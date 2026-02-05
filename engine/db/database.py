@@ -1,0 +1,371 @@
+"""Async SQLite database management."""
+
+import aiosqlite
+import json
+import time
+from pathlib import Path
+from typing import Optional, Any
+from decimal import Decimal
+
+from engine.api.schemas import PriceQuote, Position, Alert
+
+
+class Database:
+    """Async SQLite database wrapper."""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._conn: Optional[aiosqlite.Connection] = None
+
+    async def connect(self):
+        """Connect to database and initialize schema."""
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._conn = await aiosqlite.connect(self.db_path)
+        self._conn.row_factory = aiosqlite.Row
+        await self._init_schema()
+
+    async def close(self):
+        """Close database connection."""
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+
+    async def _init_schema(self):
+        """Initialize database schema."""
+        await self._conn.executescript(
+            """
+            -- System state
+            CREATE TABLE IF NOT EXISTS system_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            -- Price history
+            CREATE TABLE IF NOT EXISTS price_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                bid REAL NOT NULL,
+                ask REAL NOT NULL,
+                mid REAL NOT NULL,
+                metadata TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_price_time ON price_snapshots(timestamp);
+
+            -- Venue positions
+            CREATE TABLE IF NOT EXISTS positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT NOT NULL,
+                pair TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                cngn_balance REAL NOT NULL,
+                usdt_balance REAL NOT NULL,
+                usdc_balance REAL DEFAULT 0,
+                lp_token_id TEXT,
+                lp_liquidity TEXT,
+                range_min REAL,
+                range_max REAL,
+                in_range INTEGER,
+                open_buy_orders INTEGER,
+                open_sell_orders INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_position_venue_time ON positions(venue, timestamp);
+
+            -- Action log
+            CREATE TABLE IF NOT EXISTS actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                venue TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                direction TEXT,
+                amount_in REAL,
+                token_in TEXT,
+                amount_out REAL,
+                token_out TEXT,
+                price REAL,
+                tx_hash TEXT,
+                status TEXT NOT NULL,
+                error TEXT,
+                triggered_by TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_actions_venue ON actions(venue);
+
+            -- Venue configuration
+            CREATE TABLE IF NOT EXISTS venue_config (
+                venue TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                params TEXT NOT NULL
+            );
+
+            -- Alerts
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                message TEXT NOT NULL,
+                acknowledged INTEGER DEFAULT 0
+            );
+            """
+        )
+        await self._conn.commit()
+
+    # === System State ===
+
+    async def get_system_state(self, key: str) -> Optional[str]:
+        """Get system state value."""
+        cursor = await self._conn.execute(
+            "SELECT value FROM system_state WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        return row["value"] if row else None
+
+    async def set_system_state(self, key: str, value: str):
+        """Set system state value."""
+        await self._conn.execute(
+            """
+            INSERT INTO system_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?
+            """,
+            (key, value, int(time.time() * 1000), value, int(time.time() * 1000)),
+        )
+        await self._conn.commit()
+
+    # === Price Snapshots ===
+
+    async def insert_price_snapshot(self, quote: PriceQuote, metadata: Optional[dict] = None):
+        """Insert a price snapshot."""
+        await self._conn.execute(
+            """
+            INSERT INTO price_snapshots (timestamp, source, bid, ask, mid, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                quote.timestamp,
+                quote.source,
+                float(quote.bid),
+                float(quote.ask),
+                float(quote.mid),
+                json.dumps(metadata) if metadata else None,
+            ),
+        )
+        await self._conn.commit()
+
+    async def get_recent_prices(self, limit: int = 100) -> list[Decimal]:
+        """Get recent mid prices for SD calculation."""
+        cursor = await self._conn.execute(
+            "SELECT mid FROM price_snapshots ORDER BY timestamp DESC LIMIT ?", (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [Decimal(str(row["mid"])) for row in reversed(rows)]
+
+    async def get_price_history(
+        self,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Get price history."""
+        query = "SELECT * FROM price_snapshots WHERE 1=1"
+        params: list[Any] = []
+
+        if from_ts:
+            query += " AND timestamp >= ?"
+            params.append(from_ts)
+        if to_ts:
+            query += " AND timestamp <= ?"
+            params.append(to_ts)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    # === Positions ===
+
+    async def insert_position(self, position: Position):
+        """Insert a position snapshot."""
+        lp = position.lp_position
+        orders = position.open_orders
+
+        await self._conn.execute(
+            """
+            INSERT INTO positions (
+                venue, pair, timestamp, cngn_balance, usdt_balance, usdc_balance,
+                lp_token_id, lp_liquidity, range_min, range_max, in_range,
+                open_buy_orders, open_sell_orders
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                position.venue,
+                position.pair,
+                position.timestamp,
+                float(position.balances.get("cngn", 0)),
+                float(position.balances.get("usdt", 0)),
+                float(position.balances.get("usdc", 0)),
+                lp.token_id if lp else None,
+                lp.liquidity if lp else None,
+                float(lp.range_min) if lp else None,
+                float(lp.range_max) if lp else None,
+                1 if lp and lp.in_range else 0 if lp else None,
+                orders.get("buy_count") if orders else None,
+                orders.get("sell_count") if orders else None,
+            ),
+        )
+        await self._conn.commit()
+
+    # === Actions ===
+
+    async def insert_action(
+        self,
+        venue: str,
+        action_type: str,
+        triggered_by: str,
+        status: str,
+        direction: Optional[str] = None,
+        amount_in: Optional[float] = None,
+        token_in: Optional[str] = None,
+        amount_out: Optional[float] = None,
+        token_out: Optional[str] = None,
+        price: Optional[float] = None,
+        tx_hash: Optional[str] = None,
+        error: Optional[str] = None,
+    ):
+        """Insert an action log entry."""
+        await self._conn.execute(
+            """
+            INSERT INTO actions (
+                timestamp, venue, action_type, direction, amount_in, token_in,
+                amount_out, token_out, price, tx_hash, status, error, triggered_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(time.time() * 1000),
+                venue,
+                action_type,
+                direction,
+                amount_in,
+                token_in,
+                amount_out,
+                token_out,
+                price,
+                tx_hash,
+                status,
+                error,
+                triggered_by,
+            ),
+        )
+        await self._conn.commit()
+
+    async def get_actions(
+        self,
+        venue: Optional[str] = None,
+        action_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Get recent actions."""
+        query = "SELECT * FROM actions WHERE 1=1"
+        params: list[Any] = []
+
+        if venue:
+            query += " AND venue = ?"
+            params.append(venue)
+        if action_type:
+            query += " AND action_type = ?"
+            params.append(action_type)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    # === Venue Config ===
+
+    async def get_venue_config(self, venue: str) -> Optional[dict]:
+        """Get venue configuration."""
+        cursor = await self._conn.execute(
+            "SELECT * FROM venue_config WHERE venue = ?", (venue,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                "venue": row["venue"],
+                "enabled": bool(row["enabled"]),
+                "params": json.loads(row["params"]),
+            }
+        return None
+
+    async def update_venue_config(self, venue: str, params: dict):
+        """Update venue configuration."""
+        await self._conn.execute(
+            """
+            INSERT INTO venue_config (venue, enabled, params)
+            VALUES (?, 1, ?)
+            ON CONFLICT(venue) DO UPDATE SET params = ?
+            """,
+            (venue, json.dumps(params), json.dumps(params)),
+        )
+        await self._conn.commit()
+
+    # === Alerts ===
+
+    async def insert_alert(
+        self, severity: str, category: str, message: str
+    ) -> int:
+        """Insert an alert and return its ID."""
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO alerts (timestamp, severity, category, message)
+            VALUES (?, ?, ?, ?)
+            """,
+            (int(time.time() * 1000), severity, category, message),
+        )
+        await self._conn.commit()
+        return cursor.lastrowid
+
+    async def get_alerts(self, limit: int = 20) -> list[Alert]:
+        """Get recent alerts."""
+        cursor = await self._conn.execute(
+            "SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?", (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [
+            Alert(
+                id=row["id"],
+                timestamp=row["timestamp"],
+                severity=row["severity"],
+                category=row["category"],
+                message=row["message"],
+                acknowledged=bool(row["acknowledged"]),
+            )
+            for row in rows
+        ]
+
+    async def acknowledge_alert(self, alert_id: int):
+        """Mark an alert as acknowledged."""
+        await self._conn.execute(
+            "UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,)
+        )
+        await self._conn.commit()
+
+
+# Global database instance
+_db: Optional[Database] = None
+
+
+async def get_db() -> Database:
+    """Get the global database instance."""
+    global _db
+    if _db is None:
+        from engine.config import settings
+
+        _db = Database(settings.db_path)
+        await _db.connect()
+    return _db
