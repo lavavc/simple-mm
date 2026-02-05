@@ -38,7 +38,7 @@ CNGN manages market-making positions across four venues to provide liquidity for
 5. **Range management** — Wide ranges for convenience expose them to arbitrage/drain risk; tight ranges require constant updates
 6. **Operational hours** — Volatility events require 2-3am interventions
 
-### Quidax (CEX)
+### CEXes (Quidax for now, VALR later)
 
 **Current Process:**
 - Set ~40 limit orders across buy and sell sides
@@ -52,7 +52,7 @@ CNGN manages market-making positions across four venues to provide liquidity for
 3. **Strategy iteration** — Still A/B testing optimal spread/depth configuration
 4. **API unused** — Quidax has API but no programmatic integration yet
 
-### Blockradar (Wallet System)
+### Wallets (Blockradar, maybe other B2C providers later)
 
 **Current Process:**
 - Set fixed swap rate for each direction (CNGN→USDT, USDT→CNGN, etc.)
@@ -143,9 +143,9 @@ When liquidity depletes on one venue (e.g., all CNGN sold on Aerodrome):
 
 | Priority | Problem | Impact |
 |----------|---------|--------|
-| **P0** | DEX position management | 2-5x daily manual intervention, 24/7 |
-| **P1** | Clean USDT/NGN price feed | Foundation for all pricing decisions |
+| **P0** | Clean USDT/NGN price feed | Foundation for all pricing decisions |
 | **P1** | Global position dashboard | Cannot measure or manage what you can't see |
+| **P2** | DEX position management | 2-5x daily manual intervention, 24/7 |
 | **P2** | Quidax order automation | 4-5x daily manual order updates |
 | **P2** | Cross-venue rate synchronization | Blockradar rates isolated from strategy |
 | **P3** | Automated cross-venue arbitrage | Revenue optimization opportunity |
