@@ -10,10 +10,10 @@ CNGN manages market-making positions across four venues to provide liquidity for
 
 | Venue | Type | Pairs | Mechanism |
 |-------|------|-------|-----------|
-| **Aerodrome** | DEX (Base) | CNGN/USDT | Concentrated LP with min/max range |
-| **PancakeSwap** | DEX (BSC) | CNGN/USDT | Concentrated LP with min/max range |
-| **Quidax** | CEX | CNGN/USDT | Limit order book (market maker account) |
-| **Blockradar** | Wallet System | CNGN/USDT, CNGN/USDC | Fixed swap rates (sole market maker) |
+| **Aerodrome** | DEX (Base) | cNGN/USDC | Concentrated LP with min/max range |
+| **PancakeSwap** | DEX (BSC) | cNGN/USDT | Concentrated LP with min/max range |
+| **Quidax** | CEX | cNGN/USDT | Limit order book (market maker account) |
+| **Blockradar** | Wallet System | cNGN/USDT, cNGN/USDC | Fixed swap rates (sole market maker) |
 
 **Future pairs:** CNGN/ZARP, CNGN/IDRX (via USD intermediary)
 

@@ -1,1 +1,6 @@
 .claude/
+.env
+__pycache__/
+*.pyc
+data/
+.coverage

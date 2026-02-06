@@ -2,7 +2,7 @@
 
 import time
 from decimal import Decimal
-from typing import Optional, Protocol
+from typing import Optional
 
 import httpx
 import structlog
@@ -11,13 +11,6 @@ from engine.api.schemas import Position, PriceQuote, CexParams
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
-
-
-class QuidaxHttpClient(Protocol):
-    """Protocol for Quidax HTTP client (allows mocking)."""
-
-    async def get(self, url: str, **kwargs) -> httpx.Response: ...
-    async def post(self, url: str, **kwargs) -> httpx.Response: ...
 
 
 class QuidaxAdapter(VenueAdapter):
@@ -33,37 +26,29 @@ class QuidaxAdapter(VenueAdapter):
     def __init__(
         self,
         api_key: str,
-        api_secret: str,
         params: CexParams | None = None,
         market: str = "cngnusdt",
         base_url: str | None = None,
-        http_client: QuidaxHttpClient | None = None,
     ):
         """
         Initialize Quidax adapter.
 
         Args:
-            api_key: Quidax API key
-            api_secret: Quidax API secret
+            api_key: Quidax secret key (used as Bearer token)
             params: Order ladder parameters
             market: Trading pair (lowercase, no underscore, e.g., "cngnusdt")
             base_url: Override base URL (useful for testing)
-            http_client: Override HTTP client (useful for mocking)
         """
         self.api_key = api_key
-        self.api_secret = api_secret
         self.params = params or CexParams()
         self.market = market
         self.base_url = base_url or "https://app.quidax.io/api/v1"
         self._client: Optional[httpx.AsyncClient] = None
-        self._mock_client: Optional[QuidaxHttpClient] = http_client
         self.enabled = True
         self.paused = False
 
-    async def _get_client(self) -> QuidaxHttpClient:
+    async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with auth headers."""
-        if self._mock_client is not None:
-            return self._mock_client
         if self._client is None:
             self._client = httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -119,8 +104,48 @@ class QuidaxAdapter(VenueAdapter):
         )
 
     async def get_current_price(self) -> Optional[PriceQuote]:
-        """Quidax doesn't provide a direct price feed, return None."""
-        return None
+        """Fetch current cNGN/USDT price from the Quidax public market summary.
+
+        Uses a plain client (no auth header) since this is a public endpoint.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    f"{self.base_url}/markets/summary/",
+                    headers={"accept": "application/json"},
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            if data.get("status") != "success":
+                return None
+
+            pair_data = data.get("data", {}).get("CNGN_USDT")
+            if not pair_data:
+                return None
+
+            bid = Decimal(str(pair_data.get("highest_bid", "0")))
+            ask = Decimal(str(pair_data.get("lowest_ask", "0")))
+            last = Decimal(str(pair_data.get("last_price", "0")))
+
+            if bid == 0 and ask == 0:
+                if last == 0:
+                    return None
+                bid = last
+                ask = last
+
+            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+
+            return PriceQuote(
+                source="quidax",
+                timestamp=int(time.time() * 1000),
+                bid=bid,
+                ask=ask,
+                mid=mid,
+            )
+        except Exception as e:
+            logger.error("quidax_price_fetch_failed", error=str(e))
+            return None
 
     async def get_open_orders(self) -> list[dict]:
         """Get all open orders."""
@@ -221,7 +246,7 @@ class QuidaxAdapter(VenueAdapter):
         total_usdt = position.balances["usdt"]
 
         liquidity_per_level = Decimal(str(self.params.liquidity_per_level_percent)) / 100
-        increment = self.params.ladder_increment_ngn
+        increment = self.params.ladder_increment
 
         orders_placed = 0
 

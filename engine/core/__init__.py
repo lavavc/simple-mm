@@ -1,6 +1,11 @@
 """Core trading engine components."""
 
-from .price_feed import PriceFeed, PriceFeedConfig
 from .scheduler import TradingScheduler, SchedulerConfig
+from .price_aggregation import PriceNormalizer, BlendedPriceCalculator
 
-__all__ = ["PriceFeed", "PriceFeedConfig", "TradingScheduler", "SchedulerConfig"]
+__all__ = [
+    "TradingScheduler",
+    "SchedulerConfig",
+    "PriceNormalizer",
+    "BlendedPriceCalculator",
+]

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Any
 from decimal import Decimal
 
-from engine.api.schemas import PriceQuote, Position, Alert
+from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, ArbitrageTrade
 
 
 class Database:
@@ -52,6 +52,7 @@ class Database:
                 metadata TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_price_time ON price_snapshots(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_price_source_time ON price_snapshots(source, timestamp);
 
             -- Venue positions
             CREATE TABLE IF NOT EXISTS positions (
@@ -108,6 +109,42 @@ class Database:
                 message TEXT NOT NULL,
                 acknowledged INTEGER DEFAULT 0
             );
+
+            -- Arbitrage opportunities
+            CREATE TABLE IF NOT EXISTS arbitrage_opportunities (
+                id TEXT PRIMARY KEY,
+                timestamp INTEGER NOT NULL,
+                buy_venue TEXT NOT NULL,
+                sell_venue TEXT NOT NULL,
+                buy_price REAL NOT NULL,
+                sell_price REAL NOT NULL,
+                gross_spread_bps INTEGER NOT NULL,
+                net_spread_bps INTEGER NOT NULL,
+                recommended_size_usd REAL NOT NULL,
+                expected_profit_usd REAL NOT NULL,
+                status TEXT NOT NULL,
+                actual_profit_usd REAL,
+                reason TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_arb_opp_time ON arbitrage_opportunities(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_arb_opp_status ON arbitrage_opportunities(status);
+
+            -- Arbitrage trades (individual legs)
+            CREATE TABLE IF NOT EXISTS arbitrage_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                opportunity_id TEXT NOT NULL,
+                venue TEXT NOT NULL,
+                side TEXT NOT NULL,
+                amount REAL NOT NULL,
+                price REAL,
+                tx_hash TEXT,
+                status TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                error TEXT,
+                FOREIGN KEY (opportunity_id) REFERENCES arbitrage_opportunities(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_arb_trades_opp ON arbitrage_trades(opportunity_id);
+            CREATE INDEX IF NOT EXISTS idx_arb_trades_time ON arbitrage_trades(timestamp);
             """
         )
         await self._conn.commit()
@@ -180,6 +217,41 @@ class Database:
             params.append(to_ts)
 
         query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_price_snapshots_in_window(
+        self,
+        from_ts: int,
+        to_ts: int,
+        source: Optional[str] = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Get price snapshots within a time window for TWAP computation.
+
+        Returns rows sorted by timestamp ascending (oldest first) so that
+        time-weighting can be applied sequentially.
+
+        Args:
+            from_ts: Start timestamp in milliseconds.
+            to_ts: End timestamp in milliseconds.
+            source: Optional source/venue name filter (partial match).
+            limit: Maximum rows to return.
+
+        Returns:
+            List of dicts with keys: timestamp, source, bid, ask, mid.
+        """
+        query = "SELECT timestamp, source, bid, ask, mid FROM price_snapshots WHERE timestamp >= ? AND timestamp <= ?"
+        params: list[Any] = [from_ts, to_ts]
+
+        if source:
+            query += " AND source LIKE ?"
+            params.append(f"%{source}%")
+
+        query += " ORDER BY timestamp ASC LIMIT ?"
         params.append(limit)
 
         cursor = await self._conn.execute(query, params)
@@ -354,6 +426,229 @@ class Database:
             "UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,)
         )
         await self._conn.commit()
+
+    # === Arbitrage Opportunities ===
+
+    async def insert_arbitrage_opportunity(self, opp: ArbitrageOpportunity):
+        """Insert a detected arbitrage opportunity."""
+        await self._conn.execute(
+            """
+            INSERT INTO arbitrage_opportunities (
+                id, timestamp, buy_venue, sell_venue, buy_price, sell_price,
+                gross_spread_bps, net_spread_bps, recommended_size_usd,
+                expected_profit_usd, status, actual_profit_usd, reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                opp.id,
+                opp.timestamp,
+                opp.buy_venue,
+                opp.sell_venue,
+                float(opp.buy_price),
+                float(opp.sell_price),
+                opp.gross_spread_bps,
+                opp.net_spread_bps,
+                float(opp.recommended_size_usd),
+                float(opp.expected_profit_usd),
+                opp.status,
+                float(opp.actual_profit_usd) if opp.actual_profit_usd else None,
+                opp.reason,
+            ),
+        )
+        await self._conn.commit()
+
+    async def update_arbitrage_opportunity(
+        self,
+        opp_id: str,
+        status: str,
+        actual_profit_usd: Optional[float] = None,
+        reason: Optional[str] = None,
+    ):
+        """Update an arbitrage opportunity status."""
+        if actual_profit_usd is not None:
+            await self._conn.execute(
+                """
+                UPDATE arbitrage_opportunities
+                SET status = ?, actual_profit_usd = ?, reason = ?
+                WHERE id = ?
+                """,
+                (status, actual_profit_usd, reason, opp_id),
+            )
+        else:
+            await self._conn.execute(
+                """
+                UPDATE arbitrage_opportunities
+                SET status = ?, reason = ?
+                WHERE id = ?
+                """,
+                (status, reason, opp_id),
+            )
+        await self._conn.commit()
+
+    async def get_arbitrage_opportunities(
+        self,
+        status: Optional[str] = None,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+        limit: int = 50,
+    ) -> list[ArbitrageOpportunity]:
+        """Get arbitrage opportunities with optional filters."""
+        query = "SELECT * FROM arbitrage_opportunities WHERE 1=1"
+        params: list[Any] = []
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if from_ts:
+            query += " AND timestamp >= ?"
+            params.append(from_ts)
+        if to_ts:
+            query += " AND timestamp <= ?"
+            params.append(to_ts)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(query, params)
+        rows = await cursor.fetchall()
+
+        return [
+            ArbitrageOpportunity(
+                id=row["id"],
+                timestamp=row["timestamp"],
+                buy_venue=row["buy_venue"],
+                sell_venue=row["sell_venue"],
+                buy_price=Decimal(str(row["buy_price"])),
+                sell_price=Decimal(str(row["sell_price"])),
+                gross_spread_bps=row["gross_spread_bps"],
+                net_spread_bps=row["net_spread_bps"],
+                recommended_size_usd=Decimal(str(row["recommended_size_usd"])),
+                expected_profit_usd=Decimal(str(row["expected_profit_usd"])),
+                status=row["status"],
+                actual_profit_usd=Decimal(str(row["actual_profit_usd"]))
+                if row["actual_profit_usd"]
+                else None,
+                reason=row["reason"],
+            )
+            for row in rows
+        ]
+
+    async def get_arbitrage_stats(
+        self,
+        from_ts: int,
+    ) -> dict:
+        """Get aggregated arbitrage statistics since timestamp."""
+        cursor = await self._conn.execute(
+            """
+            SELECT
+                COUNT(*) as total_detected,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as total_executed,
+                SUM(CASE WHEN status = 'completed' THEN actual_profit_usd ELSE 0 END) as total_profit,
+                SUM(recommended_size_usd) as total_volume
+            FROM arbitrage_opportunities
+            WHERE timestamp >= ?
+            """,
+            (from_ts,),
+        )
+        row = await cursor.fetchone()
+
+        return {
+            "opportunities_detected": row["total_detected"] or 0,
+            "opportunities_executed": row["total_executed"] or 0,
+            "total_profit_usd": Decimal(str(row["total_profit"] or 0)),
+            "total_volume_usd": Decimal(str(row["total_volume"] or 0)),
+        }
+
+    # === Arbitrage Trades ===
+
+    async def insert_arbitrage_trade(self, trade: ArbitrageTrade) -> int:
+        """Insert an arbitrage trade leg."""
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO arbitrage_trades (
+                opportunity_id, venue, side, amount, price, tx_hash,
+                status, timestamp, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade.opportunity_id,
+                trade.venue,
+                trade.side,
+                float(trade.amount),
+                float(trade.price) if trade.price else None,
+                trade.tx_hash,
+                trade.status,
+                trade.timestamp,
+                trade.error,
+            ),
+        )
+        await self._conn.commit()
+        return cursor.lastrowid
+
+    async def update_arbitrage_trade(
+        self,
+        trade_id: int,
+        status: str,
+        price: Optional[float] = None,
+        tx_hash: Optional[str] = None,
+        error: Optional[str] = None,
+    ):
+        """Update an arbitrage trade status."""
+        updates = ["status = ?"]
+        params: list[Any] = [status]
+
+        if price is not None:
+            updates.append("price = ?")
+            params.append(price)
+        if tx_hash is not None:
+            updates.append("tx_hash = ?")
+            params.append(tx_hash)
+        if error is not None:
+            updates.append("error = ?")
+            params.append(error)
+
+        params.append(trade_id)
+
+        await self._conn.execute(
+            f"UPDATE arbitrage_trades SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        await self._conn.commit()
+
+    async def get_arbitrage_trades(
+        self,
+        opportunity_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[ArbitrageTrade]:
+        """Get arbitrage trades for an opportunity."""
+        query = "SELECT * FROM arbitrage_trades WHERE 1=1"
+        params: list[Any] = []
+
+        if opportunity_id:
+            query += " AND opportunity_id = ?"
+            params.append(opportunity_id)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(query, params)
+        rows = await cursor.fetchall()
+
+        return [
+            ArbitrageTrade(
+                id=row["id"],
+                opportunity_id=row["opportunity_id"],
+                venue=row["venue"],
+                side=row["side"],
+                amount=Decimal(str(row["amount"])),
+                price=Decimal(str(row["price"])) if row["price"] else None,
+                tx_hash=row["tx_hash"],
+                status=row["status"],
+                timestamp=row["timestamp"],
+                error=row["error"],
+            )
+            for row in rows
+        ]
 
 
 # Global database instance

@@ -1,5 +1,10 @@
-"""Shared base class for UniswapV3-style DEX adapters."""
+"""Shared base class for UniswapV3-style DEX adapters.
 
+Also provides PoolPriceReader for read-only on-chain price fetching
+(no private keys required).
+"""
+
+import time as _time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
@@ -15,6 +20,11 @@ from engine.api.schemas import Position, PriceQuote, LPPosition, TxResult, DexPa
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
+
+
+# =============================================================================
+# Data classes
+# =============================================================================
 
 
 @dataclass
@@ -37,6 +47,28 @@ class PoolConfig:
 
 
 @dataclass
+class PoolReadConfig:
+    """Minimal config for read-only pool price fetching (no keys needed).
+
+    ``token0`` / ``token1`` must match the **actual on-chain ordering**
+    (the pool always has token0 < token1 by address).
+
+    Set ``invert_price=True`` when the pool's native price direction
+    (token1-per-token0) is the opposite of what the consumer expects.
+    For example, if the pool is USDT/cNGN but you want cNGN-per-USD,
+    set ``invert_price=True`` so the reader returns ``1 / pool_price``.
+    """
+
+    rpc_url: str
+    pool_address: str
+    token0_symbol: str
+    token1_symbol: str
+    token0_decimals: int
+    token1_decimals: int
+    invert_price: bool = False
+
+
+@dataclass
 class PositionState:
     """LP position state from on-chain."""
 
@@ -49,6 +81,117 @@ class PositionState:
     price_lower: Decimal
     price_upper: Decimal
     in_range: bool
+
+
+# =============================================================================
+# Shared price math
+# =============================================================================
+
+
+def sqrt_price_x96_to_decimal(
+    sqrt_price_x96: int,
+    token0_decimals: int,
+    token1_decimals: int,
+) -> Decimal:
+    """Convert a UniswapV3/CL sqrtPriceX96 value to a human-readable price.
+
+    Returns the price of token0 denominated in token1, adjusted for
+    the decimal difference between the two tokens.
+    """
+    price = (Decimal(sqrt_price_x96) / Decimal(2**96)) ** 2
+    decimal_diff = token0_decimals - token1_decimals
+    price *= Decimal(10**decimal_diff)
+    return price
+
+
+# Function selector for slot0(): keccak256("slot0()")[:4] = 0x3850c7bd
+# This is the same across all UniswapV3-style pools (Uniswap, Aerodrome,
+# PancakeSwap, etc.) since the function signature is always `slot0()`.
+SLOT0_SELECTOR = bytes.fromhex("3850c7bd")
+
+
+# =============================================================================
+# PoolPriceReader -- read-only, no private keys
+# =============================================================================
+
+
+class PoolPriceReader:
+    """Read-only price reader for any UniswapV3-style concentrated liquidity pool.
+
+    Only needs an RPC URL and pool address. Uses raw ``eth_call`` with the
+    ``slot0()`` selector and parses the first 32-byte word (sqrtPriceX96)
+    directly from the response bytes.
+
+    This approach is **protocol-agnostic** -- different forks return different
+    numbers of fields from slot0 (Aerodrome has 6, PancakeSwap has 7 with
+    uint32 feeProtocol, standard UniV3 has 7 with uint8 feeProtocol), but the
+    first word is always sqrtPriceX96 in all of them.
+
+    No private keys, no NFT manager, no router -- just a single view call.
+    """
+
+    def __init__(self, config: PoolReadConfig, source_name: str):
+        self.config = config
+        self.source_name = source_name
+
+        self._w3 = Web3(Web3.HTTPProvider(config.rpc_url))
+        self._pool_address = Web3.to_checksum_address(config.pool_address)
+
+    def get_price(self) -> Optional[PriceQuote]:
+        """Read the current pool price via a single slot0() RPC call.
+
+        Parses raw return bytes instead of using a typed ABI, making this
+        compatible with all UniswapV3-style pool implementations.
+        """
+        try:
+            result = self._w3.eth.call(
+                {"to": self._pool_address, "data": SLOT0_SELECTOR}
+            )
+
+            if len(result) < 64:
+                logger.error(
+                    "slot0_response_too_short",
+                    source=self.source_name,
+                    length=len(result),
+                )
+                return None
+
+            # First 32 bytes = sqrtPriceX96 (uint160, left-padded to 32 bytes)
+            sqrt_price_x96 = int.from_bytes(result[:32], "big")
+
+            mid = sqrt_price_x96_to_decimal(
+                sqrt_price_x96,
+                self.config.token0_decimals,
+                self.config.token1_decimals,
+            )
+
+            if mid <= 0:
+                return None
+
+            # Invert if the pool's native direction is opposite to desired
+            if self.config.invert_price:
+                mid = Decimal(1) / mid
+
+            return PriceQuote(
+                source=f"{self.source_name}_pool",
+                timestamp=int(_time.time() * 1000),
+                bid=mid,
+                ask=mid,
+                mid=mid,
+            )
+        except Exception as e:
+            logger.error(
+                "pool_price_read_failed",
+                source=self.source_name,
+                pool=self.config.pool_address,
+                error=str(e),
+            )
+            return None
+
+
+# =============================================================================
+# ERC20 ABI
+# =============================================================================
 
 
 # Minimal ERC20 ABI for approvals and balance checks
@@ -257,6 +400,95 @@ class BaseDexAdapter(VenueAdapter, ABC):
             logger.warning("get_owned_positions_failed", error=str(e))
             return []
 
+    # === Capital allocation ===
+
+    def calculate_mint_amounts(
+        self,
+        reference_price_usd: Optional[Decimal] = None,
+    ) -> tuple[int, int]:
+        """
+        Calculate how much of each token to use for minting, respecting reserves and limits.
+
+        This prevents "all-in LP" by applying:
+        1. max_utilization_percent - caps % of balance to deploy
+        2. min_reserve_token0/token1 - keeps minimum in wallet
+        3. max_position_usd - hard cap on total position value
+
+        Args:
+            reference_price_usd: Optional USD price of token0 for max_position_usd calc
+
+        Returns:
+            (amount0, amount1) in raw token units (not decimal-adjusted)
+        """
+        # Get current balances (raw units)
+        balance0_raw = self.token0.functions.balanceOf(self.lp_account.address).call()
+        balance1_raw = self.token1.functions.balanceOf(self.lp_account.address).call()
+
+        # Convert to decimal for calculations
+        balance0 = Decimal(balance0_raw) / Decimal(10**self.config.token0_decimals)
+        balance1 = Decimal(balance1_raw) / Decimal(10**self.config.token1_decimals)
+
+        # 1. Apply max utilization percent
+        max_util = self.params.max_utilization_percent / Decimal("100")
+        available0 = balance0 * max_util
+        available1 = balance1 * max_util
+
+        # 2. Subtract minimum reserves
+        available0 = max(Decimal("0"), available0 - self.params.min_reserve_token0)
+        available1 = max(Decimal("0"), available1 - self.params.min_reserve_token1)
+
+        # Also ensure we don't go below reserves even after utilization calc
+        max_from_reserve0 = max(Decimal("0"), balance0 - self.params.min_reserve_token0)
+        max_from_reserve1 = max(Decimal("0"), balance1 - self.params.min_reserve_token1)
+        available0 = min(available0, max_from_reserve0)
+        available1 = min(available1, max_from_reserve1)
+
+        # 3. Apply max position USD cap if set
+        if self.params.max_position_usd and reference_price_usd:
+            # Estimate total position value
+            # token0 value + token1 value (token1 assumed to be stablecoin ≈ $1)
+            token0_usd_value = available0 * reference_price_usd
+            token1_usd_value = available1  # Stablecoin
+
+            total_usd = token0_usd_value + token1_usd_value
+
+            if total_usd > self.params.max_position_usd:
+                # Scale down proportionally
+                scale_factor = self.params.max_position_usd / total_usd
+                available0 = available0 * scale_factor
+                available1 = available1 * scale_factor
+
+        # Convert back to raw units
+        amount0 = int(available0 * Decimal(10**self.config.token0_decimals))
+        amount1 = int(available1 * Decimal(10**self.config.token1_decimals))
+
+        logger.info(
+            "calculated_mint_amounts",
+            venue=self.name,
+            balance0=float(balance0),
+            balance1=float(balance1),
+            available0=float(available0),
+            available1=float(available1),
+            max_utilization_percent=float(self.params.max_utilization_percent),
+            min_reserve_token0=float(self.params.min_reserve_token0),
+            min_reserve_token1=float(self.params.min_reserve_token1),
+        )
+
+        return amount0, amount1
+
+    def get_deployable_balances(self) -> dict[str, Decimal]:
+        """
+        Get balances available for deployment (after reserves).
+
+        Returns:
+            Dict with 'token0' and 'token1' available amounts
+        """
+        amount0, amount1 = self.calculate_mint_amounts()
+        return {
+            "token0": Decimal(amount0) / Decimal(10**self.config.token0_decimals),
+            "token1": Decimal(amount1) / Decimal(10**self.config.token1_decimals),
+        }
+
     # === Strategy logic ===
 
     def calculate_tick_range(self, prices: list[Decimal]) -> tuple[int, int]:
@@ -308,6 +540,12 @@ class BaseDexAdapter(VenueAdapter, ABC):
             mid = (tick_lower + tick_upper) // 2
             tick_lower = mid - self.params.max_tick_width // 2
             tick_upper = mid + self.params.max_tick_width // 2
+
+        # Re-align to tick spacing after width constraints (width adjustment can un-align)
+        tick_lower = (tick_lower // self.config.tick_spacing) * self.config.tick_spacing
+        tick_upper = (
+            (tick_upper // self.config.tick_spacing) + 1
+        ) * self.config.tick_spacing
 
         logger.info(
             "calculated_tick_range",
@@ -456,12 +694,12 @@ class BaseDexAdapter(VenueAdapter, ABC):
     # === Price/tick math ===
 
     def _sqrt_price_to_decimal(self, sqrt_price_x96: int) -> Decimal:
-        """Convert sqrtPriceX96 to decimal price."""
-        price = (Decimal(sqrt_price_x96) / Decimal(2**96)) ** 2
-        # Adjust for decimals
-        decimal_diff = self.config.token0_decimals - self.config.token1_decimals
-        price *= Decimal(10**decimal_diff)
-        return price
+        """Convert sqrtPriceX96 to decimal price (delegates to shared utility)."""
+        return sqrt_price_x96_to_decimal(
+            sqrt_price_x96,
+            self.config.token0_decimals,
+            self.config.token1_decimals,
+        )
 
     def _tick_to_price(self, tick: int) -> Decimal:
         """Convert tick to price."""
