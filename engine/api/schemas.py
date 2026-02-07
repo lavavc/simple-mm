@@ -78,10 +78,11 @@ class DexParams(BaseModel):
     max_slippage_percent: Decimal = Decimal("1.0")
 
     # Capital allocation - prevents "all-in LP"
-    max_utilization_percent: Decimal = Decimal("80.0")  # Max % of balance to deploy
-    min_reserve_token0: Decimal = Decimal("0")  # Min token0 to keep (e.g., CNGN)
-    min_reserve_token1: Decimal = Decimal("0")  # Min token1 to keep (e.g., USDC)
-    max_position_usd: Optional[Decimal] = None  # Hard cap on position size in USD
+    # Conservative defaults to maintain delta flexibility
+    max_utilization_percent: Decimal = Decimal("60.0")  # Max % of balance to deploy (down from 80%)
+    min_reserve_token0: Decimal = Decimal("10000")  # Keep 10k cNGN for rebalancing
+    min_reserve_token1: Decimal = Decimal("50")  # Keep $50 stables for gas/rebalancing
+    max_position_usd: Optional[Decimal] = Decimal("1000")  # Start with $1k cap, scale up over time
 
 
 class CexParams(BaseModel):

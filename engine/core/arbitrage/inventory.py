@@ -159,6 +159,7 @@ class InventoryTracker:
         size_usd: Decimal,
         profit_usd: Decimal,
         cngn_delta: Decimal,
+        cngn_price_usd: Decimal | None = None,
     ):
         """
         Record a completed trade for daily tracking.
@@ -168,6 +169,7 @@ class InventoryTracker:
             size_usd: Trade size in USD
             profit_usd: Actual profit (can be negative)
             cngn_delta: Change in cNGN holdings (positive = bought, negative = sold)
+            cngn_price_usd: cNGN/USD price for proper imbalance calculation
         """
         self._reset_daily_if_needed()
 
@@ -178,9 +180,19 @@ class InventoryTracker:
         else:
             self._state.daily_loss_usd += abs(profit_usd)
 
-        # Update inventory imbalance
-        # Convert cNGN delta to USD value (rough estimate)
-        self._state.cngn_imbalance_usd += cngn_delta
+        # Update inventory imbalance in USD terms
+        # cngn_delta is in cNGN units, convert to USD using reference price
+        if cngn_price_usd and cngn_price_usd > 0:
+            imbalance_delta_usd = cngn_delta * cngn_price_usd
+        else:
+            # Fallback: estimate at ~0.0006 USD/cNGN (1650 NGN/USD)
+            imbalance_delta_usd = cngn_delta * Decimal("0.0006")
+            logger.warning(
+                "inventory_imbalance_estimated",
+                cngn_delta=float(cngn_delta),
+                estimated_usd=float(imbalance_delta_usd),
+            )
+        self._state.cngn_imbalance_usd += imbalance_delta_usd
 
         # Reset consecutive failures on success
         if profit_usd >= 0:
