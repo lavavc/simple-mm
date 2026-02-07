@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { addNotification } from '@/lib/notifications';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
 const RECONNECT_BASE_MS = 1000;
@@ -55,6 +56,16 @@ export function useEventStream() {
           for (const key of keys) {
             qc.invalidateQueries({ queryKey: key });
           }
+        }
+
+        if (event.type === 'arbitrage_opportunity' && event.data) {
+          const d = event.data;
+          addNotification({
+            type: 'arbitrage',
+            title: `${d.buy_venue} → ${d.sell_venue}`,
+            message: `Spread: ${d.net_spread_bps} bps | Est. profit: $${Number(d.expected_profit_usd).toFixed(2)}`,
+            data: d,
+          });
         }
       } catch {
         // ignore malformed messages

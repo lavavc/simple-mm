@@ -128,7 +128,7 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
           <CardTitle className="text-sm font-medium">Venue Price Comparison</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-48 flex items-center justify-center text-muted-foreground">
+          <div className="h-80 flex items-center justify-center text-muted-foreground">
             Waiting for price history&hellip;
           </div>
         </CardContent>
@@ -167,7 +167,7 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="h-48">
+        <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
               <XAxis dataKey="time" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
