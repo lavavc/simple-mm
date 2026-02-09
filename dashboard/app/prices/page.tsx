@@ -6,6 +6,7 @@ import {
   formatNumber,
   normalizeToNgnUsd,
   spreadBps,
+  isDex,
   VENUE_LABELS,
 } from '@/lib/utils';
 import { usePrices, useBlendedPrice } from '@/lib/hooks/useQueries';
@@ -19,7 +20,8 @@ function PriceCard({ price }: { price: VenuePriceResponse }) {
   const label = VENUE_LABELS[price.venue] || { name: price.venue, chain: 'Unknown', type: '?' };
   const hasPrice = !!price.quote;
   const normalized = normalizeToNgnUsd(price);
-  const spread = normalized ? spreadBps(normalized) : null;
+  // Don't show spread for DEX venues (AMM pools don't have order book spreads)
+  const spread = normalized && !isDex(price.venue) ? spreadBps(normalized) : null;
 
   return (
     <Card className="hover:border-primary/50 transition-colors">
@@ -183,7 +185,8 @@ export default function PricesPage() {
                   const label = VENUE_LABELS[p.venue] || { name: p.venue };
                   const minMid = Math.min(...mids);
                   const diffFromMin = Math.round(((p.normalized!.mid - minMid) / minMid) * 10000);
-                  const spread = spreadBps(p.normalized!);
+                  // Don't show spread for DEX venues (AMM pools don't have order book spreads)
+                  const spread = isDex(p.venue) ? null : spreadBps(p.normalized!);
                   const diffFromVwap = vwapNgn
                     ? Math.round(((p.normalized!.mid - vwapNgn) / vwapNgn) * 10000)
                     : null;
@@ -194,7 +197,7 @@ export default function PricesPage() {
                       <td className="text-right font-medium">{formatNumber(p.normalized!.mid, 2)}</td>
                       <td className="text-right text-green-500">{formatNumber(p.normalized!.bid, 2)}</td>
                       <td className="text-right text-red-500">{formatNumber(p.normalized!.ask, 2)}</td>
-                      <td className="text-right">{spread} bps</td>
+                      <td className="text-right">{spread !== null ? `${spread} bps` : '—'}</td>
                       <td className="text-right">
                         {diffFromVwap !== null ? (
                           <span className={diffFromVwap > 0 ? 'text-red-400' : diffFromVwap < 0 ? 'text-green-400' : ''}>

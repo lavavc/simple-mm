@@ -11,7 +11,11 @@ class TestDexParamsValidation:
     """Test DexParams validation and defaults."""
 
     def test_default_values(self):
-        """Test default parameter values."""
+        """Test default parameter values.
+
+        NOTE: This test intentionally checks production defaults.
+        If it fails, verify the change was intentional and update this test.
+        """
         params = DexParams()
 
         assert params.sd_multiplier == Decimal("1.5")
@@ -20,10 +24,10 @@ class TestDexParamsValidation:
         assert params.lookback_points is None
         assert params.rebalance_threshold_percent == Decimal("5.0")
         assert params.max_slippage_percent == Decimal("1.0")
-        assert params.max_utilization_percent == Decimal("80.0")
-        assert params.min_reserve_token0 == Decimal("0")
-        assert params.min_reserve_token1 == Decimal("0")
-        assert params.max_position_usd is None
+        assert params.max_utilization_percent == Decimal("60.0")  # Conservative default
+        assert params.min_reserve_token0 == Decimal("10000")  # Keep 10k cNGN
+        assert params.min_reserve_token1 == Decimal("50")  # Keep $50 stables
+        assert params.max_position_usd == Decimal("1000")  # Start with $1k cap
 
     def test_custom_values(self):
         """Test custom parameter values."""

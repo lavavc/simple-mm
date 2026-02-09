@@ -161,3 +161,8 @@ export function normalizeToNgnUsd(
 export function spreadBps(n: { bid: number; ask: number; mid: number }): number {
   return Math.round(((n.ask - n.bid) / n.mid) * 10000);
 }
+
+/** Check if a venue is a DEX (AMM pools don't have order book spreads). */
+export function isDex(venueName: string): boolean {
+  return VENUE_LABELS[venueName]?.type === 'DEX';
+}

@@ -153,7 +153,11 @@ class TestCircuitBreaker:
 class TestTradeRecording:
 
     def test_record_profitable_trade(self, tracker):
-        tracker.record_trade_complete("t1", Decimal("500"), Decimal("25"), Decimal("100"))
+        # Pass cngn_price_usd so imbalance = cngn_delta * price
+        tracker.record_trade_complete(
+            "t1", Decimal("500"), Decimal("25"), Decimal("100"),
+            cngn_price_usd=Decimal("1"),  # 1 cNGN = $1 for easy math
+        )
 
         assert tracker.state.daily_volume_usd == Decimal("500")
         assert tracker.state.daily_profit_usd == Decimal("25")
@@ -161,7 +165,11 @@ class TestTradeRecording:
         assert tracker.state.cngn_imbalance_usd == Decimal("100")
 
     def test_record_losing_trade(self, tracker):
-        tracker.record_trade_complete("t1", Decimal("500"), Decimal("-10"), Decimal("-50"))
+        # Pass cngn_price_usd so imbalance = cngn_delta * price
+        tracker.record_trade_complete(
+            "t1", Decimal("500"), Decimal("-10"), Decimal("-50"),
+            cngn_price_usd=Decimal("1"),  # 1 cNGN = $1 for easy math
+        )
 
         assert tracker.state.daily_volume_usd == Decimal("500")
         assert tracker.state.daily_profit_usd == Decimal("0")

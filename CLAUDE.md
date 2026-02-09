@@ -1,0 +1,4 @@
+- Add the least code possible to address a request. 
+- Avoid code complexity and bloat at every opportunity. 
+- Before making significant code changes, ask clarifying questions.
+- Make documentation as succinct as possible. Avoid adding code blocks: just link to the relevant file instead.

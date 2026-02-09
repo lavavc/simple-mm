@@ -2,9 +2,9 @@
 
 import pytest
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
 
 from engine.api.schemas import DexParams
+from tests.conftest_params import make_dex_params
 
 
 class TestCapitalAllocationLogic:
@@ -61,26 +61,9 @@ class TestCapitalAllocationLogic:
 class TestMaxUtilization(TestCapitalAllocationLogic):
     """Test max_utilization_percent parameter."""
 
-    def test_default_80_percent(self):
-        """Default 80% utilization."""
-        params = DexParams()  # Default 80%
-
-        amount0, amount1 = self.calculate_allocation(
-            balance0=Decimal("1000000"),
-            balance1=Decimal("1000"),
-            params=params,
-        )
-
-        # Should use 80% of each
-        expected0 = int(Decimal("800000") * Decimal(10**18))
-        expected1 = int(Decimal("800") * Decimal(10**6))
-
-        assert amount0 == expected0
-        assert amount1 == expected1
-
     def test_100_percent_utilization(self):
         """100% utilization uses full balance."""
-        params = DexParams(max_utilization_percent=Decimal("100"))
+        params = make_dex_params(max_utilization_percent=Decimal("100"))
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("1000000"),
@@ -96,7 +79,7 @@ class TestMaxUtilization(TestCapitalAllocationLogic):
 
     def test_50_percent_utilization(self):
         """50% utilization uses half balance."""
-        params = DexParams(max_utilization_percent=Decimal("50"))
+        params = make_dex_params(max_utilization_percent=Decimal("50"))
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("1000000"),
@@ -112,7 +95,7 @@ class TestMaxUtilization(TestCapitalAllocationLogic):
 
     def test_zero_utilization(self):
         """0% utilization returns zero."""
-        params = DexParams(max_utilization_percent=Decimal("0"))
+        params = make_dex_params(max_utilization_percent=Decimal("0"))
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("1000000"),
@@ -129,8 +112,7 @@ class TestMinimumReserves(TestCapitalAllocationLogic):
 
     def test_reserves_subtracted(self):
         """Reserves are subtracted from available balance."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
+        params = make_dex_params(
             min_reserve_token0=Decimal("100000"),
             min_reserve_token1=Decimal("200"),
         )
@@ -150,7 +132,7 @@ class TestMinimumReserves(TestCapitalAllocationLogic):
 
     def test_reserves_with_utilization(self):
         """Reserves and utilization work together."""
-        params = DexParams(
+        params = make_dex_params(
             max_utilization_percent=Decimal("90"),
             min_reserve_token0=Decimal("100000"),
             min_reserve_token1=Decimal("200"),
@@ -177,8 +159,7 @@ class TestMinimumReserves(TestCapitalAllocationLogic):
 
     def test_reserve_larger_than_balance(self):
         """Reserve larger than balance returns zero."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
+        params = make_dex_params(
             min_reserve_token0=Decimal("2000000"),  # More than balance
             min_reserve_token1=Decimal("100"),
         )
@@ -196,8 +177,7 @@ class TestMinimumReserves(TestCapitalAllocationLogic):
 
     def test_reserve_equals_balance(self):
         """Reserve equal to balance returns zero."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
+        params = make_dex_params(
             min_reserve_token0=Decimal("1000000"),
             min_reserve_token1=Decimal("1000"),
         )
@@ -217,10 +197,7 @@ class TestMaxPositionUsd(TestCapitalAllocationLogic):
 
     def test_cap_applied_when_exceeded(self):
         """Position is scaled down when USD cap is exceeded."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
-            max_position_usd=Decimal("5000"),
-        )
+        params = make_dex_params(max_position_usd=Decimal("5000"))
 
         # 10M CNGN at $0.0006 = $6000
         # 5000 USDC = $5000
@@ -244,10 +221,7 @@ class TestMaxPositionUsd(TestCapitalAllocationLogic):
 
     def test_cap_not_applied_when_under(self):
         """No scaling when under USD cap."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
-            max_position_usd=Decimal("50000"),  # High cap
-        )
+        params = make_dex_params(max_position_usd=Decimal("50000"))  # High cap
 
         # Total value well under cap
         amount0, amount1 = self.calculate_allocation(
@@ -266,10 +240,7 @@ class TestMaxPositionUsd(TestCapitalAllocationLogic):
 
     def test_cap_without_reference_price(self):
         """USD cap is ignored without reference price."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
-            max_position_usd=Decimal("100"),  # Very low cap
-        )
+        params = make_dex_params(max_position_usd=Decimal("100"))  # Very low cap
 
         # Without reference_price_usd, cap is not applied
         amount0, amount1 = self.calculate_allocation(
@@ -288,10 +259,7 @@ class TestMaxPositionUsd(TestCapitalAllocationLogic):
 
     def test_cap_with_no_max_set(self):
         """No scaling when max_position_usd is None."""
-        params = DexParams(
-            max_utilization_percent=Decimal("100"),
-            max_position_usd=None,
-        )
+        params = make_dex_params()  # max_position_usd=None by default
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("10000000"),
@@ -338,7 +306,7 @@ class TestCombinedConstraints(TestCapitalAllocationLogic):
 
     def test_zero_balance(self):
         """Zero balance returns zero."""
-        params = DexParams()
+        params = make_dex_params()
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("0"),
@@ -351,7 +319,7 @@ class TestCombinedConstraints(TestCapitalAllocationLogic):
 
     def test_asymmetric_balances(self):
         """Handles asymmetric token balances."""
-        params = DexParams(max_utilization_percent=Decimal("100"))
+        params = make_dex_params()
 
         # Only token1 has balance
         amount0, amount1 = self.calculate_allocation(
@@ -370,7 +338,7 @@ class TestEdgeCases(TestCapitalAllocationLogic):
 
     def test_very_small_balance(self):
         """Handle very small balances (dust)."""
-        params = DexParams()
+        params = make_dex_params()
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("0.000001"),
@@ -384,7 +352,7 @@ class TestEdgeCases(TestCapitalAllocationLogic):
 
     def test_very_large_balance(self):
         """Handle very large balances."""
-        params = DexParams()
+        params = make_dex_params()
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("1000000000000"),  # 1 trillion
@@ -398,7 +366,7 @@ class TestEdgeCases(TestCapitalAllocationLogic):
 
     def test_precision_maintenance(self):
         """Decimal precision is maintained throughout calculation."""
-        params = DexParams(max_utilization_percent=Decimal("33.333333"))
+        params = make_dex_params(max_utilization_percent=Decimal("33.333333"))
 
         amount0, amount1 = self.calculate_allocation(
             balance0=Decimal("1000000"),

@@ -99,6 +99,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
     if settings.blockradar_api_key:
         venues["blockradar"] = BlockradarAdapter(
             api_key=settings.blockradar_api_key,
+            wallet_id=settings.blockradar_wallet_id,
             params=WalletParams(),
         )
         logger.info("venue_initialized", venue="blockradar")

@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { formatNumber, normalizeToNgnUsd, spreadBps, VENUE_LABELS } from '@/lib/utils';
+import { formatNumber, normalizeToNgnUsd, spreadBps, isDex, VENUE_LABELS } from '@/lib/utils';
 import { Circle, TrendingUp, AlertCircle } from 'lucide-react';
 import type { VenueStatus } from '@/types';
 
@@ -17,7 +17,8 @@ export function VenueCard({ venue }: VenueCardProps) {
   const priceError = venue.price?.error;
 
   const normalized = venue.price ? normalizeToNgnUsd(venue.price) : null;
-  const spread = normalized ? spreadBps(normalized) : null;
+  // Don't show spread for DEX venues (AMM pools don't have order book spreads)
+  const spread = normalized && !isDex(venue.name) ? spreadBps(normalized) : null;
 
   return (
     <Card className="hover:border-primary/50 transition-colors">
