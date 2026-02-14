@@ -20,7 +20,7 @@ AERODROME_CNGN_USDC_CONFIG = PoolConfig(
     token1_symbol="USDC",
     token0_decimals=6,
     token1_decimals=6,
-    tick_spacing=100,  # Aerodrome tick spacing for this fee tier
+    tick_spacing=10,  # Aerodrome CL Stable-10 pool
 )
 
 
