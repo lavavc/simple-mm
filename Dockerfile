@@ -28,6 +28,7 @@ RUN pytest -x -q --ignore=tests/test_dex_fork.py
 # ---- Stage 4: Production image ----
 FROM base AS production
 COPY engine/ ./engine/
+COPY scripts/ ./scripts/
 COPY --from=dashboard /dashboard/out ./dashboard/out
 RUN mkdir -p data
 ENV PYTHONPATH=/app
