@@ -24,13 +24,10 @@ class TestDexParamsValidation:
         assert params.lookback_points is None
         assert params.rebalance_threshold_percent == Decimal("5.0")
         assert params.max_slippage_percent == Decimal("1.0")
-        assert params.max_utilization_percent == Decimal("60.0")  # Conservative default
-        assert params.min_reserve_token0 == Decimal("10000")  # Keep 10k cNGN
-        assert params.min_reserve_token1 == Decimal("50")  # Keep $50 stables
-        assert params.max_position_usd == Decimal("1000")  # Start with $1k cap
+        assert params.deploy_token0 == Decimal("0")
+        assert params.deploy_token1 == Decimal("0")
 
     def test_custom_values(self):
-        """Test custom parameter values."""
         params = DexParams(
             sd_multiplier=Decimal("2.5"),
             min_tick_width=200,
@@ -38,82 +35,55 @@ class TestDexParamsValidation:
             lookback_points=50,
             rebalance_threshold_percent=Decimal("10.0"),
             max_slippage_percent=Decimal("0.5"),
-            max_utilization_percent=Decimal("70"),
-            min_reserve_token0=Decimal("100000"),
-            min_reserve_token1=Decimal("500"),
-            max_position_usd=Decimal("25000"),
+            deploy_token0=Decimal("500000"),
+            deploy_token1=Decimal("600"),
         )
 
         assert params.sd_multiplier == Decimal("2.5")
         assert params.min_tick_width == 200
         assert params.max_tick_width == 2000
         assert params.lookback_points == 50
-        assert params.max_utilization_percent == Decimal("70")
-        assert params.min_reserve_token0 == Decimal("100000")
-        assert params.max_position_usd == Decimal("25000")
+        assert params.deploy_token0 == Decimal("500000")
+        assert params.deploy_token1 == Decimal("600")
 
     def test_decimal_from_string(self):
-        """Test that string values are converted to Decimal."""
-        params = DexParams(
-            sd_multiplier="2.0",
-            max_utilization_percent="75.5",
-        )
+        params = DexParams(sd_multiplier="2.0", deploy_token0="100000")
 
         assert params.sd_multiplier == Decimal("2.0")
-        assert params.max_utilization_percent == Decimal("75.5")
+        assert params.deploy_token0 == Decimal("100000")
 
     def test_decimal_from_float(self):
-        """Test that float values are converted to Decimal."""
-        params = DexParams(
-            sd_multiplier=2.0,
-            max_utilization_percent=75.5,
-        )
+        params = DexParams(sd_multiplier=2.0)
 
-        # Note: float conversion may have precision issues
         assert float(params.sd_multiplier) == pytest.approx(2.0)
-        assert float(params.max_utilization_percent) == pytest.approx(75.5)
 
     def test_decimal_from_int(self):
-        """Test that int values are converted to Decimal."""
-        params = DexParams(
-            sd_multiplier=2,
-            max_utilization_percent=75,
-        )
+        params = DexParams(sd_multiplier=2, deploy_token0=500000)
 
         assert params.sd_multiplier == Decimal("2")
-        assert params.max_utilization_percent == Decimal("75")
+        assert params.deploy_token0 == Decimal("500000")
 
     def test_serialization(self):
-        """Test params can be serialized to dict."""
-        params = DexParams(
-            sd_multiplier=Decimal("2.5"),
-            max_position_usd=Decimal("10000"),
-        )
+        params = DexParams(deploy_token0=Decimal("500000"), deploy_token1=Decimal("600"))
 
         data = params.model_dump()
 
-        assert "sd_multiplier" in data
-        assert "max_position_usd" in data
-        assert data["max_position_usd"] == Decimal("10000")
+        assert "deploy_token0" in data
+        assert "deploy_token1" in data
+        assert data["deploy_token0"] == Decimal("500000")
 
     def test_json_serialization(self):
-        """Test params can be serialized to JSON."""
-        params = DexParams(
-            sd_multiplier=Decimal("2.5"),
-            max_position_usd=Decimal("10000"),
-        )
+        params = DexParams(deploy_token0=Decimal("500000"))
 
         json_str = params.model_dump_json()
 
-        assert "sd_multiplier" in json_str
-        assert "max_position_usd" in json_str
+        assert "deploy_token0" in json_str
 
 
 class TestCexParamsValidation:
     """Test CexParams validation and defaults."""
 
     def test_default_values(self):
-        """Test default parameter values."""
         params = CexParams()
 
         assert params.ladder_levels == 10
@@ -121,7 +91,6 @@ class TestCexParamsValidation:
         assert params.liquidity_per_level_percent == Decimal("5.0")
 
     def test_custom_values(self):
-        """Test custom parameter values."""
         params = CexParams(
             ladder_levels=20,
             ladder_increment=Decimal("0.000005"),
@@ -133,7 +102,6 @@ class TestCexParamsValidation:
         assert params.liquidity_per_level_percent == Decimal("2.5")
 
     def test_serialization(self):
-        """Test params can be serialized."""
         params = CexParams(ladder_levels=15)
         data = params.model_dump()
 
@@ -144,19 +112,16 @@ class TestWalletParamsValidation:
     """Test WalletParams validation and defaults."""
 
     def test_default_values(self):
-        """Test default parameter values."""
         params = WalletParams()
 
         assert params.spread_bps == 15
 
     def test_custom_values(self):
-        """Test custom parameter values."""
         params = WalletParams(spread_bps=25)
 
         assert params.spread_bps == 25
 
     def test_serialization(self):
-        """Test params can be serialized."""
         params = WalletParams(spread_bps=20)
         data = params.model_dump()
 
@@ -164,21 +129,14 @@ class TestWalletParamsValidation:
 
 
 class TestParamsInteroperability:
-    """Test that params work correctly when passed between components."""
-
     def test_dex_params_copy(self):
-        """Test that params can be copied."""
-        original = DexParams(
-            sd_multiplier=Decimal("2.0"),
-            max_utilization_percent=Decimal("70"),
-        )
+        original = DexParams(sd_multiplier=Decimal("2.0"), deploy_token0=Decimal("500000"))
 
         copied = original.model_copy()
 
         assert copied.sd_multiplier == original.sd_multiplier
-        assert copied.max_utilization_percent == original.max_utilization_percent
+        assert copied.deploy_token0 == original.deploy_token0
 
-        # Modify copy doesn't affect original
         copied_data = copied.model_dump()
         copied_data["sd_multiplier"] = Decimal("3.0")
         modified = DexParams(**copied_data)
@@ -187,29 +145,24 @@ class TestParamsInteroperability:
         assert original.sd_multiplier == Decimal("2.0")
 
     def test_dex_params_update(self):
-        """Test that params can be updated."""
         original = DexParams()
 
-        # Create updated version
-        updated = DexParams(
-            **{**original.model_dump(), "sd_multiplier": Decimal("2.5")}
-        )
+        updated = DexParams(**{**original.model_dump(), "sd_multiplier": Decimal("2.5")})
 
         assert updated.sd_multiplier == Decimal("2.5")
-        assert updated.max_utilization_percent == original.max_utilization_percent
+        assert updated.deploy_token0 == original.deploy_token0
 
     def test_params_from_dict(self):
-        """Test creating params from dict (e.g., from database)."""
         stored_config = {
             "sd_multiplier": "1.8",
             "min_tick_width": 150,
-            "max_utilization_percent": "65",
-            "min_reserve_token0": "50000",
+            "deploy_token0": "500000",
+            "deploy_token1": "600",
         }
 
         params = DexParams(**stored_config)
 
         assert params.sd_multiplier == Decimal("1.8")
         assert params.min_tick_width == 150
-        assert params.max_utilization_percent == Decimal("65")
-        assert params.min_reserve_token0 == Decimal("50000")
+        assert params.deploy_token0 == Decimal("500000")
+        assert params.deploy_token1 == Decimal("600")
