@@ -4,6 +4,7 @@ Also provides PoolPriceReader for read-only on-chain price fetching
 (no private keys required).
 """
 
+import asyncio
 import time as _time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -261,6 +262,9 @@ class BaseDexAdapter(VenueAdapter, ABC):
             address=Web3.to_checksum_address(pool_config.router_address),
             abi=self.get_router_abi(),
         )
+
+        # Per-account nonce locks to prevent concurrent transaction collisions
+        self._nonce_locks: dict[str, asyncio.Lock] = {}
 
         # Token contracts for balance queries
         self.token0 = self.w3.eth.contract(
@@ -583,6 +587,10 @@ class BaseDexAdapter(VenueAdapter, ABC):
         # Build mint transaction
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
 
+        slippage = self.params.max_slippage_percent / Decimal("100")
+        amount0_min = int(amount0 * (1 - slippage))
+        amount1_min = int(amount1 * (1 - slippage))
+
         mint_params = (
             Web3.to_checksum_address(self.config.token0_address),
             Web3.to_checksum_address(self.config.token1_address),
@@ -591,8 +599,8 @@ class BaseDexAdapter(VenueAdapter, ABC):
             tick_upper,
             amount0,
             amount1,
-            0,  # amount0Min - TODO: add slippage protection
-            0,  # amount1Min
+            amount0_min,
+            amount1_min,
             self.lp_account.address,
             deadline,
         )
@@ -730,14 +738,19 @@ class BaseDexAdapter(VenueAdapter, ABC):
         }
 
     async def _send_transaction(self, tx: dict, account) -> TxResult:
-        """Sign, send, and wait for transaction."""
+        """Sign, send, and wait for transaction. Serializes per-account to prevent nonce collisions."""
         try:
-            # Estimate gas
+            # Estimate gas (nonce doesn't affect gas, so do this outside the lock)
             tx["gas"] = int(self.w3.eth.estimate_gas(tx) * 1.2)
 
-            # Sign and send
-            signed = account.sign_transaction(tx)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+            # Acquire per-account lock, set nonce, sign, and broadcast atomically
+            if account.address not in self._nonce_locks:
+                self._nonce_locks[account.address] = asyncio.Lock()
+
+            async with self._nonce_locks[account.address]:
+                tx["nonce"] = self.w3.eth.get_transaction_count(account.address, "pending")
+                signed = account.sign_transaction(tx)
+                tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
             # Wait for receipt
             receipt: TxReceipt = self.w3.eth.wait_for_transaction_receipt(

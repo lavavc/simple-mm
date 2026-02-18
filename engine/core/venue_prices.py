@@ -321,88 +321,32 @@ class QuidaxPriceSource(VenuePriceSource):
             return None
 
 
+
+
 # =============================================================================
-# Blockradar (B2C wallet system)
+# Blockradar Price Source
 # =============================================================================
-
-
-@dataclass
-class BlockradarConfig:
-    """Configuration for Blockradar price source."""
-
-    api_url: str = ""
-    api_key: str = ""
-    cache_seconds: int = 60
 
 
 class BlockradarPriceSource(VenuePriceSource):
-    """Fetches cNGN rates from Blockradar wallet system.
-
-    Blockradar is a B2C system where we set the rates.
-    This source reports the currently configured rates.
-    Returns None when the API is not configured.
-    """
+    """Fetches cNGN/USDC swap quote from the Blockradar adapter."""
 
     name = "blockradar"
-    pair = "cNGN/NGN"
+    pair = "cNGN/USDC"
 
-    def __init__(self, config: BlockradarConfig | None = None):
-        self.config = config or BlockradarConfig()
-        self._client: Optional[httpx.AsyncClient] = None
-        self._cache: Optional[tuple[PriceQuote, float]] = None
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=30)
-        return self._client
-
-    async def close(self):
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+    def __init__(self, adapter: "VenueAdapter"):
+        self._adapter = adapter
 
     async def fetch_price(self) -> Optional[PriceQuote]:
-        if self._cache:
-            quote, fetched_at = self._cache
-            if time.time() - fetched_at < self.config.cache_seconds:
-                return quote
-
-        if not self.config.api_url:
-            logger.debug("blockradar_not_configured", reason="no api_url")
-            return None
-
         try:
-            client = await self._get_client()
-            # TODO: implement real Blockradar API call when endpoint is available
-            response = await client.get(
-                self.config.api_url,
-                headers={"Authorization": f"Bearer {self.config.api_key}"} if self.config.api_key else {},
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            # Parse rates from Blockradar response
-            bid = Decimal(str(data.get("bid", "0")))
-            ask = Decimal(str(data.get("ask", "0")))
-            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else Decimal("0")
-
-            if mid <= 0:
-                logger.warning("blockradar_invalid_rates", bid=float(bid), ask=float(ask))
-                return None
-
-            quote = PriceQuote(
-                source="blockradar",
-                timestamp=int(time.time() * 1000),
-                bid=bid,
-                ask=ask,
-                mid=mid,
-            )
-            self._cache = (quote, time.time())
-            return quote
-
+            return await self._adapter.get_current_price()
         except Exception as e:
             logger.error("blockradar_fetch_failed", error=str(e))
             return None
+
+    async def close(self):
+        if hasattr(self._adapter, "close"):
+            await self._adapter.close()
 
 
 # =============================================================================
@@ -586,13 +530,9 @@ def create_venue_aggregator(
     aerodrome_reader: "Optional[PoolPriceReader]" = None,
     pancakeswap_adapter: "Optional[VenueAdapter]" = None,
     pancakeswap_reader: "Optional[PoolPriceReader]" = None,
-    blockradar_config: BlockradarConfig | None = None,
+    blockradar_adapter: "Optional[VenueAdapter]" = None,
 ) -> VenuePriceAggregator:
-    """Create a venue price aggregator with configured sources.
-
-    DEX sources use a two-tier fallback: live adapter > read-only
-    PoolPriceReader.  Returns None for any venue that cannot be reached.
-    """
+    """Create a venue price aggregator with configured sources."""
     sources: list[VenuePriceSource] = []
 
     if bybit_enabled:
@@ -618,6 +558,7 @@ def create_venue_aggregator(
         )
     )
 
-    sources.append(BlockradarPriceSource(blockradar_config))
+    if blockradar_adapter:
+        sources.append(BlockradarPriceSource(blockradar_adapter))
 
     return VenuePriceAggregator(sources)

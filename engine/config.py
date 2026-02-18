@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     quidax_api_key: str = Field(default="", description="Quidax secret key (Bearer token)")
     blockradar_api_key: str = Field(default="", description="Blockradar API key")
     blockradar_wallet_id: str = Field(default="", description="Blockradar wallet ID for swaps")
+    blockradar_deposit_address: str = Field(default="", description="Blockradar on-chain deposit address")
 
     # Optional notifications
     telegram_bot_token: Optional[str] = None

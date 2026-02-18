@@ -29,7 +29,6 @@ class SchedulerConfig:
     position_sync_interval: int = 60
     dex_check_interval: int = 120
     cex_sync_interval: int = 300
-    rate_sync_interval: int = 300
     rebalance_check_interval: int = 120
     arbitrage_scan_interval: int = 30
     balance_check_interval: int = 300
@@ -117,12 +116,6 @@ class TradingScheduler:
             replace_existing=True,
         )
 
-        self.scheduler.add_job(
-            self._sync_blockradar_rates,
-            IntervalTrigger(seconds=self.config.rate_sync_interval),
-            id="rate_sync",
-            replace_existing=True,
-        )
 
         if self.arbitrage_engine:
             self.scheduler.add_job(
@@ -347,25 +340,6 @@ class TradingScheduler:
                 await quidax.sync_order_ladder(reference_price)
         except Exception as e:
             logger.error("cex_sync_failed", error=str(e))
-
-    # ------------------------------------------------------------------
-    # Blockradar rate sync
-    # ------------------------------------------------------------------
-
-    async def _sync_blockradar_rates(self):
-        if not self._trading_enabled:
-            return
-
-        blockradar = self.venues.get("blockradar")
-        if not blockradar or blockradar.paused:
-            return
-
-        try:
-            reference_price = await self._get_reference_price_ngn()
-            if reference_price:
-                await blockradar.sync_rates(reference_price)
-        except Exception as e:
-            logger.error("blockradar_sync_failed", error=str(e))
 
     # ------------------------------------------------------------------
     # Portfolio delta monitoring

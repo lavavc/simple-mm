@@ -63,44 +63,12 @@ class QuidaxAdapter(VenueAdapter):
             self._client = None
 
     async def get_position(self) -> Position:
-        """Get current balances on Quidax."""
-        client = await self._get_client()
-
-        response = await client.get(f"{self.base_url}/users/me/wallets")
-        response.raise_for_status()
-        data = response.json()
-
-        balances = {
-            "cngn": Decimal("0"),
-            "usdt": Decimal("0"),
-            "usdc": Decimal("0"),
-        }
-
-        for wallet in data.get("data", []):
-            currency = wallet["currency"].lower()
-            if currency in balances:
-                balances[currency] = Decimal(str(wallet.get("balance", "0")))
-
-        # Get open orders
-        orders = await self.get_open_orders()
-        buy_orders = [o for o in orders if o.get("side") == "buy"]
-        sell_orders = [o for o in orders if o.get("side") == "sell"]
-
+        """Return empty position — authenticated balance fetch not needed until order ladder trading is active."""
         return Position(
             venue=self.name,
             pair="CNGN/USDT",
             timestamp=int(time.time() * 1000),
-            balances=balances,
-            open_orders={
-                "buy_count": len(buy_orders),
-                "sell_count": len(sell_orders),
-                "buy_volume": sum(
-                    Decimal(str(o.get("remaining_volume", "0"))) for o in buy_orders
-                ),
-                "sell_volume": sum(
-                    Decimal(str(o.get("remaining_volume", "0"))) for o in sell_orders
-                ),
-            },
+            balances={"cngn": Decimal("0"), "usdt": Decimal("0")},
         )
 
     async def get_current_price(self) -> Optional[PriceQuote]:
@@ -283,6 +251,25 @@ class QuidaxAdapter(VenueAdapter):
             levels=self.params.ladder_levels,
             orders_placed=orders_placed,
         )
+
+    async def get_deposit_address(self, currency: str) -> dict:
+        """
+        Get or create a deposit address for a currency on Quidax.
+
+        Args:
+            currency: Currency ticker (e.g. "cngn", "usdt")
+
+        Returns:
+            API response with deposit address details
+        """
+        open_api_url = "https://openapi.quidax.io/exchange-open-api/api/v1"
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{open_api_url}/users/me/wallets/{currency}/addresses",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            response.raise_for_status()
+            return response.json()
 
     async def handle_webhook(self, event: dict) -> None:
         """

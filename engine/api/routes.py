@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 import structlog
 
 from engine.config import settings
@@ -18,7 +19,6 @@ from engine.api.schemas import (
     SystemStatus,
     DexParams,
     CexParams,
-    WalletParams,
     Alert,
     GlobalPosition,
     ArbitrageParams,
@@ -444,11 +444,73 @@ async def update_venue_params(venue: str, params: dict):
             venue_adapter.params = DexParams(**params)
         elif venue == "quidax":
             venue_adapter.params = CexParams(**params)
-        elif venue == "blockradar":
-            venue_adapter.params = WalletParams(**params)
 
     logger.info("venue_params_updated", venue=venue, params=params)
     return {"venue": venue, "params": params}
+
+
+# === Deposit Routes ===
+
+
+class DepositRequest(BaseModel):
+    role: str  # Account role to send from (e.g. "aerodrome-lp")
+    token: str  # Token symbol: "USDC" or "cNGN"
+    amount: Decimal
+
+
+def _get_deposit_token_address(token: str) -> str:
+    token_map = {
+        "USDC": settings.usdc_contract_address,
+        "cNGN": settings.cngn_contract_address,
+    }
+    address = token_map.get(token)
+    if not address:
+        raise HTTPException(status_code=400, detail=f"Unsupported token: {token}. Use USDC or cNGN.")
+    return address
+
+
+@router.post("/venues/blockradar/deposit", dependencies=[Depends(verify_token)])
+async def deposit_to_blockradar(req: DepositRequest):
+    """Transfer USDC or cNGN from an HD wallet account to the Blockradar deposit address."""
+    if not _account_manager:
+        raise HTTPException(status_code=503, detail="Account manager not configured")
+
+    from engine.core.accounts import AccountRole
+
+    try:
+        role = AccountRole(req.role)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {req.role}")
+
+    if not settings.blockradar_deposit_address:
+        raise HTTPException(status_code=503, detail="BLOCKRADAR_DEPOSIT_ADDRESS not configured")
+
+    token_address = _get_deposit_token_address(req.token)
+
+    try:
+        tx_hash = await _account_manager.transfer_erc20(
+            role=role,
+            token_address=token_address,
+            to_address=settings.blockradar_deposit_address,
+            amount=req.amount,
+        )
+        return {"status": "sent", "tx_hash": tx_hash, "to": settings.blockradar_deposit_address}
+    except Exception as e:
+        logger.error("blockradar_deposit_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/venues/quidax/deposit-address/{currency}")
+async def get_quidax_deposit_address(currency: str):
+    """Get or create a deposit address for a currency on Quidax."""
+    if "quidax" not in _venues:
+        raise HTTPException(status_code=503, detail="Quidax not configured")
+
+    try:
+        return await _venues["quidax"].get_deposit_address(currency.lower())
+    except Exception as e:
+        logger.error("quidax_deposit_address_failed", currency=currency, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # === Manual Action Routes ===
@@ -465,8 +527,6 @@ async def trigger_venue_sync(venue: str):
 
         if venue == "quidax" and ref_price:
             await _venues[venue].sync_order_ladder(ref_price)
-        elif venue == "blockradar" and ref_price:
-            await _venues[venue].sync_rates(ref_price)
         else:
             await _venues[venue].get_position()
 

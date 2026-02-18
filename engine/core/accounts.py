@@ -27,6 +27,7 @@ class AccountRole(str, Enum):
     AERODROME_TRADE = "aerodrome-trade"
     BLOCKRADAR = "blockradar"
     QUIDAX = "quidax"  # For self-custody scenarios
+    PANCAKESWAP_LP = "pancakeswap-lp"
 
 
 @dataclass
@@ -79,6 +80,15 @@ DEFAULT_ACCOUNT_CONFIGS = {
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.01"),
         min_balance_tokens={"cNGN": Decimal("100000"), "USDT": Decimal("500")},
+    ),
+    AccountRole.PANCAKESWAP_LP: AccountConfig(
+        role=AccountRole.PANCAKESWAP_LP,
+        derivation_path="m/44'/60'/0'/4/0",
+        chain_id=56,  # BSC
+        rpc_url="https://bsc-dataseed.binance.org",
+        tokens=["cNGN", "USDT"],
+        min_balance_eth=Decimal("0.005"),  # BNB for gas
+        min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("100")},
     ),
 }
 
@@ -304,6 +314,66 @@ class AccountManager:
             except Exception as e:
                 logger.error("balance_check_failed", role=role.value, error=str(e))
         return balances
+
+    async def transfer_erc20(
+        self,
+        role: AccountRole,
+        token_address: str,
+        to_address: str,
+        amount: Decimal,
+    ) -> str:
+        """Transfer ERC20 tokens from a role account. Returns tx hash."""
+        config = self.get_config(role)
+        account = self.get_account(role)
+        w3 = self._get_web3(config.chain_id, config.rpc_url)
+
+        transfer_abi = [
+            {
+                "inputs": [],
+                "name": "decimals",
+                "outputs": [{"name": "", "type": "uint8"}],
+                "stateMutability": "view",
+                "type": "function",
+            },
+            {
+                "inputs": [
+                    {"name": "to", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+                "name": "transfer",
+                "outputs": [{"name": "", "type": "bool"}],
+                "stateMutability": "nonpayable",
+                "type": "function",
+            },
+        ]
+
+        contract = w3.eth.contract(
+            address=Web3.to_checksum_address(token_address), abi=transfer_abi
+        )
+        decimals = contract.functions.decimals().call()
+        amount_raw = int(amount * Decimal(10**decimals))
+
+        tx = contract.functions.transfer(
+            Web3.to_checksum_address(to_address), amount_raw
+        ).build_transaction(
+            {
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "chainId": config.chain_id,
+            }
+        )
+
+        signed = w3.eth.account.sign_transaction(tx, account.key)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        logger.info(
+            "erc20_transfer_sent",
+            role=role.value,
+            token=token_address,
+            to=to_address,
+            amount=str(amount),
+            tx_hash=tx_hash.hex(),
+        )
+        return tx_hash.hex()
 
     def update_thresholds(
         self,

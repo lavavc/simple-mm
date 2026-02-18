@@ -25,7 +25,7 @@ from engine.venues.dex.base import PoolPriceReader
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes
-from engine.api.schemas import DexParams, CexParams, WalletParams, ArbitrageParams
+from engine.api.schemas import DexParams, CexParams, ArbitrageParams
 
 # Configure structured logging
 structlog.configure(
@@ -100,7 +100,6 @@ async def init_venues(acct_manager: AccountManager | None = None):
         venues["blockradar"] = BlockradarAdapter(
             api_key=settings.blockradar_api_key,
             wallet_id=settings.blockradar_wallet_id,
-            params=WalletParams(),
         )
         logger.info("venue_initialized", venue="blockradar")
 
@@ -158,6 +157,7 @@ async def lifespan(app: FastAPI):
         aerodrome_reader=aerodrome_reader,
         pancakeswap_adapter=venues.get("pancakeswap"),
         pancakeswap_reader=pancakeswap_reader,
+        blockradar_adapter=venues.get("blockradar"),
     )
     logger.info("price_aggregator_initialized", venues=list(price_aggregator.sources.keys()))
 
@@ -202,7 +202,6 @@ async def lifespan(app: FastAPI):
         position_sync_interval=settings.position_sync_interval,
         dex_check_interval=settings.dex_check_interval,
         cex_sync_interval=settings.cex_sync_interval,
-        rate_sync_interval=settings.rate_sync_interval,
         rebalance_check_interval=settings.rebalance_check_interval,
         arbitrage_scan_interval=settings.arbitrage_scan_interval,
         balance_check_interval=settings.balance_check_interval,

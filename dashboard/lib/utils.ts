@@ -100,7 +100,7 @@ const SOURCE_MAP: Record<string, SourceInfo> = {
   quidax: { venue: 'quidax', pair: 'cNGN/USDT' },
   aerodrome_pool: { venue: 'aerodrome', pair: 'cNGN/USDC' },
   pancakeswap_pool: { venue: 'pancakeswap', pair: 'cNGN/USDT' },
-  blockradar: { venue: 'blockradar', pair: 'cNGN/NGN' },
+  blockradar: { venue: 'blockradar', pair: 'cNGN/USDC' },
 };
 
 /** Map a price_snapshots source name to a venue name. */
