@@ -67,27 +67,6 @@ export function useAlerts(limit = 20) {
 
 // ── Mutations ───────────────────────────────────────────────────────────────
 
-export function usePauseTrading() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (token: string) => api.pauseTrading(token),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['status'] });
-      qc.invalidateQueries({ queryKey: ['health'] });
-    },
-  });
-}
-
-export function useResumeTrading() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (token: string) => api.resumeTrading(token),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['status'] });
-      qc.invalidateQueries({ queryKey: ['health'] });
-    },
-  });
-}
 
 export function useTriggerScan() {
   const qc = useQueryClient();

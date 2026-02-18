@@ -22,7 +22,8 @@ Master Seed (12 or 24 words, stored securely)
 ├── m/44'/60'/0'/1/1  → Aerodrome Trade   (cNGN + USDC)
 ├── m/44'/60'/0'/2/0  → Blockradar        (cNGN + USDT + USDC)
 ├── m/44'/60'/0'/3/0  → Quidax            (cNGN + USDT)
-└── m/44'/60'/0'/4/0  → PancakeSwap LP    (cNGN + USDT, BSC)
+├── m/44'/60'/0'/4/0  → PancakeSwap LP    (cNGN + USDT, BSC)
+└── m/44'/60'/0'/4/1  → PancakeSwap Trade (cNGN + USDT, BSC)
 ```
 
 ## Account Roles
@@ -34,6 +35,7 @@ Master Seed (12 or 24 words, stored securely)
 | `blockradar` | m/44'/60'/0'/2/0 | Base (8453) | cNGN, USDT, USDC | Wallet system funding |
 | `quidax` | m/44'/60'/0'/3/0 | Ethereum (1) | cNGN, USDT | CEX deposit address |
 | `pancakeswap-lp` | m/44'/60'/0'/4/0 | BSC (56) | cNGN, USDT | Liquidity provision (BSC) |
+| `pancakeswap-trade` | m/44'/60'/0'/4/1 | BSC (56) | cNGN, USDT | Arbitrage swaps (BSC) |
 
 ## Configuration
 

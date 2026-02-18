@@ -28,6 +28,7 @@ class AccountRole(str, Enum):
     BLOCKRADAR = "blockradar"
     QUIDAX = "quidax"  # For self-custody scenarios
     PANCAKESWAP_LP = "pancakeswap-lp"
+    PANCAKESWAP_TRADE = "pancakeswap-trade"
 
 
 @dataclass
@@ -89,6 +90,15 @@ DEFAULT_ACCOUNT_CONFIGS = {
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("100")},
+    ),
+    AccountRole.PANCAKESWAP_TRADE: AccountConfig(
+        role=AccountRole.PANCAKESWAP_TRADE,
+        derivation_path="m/44'/60'/0'/4/1",
+        chain_id=56,  # BSC
+        rpc_url="https://bsc-dataseed.binance.org",
+        tokens=["cNGN", "USDT"],
+        min_balance_eth=Decimal("0.005"),  # BNB for gas
+        min_balance_tokens={"cNGN": Decimal("5000"), "USDT": Decimal("50")},
     ),
 }
 

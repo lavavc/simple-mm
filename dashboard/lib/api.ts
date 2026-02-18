@@ -77,18 +77,6 @@ export const api = {
     fetchJson(`${API_BASE}/positions/${venue}`),
 
   // Trading control
-  pauseTrading: (token: string): Promise<{ status: string }> =>
-    fetchJson(`${API_BASE}/trading/pause`, {
-      method: 'POST',
-      headers: authHeaders(token),
-    }),
-
-  resumeTrading: (token: string): Promise<{ status: string }> =>
-    fetchJson(`${API_BASE}/trading/resume`, {
-      method: 'POST',
-      headers: authHeaders(token),
-    }),
-
   // Venue control
   pauseVenue: (venue: string, token: string): Promise<{ venue: string; paused: boolean }> =>
     fetchJson(`${API_BASE}/venues/${venue}/pause`, {

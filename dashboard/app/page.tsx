@@ -7,7 +7,6 @@ import { VenueCard } from '@/components/cards/VenueCard';
 import { ArbitrageCard } from '@/components/cards/ArbitrageCard';
 import { AlertsList } from '@/components/cards/AlertsList';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
-import { Button } from '@/components/ui/button';
 import {
   useStatus,
   useHealth,
@@ -16,11 +15,9 @@ import {
   useArbitrageStatus,
   useOpportunities,
   useAlerts,
-  usePauseTrading,
-  useResumeTrading,
   useAcknowledgeAlert,
 } from '@/lib/hooks/useQueries';
-import { Pause, Play, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 
 export default function DashboardPage() {
   const { data: status, isLoading: statusLoading } = useStatus();
@@ -31,19 +28,9 @@ export default function DashboardPage() {
   const { data: opportunities } = useOpportunities(10);
   const { data: alerts } = useAlerts(10);
 
-  const pauseTrading = usePauseTrading();
-  const resumeTrading = useResumeTrading();
   const acknowledgeAlert = useAcknowledgeAlert();
 
   const token = process.env.NEXT_PUBLIC_API_TOKEN || '';
-
-  const handleToggleTrading = () => {
-    if (status?.trading_enabled) {
-      pauseTrading.mutate(token);
-    } else {
-      resumeTrading.mutate(token);
-    }
-  };
 
   const handleAcknowledgeAlert = (id: number) => {
     acknowledgeAlert.mutate({ id, token });
@@ -59,27 +46,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header with trading control */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <Button
-          variant={status?.trading_enabled ? 'destructive' : 'default'}
-          onClick={handleToggleTrading}
-          disabled={pauseTrading.isPending || resumeTrading.isPending}
-        >
-          {status?.trading_enabled ? (
-            <>
-              <Pause className="h-4 w-4 mr-2" />
-              Pause Trading
-            </>
-          ) : (
-            <>
-              <Play className="h-4 w-4 mr-2" />
-              Resume Trading
-            </>
-          )}
-        </Button>
-      </div>
+      <h1 className="text-2xl font-bold">Dashboard</h1>
 
       {/* Top row: Status, Blended Price, Position */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

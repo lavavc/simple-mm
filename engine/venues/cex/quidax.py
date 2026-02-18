@@ -15,10 +15,13 @@ logger = structlog.get_logger()
 
 class QuidaxAdapter(VenueAdapter):
     """
-    Quidax CEX adapter for order ladder management.
+    Quidax CEX adapter.
 
-    Manages limit orders across a price ladder to provide liquidity
-    on the CNGN/USDT market.
+    Two independent roles:
+    - Liquidity provision: sync_order_ladder() places limit orders across a price
+      range to keep the CNGN/USDT book filled (market making).
+    - Arb execution: place_market_order() hits the book immediately with a market
+      order to capture a detected spread (taker, guaranteed fill).
     """
 
     name = "quidax"
@@ -186,6 +189,44 @@ class QuidaxAdapter(VenueAdapter):
             "order_placed",
             side=side,
             price=float(price),
+            amount=float(amount),
+            success=bool(result.get("data")),
+        )
+
+        return result
+
+    async def place_market_order(
+        self,
+        side: str,
+        amount: Decimal,
+    ) -> dict:
+        """
+        Place a market order, guaranteeing immediate fill at the best available price.
+
+        Args:
+            side: "buy" or "sell"
+            amount: Order amount in CNGN
+
+        Returns:
+            Order result from API
+        """
+        client = await self._get_client()
+
+        response = await client.post(
+            f"{self.base_url}/users/me/orders",
+            json={
+                "market": self.market,
+                "side": side,
+                "ord_type": "market",
+                "volume": str(amount),
+            },
+        )
+
+        result = response.json()
+
+        logger.debug(
+            "market_order_placed",
+            side=side,
             amount=float(amount),
             success=bool(result.get("data")),
         )

@@ -11,6 +11,7 @@ One BIP39 mnemonic derives five accounts. Set `WALLET_MNEMONIC` in `.env`.
 | `blockradar` | m/44'/60'/0'/2/0 | Base | 8453 | ETH (gas), cNGN, USDC — source for Blockradar deposits |
 | `quidax` | m/44'/60'/0'/3/0 | Mainnet | 1 | ETH (gas), cNGN, USDT — source for Quidax deposits |
 | `pancakeswap-lp` | m/44'/60'/0'/4/0 | BSC | 56 | BNB (gas), cNGN, USDT |
+| `pancakeswap-trade` | m/44'/60'/0'/4/1 | BSC | 56 | BNB (gas), cNGN, USDT |
 
 To view all derived addresses and funding requirements:
 
@@ -50,7 +51,7 @@ Authorization: Bearer <DASHBOARD_API_TOKEN>
 {"role": "aerodrome-lp", "token": "USDC", "amount": "500"}
 ```
 
-Funds go to `0x0839578d121a5b99ae5BF6dC604Bbf247E51C584`. Blockradar's price quote API requires non-zero liquidity — price will show as unavailable until funded.
+Funds go to a Blockradar master wallet. Blockradar's price quote API requires non-zero liquidity — price will show as unavailable until funded.
 
 **Quidax**: Fetch a deposit address for a currency, then send on-chain:
 
@@ -79,7 +80,7 @@ BSC_RPC_URL=               # defaults to https://bsc-dataseed.binance.org (fine 
 1. SSH onto the server as root.
 2. Run the setup script:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/lavavc/automated-infra/main/deploy/setup.sh | bash
+   bash ./deploy/setup.sh
    ```
    The script will prompt you for:
    - **GitHub Actions runner token** — from **Settings → Actions → Runners → New self-hosted runner**
@@ -121,6 +122,20 @@ PATCH /api/venues/aerodrome/params
 {"deploy_token0": "500000", "deploy_token1": "600"}
 ```
 
+## Stopping and starting trading
+
+Trading can be paused or resumed by someone with SSH access to the server.
+
+```bash
+# Stop all trading immediately
+ssh root@<server-ip> "docker compose -f /opt/repo/docker-compose.yml stop"
+
+# Resume trading
+ssh root@<server-ip> "docker compose -f /opt/repo/docker-compose.yml start"
+```
+
+The engine and all scheduled jobs halt when the container stops. On `start`, the engine resumes from its last persisted state.
+
 ## Starting the engine (local dev)
 
 ```bash
@@ -134,11 +149,6 @@ python -m engine
 `engine/venues/dex/base.py` approves `2**256 - 1` (unlimited) for each token before the
 first swap or mint. If the router contract were compromised the entire wallet balance would
 be at risk. Should approve only the amount needed per transaction.
-
-### MEDIUM — arbitrage execution not implemented
-`ArbitrageExecutor.execute_dex_buy/sell` raise `NotImplementedError`. The
-`ARBITRAGE_EXECUTION_ENABLED` flag is currently `false` in `.env`, which is correct.
-Do not set it to `true` until the executor is implemented.
 
 ### LOW — quidax position sync disabled
 `QuidaxAdapter.get_position()` returns a stub. When order-ladder trading on Quidax is

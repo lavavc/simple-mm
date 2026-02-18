@@ -387,23 +387,6 @@ async def get_venue_position(venue: str):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-# === Trading Control Routes ===
-
-
-@router.post("/trading/pause", dependencies=[Depends(verify_token)])
-async def pause_trading():
-    """Pause all trading operations."""
-    await _scheduler.pause()
-    return {"status": "paused"}
-
-
-@router.post("/trading/resume", dependencies=[Depends(verify_token)])
-async def resume_trading():
-    """Resume trading operations."""
-    await _scheduler.resume()
-    return {"status": "running"}
-
-
 # === Venue Control Routes ===
 
 

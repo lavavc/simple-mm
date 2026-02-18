@@ -48,11 +48,12 @@ Manages risk through limits and circuit breakers:
 
 ### ArbitrageExecutor
 
-**Phase 1 (Current)**: Detection-only mode. Logs opportunities but does not execute trades.
+Executes detected opportunities across DEX and CEX venues:
 
-**Phase 2 (Future)**: DEX swap execution with slippage protection.
+- **DEX leg**: calls `venue.swap()` — synchronous, waits for on-chain confirmation
+- **CEX leg**: calls `venue.place_market_order()` — market order for guaranteed fill at taker fee
 
-**Phase 3 (Future)**: Full cross-venue execution with CEX orders.
+Buy leg always executes first; sell leg uses the exact cNGN amount received. Either leg can be DEX or CEX depending on where the opportunity is.
 
 ## Configuration
 
@@ -201,29 +202,16 @@ Opportunities are broadcast to connected clients:
 }
 ```
 
-## Implementation Phases
+## Quidax: dual role
 
-### Phase 1: Detection Only (Current)
+Quidax is used for two distinct and independent purposes:
 
-- Full detection infrastructure
-- Opportunities logged to database
-- WebSocket broadcasts
-- No actual trades executed
-- Run for 1-2 weeks to validate accuracy
+| Role | Method | Order type | When |
+|------|--------|-----------|------|
+| **Liquidity provision** | `sync_order_ladder()` | Limit orders across a price range | Scheduled — keeps the book filled |
+| **Arb execution** | `place_market_order()` | Market order | On-demand — captures a detected spread |
 
-### Phase 2: DEX Execution (Future)
-
-- Swap execution on Aerodrome
-- Slippage protection via `min_amount_out`
-- Start with small amounts (~$100)
-- Requires `ARBITRAGE_EXECUTION_ENABLED=true`
-
-### Phase 3: Full Cross-Venue (Future)
-
-- CEX order placement on Quidax
-- State machine for pending fills
-- Sequential execution (buy leg → wait → sell leg)
-- Full circuit breaker integration
+These never interfere: the order ladder runs on its own schedule, and arb market orders hit the best available price immediately regardless of what ladder orders are resting in the book.
 
 ## Fee Estimation
 

@@ -1,5 +1,6 @@
-"""Arbitrage execution strategies (stub for Phase 1 - detection only)."""
+"""Arbitrage execution across DEX and CEX venues."""
 
+import time
 from decimal import Decimal
 from typing import Optional
 
@@ -7,113 +8,208 @@ import structlog
 
 from engine.api.schemas import ArbitrageOpportunity, ArbitrageTrade
 from engine.venues.base import VenueAdapter
+from engine.venues.dex.base import BaseDexAdapter
+from engine.venues.cex.quidax import QuidaxAdapter
 
 logger = structlog.get_logger()
 
+# Slippage tolerance applied to arb swaps (separate from LP slippage)
+_ARB_SLIPPAGE_BPS = 50  # 0.5%
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
 
 class ArbitrageExecutor:
-    """
-    Executes arbitrage trades across venues.
+    """Executes arbitrage trades across DEX and CEX venues."""
 
-    PHASE 1 (Current): Detection-only mode - logs opportunities but does not execute.
-    PHASE 2 (Future): DEX swap execution with slippage protection.
-    PHASE 3 (Future): Full cross-venue execution with CEX orders.
-    """
-
-    def __init__(
-        self,
-        venues: dict[str, VenueAdapter],
-        execution_enabled: bool = False,
-    ):
-        """
-        Initialize arbitrage executor.
-
-        Args:
-            venues: Dict of venue name to adapter
-            execution_enabled: If False, only logs (detection-only mode)
-        """
+    def __init__(self, venues: dict[str, VenueAdapter], execution_enabled: bool = False):
         self.venues = venues
         self.execution_enabled = execution_enabled
 
     async def execute(
-        self,
-        opportunity: ArbitrageOpportunity,
+        self, opportunity: ArbitrageOpportunity
     ) -> tuple[bool, Optional[Decimal], Optional[str]]:
-        """
-        Execute an arbitrage opportunity.
-
-        Args:
-            opportunity: The detected opportunity to execute
-
-        Returns:
-            (success, actual_profit_usd, error_message)
-        """
+        """Returns (success, actual_profit_usd, error_message)."""
         if not self.execution_enabled:
             logger.info(
-                "arbitrage_execution_skipped_detection_only",
+                "arbitrage_execution_skipped",
                 opportunity_id=opportunity.id,
-                buy_venue=opportunity.buy_venue,
-                sell_venue=opportunity.sell_venue,
                 expected_profit=float(opportunity.expected_profit_usd),
             )
             return False, None, "Execution disabled (detection-only mode)"
 
-        # Phase 2+: Actual execution logic will go here
-        # For now, just log and return
-        logger.warning(
-            "arbitrage_execution_not_implemented",
-            opportunity_id=opportunity.id,
-        )
-        return False, None, "Execution not yet implemented"
+        buy_venue = self.venues.get(opportunity.buy_venue)
+        sell_venue = self.venues.get(opportunity.sell_venue)
+
+        if buy_venue is None or sell_venue is None:
+            missing = opportunity.buy_venue if buy_venue is None else opportunity.sell_venue
+            return False, None, f"Unknown venue: {missing}"
+
+        size_usd = opportunity.recommended_size_usd
+        opp_id = opportunity.id
+
+        try:
+            # --- Buy leg ---
+            if isinstance(buy_venue, BaseDexAdapter):
+                buy_trade = await self.execute_dex_buy(opportunity.buy_venue, size_usd, opp_id)
+            else:
+                buy_trade = await self.execute_cex_buy(opportunity.buy_venue, size_usd, opportunity.buy_price, opp_id)
+
+            if buy_trade is None or buy_trade.status == "failed":
+                err = (buy_trade.error if buy_trade else None) or "unknown"
+                return False, None, f"Buy leg failed: {err}"
+
+            # --- Sell leg ---
+            amount_cngn = buy_trade.amount
+            slippage = Decimal(_ARB_SLIPPAGE_BPS) / Decimal(10000)
+            min_out_usd = size_usd * (1 - slippage)
+
+            if isinstance(sell_venue, BaseDexAdapter):
+                sell_trade = await self.execute_dex_sell(opportunity.sell_venue, amount_cngn, min_out_usd, opp_id)
+            else:
+                sell_trade = await self.execute_cex_sell(opportunity.sell_venue, amount_cngn, opportunity.sell_price, opp_id)
+
+            if sell_trade is None or sell_trade.status == "failed":
+                err = (sell_trade.error if sell_trade else None) or "unknown"
+                return False, None, f"Sell leg failed: {err}"
+
+            actual_profit = amount_cngn * opportunity.sell_price - size_usd
+
+            logger.info(
+                "arbitrage_executed",
+                opportunity_id=opp_id,
+                buy_venue=opportunity.buy_venue,
+                sell_venue=opportunity.sell_venue,
+                size_usd=float(size_usd),
+                amount_cngn=float(amount_cngn),
+                actual_profit=float(actual_profit),
+            )
+
+            return True, actual_profit, None
+
+        except Exception as e:
+            logger.error("arbitrage_execution_failed", opportunity_id=opp_id, error=str(e))
+            return False, None, str(e)
 
     async def execute_dex_buy(
         self,
         venue_name: str,
         amount_usd: Decimal,
-        max_slippage_bps: int,
+        opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """
-        Execute a DEX buy (swap USDC -> cNGN).
+        """Swap stablecoin → cNGN on a DEX."""
+        venue: BaseDexAdapter = self.venues[venue_name]  # type: ignore
 
-        Phase 2 implementation placeholder.
-        """
-        raise NotImplementedError("DEX execution will be implemented in Phase 2")
+        price_quote = await venue.get_current_price()
+        if price_quote is None or price_quote.mid == 0:
+            return ArbitrageTrade(
+                id=0, opportunity_id=opportunity_id, venue=venue_name, side="buy",
+                amount=Decimal("0"), status="failed", timestamp=_now_ms(),
+                error="Could not fetch DEX price",
+            )
+
+        current_price = price_quote.mid  # stablecoin per cNGN
+        amount_in_raw = int(amount_usd * Decimal(10 ** venue.config.token1_decimals))
+
+        slippage = Decimal(_ARB_SLIPPAGE_BPS) / Decimal(10000)
+        expected_cngn = amount_usd / current_price
+        min_out_raw = int(expected_cngn * (1 - slippage) * Decimal(10 ** venue.config.token0_decimals))
+
+        result = await venue.swap(venue.config.token1_address, amount_in_raw, min_out_raw)
+
+        return ArbitrageTrade(
+            id=0,
+            opportunity_id=opportunity_id,
+            venue=venue_name,
+            side="buy",
+            amount=expected_cngn,
+            price=current_price,
+            tx_hash=result.hash or None,
+            status="confirmed" if result.status == "confirmed" else "failed",
+            timestamp=_now_ms(),
+            error=result.error,
+        )
 
     async def execute_dex_sell(
         self,
         venue_name: str,
         amount_cngn: Decimal,
         min_amount_out_usd: Decimal,
+        opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """
-        Execute a DEX sell (swap cNGN -> USDC).
+        """Swap cNGN → stablecoin on a DEX."""
+        venue: BaseDexAdapter = self.venues[venue_name]  # type: ignore
 
-        Phase 2 implementation placeholder.
-        """
-        raise NotImplementedError("DEX execution will be implemented in Phase 2")
+        price_quote = await venue.get_current_price()
+        current_price = price_quote.mid if price_quote else Decimal("0")
+
+        amount_in_raw = int(amount_cngn * Decimal(10 ** venue.config.token0_decimals))
+        min_out_raw = int(min_amount_out_usd * Decimal(10 ** venue.config.token1_decimals))
+
+        result = await venue.swap(venue.config.token0_address, amount_in_raw, min_out_raw)
+
+        return ArbitrageTrade(
+            id=0,
+            opportunity_id=opportunity_id,
+            venue=venue_name,
+            side="sell",
+            amount=amount_cngn,
+            price=current_price,
+            tx_hash=result.hash or None,
+            status="confirmed" if result.status == "confirmed" else "failed",
+            timestamp=_now_ms(),
+            error=result.error,
+        )
 
     async def execute_cex_buy(
         self,
         venue_name: str,
         amount_usd: Decimal,
         limit_price: Decimal,
+        opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """
-        Place a CEX limit buy order.
+        """Place a market buy order on a CEX."""
+        venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
-        Phase 3 implementation placeholder.
-        """
-        raise NotImplementedError("CEX execution will be implemented in Phase 3")
+        amount_cngn = amount_usd / limit_price
+        result = await venue.place_market_order("buy", amount_cngn)
+
+        success = bool(result.get("data"))
+        return ArbitrageTrade(
+            id=0,
+            opportunity_id=opportunity_id,
+            venue=venue_name,
+            side="buy",
+            amount=amount_cngn,
+            price=limit_price,
+            status="submitted" if success else "failed",
+            timestamp=_now_ms(),
+            error=None if success else str(result.get("message", "Order placement failed")),
+        )
 
     async def execute_cex_sell(
         self,
         venue_name: str,
         amount_cngn: Decimal,
         limit_price: Decimal,
+        opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """
-        Place a CEX limit sell order.
+        """Place a market sell order on a CEX."""
+        venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
-        Phase 3 implementation placeholder.
-        """
-        raise NotImplementedError("CEX execution will be implemented in Phase 3")
+        result = await venue.place_market_order("sell", amount_cngn)
+
+        success = bool(result.get("data"))
+        return ArbitrageTrade(
+            id=0,
+            opportunity_id=opportunity_id,
+            venue=venue_name,
+            side="sell",
+            amount=amount_cngn,
+            price=limit_price,
+            status="submitted" if success else "failed",
+            timestamp=_now_ms(),
+            error=None if success else str(result.get("message", "Order placement failed")),
+        )

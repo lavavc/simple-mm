@@ -31,18 +31,19 @@ class TestAccountManagerInit:
         mgr = AccountManager(use_test_accounts=True)
         accounts = mgr.list_accounts()
 
-        assert len(accounts) == 5
+        assert len(accounts) == 6
         assert "aerodrome-lp" in accounts
         assert "aerodrome-trade" in accounts
         assert "blockradar" in accounts
         assert "quidax" in accounts
         assert "pancakeswap-lp" in accounts
+        assert "pancakeswap-trade" in accounts
 
     def test_init_with_explicit_mnemonic(self):
         """Should derive accounts from provided mnemonic."""
         mgr = AccountManager(mnemonic=ANVIL_TEST_MNEMONIC)
         accounts = mgr.list_accounts()
-        assert len(accounts) == 5
+        assert len(accounts) == 6
 
     def test_init_without_mnemonic_raises(self):
         """Should raise ValueError if no mnemonic is available."""
