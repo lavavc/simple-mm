@@ -9,20 +9,13 @@ RUNNER_DIR="/opt/actions-runner"
 # Check https://github.com/actions/runner/releases for the latest version
 RUNNER_VERSION="2.321.0"
 
-echo "=== Creating app directory ==="
-mkdir -p /opt/cngn/data
-echo "Place your production .env at /opt/cngn/.env before starting the container."
-
-echo ""
-echo "=== Placing docker-compose.yml ==="
-cp "$(dirname "$0")/../docker-compose.yml" /opt/cngn/docker-compose.yml
-
-echo ""
-echo "=== Configuring firewall ==="
-ufw allow in on tailscale0 to any port 8000
-ufw deny 8000/tcp
-ufw --force enable
-echo "Firewall: port 8000 open on tailscale0 only."
+echo "=== Setting up /opt/repo ==="
+if [ ! -d /opt/repo ]; then
+  git clone "https://github.com/${REPO}.git" /opt/repo
+fi
+mkdir -p /opt/repo/data
+chown -R "$RUNNER_USER:$RUNNER_USER" /opt/repo
+echo "/opt/repo is owned by $RUNNER_USER."
 
 echo ""
 echo "=== Creating runner user ==="
