@@ -27,11 +27,9 @@ def make_dex_params(**overrides) -> DexParams:
         "lookback_points": None,
         "rebalance_threshold_percent": Decimal("5.0"),
         "max_slippage_percent": Decimal("1.0"),
-        # Test defaults: no reserves, full utilization, no caps
-        "max_utilization_percent": Decimal("100"),
-        "min_reserve_token0": Decimal("0"),
-        "min_reserve_token1": Decimal("0"),
-        "max_position_usd": None,
+        # Test defaults: deploy full balance by default
+        "deploy_token0": Decimal("1000000000000"),  # Effectively uncapped for tests
+        "deploy_token1": Decimal("1000000000000"),
     }
     defaults.update(overrides)
     return DexParams(**defaults)

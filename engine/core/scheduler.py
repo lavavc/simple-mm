@@ -484,21 +484,7 @@ class TradingScheduler:
 
             tick_lower, tick_upper = venue.calculate_tick_range(prices)
 
-            reference_price_usd = None
-            if self.blended_calculator:
-                try:
-                    blended = await self.blended_calculator.get_blended_price()
-                    if blended.vwap > 0:
-                        reference_price_usd = blended.vwap
-                except Exception:
-                    pass
-
-            if reference_price_usd is None:
-                ref_ngn = await self._get_reference_price_ngn()
-                if ref_ngn and ref_ngn > 0:
-                    reference_price_usd = Decimal("1") / ref_ngn
-
-            amount0, amount1 = venue.calculate_mint_amounts(reference_price_usd)
+            amount0, amount1 = venue.calculate_mint_amounts()
 
             if amount0 == 0 and amount1 == 0:
                 logger.warning("no_funds_available_for_mint", venue=venue.name)

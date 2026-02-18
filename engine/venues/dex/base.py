@@ -406,79 +406,40 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
     # === Capital allocation ===
 
-    def calculate_mint_amounts(
-        self,
-        reference_price_usd: Optional[Decimal] = None,
-    ) -> tuple[int, int]:
+    def calculate_mint_amounts(self) -> tuple[int, int]:
         """
-        Calculate how much of each token to use for minting, respecting reserves and limits.
+        Return raw token amounts to deploy for minting.
 
-        This prevents "all-in LP" by applying:
-        1. max_utilization_percent - caps % of balance to deploy
-        2. min_reserve_token0/token1 - keeps minimum in wallet
-        3. max_position_usd - hard cap on total position value
-
-        Args:
-            reference_price_usd: Optional USD price of token0 for max_position_usd calc
+        Uses the explicitly configured deploy_token0/deploy_token1 amounts,
+        capped by the actual wallet balance so it never overdrafts.
 
         Returns:
             (amount0, amount1) in raw token units (not decimal-adjusted)
         """
-        # Get current balances (raw units)
         balance0_raw = self.token0.functions.balanceOf(self.lp_account.address).call()
         balance1_raw = self.token1.functions.balanceOf(self.lp_account.address).call()
 
-        # Convert to decimal for calculations
         balance0 = Decimal(balance0_raw) / Decimal(10**self.config.token0_decimals)
         balance1 = Decimal(balance1_raw) / Decimal(10**self.config.token1_decimals)
 
-        # 1. Apply max utilization percent
-        max_util = self.params.max_utilization_percent / Decimal("100")
-        available0 = balance0 * max_util
-        available1 = balance1 * max_util
-
-        # 2. Subtract minimum reserves
-        available0 = max(Decimal("0"), available0 - self.params.min_reserve_token0)
-        available1 = max(Decimal("0"), available1 - self.params.min_reserve_token1)
-
-        # Also ensure we don't go below reserves even after utilization calc
-        max_from_reserve0 = max(Decimal("0"), balance0 - self.params.min_reserve_token0)
-        max_from_reserve1 = max(Decimal("0"), balance1 - self.params.min_reserve_token1)
-        available0 = min(available0, max_from_reserve0)
-        available1 = min(available1, max_from_reserve1)
-
-        # 3. Apply max position USD cap if set
-        if self.params.max_position_usd and reference_price_usd:
-            # Estimate total position value
-            # token0 value + token1 value (token1 assumed to be stablecoin ≈ $1)
-            token0_usd_value = available0 * reference_price_usd
-            token1_usd_value = available1  # Stablecoin
-
-            total_usd = token0_usd_value + token1_usd_value
-
-            if total_usd > self.params.max_position_usd:
-                # Scale down proportionally
-                scale_factor = self.params.max_position_usd / total_usd
-                available0 = available0 * scale_factor
-                available1 = available1 * scale_factor
-
-        # Convert back to raw units
-        amount0 = int(available0 * Decimal(10**self.config.token0_decimals))
-        amount1 = int(available1 * Decimal(10**self.config.token1_decimals))
+        amount0 = min(self.params.deploy_token0, balance0)
+        amount1 = min(self.params.deploy_token1, balance1)
 
         logger.info(
             "calculated_mint_amounts",
             venue=self.name,
             balance0=float(balance0),
             balance1=float(balance1),
-            available0=float(available0),
-            available1=float(available1),
-            max_utilization_percent=float(self.params.max_utilization_percent),
-            min_reserve_token0=float(self.params.min_reserve_token0),
-            min_reserve_token1=float(self.params.min_reserve_token1),
+            deploy_token0=float(self.params.deploy_token0),
+            deploy_token1=float(self.params.deploy_token1),
+            amount0=float(amount0),
+            amount1=float(amount1),
         )
 
-        return amount0, amount1
+        return (
+            int(amount0 * Decimal(10**self.config.token0_decimals)),
+            int(amount1 * Decimal(10**self.config.token1_decimals)),
+        )
 
     def get_deployable_balances(self) -> dict[str, Decimal]:
         """
