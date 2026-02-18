@@ -42,5 +42,6 @@ jobs:
 
       - name: Deploy
         run: |
-          docker compose -f /opt/cngn/docker-compose.yml pull
-          docker compose -f /opt/cngn/docker-compose.yml up -d --remove-orphans
+          cp docker-compose.yml /opt/repo/docker-compose.yml
+          docker compose -f /opt/repo/docker-compose.yml pull
+          docker compose -f /opt/repo/docker-compose.yml up -d --remove-orphans
