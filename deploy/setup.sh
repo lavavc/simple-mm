@@ -23,42 +23,47 @@ useradd -m -s /bin/bash "$RUNNER_USER" || echo "User $RUNNER_USER already exists
 usermod -aG docker "$RUNNER_USER"
 echo "User $RUNNER_USER added to docker group."
 
-echo ""
-echo "=== Downloading GitHub Actions runner v${RUNNER_VERSION} ==="
-mkdir -p "$RUNNER_DIR"
-cd "$RUNNER_DIR"
+if [ -f "${RUNNER_DIR}/.runner" ]; then
+  echo ""
+  echo "=== GitHub Actions runner already configured, skipping ==="
+else
+  echo ""
+  echo "=== Downloading GitHub Actions runner v${RUNNER_VERSION} ==="
+  mkdir -p "$RUNNER_DIR"
+  cd "$RUNNER_DIR"
 
-curl -sSL -o runner.tar.gz \
-  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
-tar xzf runner.tar.gz
-rm runner.tar.gz
-chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR"
+  curl -sSL -o runner.tar.gz \
+    "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+  tar xzf runner.tar.gz
+  rm runner.tar.gz
+  chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR"
 
-echo ""
-echo "=== Runner is ready to configure ==="
-echo ""
-echo "1. Get your registration token at:"
-echo "   https://github.com/${REPO}/settings/actions/runners/new"
-echo ""
-read -rp "Paste the token here: " RUNNER_TOKEN
+  echo ""
+  echo "=== Runner is ready to configure ==="
+  echo ""
+  echo "1. Get your registration token at:"
+  echo "   https://github.com/${REPO}/settings/actions/runners/new"
+  echo ""
+  read -rp "Paste the token here: " RUNNER_TOKEN
 
-echo ""
-echo "=== Registering runner ==="
-su - "$RUNNER_USER" -c "
-  cd $RUNNER_DIR
-  ./config.sh \
-    --url https://github.com/${REPO} \
-    --token ${RUNNER_TOKEN} \
-    --unattended \
-    --name vps-runner
-"
+  echo ""
+  echo "=== Registering runner ==="
+  su - "$RUNNER_USER" -c "
+    cd $RUNNER_DIR
+    ./config.sh \
+      --url https://github.com/${REPO} \
+      --token ${RUNNER_TOKEN} \
+      --unattended \
+      --name vps-runner
+  "
 
-echo ""
-echo "=== Installing systemd service ==="
-cd "$RUNNER_DIR"
-./svc.sh install "$RUNNER_USER"
-./svc.sh start
-echo "Runner service started."
+  echo ""
+  echo "=== Installing systemd service ==="
+  cd "$RUNNER_DIR"
+  ./svc.sh install "$RUNNER_USER"
+  ./svc.sh start
+  echo "Runner service started."
+fi
 
 echo ""
 echo "=== Installing cloudflared ==="
