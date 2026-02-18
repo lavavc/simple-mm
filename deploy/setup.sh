@@ -61,9 +61,70 @@ cd "$RUNNER_DIR"
 echo "Runner service started."
 
 echo ""
+echo "=== Installing cloudflared ==="
+if ! command -v cloudflared &>/dev/null; then
+  curl -fsSL -o /tmp/cloudflared.deb \
+    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+  dpkg -i /tmp/cloudflared.deb
+  rm /tmp/cloudflared.deb
+else
+  echo "cloudflared already installed, skipping."
+fi
+
+echo ""
+echo "=== Cloudflare Tunnel setup ==="
+echo ""
+read -rp "Enter the dashboard hostname (e.g. engine.yourdomain.com): " CF_HOSTNAME
+
+echo ""
+echo "--- Step 1: Authenticate with Cloudflare ---"
+echo "A URL will appear below. Open it in your browser and log in."
+cloudflared tunnel login
+
+echo ""
+echo "--- Step 2: Creating tunnel 'cngn' ---"
+if cloudflared tunnel list 2>/dev/null | grep -q "cngn"; then
+  echo "Tunnel 'cngn' already exists, skipping creation."
+else
+  cloudflared tunnel create cngn
+fi
+
+TUNNEL_ID=$(cloudflared tunnel list --output json 2>/dev/null \
+  | python3 -c "import json,sys; t=json.load(sys.stdin); print(next(x['id'] for x in t if x['name']=='cngn'))")
+CREDS_FILE="/root/.cloudflared/${TUNNEL_ID}.json"
+
+mkdir -p /etc/cloudflared
+cat > /etc/cloudflared/config.yml <<EOF
+tunnel: ${TUNNEL_ID}
+credentials-file: ${CREDS_FILE}
+
+ingress:
+  - hostname: ${CF_HOSTNAME}
+    service: http://localhost:8000
+  - service: http_status:404
+EOF
+
+echo ""
+echo "--- Step 3: Creating DNS record ---"
+cloudflared tunnel route dns cngn "${CF_HOSTNAME}"
+
+echo ""
+echo "--- Step 4: Installing and starting cloudflared service ---"
+if systemctl is-active --quiet cloudflared; then
+  systemctl restart cloudflared
+else
+  cloudflared service install
+  systemctl enable cloudflared
+  systemctl start cloudflared
+fi
+echo "Cloudflare tunnel running → https://${CF_HOSTNAME}"
+
+echo ""
 echo "=== Done ==="
 echo ""
-echo "Remaining step — copy your .env to the server:"
-echo " scp .env root@100.102.148.33:/opt/repo/.env"
-echo ""
-echo "Then push to main to trigger the first deployment."
+echo "Remaining steps:"
+echo "  1. Copy your .env to the server:"
+echo "       cat .env | ssh root@<server-ip> \"cat > /opt/repo/.env\""
+echo "  2. In the Cloudflare Zero Trust dashboard, create an Access application"
+echo "     for https://${CF_HOSTNAME} and set your allowed email policy."
+echo "  3. Push to main to trigger the first deployment."

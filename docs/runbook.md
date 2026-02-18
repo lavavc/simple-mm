@@ -77,15 +77,26 @@ BSC_RPC_URL=               # defaults to https://bsc-dataseed.binance.org (fine 
 ## Server setup (first time)
 
 1. SSH onto the server as root.
-2. Run the setup script (creates `github-runner` user, installs Actions runner, skips ufw since Docker manages iptables directly):
+2. Run the setup script:
    ```bash
    curl -fsSL https://raw.githubusercontent.com/lavavc/automated-infra/main/deploy/setup.sh | bash
    ```
-3. When prompted, paste the GitHub Actions runner token from **Settings → Actions → Runners → New self-hosted runner**.
-4. Copy your `.env` to the server:
+   The script will prompt you for:
+   - **GitHub Actions runner token** — from **Settings → Actions → Runners → New self-hosted runner**
+   - **Dashboard hostname** — e.g. `engine.yourdomain.com`
+   - **Cloudflare login** — a URL will appear; open it in your browser to authenticate
+
+3. Copy your `.env` to the server:
    ```bash
    cat .env | ssh root@<server-ip> "cat > /opt/repo/.env"
    ```
+
+4. In the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com), create an **Access application**:
+   - Application type: Self-hosted
+   - Application domain: your hostname
+   - Policy: Allow → Emails → add your email address
+
+The dashboard is then accessible only after Cloudflare identity verification. The port `8000` is bound to `127.0.0.1` — not reachable from the public internet directly.
 
 ## CI/CD pipeline
 
