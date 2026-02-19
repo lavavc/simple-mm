@@ -156,7 +156,7 @@ class BlendedPriceResponse(BaseModel):
     venue_prices: dict[str, Decimal]  # Per-venue normalized cNGN/USD
     timestamp: int
     num_sources: int
-    total_venues: int
+    total_venues: int = 0
     confidence: float  # 0-1 based on source agreement
 
 
