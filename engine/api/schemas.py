@@ -23,6 +23,7 @@ class LPPosition(BaseModel):
     range_min: Decimal
     range_max: Decimal
     in_range: bool
+    our_share_pct: Optional[Decimal] = None  # our_liquidity / pool_liquidity * 100
 
 
 class Position(BaseModel):
@@ -34,6 +35,8 @@ class Position(BaseModel):
     balances: dict[str, Decimal]
     lp_position: Optional[LPPosition] = None
     open_orders: Optional[dict] = None
+    pool_tvl_usd: Optional[Decimal] = None
+    volume_24h_usd: Optional[Decimal] = None
 
 
 class VenuePriceResponse(BaseModel):

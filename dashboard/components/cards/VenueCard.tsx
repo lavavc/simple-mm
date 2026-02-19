@@ -99,6 +99,28 @@ export function VenueCard({ venue }: VenueCardProps) {
                 </Badge>
               </div>
             )}
+            {(venue.position.volume_24h_usd != null || venue.position.pool_tvl_usd != null) && (
+              <div className="mt-2 text-xs space-y-0.5">
+                {venue.position.volume_24h_usd != null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">24h Volume</span>
+                    <span>${Math.round(venue.position.volume_24h_usd).toLocaleString()}</span>
+                  </div>
+                )}
+                {venue.position.pool_tvl_usd != null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Pool TVL</span>
+                    <span>${Math.round(venue.position.pool_tvl_usd).toLocaleString()}</span>
+                  </div>
+                )}
+                {venue.position.lp_position?.our_share_pct != null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Our Share</span>
+                    <span>{Number(venue.position.lp_position.our_share_pct).toFixed(2)}%</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </CardContent>

@@ -110,6 +110,12 @@ def sqrt_price_x96_to_decimal(
 # PancakeSwap, etc.) since the function signature is always `slot0()`.
 SLOT0_SELECTOR = bytes.fromhex("3850c7bd")
 
+# Function selector for liquidity(): keccak256("liquidity()")[:4] = 0x1a686502
+LIQUIDITY_SELECTOR = bytes.fromhex("1a686502")
+
+# DexScreener chain identifiers
+DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
+
 
 # =============================================================================
 # PoolPriceReader -- read-only, no private keys
@@ -295,6 +301,53 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
     # === VenueAdapter implementation ===
 
+    async def get_pool_metrics(
+        self, our_liquidity: int = 0
+    ) -> tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
+        """Fetch pool TVL and 24h volume from DexScreener; compute our share on-chain.
+
+        Returns (pool_tvl_usd, volume_24h_usd, our_share_pct).
+        our_share_pct is None when our_liquidity is 0.
+        """
+        import httpx
+
+        pool_tvl_usd: Optional[Decimal] = None
+        volume_24h_usd: Optional[Decimal] = None
+        our_share_pct: Optional[Decimal] = None
+
+        try:
+            chain = DEXSCREENER_CHAIN_MAP.get(self.config.chain_id)
+            if chain:
+                url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{self.config.pool_address}"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url)
+                    data = resp.json()
+                pairs = data.get("pairs") or []
+                if pairs:
+                    pair = pairs[0]
+                    tvl = pair.get("liquidity", {}).get("usd")
+                    vol = pair.get("volume", {}).get("h24")
+                    pool_tvl_usd = Decimal(str(tvl)) if tvl is not None else None
+                    volume_24h_usd = Decimal(str(vol)) if vol is not None else None
+        except Exception as e:
+            logger.warning("dexscreener_fetch_failed", venue=self.name, error=str(e))
+
+        if our_liquidity > 0:
+            try:
+                result = self.w3.eth.call(
+                    {"to": self.pool_contract.address, "data": LIQUIDITY_SELECTOR}
+                )
+                if len(result) >= 32:
+                    pool_liquidity = int.from_bytes(result[:32], "big")
+                    if pool_liquidity > 0:
+                        our_share_pct = (
+                            Decimal(our_liquidity) / Decimal(pool_liquidity) * Decimal(100)
+                        )
+            except Exception as e:
+                logger.warning("pool_liquidity_fetch_failed", venue=self.name, error=str(e))
+
+        return pool_tvl_usd, volume_24h_usd, our_share_pct
+
     async def get_position(self) -> Position:
         """Get current position including LP and wallet balances."""
         # Get wallet balances
@@ -305,19 +358,27 @@ class BaseDexAdapter(VenueAdapter, ABC):
         cngn_bal = Decimal(token0_bal) / Decimal(10**self.config.token0_decimals)
         stable_bal = Decimal(token1_bal) / Decimal(10**self.config.token1_decimals)
 
-        # Get LP position if exists
+        # Fetch pool metrics (always — TVL/volume shown regardless of LP activity)
         lp_position = None
         token_ids = self.get_owned_positions()
+        our_liquidity = 0
+        pos_state = None
         if token_ids:
             pos_state = self.get_position_state(token_ids[0])
             if pos_state:
-                lp_position = LPPosition(
-                    token_id=str(pos_state.token_id),
-                    liquidity=str(pos_state.liquidity),
-                    range_min=pos_state.price_lower,
-                    range_max=pos_state.price_upper,
-                    in_range=pos_state.in_range,
-                )
+                our_liquidity = pos_state.liquidity
+
+        pool_tvl_usd, volume_24h_usd, our_share_pct = await self.get_pool_metrics(our_liquidity)
+
+        if pos_state:
+            lp_position = LPPosition(
+                token_id=str(pos_state.token_id),
+                liquidity=str(pos_state.liquidity),
+                range_min=pos_state.price_lower,
+                range_max=pos_state.price_upper,
+                in_range=pos_state.in_range,
+                our_share_pct=our_share_pct,
+            )
 
         # Determine which is USDT vs USDC based on symbol
         balances = {"cngn": cngn_bal, "usdt": Decimal(0), "usdc": Decimal(0)}
@@ -334,6 +395,8 @@ class BaseDexAdapter(VenueAdapter, ABC):
             timestamp=int(time.time() * 1000),
             balances=balances,
             lp_position=lp_position,
+            pool_tvl_usd=pool_tvl_usd,
+            volume_24h_usd=volume_24h_usd,
         )
 
     async def get_current_price(self) -> Optional[PriceQuote]:

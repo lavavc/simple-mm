@@ -2,84 +2,72 @@
 
 ## 1. Overview
 
-A Python trading engine with FastAPI backend and static Next.js dashboard that automates CNGN market-making operations across multiple venues (starting with four, but built to be extensible).
+A Python trading engine with FastAPI backend and static Next.js dashboard that automates CNGN market-making operations across multiple venues.
 
 **Core Capabilities:**
-- Unified USDT/NGN price feed with proper filtering
+- Unified cNGN/USD price feed aggregated from multiple sources
 - Real-time position tracking across all venues
 - Automated DEX LP range management (SD-based tick ranges)
-- Automated CEX order ladder management
-- Manual controls with pause/resume at global and venue level
+- Automated CEX order ladder management (Quidax)
 - Cross-venue arbitrage detection and execution
+- Portfolio delta monitoring
 
 **Architecture:**
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         Ubuntu Server                            │
 │                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                 Python Trading Engine                       │ │
-│  │                      (FastAPI)                              │ │
-│  │                                                             │ │
-│  │  ┌─────────────────────────────────────────────────────┐    │ │
-│  │  │                   Venue Adapters                    │    │ │
-│  │  │  ┌───────────┐ ┌───────────┐ ┌───────┐ ┌─────────┐  │    │ │
-│  │  │  │ Aerodrome │ │ Pancake   │ │Quidax │ │Blockrdr │  │    │ │
-│  │  │  │  (Base)   │ │  (BSC)    │ │ (CEX) │ │ (Wallet)│  │    │ │
-│  │  │  └─────┬─────┘ └─────┬─────┘ └───┬───┘ └────┬────┘  │    │ │
-│  │  │        │             │           │          │       │    │ │
-│  │  │        └──────┬──────┘           │          │       │    │ │
-│  │  │               │                  │          │       │    │ │
-│  │  │        ┌──────┴──────┐           │          │       │    │ │
-│  │  │        │  Shared DEX │           │          │       │    │ │
-│  │  │        │    Layer    │           │          │       │    │ │
-│  │  │        │ (from mm-bot)           │          │       │    │ │
-│  │  │        └─────────────┘           │          │       │    │ │
-│  │  └──────────────────────────────────┴──────────┴───────┘    │ │
-│  │                         │                                   │ │
-│  │  ┌──────────────────────┴───────────────────────────────┐   │ │
-│  │  │                    Orchestrator                      │   │ │
-│  │  │  • Scheduler (APScheduler)                           │   │ │
-│  │  │  • Price Feed (Bybit P2P + on-chain)                 │   │ │
-│  │  │  • Rebalancer (delta-neutral targeting)              │   │ │
-│  │  │  • Arbitrage Engine                                  │   │ │
-│  │  └──────────────────────┬───────────────────────────────┘   │ │
-│  │                         │                                   │ │
-│  │  ┌──────────────────────┴───────────────────────────────┐   │ │
-│  │  │              FastAPI Server                          │   │ │
-│  │  │  • REST API (controls, positions, config)            │   │ │
-│  │  │  • WebSocket (real-time updates)                     │   │ │
-│  │  │  • Webhook handlers (Quidax)                         │   │ │
-│  │  └──────────────────────────────────────────────────────┘   │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│  ┌───────────────────────────┴────────────────────────────────┐  │
-│  │              Static Next.js Dashboard                      │  │
-│  │            (served by nginx or FastAPI)                    │  │
-│  └────────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐   │
+│  │               Docker Compose                              │   │
+│  │                                                           │   │
+│  │  ┌────────────────────────────────────────────────────┐   │   │
+│  │  │             Python Trading Engine (FastAPI)        │   │   │
+│  │  │                                                    │   │   │
+│  │  │  Venue Adapters:                                   │   │   │
+│  │  │  • Aerodrome (Base) — cNGN/USDC LP + price        │   │   │
+│  │  │  • PancakeSwap (BSC) — cNGN/USDT LP + price       │   │   │
+│  │  │  • Quidax (CEX) — order ladder + arb execution    │   │   │
+│  │  │  • Blockradar (Wallet) — rate setting             │   │   │
+│  │  │                                                    │   │   │
+│  │  │  Orchestrator:                                     │   │   │
+│  │  │  • Scheduler (APScheduler)                        │   │   │
+│  │  │  • Price aggregation + blending                   │   │   │
+│  │  │  • Arbitrage engine                               │   │   │
+│  │  │  • Account / balance monitoring                   │   │   │
+│  │  │                                                    │   │   │
+│  │  │  API: REST + WebSocket (/ws)                       │   │   │
+│  │  │  Dashboard: static Next.js (served by FastAPI)     │   │   │
+│  │  └──────────────────────────┬─────────────────────────┘   │   │
+│  │                             │ 127.0.0.1:8000               │   │
+│  │  ┌──────────────────────────┴─────────────────────────┐   │   │
+│  │  │         cloudflared tunnel → app.domain.com        │   │   │
+│  │  └────────────────────────────────────────────────────┘   │   │
+│  └───────────────────────────────────────────────────────────┘   │
 │                                                                  │
-│  ┌──────────────┐  ┌──────────────┐                              │
-│  │   SQLite     │  │    cache/    │                              │
-│  │   (state)    │  │ (price data) │                              │
-│  └──────────────┘  └──────────────┘                              │
+│  SQLite (state + history)      GitHub Actions runner (CI/CD)     │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+Access is gated behind **Cloudflare Zero Trust** (identity verification required). The engine port is bound to `127.0.0.1` — not reachable from the public internet directly.
 
 ---
 
 ## 2. Technology Stack
 
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| **Trading Engine** | Python 3.11+ | Good testing infra, typically used for trading, quant etc |
-| **Web Framework** | FastAPI | Async, auto-docs, Pydantic validation |
-| **On-chain** | web3.py 6.x | Mature, good docs & examples |
-| **Scheduling** | APScheduler | Robust, supports async jobs |
-| **Database** | SQLite + aiosqlite | Async SQLite, zero dependencies |
-| **HTTP Client** | httpx | Async HTTP for external APIs |
-| **Real-time** | WebSocket (FastAPI built-in) | Push-based streaming to dashboard |
-| **Dashboard** | Next.js (static export) | React DX, static = simple serving |
-| **Logging** | structlog | Structured logging, Python-native |
+| Component | Technology |
+|-----------|------------|
+| Trading engine | Python 3.11+ |
+| Web framework | FastAPI (async, Pydantic validation) |
+| On-chain | web3.py 6.x |
+| Scheduling | APScheduler |
+| Database | SQLite + aiosqlite |
+| HTTP client | httpx (async) |
+| Real-time | WebSocket (FastAPI built-in) |
+| Dashboard | Next.js (static export, served by FastAPI) |
+| Logging | structlog |
+| Container | Docker + docker-compose |
+| Tunnel | cloudflared (Cloudflare Zero Trust) |
+| CI/CD | GitHub Actions (self-hosted runner on server) |
 
 ---
 
@@ -87,96 +75,150 @@ A Python trading engine with FastAPI backend and static Next.js dashboard that a
 
 ### 3.1 Price Architecture
 
-Prices are fetched per-venue, normalized to a common basis (cNGN/USD), and then aggregated into blended reference prices. See [engine/core/venue_prices.py](../engine/core/venue_prices.py) for the source implementations and [engine/core/price_aggregation.py](../engine/core/price_aggregation.py) for normalization and blending.
+Prices are fetched per-venue, normalized to cNGN/USD, then aggregated into blended references. See [engine/core/venue_prices.py](../engine/core/venue_prices.py) and [engine/core/price_aggregation.py](../engine/core/price_aggregation.py).
 
 **Venue price sources:**
 
-| Source | Pair | Method | File |
-|--------|------|--------|------|
-| Bybit P2P | USDT/NGN | HTTP (public ads, fraud-filtered VWAP) | [engine/core/venue_prices.py](../engine/core/venue_prices.py) |
-| Quidax | cNGN/USDT | HTTP (public market summary, no auth) | [engine/core/venue_prices.py](../engine/core/venue_prices.py) |
-| Aerodrome | cNGN/USDC | On-chain `slot0()` via Base RPC | [engine/venues/dex/base.py](../engine/venues/dex/base.py) |
-| PancakeSwap | cNGN/USDT | On-chain `slot0()` via BSC RPC | [engine/venues/dex/base.py](../engine/venues/dex/base.py) |
-| Blockradar | cNGN/NGN | HTTP (API, not yet integrated) | [engine/core/venue_prices.py](../engine/core/venue_prices.py) |
+| Source | Pair | Method |
+|--------|------|--------|
+| Bybit P2P | USDT/NGN | HTTP — fraud-filtered VWAP of public P2P ads |
+| Quidax | cNGN/USDT | HTTP — public market summary (no auth) |
+| Aerodrome | cNGN/USDC | On-chain `slot0()` via Base RPC |
+| PancakeSwap | cNGN/USDT | On-chain `slot0()` via BSC RPC |
+| Blockradar | cNGN/NGN | HTTP (not yet integrated) |
 
-**DEX price reads** use `PoolPriceReader`, a lightweight read-only class that calls `slot0()` on any UniswapV3-style pool. It uses raw `eth_call` with just the function selector (no typed ABI), making it protocol-agnostic across Aerodrome, PancakeSwap, and standard UniswapV3. No private keys are needed — only a public RPC URL. See [engine/venues/dex/base.py](../engine/venues/dex/base.py).
+**DEX price reads** use `PoolPriceReader` — a read-only class that calls `slot0()` on any UniswapV3-style pool via raw `eth_call`. No private keys needed.
 
-Pool configs with on-chain token ordering and decimal info live in [engine/venues/dex/aerodrome.py](../engine/venues/dex/aerodrome.py) and [engine/venues/dex/pancakeswap.py](../engine/venues/dex/pancakeswap.py).
+**Normalization** converts all venues to cNGN/USD. USDT/NGN sources (Bybit) are inverted; cNGN/USDT and cNGN/USDC sources are used directly.
 
-**Normalization** converts all venue prices to cNGN/USD. Venues reporting USDT/NGN (Bybit) are inverted; venues reporting cNGN/USDT or cNGN/USDC are used directly.
+**Blended prices** (TWAP 5m/1h, VWAP) are computed across normalized venue prices. Used for portfolio delta monitoring and LP rebalancing divergence checks.
 
-**Blended prices** (TWAP, VWAP) are computed from the normalized venue prices for global portfolio management and delta-neutrality checks. Venue-specific prices are used for per-venue LP rebalancing and arbitrage detection.
-
-**Token decimals:** cNGN has **6 decimals** on both Base and BSC. This is important for the sqrtPriceX96 → human price conversion.
+**Token decimals:** cNGN has **6 decimals** on both Base and BSC.
 
 ### 3.2 DEX Position Management
 
-Both Aerodrome (Base) and PancakeSwap (BSC) use concentrated liquidity (UniswapV3-style). The system:
+Aerodrome (Base) and PancakeSwap (BSC) both use concentrated liquidity (UniswapV3-style). The system:
 
-1. **Monitors positions** — checks if liquidity is still in range
-2. **Calculates optimal range** — uses standard deviation of recent prices
-3. **Rebalances when needed** — removes old position, creates new one with updated range
+1. Monitors positions — checks if the LP tick range is still active
+2. Calculates optimal range — standard deviation of recent prices × `sd_multiplier`
+3. Triggers rebalance on two conditions:
+   - Position out of range
+   - Venue price diverged from blended fair value by > `venue_divergence_rebalance_bps`
 
-The SD-based range calculation ensures positions adapt to market volatility. The shared base class lives in [engine/venues/dex/base.py](../engine/venues/dex/base.py); protocol-specific ABIs and configs in [engine/venues/dex/aerodrome.py](../engine/venues/dex/aerodrome.py) and [engine/venues/dex/pancakeswap.py](../engine/venues/dex/pancakeswap.py).
+Capital to deploy is configured explicitly per venue:
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `deploy_token0` | `0` | Absolute cNGN amount to use for LP |
+| `deploy_token1` | `0` | Absolute USDC/USDT amount to use for LP |
+
+Defaults to `0` — nothing is deployed until explicitly configured. The engine caps each to actual wallet balance.
+
+Set via: `PATCH /api/venues/aerodrome/params`
+
+See [engine/venues/dex/base.py](../engine/venues/dex/base.py) for the shared base class and [engine/venues/dex/aerodrome.py](../engine/venues/dex/aerodrome.py) / [engine/venues/dex/pancakeswap.py](../engine/venues/dex/pancakeswap.py) for protocol configs.
 
 ### 3.3 CEX Order Ladder (Quidax)
 
-Maintains buy and sell orders across price levels:
+Quidax serves two independent roles:
 
-- **Ladder levels** — configurable number of price increments (default: 10)
-- **Spread per level** — price increment in NGN (default: 1.0)
-- **Liquidity distribution** — percentage of balance at each level
+| Role | Method | Order type | When |
+|------|--------|------------|------|
+| **Liquidity provision** | `sync_order_ladder()` | Limit orders | Scheduled — keeps the book filled |
+| **Arb execution** | `place_market_order()` | Market order | On-demand — captures a detected spread |
 
-Orders are cancelled and recreated when the reference price changes significantly. The adapter is in [engine/venues/cex/quidax.py](../engine/venues/cex/quidax.py).
+**Order ladder formula:**
+
+Orders are placed at fixed NGN offsets from the current NGN/USDT reference rate. Default offsets: `[1, 3, 5, 10]` NGN.
+
+- Sell orders (cNGN more expensive): `price = 1 / (rate - offset)` USDT per cNGN
+- Buy orders (cNGN cheaper): `price = 1 / (rate + offset)` USDT per cNGN
+
+Each level gets a fixed amount, not a proportion of balance:
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `ladder_enabled` | `false` | Gate — ladder does nothing until enabled |
+| `ladder_offsets_ngn` | `[1, 3, 5, 10]` | NGN offsets from current rate |
+| `order_size_cngn` | `0` | cNGN per sell order (0 = no sell orders) |
+| `order_size_usdt` | `0` | USDT budget per buy order (0 = no buy orders) |
+
+Configure via: `PATCH /api/venues/quidax/params`
+
+See [engine/venues/cex/quidax.py](../engine/venues/cex/quidax.py).
 
 ### 3.4 Wallet Rate Sync (Blockradar)
 
-Sets B2C swap rates for the wallet system:
+Sets B2C swap rates for the wallet system — buy/sell rates at reference price ± spread. Configurable spread in basis points (default: 15 bps).
 
-- Calculates buy/sell rates from reference price ± spread
-- Supports both CNGN/USDT and CNGN/USDC pairs
-- Configurable spread in basis points (default: 15 bps)
+See [engine/venues/blockradar.py](../engine/venues/blockradar.py).
 
-See [docs/block-radar-questions.md](block-radar-questions.md) for open questions and remaining work.
+### 3.5 Arbitrage
 
-### 3.5 Scheduler
+Cross-venue arbitrage detection and execution. See [docs/arbitrage.md](arbitrage.md) for full detail.
 
-Orchestrates all automated tasks. See [engine/core/scheduler.py](../engine/core/scheduler.py). All task intervals are configurable via environment variables.
+**Detection:** scans all venue pairs for price divergences, estimates fees, filters by `min_net_profit_bps`.
 
-| Task | Default Interval | Description |
-|------|------------------|-------------|
-| Price update | 30s | Fetch all venue prices and compute blended |
-| Position sync | 60s | Fetch positions from all venues |
-| DEX rebalance check | 120s | Check if LP needs rebalancing |
-| CEX order sync | 300s | Sync Quidax order ladder |
-| Rate sync | 300s | Sync Blockradar swap rates |
+**Execution:**
+- DEX leg: `venue.swap()` — synchronous, waits for on-chain confirmation
+- CEX leg: `venue.place_market_order()` — market order for guaranteed fill at taker fee
 
-### 3.6 WebSocket Streaming
+Buy leg always executes first; sell leg uses the exact cNGN amount received.
 
-The engine pushes real-time events to all connected dashboard clients via WebSocket (`/ws`). The scheduler already emits structured events at every state change — the WebSocket endpoint streams them to clients as JSON.
+Gated by `ARBITRAGE_EXECUTION_ENABLED`. Start with `false` (detection only) to validate opportunity quality before enabling trades.
 
-**Event types:**
+### 3.6 Scheduler
 
-| Event | Trigger | Dashboard effect |
-|-------|---------|------------------|
-| `venue_prices` | Price update job | Refreshes prices, blended, status |
-| `positions` | Position sync job | Refreshes status |
-| `portfolio_delta` | Delta check job | Refreshes global position |
-| `alert` / `refill_alert` | Any alert | Refreshes alerts list |
-| `system` | Pause/resume | Refreshes status, health |
-| `account_balances` | Balance check job | Refreshes account balances |
-| `arbitrage_opportunity` | Arb scan | Refreshes opportunities, arb status |
-| `arbitrage_completed` | Arb execution | Refreshes opportunities, arb status |
+All automated tasks. See [engine/core/scheduler.py](../engine/core/scheduler.py).
 
-The dashboard connects via a single WebSocket and invalidates the matching React Query cache keys on each event, eliminating the need for polling. Reconnection uses exponential backoff with jitter.
+| Task | Default interval |
+|------|-----------------|
+| Price update | 30s |
+| Position sync | 60s |
+| DEX rebalance check | 120s |
+| Portfolio delta check | 120s |
+| CEX order sync | 300s |
+| Account balance check | 300s |
+| Arbitrage scan | 30s |
 
-See [engine/ws.py](../engine/ws.py) for the server and [dashboard/lib/hooks/useEventStream.ts](../dashboard/lib/hooks/useEventStream.ts) for the client.
+### 3.7 WebSocket Streaming
+
+Real-time push to dashboard clients via `/ws`. The scheduler emits structured events at every state change; the WebSocket endpoint streams them as JSON.
+
+| Event | Trigger |
+|-------|---------|
+| `venue_prices` | Price update job |
+| `positions` | Position sync job |
+| `portfolio_delta` | Delta check job |
+| `alert` / `refill_alert` | Any alert |
+| `account_balances` | Balance check job |
+| `arbitrage_opportunity` | Arb scan |
+| `arbitrage_completed` | Arb execution |
+
+The dashboard connects once and invalidates React Query cache keys on each event — no polling needed. WebSocket URL is derived from `window.location` at runtime (`wss://` over HTTPS, `ws://` for local dev).
+
+See [engine/ws.py](../engine/ws.py) and [dashboard/lib/hooks/useEventStream.ts](../dashboard/lib/hooks/useEventStream.ts).
 
 ---
 
-## 4. Data Storage
+## 4. Account Structure
 
-### Database Tables
+Six HD wallet accounts derived from one BIP44 mnemonic. See [docs/accounts.md](accounts.md) for full detail.
+
+| Role | Path | Chain | Tokens |
+|------|------|-------|--------|
+| `aerodrome-lp` | m/44'/60'/0'/1/0 | Base (8453) | ETH, cNGN, USDC |
+| `aerodrome-trade` | m/44'/60'/0'/1/1 | Base (8453) | ETH, cNGN, USDC |
+| `blockradar` | m/44'/60'/0'/2/0 | Base (8453) | ETH, cNGN, USDC |
+| `quidax` | m/44'/60'/0'/3/0 | Ethereum (1) | ETH, cNGN, USDT |
+| `pancakeswap-lp` | m/44'/60'/0'/4/0 | BSC (56) | BNB, cNGN, USDT |
+| `pancakeswap-trade` | m/44'/60'/0'/4/1 | BSC (56) | BNB, cNGN, USDT |
+
+Treasury is held off-server. Hot wallets contain only operational funds. The engine surfaces alerts when balances fall below configurable thresholds.
+
+---
+
+## 5. Data Storage
 
 | Table | Purpose |
 |-------|---------|
@@ -185,149 +227,116 @@ See [engine/ws.py](../engine/ws.py) for the server and [dashboard/lib/hooks/useE
 | `positions` | Venue position history |
 | `actions` | All trading actions taken |
 | `venue_config` | Per-venue configuration |
-| `alerts` | System alerts and notifications |
+| `alerts` | System alerts |
+| `arbitrage_opportunities` | Detected and executed opportunities |
+| `arbitrage_trades` | Individual trade legs |
 
 ---
 
-## 5. API
+## 6. API
 
 ### WebSocket
-- `WS /ws` — Real-time event stream (prices, positions, alerts, arbitrage)
+- `WS /ws` — Real-time event stream
 
 ### REST Endpoints
 
-| Group | Endpoint | Description |
-|-------|----------|-------------|
-| Status | `GET /api/status` | System status, uptime, venue prices |
-| Status | `GET /api/health` | Health check |
-| Prices | `GET /api/prices` | All venue prices |
-| Prices | `GET /api/prices/blended` | VWAP/TWAP composite |
-| Prices | `GET /api/prices/normalized` | cNGN/USD per venue |
-| Positions | `GET /api/positions/global` | Aggregated portfolio |
-| Trading | `POST /api/trading/pause` | Pause all trading |
-| Trading | `POST /api/trading/resume` | Resume trading |
-| Venues | `POST /api/venues/{v}/pause` | Pause venue |
-| Venues | `PUT /api/venues/{v}/params` | Update params |
-| Arbitrage | `GET /api/arbitrage/status` | Arb engine status |
-| Arbitrage | `POST /api/arbitrage/scan` | Manual scan trigger |
-| Accounts | `GET /api/accounts/balances` | All account balances |
-| Alerts | `GET /api/alerts` | Recent alerts |
+| Group | Endpoint | Auth | Description |
+|-------|----------|------|-------------|
+| Status | `GET /api/status` | — | System status, uptime, venue prices |
+| Status | `GET /api/health` | — | Health check |
+| Prices | `GET /api/prices` | — | All venue prices |
+| Prices | `GET /api/prices/blended` | — | VWAP/TWAP composite |
+| Prices | `GET /api/prices/normalized` | — | cNGN/USD per venue |
+| Positions | `GET /api/positions/global` | — | Aggregated portfolio |
+| Venues | `POST /api/venues/{v}/pause` | ✓ | Pause a venue |
+| Venues | `POST /api/venues/{v}/resume` | ✓ | Resume a venue |
+| Venues | `PATCH /api/venues/{v}/params` | ✓ | Update venue params |
+| Venues | `POST /api/venues/{v}/sync` | ✓ | Force position sync |
+| Arbitrage | `GET /api/arbitrage/status` | — | Arb engine status |
+| Arbitrage | `GET /api/arbitrage/opportunities` | — | Opportunity list |
+| Arbitrage | `POST /api/arbitrage/enable` | ✓ | Enable arb engine |
+| Arbitrage | `POST /api/arbitrage/scan` | ✓ | Manual scan trigger |
+| Arbitrage | `POST /api/arbitrage/reset-circuit-breaker` | ✓ | Reset circuit breaker |
+| Accounts | `GET /api/accounts` | — | Account list |
+| Accounts | `GET /api/accounts/balances` | — | All account balances |
+| Accounts | `PUT /api/accounts/{role}/thresholds` | ✓ | Update refill thresholds |
+| Alerts | `GET /api/alerts` | — | Recent alerts |
+| Alerts | `POST /api/alerts/{id}/acknowledge` | ✓ | Acknowledge alert |
+
+**Global pause/resume** is done at the server level — there is no API endpoint for it. See [docs/runbook.md](runbook.md).
 
 ---
 
-## 6. Security
+## 7. Security
 
-### Server Hardening
-
-- SSH on non-standard port (2222)
-- Key-only authentication (no passwords)
-- UFW firewall (only SSH + HTTPS)
-- Fail2ban for brute-force protection
-- Automatic security updates
-
-### Key Management
-
-All secrets are stored as environment variables in `.env` (loaded by Pydantic Settings). No separate keys file — keep it simple.
-
-### Key Hierarchy
-
-| Key | Purpose | Typical Funding |
-|-----|---------|-----------------|
-| Aerodrome LP | LP position management | ~$5k |
-| Aerodrome Trade | Swaps for rebalancing | ~$2k |
-| PancakeSwap LP | LP position management | ~$5k |
-| PancakeSwap Trade | Swaps for rebalancing | ~$2k |
-| Quidax API | CEX order management | N/A |
-| Blockradar API | Rate setting | N/A |
+- Port `8000` bound to `127.0.0.1` — not internet-accessible
+- **Cloudflare Zero Trust** — dashboard access requires identity verification
+- Bearer token required for all mutating API calls (`DASHBOARD_API_TOKEN`)
+- HD wallet mnemonic stored in `.env`, never logged or committed
+- Infinite token approvals on DEX contracts are a known issue (see runbook)
 
 ---
 
-## 7. Deployment
+## 8. Deployment
 
-### Systemd Service
+### CI/CD
 
-The trading engine runs as a systemd service with:
-- Automatic restart on failure
-- Restricted permissions (no root, limited filesystem access)
-- Environment loaded from `.env` file
+Every push to `main`:
+1. **test** — builds Docker `test` target; runs `pytest`
+2. **deploy** — builds and pushes `production` image to `ghcr.io`, then SSHs to server and runs `docker compose pull && docker compose up -d`
 
-### Nginx Reverse Proxy
+### Server
 
-- HTTPS with Let's Encrypt certificates
-- WebSocket proxying for `/ws` (Connection: Upgrade)
-- Optional IP whitelisting for additional security
+`deploy/setup.sh` performs first-time setup:
+- Installs Docker, GitHub Actions runner, cloudflared
+- Configures Cloudflare tunnel
+- Idempotent: skips steps already completed
 
----
-
-## 8. Configuration
-
-Key configuration options (via `.env` file):
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `PRICE_UPDATE_INTERVAL` | Price fetch frequency | 30s |
-| `DEX_CHECK_INTERVAL` | LP position check frequency | 120s |
-| `CEX_SYNC_INTERVAL` | Order ladder sync frequency | 300s |
-| `TARGET_DELTA_RATIO` | Target CNGN/total ratio | 0.5 |
-| `REBALANCE_THRESHOLD_PERCENT` | Deviation before rebalancing | 5% |
+See [docs/runbook.md](runbook.md) for operational procedures.
 
 ---
 
-## 9. Extensibility
+## 9. Configuration
+
+Key environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `WALLET_MNEMONIC` | BIP39 seed phrase (12 or 24 words) | — |
+| `DASHBOARD_API_TOKEN` | Bearer token for protected API calls | — |
+| `BLOCKRADAR_API_KEY` | Blockradar dashboard key | — |
+| `BLOCKRADAR_WALLET_ID` | Blockradar master wallet ID | — |
+| `QUIDAX_API_KEY` | Quidax account key | — |
+| `BASE_RPC_URL` | Base chain RPC | https://mainnet.base.org |
+| `BSC_RPC_URL` | BSC RPC | https://bsc-dataseed.binance.org |
+| `ARBITRAGE_EXECUTION_ENABLED` | Enable arb trade execution | `false` |
+| `PRICE_UPDATE_INTERVAL` | Price fetch interval (seconds) | `30` |
+| `DEX_CHECK_INTERVAL` | LP rebalance check interval | `120` |
+| `CEX_SYNC_INTERVAL` | Order ladder sync interval | `300` |
+
+---
+
+## 10. Extensibility
 
 ### Adding a New DEX
 
-**For price reading only** (no trading):
+**Price reading only:** add a `PoolReadConfig` and wire a `PoolPriceReader` into the aggregator in [engine/main.py](../engine/main.py).
 
-1. Create a `PoolReadConfig` with the pool address, RPC URL, token decimals, and `invert_price` if needed
-2. Wire a `PoolPriceReader` into the aggregator in [engine/main.py](../engine/main.py)
-
-**For full trading:**
-
-1. Create a new adapter file extending `BaseDexAdapter` in [engine/venues/dex/base.py](../engine/venues/dex/base.py)
-2. Provide contract ABIs and a `PoolConfig` with all addresses
-3. Register in the venue factory
-
-The shared base class handles all UniswapV3-style operations (mint, burn, swap, range calculation).
+**Full trading:** extend `BaseDexAdapter` in [engine/venues/dex/base.py](../engine/venues/dex/base.py), provide ABIs and a `PoolConfig`, and register in the venue factory.
 
 ### Adding a New CEX
 
-1. Create new adapter implementing position and order methods
-2. Add webhook handler if the exchange supports it
-3. Register in the venue factory
-
-### Adding a New Trading Pair
-
-1. Update venue configuration with new pool/market addresses
-2. Add price feed source if needed
-3. Update position tracking
+Implement the `VenueAdapter` interface, add webhook handler if supported, register in the venue factory.
 
 ---
 
-## 10. Rollout Plan
+## 11. Rollout Plan
 
-### Phase 1: Read-Only
-- Deploy with trading disabled
-- Verify price feed accuracy
-- Verify position tracking
-- Dashboard verification
-
-### Phase 2: Blockradar
-- Enable rate syncing (lowest risk)
-- Monitor for 1 week
-- Verify rates stay accurate
-
-### Phase 3: Quidax
-- Enable order ladder sync
-- Start with wider spreads
-- Monitor fill rates and P&L
-
-### Phase 4: DEXs
-- Enable Aerodrome first, then PancakeSwap
-- Start with conservative range settings
-- Gradually tighten as confidence builds
-
-### Phase 5: Cross-Venue
-- Enable global rebalancing
-- Enable arbitrage detection
-- Start with manual approval, then automate
+| Phase | What | Status |
+|-------|------|--------|
+| 1 | Price feeds + Aerodrome LP | Live |
+| 2 | Blockradar rate sync | Ready to enable |
+| 3 | Quidax order ladder | Ready to enable (`ladder_enabled=true`) |
+| 4 | Arb detection (no execution) | Ready (`ARBITRAGE_ENABLED=true`) |
+| 5 | Arb execution | Ready after Phase 4 validation (`ARBITRAGE_EXECUTION_ENABLED=true`) |
+| 6 | PancakeSwap LP + arb | Infrastructure ready, BSC funding required |
