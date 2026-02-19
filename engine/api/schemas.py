@@ -85,9 +85,12 @@ class DexParams(BaseModel):
 class CexParams(BaseModel):
     """Parameters for CEX order ladder."""
 
-    ladder_levels: int = 10
-    ladder_increment: Decimal = Decimal("0.000001")  # Price increment per level (in quote currency)
-    liquidity_per_level_percent: Decimal = Decimal("5.0")
+    ladder_enabled: bool = False
+    # NGN offsets from current rate, one order placed per offset on each side
+    # e.g. [1, 3, 5, 10] → orders at rate±1, rate±3, rate±5, rate±10 NGN
+    ladder_offsets_ngn: list[int] = [1, 3, 5, 10]
+    order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
+    order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
 
 
 class WalletParams(BaseModel):

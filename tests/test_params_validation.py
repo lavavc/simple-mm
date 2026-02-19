@@ -86,26 +86,30 @@ class TestCexParamsValidation:
     def test_default_values(self):
         params = CexParams()
 
-        assert params.ladder_levels == 10
-        assert params.ladder_increment == Decimal("0.000001")
-        assert params.liquidity_per_level_percent == Decimal("5.0")
+        assert params.ladder_enabled is False
+        assert params.ladder_offsets_ngn == [1, 3, 5, 10]
+        assert params.order_size_cngn == Decimal("0")
+        assert params.order_size_usdt == Decimal("0")
 
     def test_custom_values(self):
         params = CexParams(
-            ladder_levels=20,
-            ladder_increment=Decimal("0.000005"),
-            liquidity_per_level_percent=Decimal("2.5"),
+            ladder_enabled=True,
+            ladder_offsets_ngn=[1, 3, 5],
+            order_size_cngn=Decimal("10000"),
+            order_size_usdt=Decimal("100"),
         )
 
-        assert params.ladder_levels == 20
-        assert params.ladder_increment == Decimal("0.000005")
-        assert params.liquidity_per_level_percent == Decimal("2.5")
+        assert params.ladder_enabled is True
+        assert params.ladder_offsets_ngn == [1, 3, 5]
+        assert params.order_size_cngn == Decimal("10000")
+        assert params.order_size_usdt == Decimal("100")
 
     def test_serialization(self):
-        params = CexParams(ladder_levels=15)
+        params = CexParams(order_size_cngn=Decimal("5000"))
         data = params.model_dump()
 
-        assert data["ladder_levels"] == 15
+        assert data["order_size_cngn"] == Decimal("5000")
+        assert data["ladder_enabled"] is False
 
 
 class TestWalletParamsValidation:

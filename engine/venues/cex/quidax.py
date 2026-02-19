@@ -237,59 +237,48 @@ class QuidaxAdapter(VenueAdapter):
         """
         Sync order ladder to current reference price.
 
-        Creates buy and sell orders at incremental price levels.
+        Places buy and sell limit orders at fixed NGN offsets from the current rate.
 
         Args:
-            reference_price: Mid-market price to center ladder around
+            reference_price: Current NGN/USDT rate (e.g. 1600 = 1 USDT buys 1600 NGN/cNGN)
         """
-        if self.paused:
-            logger.info("quidax_paused_skipping_sync")
+        if self.paused or not self.params.ladder_enabled:
+            logger.info("quidax_ladder_skipped", paused=self.paused, enabled=self.params.ladder_enabled)
             return
 
-        # Cancel existing orders
         await self.cancel_all_orders()
-
-        # Get current balances
-        position = await self.get_position()
-        total_cngn = position.balances["cngn"]
-        total_usdt = position.balances["usdt"]
-
-        liquidity_per_level = Decimal(str(self.params.liquidity_per_level_percent)) / 100
-        increment = self.params.ladder_increment
 
         orders_placed = 0
 
-        # Build sell ladder (selling CNGN for USDT)
-        for i in range(self.params.ladder_levels):
-            price_offset = Decimal(str(i + 1)) * increment
-            price = reference_price + price_offset
-            amount = total_cngn * liquidity_per_level
+        for offset in self.params.ladder_offsets_ngn:
+            # Sell orders: cNGN is more expensive (fewer NGN per USDT from buyer's perspective)
+            # price = 1 / (rate - offset) USDT per cNGN
+            if self.params.order_size_cngn > 0:
+                sell_ngn_rate = reference_price - offset
+                if sell_ngn_rate > 0:
+                    sell_price = Decimal("1") / sell_ngn_rate
+                    try:
+                        await self.place_order("sell", sell_price, self.params.order_size_cngn)
+                        orders_placed += 1
+                    except Exception as e:
+                        logger.warning("place_sell_order_failed", offset=offset, error=str(e))
 
-            if amount > 0:
+            # Buy orders: cNGN is cheaper (more NGN per USDT from seller's perspective)
+            # price = 1 / (rate + offset) USDT per cNGN; convert USDT budget to cNGN volume
+            if self.params.order_size_usdt > 0:
+                buy_ngn_rate = reference_price + offset
+                buy_price = Decimal("1") / buy_ngn_rate
+                cngn_amount = self.params.order_size_usdt / buy_price
                 try:
-                    await self.place_order("sell", price, amount)
+                    await self.place_order("buy", buy_price, cngn_amount)
                     orders_placed += 1
                 except Exception as e:
-                    logger.warning("place_sell_order_failed", level=i, error=str(e))
-
-        # Build buy ladder (buying CNGN with USDT)
-        for i in range(self.params.ladder_levels):
-            price_offset = Decimal(str(i + 1)) * increment
-            price = reference_price - price_offset
-            usdt_amount = total_usdt * liquidity_per_level
-            cngn_amount = usdt_amount / price if price > 0 else Decimal("0")
-
-            if cngn_amount > 0:
-                try:
-                    await self.place_order("buy", price, cngn_amount)
-                    orders_placed += 1
-                except Exception as e:
-                    logger.warning("place_buy_order_failed", level=i, error=str(e))
+                    logger.warning("place_buy_order_failed", offset=offset, error=str(e))
 
         logger.info(
             "order_ladder_synced",
-            reference_price=float(reference_price),
-            levels=self.params.ladder_levels,
+            reference_price_ngn=float(reference_price),
+            offsets=self.params.ladder_offsets_ngn,
             orders_placed=orders_placed,
         )
 
