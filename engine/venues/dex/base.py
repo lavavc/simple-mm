@@ -46,6 +46,7 @@ class PoolConfig:
     token1_decimals: int
     tick_spacing: int
     pool_fee: Optional[int] = None  # Fee tier for protocols that use fee != tick_spacing (e.g. PancakeSwap)
+    invert_price: bool = False  # True when native pool price must be inverted (e.g. PancakeSwap: USDT/cNGN → cNGN/USD)
 
 
 @dataclass
@@ -408,12 +409,16 @@ class BaseDexAdapter(VenueAdapter, ABC):
         state = self.get_current_state()
         import time
 
+        price = state["price"]
+        if self.config.invert_price and price > 0:
+            price = Decimal("1") / price
+
         return PriceQuote(
             source=f"{self.name}_pool",
             timestamp=int(time.time() * 1000),
-            bid=state["price"],
-            ask=state["price"],
-            mid=state["price"],
+            bid=price,
+            ask=price,
+            mid=price,
         )
 
     # === Pool state queries ===
