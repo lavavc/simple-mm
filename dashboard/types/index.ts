@@ -148,6 +148,7 @@ export interface BlendedPriceResponse {
   venue_prices: Record<string, number>;
   timestamp: number;
   num_sources: number;
+  total_venues: number;
   confidence: number;
 }
 
@@ -157,6 +158,13 @@ export interface NormalizedPriceResponse {
   basis: string;
   raw_mid: number;
   timestamp: number;
+}
+
+export interface PoolMetrics {
+  venue: string;
+  chain: string;
+  pool_tvl_usd: number | null;
+  volume_24h_usd: number | null;
 }
 
 /** Row from the price_snapshots table (returned by GET /api/price/history). */

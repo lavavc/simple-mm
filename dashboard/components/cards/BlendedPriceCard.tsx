@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { formatNumber } from '@/lib/utils';
-import { Activity, TrendingUp, Shield } from 'lucide-react';
+import { Activity, TrendingUp, Shield, AlertTriangle } from 'lucide-react';
 import type { BlendedPriceResponse } from '@/types';
 
 interface BlendedPriceCardProps {
@@ -14,6 +14,7 @@ export function BlendedPriceCard({ blended }: BlendedPriceCardProps) {
   const confidencePct = Math.round(blended.confidence * 100);
   const confidenceColor =
     confidencePct >= 80 ? 'text-green-500' : confidencePct >= 50 ? 'text-yellow-500' : 'text-red-500';
+  const degraded = blended.num_sources < blended.total_venues;
 
   // VWAP as NGN/USD for display (invert cNGN/USD)
   const ngnPerUsd = blended.vwap > 0 ? 1 / blended.vwap : 0;
@@ -52,9 +53,10 @@ export function BlendedPriceCard({ blended }: BlendedPriceCardProps) {
           <Badge variant="outline" className="text-xs">
             {confidencePct}% confidence
           </Badge>
-          <span className="text-xs text-muted-foreground">
-            {blended.num_sources} source{blended.num_sources !== 1 ? 's' : ''}
+          <span className={`text-xs ${degraded ? 'text-yellow-500' : 'text-muted-foreground'}`}>
+            {blended.num_sources} of {blended.total_venues} sources
           </span>
+          {degraded && <AlertTriangle className="h-3 w-3 text-yellow-500" />}
         </div>
       </CardContent>
     </Card>

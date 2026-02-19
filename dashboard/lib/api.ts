@@ -12,6 +12,7 @@ import type {
   HealthCheck,
   BlendedPriceResponse,
   NormalizedPriceResponse,
+  PoolMetrics,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
@@ -166,6 +167,10 @@ export const api = {
       },
       body: JSON.stringify(thresholds),
     }),
+
+  // Pool metrics (DexScreener)
+  getPoolMetrics: (): Promise<PoolMetrics[]> =>
+    fetchJson(`${API_BASE}/pool-metrics`),
 
   // Alerts
   getAlerts: (limit = 20): Promise<Alert[]> =>

@@ -6,6 +6,7 @@ import { BlendedPriceCard } from '@/components/cards/BlendedPriceCard';
 import { VenueCard } from '@/components/cards/VenueCard';
 import { ArbitrageCard } from '@/components/cards/ArbitrageCard';
 import { AlertsList } from '@/components/cards/AlertsList';
+import { PoolMetricsCard } from '@/components/cards/PoolMetricsCard';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
 import {
   useStatus,
@@ -72,6 +73,9 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
+      {/* DEX Pool Metrics */}
+      <PoolMetricsCard />
 
       {/* Venue Price Comparison Chart */}
       <VenuePriceChart blended={blendedPrice} />

@@ -65,6 +65,14 @@ export function useAlerts(limit = 20) {
   });
 }
 
+export function usePoolMetrics() {
+  return useQuery({
+    queryKey: ['poolMetrics'],
+    queryFn: api.getPoolMetrics,
+    refetchInterval: 60_000,
+  });
+}
+
 // ── Mutations ───────────────────────────────────────────────────────────────
 
 
