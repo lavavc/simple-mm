@@ -53,8 +53,8 @@ class BlendedPrice:
     venue_prices: dict[str, Decimal]  # Per-venue normalized cNGN/USD prices
     timestamp: int
     num_sources: int  # How many venues contributed valid prices
-    total_venues: int = 0  # How many venues were attempted
     confidence: float  # 0-1, based on source agreement
+    total_venues: int = 0  # How many venues were attempted
 
     @property
     def reference_price_ngn(self) -> Decimal:
