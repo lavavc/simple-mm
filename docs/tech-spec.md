@@ -329,14 +329,3 @@ Key environment variables:
 Implement the `VenueAdapter` interface, add webhook handler if supported, register in the venue factory.
 
 ---
-
-## 11. Rollout Plan
-
-| Phase | What | Status |
-|-------|------|--------|
-| 1 | Price feeds + Aerodrome LP | Live |
-| 2 | Blockradar rate sync | Ready to enable |
-| 3 | Quidax order ladder | Ready to enable (`ladder_enabled=true`) |
-| 4 | Arb detection (no execution) | Ready (`ARBITRAGE_ENABLED=true`) |
-| 5 | Arb execution | Ready after Phase 4 validation (`ARBITRAGE_EXECUTION_ENABLED=true`) |
-| 6 | PancakeSwap LP + arb | Infrastructure ready, BSC funding required |

@@ -89,8 +89,8 @@ async def _get_cngn_usd_rate() -> Decimal:
             blended = await _blended_calculator.get_blended_price()
             if blended.vwap > 0:
                 return blended.vwap
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("blended_price_unavailable", error=str(e))
 
     if _price_aggregator:
         # Quidax reports cNGN/USDT directly (mid ≈ 0.0007)
@@ -113,8 +113,8 @@ async def _get_reference_price_ngn() -> Optional[Decimal]:
             blended = await _blended_calculator.get_blended_price()
             if blended.reference_price_ngn > 0:
                 return blended.reference_price_ngn
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("blended_reference_price_unavailable", error=str(e))
 
     if _price_aggregator:
         # Bybit reports USDT/NGN directly (mid ≈ 1436)
@@ -235,6 +235,7 @@ async def get_blended_price():
             venue_prices=blended.venue_prices,
             timestamp=blended.timestamp,
             num_sources=blended.num_sources,
+            total_venues=blended.total_venues,
             confidence=blended.confidence,
         )
     except Exception as e:
@@ -786,6 +787,37 @@ async def update_account_thresholds(role: str, thresholds: AccountThresholds):
         return {"status": "updated", "role": role}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# === Pool Metrics ===
+
+# Static config: chain and pool address for each DEX we track
+_DEX_POOLS = [
+    {"venue": "aerodrome", "chain": "base", "pool_address": "0x0206B696a410277eF692024C2B64CcF4EaC78589"},
+    {"venue": "pancakeswap", "chain": "bsc", "pool_address": "0xb84e7c912a1034ad674bba8859fca84f1f614a29"},
+]
+
+
+@router.get("/pool-metrics")
+async def get_pool_metrics():
+    """Fetch 24h volume and TVL for all DEX pools from DexScreener (no keys required)."""
+    import httpx
+
+    results = []
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for pool in _DEX_POOLS:
+            entry = {"venue": pool["venue"], "chain": pool["chain"], "pool_tvl_usd": None, "volume_24h_usd": None}
+            try:
+                url = f"https://api.dexscreener.com/latest/dex/pairs/{pool['chain']}/{pool['pool_address']}"
+                resp = await client.get(url)
+                pairs = resp.json().get("pairs") or []
+                if pairs:
+                    entry["pool_tvl_usd"] = pairs[0].get("liquidity", {}).get("usd")
+                    entry["volume_24h_usd"] = pairs[0].get("volume", {}).get("h24")
+            except Exception as e:
+                logger.warning("pool_metrics_fetch_failed", venue=pool["venue"], error=str(e))
+            results.append(entry)
+    return results
 
 
 # === Health Check ===

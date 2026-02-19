@@ -45,6 +45,7 @@ class PoolConfig:
     token0_decimals: int
     token1_decimals: int
     tick_spacing: int
+    pool_fee: Optional[int] = None  # Fee tier for protocols that use fee != tick_spacing (e.g. PancakeSwap)
 
 
 @dataclass
@@ -354,9 +355,9 @@ class BaseDexAdapter(VenueAdapter, ABC):
         token0_bal = self.token0.functions.balanceOf(self.lp_account.address).call()
         token1_bal = self.token1.functions.balanceOf(self.lp_account.address).call()
 
-        # Normalize to decimals
-        cngn_bal = Decimal(token0_bal) / Decimal(10**self.config.token0_decimals)
-        stable_bal = Decimal(token1_bal) / Decimal(10**self.config.token1_decimals)
+        # Normalize to decimals, then assign by symbol (token0/token1 ordering varies by pool)
+        t0_amount = Decimal(token0_bal) / Decimal(10**self.config.token0_decimals)
+        t1_amount = Decimal(token1_bal) / Decimal(10**self.config.token1_decimals)
 
         # Fetch pool metrics (always — TVL/volume shown regardless of LP activity)
         lp_position = None
@@ -380,12 +381,15 @@ class BaseDexAdapter(VenueAdapter, ABC):
                 our_share_pct=our_share_pct,
             )
 
-        # Determine which is USDT vs USDC based on symbol
-        balances = {"cngn": cngn_bal, "usdt": Decimal(0), "usdc": Decimal(0)}
-        if self.config.token1_symbol.upper() == "USDC":
-            balances["usdc"] = stable_bal
-        else:
-            balances["usdt"] = stable_bal
+        balances: dict[str, Decimal] = {"cngn": Decimal(0), "usdt": Decimal(0), "usdc": Decimal(0)}
+        for sym, amount in [
+            (self.config.token0_symbol.lower(), t0_amount),
+            (self.config.token1_symbol.lower(), t1_amount),
+        ]:
+            if sym in balances:
+                balances[sym] = amount
+            else:
+                balances["usdt"] = amount  # fallback for unexpected stable symbols
 
         import time
 
@@ -615,10 +619,11 @@ class BaseDexAdapter(VenueAdapter, ABC):
         amount0_min = int(amount0 * (1 - slippage))
         amount1_min = int(amount1 * (1 - slippage))
 
+        fee_param = self.config.pool_fee if self.config.pool_fee is not None else self.config.tick_spacing
         mint_params = (
             Web3.to_checksum_address(self.config.token0_address),
             Web3.to_checksum_address(self.config.token1_address),
-            self.config.tick_spacing,
+            fee_param,
             tick_lower,
             tick_upper,
             amount0,
@@ -706,10 +711,11 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
 
+        fee_param = self.config.pool_fee if self.config.pool_fee is not None else self.config.tick_spacing
         swap_params = (
             Web3.to_checksum_address(token_in),
             Web3.to_checksum_address(token_out),
-            self.config.tick_spacing,
+            fee_param,
             self.trade_account.address,
             deadline,
             amount_in,

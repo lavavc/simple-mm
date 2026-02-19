@@ -52,7 +52,8 @@ class BlendedPrice:
     twap_1h: Decimal  # 1-hour time-weighted average
     venue_prices: dict[str, Decimal]  # Per-venue normalized cNGN/USD prices
     timestamp: int
-    num_sources: int  # How many venues contributed
+    num_sources: int  # How many venues contributed valid prices
+    total_venues: int  # How many venues were attempted
     confidence: float  # 0-1, based on source agreement
 
     @property
@@ -394,6 +395,7 @@ class BlendedPriceCalculator:
             venue_prices=venue_price_map,
             timestamp=int(time.time() * 1000),
             num_sources=len(normalized),
+            total_venues=len(venue_prices),
             confidence=confidence,
         )
 

@@ -20,7 +20,7 @@ from engine.core.scheduler import TradingScheduler, SchedulerConfig
 from engine.core.arbitrage import ArbitrageEngine
 from engine.core.accounts import AccountManager, AccountRole
 from engine.venues.dex.aerodrome import AerodromeAdapter, AERODROME_POOL_READ_CONFIG
-from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
+from engine.venues.dex.pancakeswap import PancakeSwapAdapter, PANCAKESWAP_POOL_READ_CONFIG
 from engine.venues.dex.base import PoolPriceReader
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
@@ -86,6 +86,20 @@ async def init_venues(acct_manager: AccountManager | None = None):
             logger.info("venue_initialized", venue="aerodrome")
         except ValueError as e:
             logger.warning("aerodrome_init_skipped", reason=str(e))
+
+    # PancakeSwap (BSC DEX) — requires HD wallet
+    if acct_manager:
+        try:
+            lp_key = acct_manager.get_private_key(AccountRole.PANCAKESWAP_LP)
+            trade_key = acct_manager.get_private_key(AccountRole.PANCAKESWAP_TRADE)
+            venues["pancakeswap"] = PancakeSwapAdapter(
+                lp_private_key=lp_key,
+                trade_private_key=trade_key,
+                params=DexParams(),
+            )
+            logger.info("venue_initialized", venue="pancakeswap")
+        except ValueError as e:
+            logger.warning("pancakeswap_init_skipped", reason=str(e))
 
     # Quidax (CEX)
     if settings.quidax_api_key:
