@@ -44,8 +44,8 @@ class Settings(BaseSettings):
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
-    # Scheduler intervals (seconds) — all SchedulerConfig defaults live here, nowhere else
-    price_update_interval: int = 30
+    # Scheduler intervals (seconds)
+    price_update_interval: int = 10
     position_sync_interval: int = 60
     dex_check_interval: int = 120
     cex_sync_interval: int = 300
@@ -59,8 +59,8 @@ class Settings(BaseSettings):
 
     # Arbitrage settings
     arbitrage_enabled: bool = True
-    arbitrage_execution_enabled: bool = True
-    arbitrage_scan_interval: int = 30  # seconds
+    arbitrage_execution_enabled: bool = False  # Phase 1: detection only
+    arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
     arbitrage_min_spread_bps: int = 150          # 1.5% minimum gross spread

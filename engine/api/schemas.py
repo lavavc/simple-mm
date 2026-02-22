@@ -221,6 +221,29 @@ class ArbitrageOpportunity(BaseModel):
     reason: Optional[str] = None  # Why it was abandoned/expired
 
 
+class DexArbOpportunity(BaseModel):
+    """Detected DEX V3 arbitrage opportunity."""
+
+    id: str
+    timestamp: int
+    direction: str
+    optimal_size_usd: Decimal
+    expected_profit_usd: Decimal
+    cngn_transferred: Decimal
+    expected_usd_out: Decimal
+    status: Literal["detected", "executing", "completed", "abandoned", "expired"]
+    net_spread_bps: int
+    actual_profit_usd: Optional[Decimal] = None
+    reason: Optional[str] = None
+    pancake_price: Optional[Decimal] = None
+    aerodrome_price: Optional[Decimal] = None
+    buy_tx_hash: Optional[str] = None
+    sell_tx_hash: Optional[str] = None
+    slippage_tolerance_bps: Optional[int] = None
+    pancake_fee_bps: Optional[int] = None
+    aerodrome_fee_bps: Optional[int] = None
+    estimated_gas_usd: Optional[Decimal] = None
+
 class ArbitrageTrade(BaseModel):
     """Individual trade leg of an arbitrage opportunity."""
 

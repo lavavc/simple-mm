@@ -14,6 +14,7 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.base import BaseDexAdapter
+from engine.core.arbitrage.simulator import generate_v3_profit_curve
 
 if TYPE_CHECKING:
     from engine.core.arbitrage import ArbitrageEngine
@@ -28,6 +29,7 @@ class SchedulerConfig:
 
     All defaults come from engine.config.Settings — edit config.py to change them.
     """
+    dex_arb_curve_interval: int = 10
 
     price_update_interval: int = settings.price_update_interval
     position_sync_interval: int = settings.position_sync_interval
@@ -154,6 +156,14 @@ class TradingScheduler:
                 replace_existing=True,
             )
             logger.info("blockradar_rate_sync_job_registered")
+
+        self.scheduler.add_job(
+            self._stream_dex_arb_curve,
+            IntervalTrigger(seconds=self.config.dex_arb_curve_interval),
+            id="dex_arb_curve_stream",
+            replace_existing=True,
+        )
+        logger.info("dex_arb_curve_stream_job_registered")
 
         self.scheduler.start()
         self._started = True
@@ -607,6 +617,73 @@ class TradingScheduler:
                 )
         except Exception as e:
             logger.error("arbitrage_scan_failed", error=str(e))
+
+    async def _stream_dex_arb_curve(self):
+        """Generates the live V3 profit curve and streams it to the frontend dashboard."""
+        try:
+            curve_data = await generate_v3_profit_curve()
+            if curve_data:
+                self.broadcast({
+                    "type": "dex_arb_curve",
+                    "data": curve_data
+                })
+                
+                # Check for profitable live V3 Arb
+                optimal = curve_data.get("optimal_arb", {})
+                if optimal.get("expected_profit_usd", -1) > 0:
+                    import uuid
+                    import time
+                    from engine.api.schemas import DexArbOpportunity
+                    from engine.db.database import get_db
+
+                    db = await get_db()
+                    
+                    # Expire old ones
+                    cutoff_ts = int(time.time() * 1000) - 60000
+                    await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
+
+                    # Deduplication Strategy: don't slam the DB with 10 records a second 
+                    # if we are already 'Targeting' or 'Routing' the exact same vector.
+                    direction = optimal["direction"]
+                    existing_active = await db._conn.execute(
+                        "SELECT id FROM dex_arbitrage_opportunities WHERE status IN ('detected', 'executing') AND direction = ? ORDER BY timestamp DESC LIMIT 1",
+                        (direction,)
+                    )
+                    existing_row = await existing_active.fetchone()
+
+                    if existing_row:
+                        opp_id = existing_row['id']
+                    else:
+                        opp_id = f"dex-arb-{uuid.uuid4()}"
+                        opportunity = DexArbOpportunity(
+                            id=opp_id,
+                            timestamp=int(time.time() * 1000),
+                            direction=direction,
+                            optimal_size_usd=optimal["optimal_size_usd"],
+                            expected_profit_usd=optimal["expected_profit_usd"],
+                            cngn_transferred=optimal["cngn_transferred"],
+                            expected_usd_out=optimal["expected_usd_out"],
+                            status="detected",
+                            net_spread_bps=optimal.get("net_spread_bps", 0),
+                            pancake_price=curve_data.get("prices", {}).get("pancakeswap"),
+                            aerodrome_price=curve_data.get("prices", {}).get("aerodrome"),
+                            slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
+                            pancake_fee_bps=optimal.get("pancake_fee_bps"),
+                            aerodrome_fee_bps=optimal.get("aerodrome_fee_bps"),
+                            estimated_gas_usd=optimal.get("estimated_gas_usd")
+                        )
+                        await db.insert_dex_arbitrage_opportunity(opportunity)
+
+                    # Augment broadcast data with the ID so frontend can track it
+                    broadcast_data = optimal.copy()
+                    broadcast_data["id"] = opp_id
+
+                    self.broadcast({
+                        "type": "dex_arb_opportunity",
+                        "data": broadcast_data
+                    })
+        except Exception as e:
+            logger.error("dex_arb_curve_stream_failed", error=str(e))
 
     # ------------------------------------------------------------------
     # Account balance monitoring

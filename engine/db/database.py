@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Any
 from decimal import Decimal
 
-from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, ArbitrageTrade
+from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity
 
 
 class Database:
@@ -147,9 +147,54 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_arb_trades_opp ON arbitrage_trades(opportunity_id);
             CREATE INDEX IF NOT EXISTS idx_arb_trades_time ON arbitrage_trades(timestamp);
+
+            -- DEX Arbitrage opportunities
+            CREATE TABLE IF NOT EXISTS dex_arbitrage_opportunities (
+                id TEXT PRIMARY KEY,
+                timestamp INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                optimal_size_usd REAL NOT NULL,
+                expected_profit_usd REAL NOT NULL,
+                cngn_transferred REAL NOT NULL,
+                expected_usd_out REAL NOT NULL,
+                status TEXT NOT NULL,
+                net_spread_bps INTEGER NOT NULL,
+            actual_profit_usd REAL,
+                reason TEXT,
+                pancake_price REAL,
+                aerodrome_price REAL,
+                buy_tx_hash TEXT,
+                sell_tx_hash TEXT,
+                slippage_tolerance_bps INTEGER,
+                pancake_fee_bps INTEGER,
+                aerodrome_fee_bps INTEGER,
+                estimated_gas_usd REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_time ON dex_arbitrage_opportunities(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_status ON dex_arbitrage_opportunities(status);
             """
         )
         await self._conn.commit()
+
+        # Database Migrations for dex_arbitrage_opportunities
+        columns_to_add = [
+            ("pancake_price", "REAL"),
+            ("aerodrome_price", "REAL"),
+            ("buy_tx_hash", "TEXT"),
+            ("sell_tx_hash", "TEXT"),
+            ("slippage_tolerance_bps", "INTEGER"),
+            ("pancake_fee_bps", "INTEGER"),
+            ("aerodrome_fee_bps", "INTEGER"),
+            ("estimated_gas_usd", "REAL")
+        ]
+        import sqlite3
+        for col, col_type in columns_to_add:
+            try:
+                await self._conn.execute(f"ALTER TABLE dex_arbitrage_opportunities ADD COLUMN {col} {col_type}")
+                await self._conn.commit()
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
 
     # === System State ===
 
@@ -552,6 +597,134 @@ class Database:
                 if row["actual_profit_usd"]
                 else None,
                 reason=row["reason"],
+            )
+            for row in rows
+        ]
+
+    async def insert_dex_arbitrage_opportunity(self, opp: DexArbOpportunity):
+        """Insert a detected DEX arbitrage opportunity."""
+        await self._conn.execute(
+            """
+            INSERT INTO dex_arbitrage_opportunities (
+                id, timestamp, direction, optimal_size_usd, expected_profit_usd,
+                cngn_transferred, expected_usd_out, status, net_spread_bps,
+                actual_profit_usd, reason, pancake_price, aerodrome_price,
+                buy_tx_hash, sell_tx_hash, slippage_tolerance_bps, pancake_fee_bps,
+                aerodrome_fee_bps, estimated_gas_usd
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                opp.id,
+                opp.timestamp,
+                opp.direction,
+                float(opp.optimal_size_usd),
+                float(opp.expected_profit_usd),
+                float(opp.cngn_transferred),
+                float(opp.expected_usd_out),
+                opp.status,
+                opp.net_spread_bps,
+                float(opp.actual_profit_usd) if opp.actual_profit_usd is not None else None,
+                opp.reason,
+                float(opp.pancake_price) if opp.pancake_price is not None else None,
+                float(opp.aerodrome_price) if opp.aerodrome_price is not None else None,
+                opp.buy_tx_hash,
+                opp.sell_tx_hash,
+                opp.slippage_tolerance_bps,
+                opp.pancake_fee_bps,
+                opp.aerodrome_fee_bps,
+                float(opp.estimated_gas_usd) if opp.estimated_gas_usd is not None else None,
+            ),
+        )
+        await self._conn.commit()
+
+    async def update_dex_arbitrage_opportunity(
+        self,
+        opp_id: str,
+        status: str,
+        actual_profit_usd: Optional[float] = None,
+        reason: Optional[str] = None,
+    ):
+        """Update a DEX arbitrage opportunity."""
+        if actual_profit_usd is not None:
+            await self._conn.execute(
+                """
+                UPDATE dex_arbitrage_opportunities
+                SET status = ?, actual_profit_usd = ?, reason = ?
+                WHERE id = ?
+                """,
+                (status, actual_profit_usd, reason, opp_id),
+            )
+        else:
+            await self._conn.execute(
+                """
+                UPDATE dex_arbitrage_opportunities
+                SET status = ?, reason = ?
+                WHERE id = ?
+                """,
+                (status, reason, opp_id),
+            )
+        await self._conn.commit()
+
+    async def expire_old_dex_arbitrage_opportunities(self, cutoff_ts: int):
+        """Mark opportunities older than cutoff and still detected/executing as expired."""
+        await self._conn.execute(
+            """
+            UPDATE dex_arbitrage_opportunities
+            SET status = 'expired', reason = 'Timeout'
+            WHERE status IN ('detected', 'executing') AND timestamp < ?
+            """,
+            (cutoff_ts,),
+        )
+        await self._conn.commit()
+
+    async def get_dex_arbitrage_opportunities(
+        self,
+        status: Optional[str] = None,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+        limit: int = 50,
+    ) -> list[DexArbOpportunity]:
+        """Get DEX arbitrage opportunities with optional filters."""
+        query = "SELECT * FROM dex_arbitrage_opportunities WHERE 1=1"
+        params: list[Any] = []
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if from_ts:
+            query += " AND timestamp >= ?"
+            params.append(from_ts)
+        if to_ts:
+            query += " AND timestamp <= ?"
+            params.append(to_ts)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._conn.execute(query, params)
+        rows = await cursor.fetchall()
+
+        return [
+            DexArbOpportunity(
+                id=row["id"],
+                timestamp=row["timestamp"],
+                direction=row["direction"],
+                optimal_size_usd=Decimal(str(row["optimal_size_usd"])),
+                expected_profit_usd=Decimal(str(row["expected_profit_usd"])),
+                cngn_transferred=Decimal(str(row["cngn_transferred"])),
+                expected_usd_out=Decimal(str(row["expected_usd_out"])),
+                status=row["status"],
+                net_spread_bps=row["net_spread_bps"],
+                actual_profit_usd=Decimal(str(row["actual_profit_usd"])) if row["actual_profit_usd"] else None,
+                reason=row["reason"],
+                pancake_price=Decimal(str(row["pancake_price"])) if row["pancake_price"] is not None else None,
+                aerodrome_price=Decimal(str(row["aerodrome_price"])) if row["aerodrome_price"] is not None else None,
+                buy_tx_hash=row["buy_tx_hash"],
+                sell_tx_hash=row["sell_tx_hash"],
+                slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
+                pancake_fee_bps=dict(row).get("pancake_fee_bps"),
+                aerodrome_fee_bps=dict(row).get("aerodrome_fee_bps"),
+                estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
             )
             for row in rows
         ]

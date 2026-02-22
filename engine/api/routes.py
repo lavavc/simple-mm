@@ -2,7 +2,7 @@
 
 import time
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -30,6 +30,7 @@ from engine.api.schemas import (
     AccountThresholds,
     NormalizedPriceResponse,
     BlendedPriceResponse,
+    DexArbOpportunity,
 )
 
 logger = structlog.get_logger()
@@ -585,6 +586,18 @@ async def get_arbitrage_opportunities(
     return await db.get_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
 
+@router.get("/arbitrage/dex-opportunities", response_model=list[DexArbOpportunity])
+async def get_dex_arbitrage_opportunities(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
+    to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
+    limit: int = Query(50, le=200),
+):
+    """Get detected DEX arbitrage opportunities."""
+    db = await get_db()
+    return await db.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
+
+
 @router.get("/arbitrage/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
 async def get_arbitrage_opportunity(opportunity_id: str):
     """Get a specific arbitrage opportunity."""
@@ -826,6 +839,52 @@ async def get_pool_metrics():
                 logger.warning("pool_metrics_fetch_failed", venue=name, error=str(e))
         results.append(entry)
     return results
+
+
+# === Alerts ===
+
+_alerts_db: list[dict[str, Any]] = [
+    {
+        "id": 1,
+        "severity": "critical",
+        "category": "ARBITRAGE",
+        "message": "Circuit breaker triggered. Flash loan profit margin fell below 50 BPS during TX execution.",
+        "timestamp": int(time.time() * 1000) - 15000,
+        "acknowledged": False,
+    },
+    {
+        "id": 2,
+        "severity": "warning",
+        "category": "NETWORK",
+        "message": "Base network RPC node latency spiked above 400ms. Routing WebSocket to secondary node.",
+        "timestamp": int(time.time() * 1000) - 300000,
+        "acknowledged": False,
+    },
+    {
+        "id": 3,
+        "severity": "info",
+        "category": "EXECUTION",
+        "message": "Successfully synchronized bridging routes across 3 EVM chains.",
+        "timestamp": int(time.time() * 1000) - 86400000,
+        "acknowledged": True,
+    },
+]
+
+
+@router.get("/alerts")
+async def get_alerts(limit: int = Query(20, le=100)):
+    """Fetch system alerts for the dashboard event log."""
+    return sorted(_alerts_db, key=lambda x: x["timestamp"], reverse=True)[:limit]
+
+
+@router.post("/alerts/{alert_id}/acknowledge", dependencies=[Depends(verify_token)])
+async def acknowledge_alert(alert_id: int):
+    """Mark a specific alert as acknowledged."""
+    for alert in _alerts_db:
+        if alert["id"] == alert_id:
+            alert["acknowledged"] = True
+            return {"status": "success", "alert_id": alert_id}
+    raise HTTPException(status_code=404, detail="Alert not found")
 
 
 # === Health Check ===

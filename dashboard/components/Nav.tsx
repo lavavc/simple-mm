@@ -19,6 +19,7 @@ const navItems = [
   { href: '/prices', label: 'Prices', icon: TrendingUp },
   { href: '/venues', label: 'Venues', icon: Building2 },
   { href: '/arbitrage', label: 'Arbitrage', icon: ArrowRightLeft },
+  { href: '/dex-arb', label: 'DEX Arb', icon: ArrowRightLeft },
   { href: '/accounts', label: 'Accounts', icon: Wallet },
   { href: '/alerts', label: 'Alerts', icon: Bell },
 ];
@@ -31,11 +32,11 @@ export function Nav({ unacknowledgedAlerts = 0 }: NavProps) {
   const pathname = usePathname();
 
   return (
-    <nav className="border-b bg-card">
+    <nav className="border-b border-white/[0.05] bg-[#0B0E14] text-slate-300">
       <div className="container mx-auto px-4">
         <div className="flex h-14 items-center justify-between">
           <div className="flex items-center gap-6">
-            <Link href="/" className="font-bold text-lg">
+            <Link href="/" className="font-bold text-lg text-white">
               CNGN Engine
             </Link>
             <div className="hidden md:flex items-center gap-1">
@@ -45,11 +46,11 @@ export function Nav({ unacknowledgedAlerts = 0 }: NavProps) {
                 return (
                   <Link key={item.href} href={item.href}>
                     <Button
-                      variant={isActive ? 'secondary' : 'ghost'}
+                      variant="ghost"
                       size="sm"
                       className={cn(
-                        'gap-2',
-                        isActive && 'bg-secondary'
+                        'gap-2 hover:bg-white/5 hover:text-white',
+                        isActive ? 'text-white bg-white/5 font-semibold' : 'text-slate-400'
                       )}
                     >
                       <Icon className="h-4 w-4" />
