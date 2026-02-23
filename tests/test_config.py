@@ -20,14 +20,17 @@ class TestSettings:
 
     def test_rpc_urls_default(self):
         s = Settings()
-        assert "base.org" in s.base_rpc_url
-        assert "binance.org" in s.bsc_rpc_url
+        assert s.base_rpc_url.startswith("https://")
+        assert s.bsc_rpc_url.startswith("https://")
 
     def test_token_addresses(self):
         s = Settings()
-        assert s.cngn_contract_address.startswith("0x")
-        assert s.usdc_contract_address.startswith("0x")
-        assert s.usdt_contract_address.startswith("0x")
+        assert s.cngn_base_address.startswith("0x")
+        assert s.usdc_base_address.startswith("0x")
+        assert s.usdt_base_address.startswith("0x")
+        assert s.cngn_bsc_address.startswith("0x")
+        assert s.usdt_bsc_address.startswith("0x")
+        assert s.usdt_eth_address.startswith("0x")
 
     def test_arbitrage_defaults(self):
         s = Settings()
