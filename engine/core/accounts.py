@@ -209,14 +209,14 @@ class AccountManager:
     async def get_balance(
         self,
         role: AccountRole,
-        token_contracts: Optional[dict[str, str]] = None,
+        token_contracts: Optional[dict] = None,
     ) -> AccountBalance:
         """
         Get balance for an account including native and token balances.
 
         Args:
             role: Account role to check
-            token_contracts: Dict of token symbol -> contract address
+            token_contracts: Either dict[str, str] (legacy) or dict[int, dict[str, str]] keyed by chain_id
 
         Returns:
             AccountBalance with current balances and refill status
@@ -224,6 +224,10 @@ class AccountManager:
         config = self.get_config(role)
         account = self.get_account(role)
         w3 = self._get_web3(config.chain_id, config.rpc_url)
+
+        # Support both flat {symbol: addr} and chain-keyed {chain_id: {symbol: addr}}
+        if token_contracts and isinstance(next(iter(token_contracts)), int):
+            token_contracts = token_contracts.get(config.chain_id, {})
 
         # Get native balance
         native_balance_wei = w3.eth.get_balance(account.address)
@@ -305,7 +309,7 @@ class AccountManager:
 
     async def check_all_balances(
         self,
-        token_contracts: Optional[dict[str, str]] = None,
+        token_contracts: Optional[dict] = None,
     ) -> list[AccountBalance]:
         """
         Check balances for all accounts.

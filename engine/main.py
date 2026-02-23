@@ -55,11 +55,20 @@ scheduler: TradingScheduler | None = None
 arbitrage_engine: ArbitrageEngine | None = None
 account_manager: AccountManager | None = None
 
-# Token contract addresses for balance monitoring
-TOKEN_CONTRACTS: dict[str, str] = {
-    "cNGN": settings.cngn_contract_address,
-    "USDC": settings.usdc_contract_address,
-    "USDT": settings.usdt_contract_address,
+# Token contract addresses for balance monitoring, keyed by chain_id
+TOKEN_CONTRACTS: dict[int, dict[str, str]] = {
+    8453: {  # Base
+        "cNGN": settings.cngn_base_address,
+        "USDC": settings.usdc_base_address,
+        "USDT": settings.usdt_base_address,
+    },
+    56: {  # BSC
+        "cNGN": settings.cngn_bsc_address,
+        "USDT": settings.usdt_bsc_address,
+    },
+    1: {  # Ethereum mainnet (Quidax self-custody)
+        "USDT": settings.usdt_eth_address,
+    },
 }
 
 

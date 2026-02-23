@@ -793,8 +793,8 @@ async def update_account_thresholds(role: str, thresholds: AccountThresholds):
 
 # Static config: chain and pool address for each DEX we track
 _DEX_POOLS = [
-    {"venue": "aerodrome", "chain": "base", "pool_address": "0x0206B696a410277eF692024C2B64CcF4EaC78589"},
-    {"venue": "pancakeswap", "chain": "bsc", "pool_address": "0xb84e7c912a1034ad674bba8859fca84f1f614a29"},
+    {"venue": "aerodrome", "chain": "base", "pool_address": settings.aerodrome_pool_address},
+    {"venue": "pancakeswap", "chain": "bsc", "pool_address": settings.pancakeswap_pool_address},
 ]
 
 

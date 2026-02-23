@@ -1,7 +1,7 @@
 """Configuration management using Pydantic Settings."""
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 from typing import Optional
 
 
@@ -19,9 +19,18 @@ class Settings(BaseSettings):
     # Dashboard auth
     dashboard_api_token: str = Field(default="", description="Token for dashboard auth")
 
-    # RPC endpoints
+    # RPC endpoints — set ALCHEMY_KEY to use Alchemy for all chains,
+    # or override individual URLs directly.
+    alchemy_key: str = Field(default="", description="Alchemy API key (used for all chain RPCs)")
     base_rpc_url: str = "https://mainnet.base.org"
     bsc_rpc_url: str = "https://bsc-dataseed.binance.org"
+
+    @model_validator(mode="after")
+    def apply_alchemy_key(self) -> "Settings":
+        if self.alchemy_key:
+            self.base_rpc_url = f"https://base-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+            self.bsc_rpc_url = f"https://bnb-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+        return self
 
     # Venue API keys
     quidax_api_key: str = Field(default="", description="Quidax secret key (Bearer token)")
@@ -65,10 +74,23 @@ class Settings(BaseSettings):
     wallet_mnemonic: str = Field(default="", description="BIP39 mnemonic for HD wallet derivation")
     balance_check_interval: int = 300  # Check balances every 5 minutes
 
-    # Token contract addresses (Base chain)
-    cngn_contract_address: str = "0x46C85152bFe9f96829aA94755D9f915F9B10EF5F"
-    usdc_contract_address: str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-    usdt_contract_address: str = "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"  # Base USDT
+    # Token contract addresses
+    cngn_base_address: str = "0x46C85152bFe9f96829aA94755D9f915F9B10EF5F"
+    usdc_base_address: str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    usdt_base_address: str = "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"
+    cngn_bsc_address: str = "0xa8aea66b361a8d53e8865c62d142167af28af058"
+    usdt_bsc_address: str = "0x55d398326f99059fF775485246999027B3197955"
+    usdt_eth_address: str = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+
+    # Aerodrome contract addresses (Base)
+    aerodrome_pool_address: str = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
+    aerodrome_nft_manager_address: str = "0x827922686190790b37229fd06084350E74485b72"
+    aerodrome_router_address: str = "0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5"
+
+    # PancakeSwap contract addresses (BSC)
+    pancakeswap_pool_address: str = "0xb84e7c912a1034ad674bba8859fca84f1f614a29"
+    pancakeswap_nft_manager_address: str = "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364"
+    pancakeswap_router_address: str = "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4"
 
     model_config = {
         "env_file": ".env",
