@@ -800,23 +800,20 @@ _DEX_POOLS = [
 
 @router.get("/pool-metrics")
 async def get_pool_metrics():
-    """Fetch 24h volume and TVL for all DEX pools from DexScreener (no keys required)."""
-    import httpx
-
+    """Return 24h volume and TVL for all DEX pools (reuses venue adapter cache)."""
     results = []
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        for pool in _DEX_POOLS:
-            entry = {"venue": pool["venue"], "chain": pool["chain"], "pool_tvl_usd": None, "volume_24h_usd": None}
+    for pool in _DEX_POOLS:
+        name = pool["venue"]
+        venue = (_venues or {}).get(name)
+        entry = {"venue": name, "chain": pool["chain"], "pool_tvl_usd": None, "volume_24h_usd": None}
+        if venue and hasattr(venue, "get_pool_metrics"):
             try:
-                url = f"https://api.dexscreener.com/latest/dex/pairs/{pool['chain']}/{pool['pool_address']}"
-                resp = await client.get(url)
-                pairs = resp.json().get("pairs") or []
-                if pairs:
-                    entry["pool_tvl_usd"] = pairs[0].get("liquidity", {}).get("usd")
-                    entry["volume_24h_usd"] = pairs[0].get("volume", {}).get("h24")
+                tvl, vol, _ = await venue.get_pool_metrics(0)
+                entry["pool_tvl_usd"] = float(tvl) if tvl is not None else None
+                entry["volume_24h_usd"] = float(vol) if vol is not None else None
             except Exception as e:
-                logger.warning("pool_metrics_fetch_failed", venue=pool["venue"], error=str(e))
-            results.append(entry)
+                logger.warning("pool_metrics_fetch_failed", venue=name, error=str(e))
+        results.append(entry)
     return results
 
 

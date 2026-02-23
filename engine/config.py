@@ -24,12 +24,14 @@ class Settings(BaseSettings):
     alchemy_key: str = Field(default="", description="Alchemy API key (used for all chain RPCs)")
     base_rpc_url: str = "https://mainnet.base.org"
     bsc_rpc_url: str = "https://bsc-dataseed.binance.org"
+    eth_rpc_url: str = "https://eth.llamarpc.com"
 
     @model_validator(mode="after")
     def apply_alchemy_key(self) -> "Settings":
         if self.alchemy_key:
             self.base_rpc_url = f"https://base-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
             self.bsc_rpc_url = f"https://bnb-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+            self.eth_rpc_url = f"https://eth-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
         return self
 
     # Venue API keys

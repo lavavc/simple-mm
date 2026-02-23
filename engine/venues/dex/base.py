@@ -108,15 +108,44 @@ def sqrt_price_x96_to_decimal(
 
 
 # Function selector for slot0(): keccak256("slot0()")[:4] = 0x3850c7bd
-# This is the same across all UniswapV3-style pools (Uniswap, Aerodrome,
-# PancakeSwap, etc.) since the function signature is always `slot0()`.
 SLOT0_SELECTOR = bytes.fromhex("3850c7bd")
 
 # Function selector for liquidity(): keccak256("liquidity()")[:4] = 0x1a686502
 LIQUIDITY_SELECTOR = bytes.fromhex("1a686502")
 
+# Function selector for balanceOf(address): keccak256("balanceOf(address)")[:4] = 0x70a08231
+_BALANCE_OF_SIG = bytes.fromhex("70a08231")
+
 # DexScreener chain identifiers
 DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
+
+# Multicall3 — deployed at the same address on Ethereum, Base, and BSC
+MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11"
+MULTICALL3_ABI = [
+    {
+        "inputs": [{"components": [
+            {"internalType": "address", "name": "target", "type": "address"},
+            {"internalType": "bool", "name": "allowFailure", "type": "bool"},
+            {"internalType": "bytes", "name": "callData", "type": "bytes"},
+        ], "name": "calls", "type": "tuple[]"}],
+        "name": "aggregate3",
+        "outputs": [{"components": [
+            {"internalType": "bool", "name": "success", "type": "bool"},
+            {"internalType": "bytes", "name": "returnData", "type": "bytes"},
+        ], "name": "returnData", "type": "tuple[]"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
+
+
+def _encode_balance_of(address: str) -> bytes:
+    """Encode a balanceOf(address) call for use in Multicall3."""
+    return _BALANCE_OF_SIG + bytes(12) + bytes.fromhex(address[2:])
+
+
+def _decode_uint256(data: bytes) -> int:
+    return int.from_bytes(data, "big") if len(data) == 32 else 0
 
 
 # =============================================================================
@@ -308,57 +337,77 @@ class BaseDexAdapter(VenueAdapter, ABC):
     ) -> tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
         """Fetch pool TVL and 24h volume from DexScreener; compute our share on-chain.
 
+        Results are cached for 60s — callers within the same cycle share one HTTP request.
         Returns (pool_tvl_usd, volume_24h_usd, our_share_pct).
-        our_share_pct is None when our_liquidity is 0.
         """
         import httpx
 
-        pool_tvl_usd: Optional[Decimal] = None
-        volume_24h_usd: Optional[Decimal] = None
-        our_share_pct: Optional[Decimal] = None
+        now = _time.time()
+        cache_stale = not hasattr(self, "_metrics_cache_time") or now - self._metrics_cache_time > 60
 
-        try:
-            chain = DEXSCREENER_CHAIN_MAP.get(self.config.chain_id)
-            if chain:
-                url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{self.config.pool_address}"
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(url)
-                    data = resp.json()
-                pairs = data.get("pairs") or []
-                if pairs:
-                    pair = pairs[0]
-                    tvl = pair.get("liquidity", {}).get("usd")
-                    vol = pair.get("volume", {}).get("h24")
-                    pool_tvl_usd = Decimal(str(tvl)) if tvl is not None else None
-                    volume_24h_usd = Decimal(str(vol)) if vol is not None else None
-        except Exception as e:
-            logger.warning("dexscreener_fetch_failed", venue=self.name, error=str(e))
+        if cache_stale:
+            pool_tvl_usd: Optional[Decimal] = None
+            volume_24h_usd: Optional[Decimal] = None
+            pool_total_liquidity: int = 0
 
-        if our_liquidity > 0:
+            try:
+                chain = DEXSCREENER_CHAIN_MAP.get(self.config.chain_id)
+                if chain:
+                    url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{self.config.pool_address}"
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        resp = await client.get(url)
+                        data = resp.json()
+                    pairs = data.get("pairs") or []
+                    if pairs:
+                        pair = pairs[0]
+                        tvl = pair.get("liquidity", {}).get("usd")
+                        vol = pair.get("volume", {}).get("h24")
+                        pool_tvl_usd = Decimal(str(tvl)) if tvl is not None else None
+                        volume_24h_usd = Decimal(str(vol)) if vol is not None else None
+            except Exception as e:
+                logger.warning("dexscreener_fetch_failed", venue=self.name, error=str(e))
+
             try:
                 result = self.w3.eth.call(
                     {"to": self.pool_contract.address, "data": LIQUIDITY_SELECTOR}
                 )
                 if len(result) >= 32:
-                    pool_liquidity = int.from_bytes(result[:32], "big")
-                    if pool_liquidity > 0:
-                        our_share_pct = (
-                            Decimal(our_liquidity) / Decimal(pool_liquidity) * Decimal(100)
-                        )
+                    pool_total_liquidity = int.from_bytes(result[:32], "big")
             except Exception as e:
                 logger.warning("pool_liquidity_fetch_failed", venue=self.name, error=str(e))
 
-        return pool_tvl_usd, volume_24h_usd, our_share_pct
+            self._metrics_tvl = pool_tvl_usd
+            self._metrics_vol = volume_24h_usd
+            self._metrics_total_liq = pool_total_liquidity
+            self._metrics_cache_time = now
+
+        our_share_pct: Optional[Decimal] = None
+        if our_liquidity > 0 and self._metrics_total_liq > 0:
+            our_share_pct = Decimal(our_liquidity) / Decimal(self._metrics_total_liq) * Decimal(100)
+
+        return self._metrics_tvl, self._metrics_vol, our_share_pct
 
     async def get_position(self) -> Position:
-        """Get current position including LP and wallet balances."""
-        # Get wallet balances
-        token0_bal = self.token0.functions.balanceOf(self.lp_account.address).call()
-        token1_bal = self.token1.functions.balanceOf(self.lp_account.address).call()
-
-        # Normalize to decimals, then assign by symbol (token0/token1 ordering varies by pool)
-        t0_amount = Decimal(token0_bal) / Decimal(10**self.config.token0_decimals)
-        t1_amount = Decimal(token1_bal) / Decimal(10**self.config.token1_decimals)
+        """Get current position including LP and wallet balances (both LP and trade accounts)."""
+        # Get wallet balances — batch all 4 balanceOf calls via Multicall3 (single RPC)
+        multicall = self.w3.eth.contract(
+            address=Web3.to_checksum_address(MULTICALL3_ADDRESS),
+            abi=MULTICALL3_ABI,
+        )
+        mc_results = multicall.functions.aggregate3([
+            (Web3.to_checksum_address(self.config.token0_address), True, _encode_balance_of(self.lp_account.address)),
+            (Web3.to_checksum_address(self.config.token0_address), True, _encode_balance_of(self.trade_account.address)),
+            (Web3.to_checksum_address(self.config.token1_address), True, _encode_balance_of(self.lp_account.address)),
+            (Web3.to_checksum_address(self.config.token1_address), True, _encode_balance_of(self.trade_account.address)),
+        ]).call()
+        t0_amount = Decimal(
+            (_decode_uint256(mc_results[0][1]) if mc_results[0][0] else 0)
+            + (_decode_uint256(mc_results[1][1]) if mc_results[1][0] else 0)
+        ) / Decimal(10**self.config.token0_decimals)
+        t1_amount = Decimal(
+            (_decode_uint256(mc_results[2][1]) if mc_results[2][0] else 0)
+            + (_decode_uint256(mc_results[3][1]) if mc_results[3][0] else 0)
+        ) / Decimal(10**self.config.token1_decimals)
 
         # Fetch pool metrics (always — TVL/volume shown regardless of LP activity)
         lp_position = None

@@ -11,6 +11,8 @@ from eth_account.signers.local import LocalAccount
 from web3 import Web3
 import structlog
 
+from engine.config import settings
+
 logger = structlog.get_logger()
 
 # Enable HD wallet features
@@ -50,7 +52,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         role=AccountRole.AERODROME_LP,
         derivation_path="m/44'/60'/0'/1/0",
         chain_id=8453,  # Base
-        rpc_url="https://mainnet.base.org",
+        rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDC"],
         min_balance_eth=Decimal("0.005"),
         min_balance_tokens={"cNGN": Decimal("10000"), "USDC": Decimal("100")},
@@ -59,7 +61,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         role=AccountRole.AERODROME_TRADE,
         derivation_path="m/44'/60'/0'/1/1",
         chain_id=8453,  # Base
-        rpc_url="https://mainnet.base.org",
+        rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDC"],
         min_balance_eth=Decimal("0.005"),
         min_balance_tokens={"cNGN": Decimal("5000"), "USDC": Decimal("50")},
@@ -67,8 +69,8 @@ DEFAULT_ACCOUNT_CONFIGS = {
     AccountRole.BLOCKRADAR: AccountConfig(
         role=AccountRole.BLOCKRADAR,
         derivation_path="m/44'/60'/0'/2/0",
-        chain_id=8453,  # Base (or could be multi-chain)
-        rpc_url="https://mainnet.base.org",
+        chain_id=8453,  # Base
+        rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDT", "USDC"],
         min_balance_eth=Decimal("0.005"),
         min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("100"), "USDC": Decimal("100")},
@@ -76,8 +78,8 @@ DEFAULT_ACCOUNT_CONFIGS = {
     AccountRole.QUIDAX: AccountConfig(
         role=AccountRole.QUIDAX,
         derivation_path="m/44'/60'/0'/3/0",
-        chain_id=1,  # Mainnet (for self-custody deposit address)
-        rpc_url="https://eth.llamarpc.com",
+        chain_id=1,  # Ethereum mainnet (self-custody deposit address)
+        rpc_url=settings.eth_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.01"),
         min_balance_tokens={"cNGN": Decimal("100000"), "USDT": Decimal("500")},
@@ -86,7 +88,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         role=AccountRole.PANCAKESWAP_LP,
         derivation_path="m/44'/60'/0'/4/0",
         chain_id=56,  # BSC
-        rpc_url="https://bsc-dataseed.binance.org",
+        rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("100")},
@@ -95,7 +97,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         role=AccountRole.PANCAKESWAP_TRADE,
         derivation_path="m/44'/60'/0'/4/1",
         chain_id=56,  # BSC
-        rpc_url="https://bsc-dataseed.binance.org",
+        rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("5000"), "USDT": Decimal("50")},
@@ -155,6 +157,7 @@ class AccountManager:
         self._configs = account_configs or DEFAULT_ACCOUNT_CONFIGS
         self._accounts: dict[AccountRole, LocalAccount] = {}
         self._web3_instances: dict[int, Web3] = {}  # chain_id -> Web3
+        self._decimals_cache: dict[str, int] = {}  # contract_address -> decimals (immutable)
 
         # Derive all accounts
         self._derive_accounts()
@@ -270,7 +273,9 @@ class AccountManager:
                         abi=erc20_abi,
                     )
                     balance_raw = contract.functions.balanceOf(account.address).call()
-                    decimals = contract.functions.decimals().call()
+                    if contract_addr not in self._decimals_cache:
+                        self._decimals_cache[contract_addr] = contract.functions.decimals().call()
+                    decimals = self._decimals_cache[contract_addr]
                     token_balances[symbol] = Decimal(balance_raw) / Decimal(10**decimals)
                 except Exception as e:
                     logger.warning(
