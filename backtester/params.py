@@ -21,13 +21,13 @@ class BacktestParams:
 # Grid axes
 SD_MULTIPLIERS = [0.5 + 0.25 * i for i in range(11)]  # 0.5 – 3.0
 EWMA_LAMBDAS = [0.95, 0.975, 0.99, 0.999]
-DOWNSIDE_SKEWS = [0.5, 0.6, 0.7, 0.8]
+DOWNSIDE_SKEWS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 PREEMPTIVE = [True, False]
 REBALANCE_THRESHOLDS = [1.0, 3.0, 5.0, 10.0, 15.0]
 
 
 def generate_grid(gas_cost_usd: float = 0.05) -> list[BacktestParams]:
-    """11×4×4×2×5 = 1,760 parameter combinations."""
+    """11×4×6×2×5 = 2,640 parameter combinations."""
     combos = product(
         SD_MULTIPLIERS,
         EWMA_LAMBDAS,

@@ -164,7 +164,7 @@ class TestPoolState:
 class TestParams:
     def test_grid_size(self):
         grid = generate_grid()
-        assert len(grid) == 1760
+        assert len(grid) == 2640
 
     def test_grid_gas_override(self):
         grid = generate_grid(gas_cost_usd=0.20)
@@ -218,5 +218,14 @@ class TestMetrics:
         assert abs(metrics.return_skew(rets)) < 0.01
 
     def test_composite_objective(self):
-        val = metrics.composite_objective(2.0, 0.1, 0.8)
-        assert val == pytest.approx(2.0 * 0.9 * 0.8)
+        # net_return=0.05 (5% gain), max_dd=0.1 → 0.05 - 0.1 = -0.05
+        val = metrics.composite_objective(0.05, 0.1)
+        assert val == pytest.approx(0.05 - 0.1)
+
+    def test_composite_negative_return(self):
+        # net_return=-0.2 (20% loss), max_dd=0.3 → -0.2 - 0.3 = -0.5
+        val = metrics.composite_objective(-0.2, 0.3)
+        assert val == pytest.approx(-0.5)
+        # Same loss with less drawdown scores better (less negative)
+        val2 = metrics.composite_objective(-0.2, 0.1)
+        assert val2 > val

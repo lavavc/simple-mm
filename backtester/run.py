@@ -32,18 +32,20 @@ def _run_grid(
         if i % 100 == 0:
             print(f"  {i}/{total}", file=sys.stderr)
         sim = simulate_pool(events, params, pool_config, params.initial_capital_usd)
-        m = _compute_metrics(sim)
+        m = _compute_metrics(sim, params.initial_capital_usd)
         rows.append((params, sim, m))
     return rows
 
 
-def _compute_metrics(sim: SimResult) -> dict:
+def _compute_metrics(sim: SimResult, initial_capital: float = 1000.0) -> dict:
     dr = sim.daily_returns
-    sortino = metrics.sortino_ratio(dr)
     mdd = metrics.max_drawdown(metrics._cumulative(dr)) if dr else 0.0
     tir = metrics.time_in_range_pct(sim)
+    net_return = sim.final_value / initial_capital - 1.0 if initial_capital > 0 else 0.0
     return {
-        "sortino": sortino,
+        "composite": metrics.composite_objective(net_return, mdd),
+        "net_return": net_return,
+        "sortino": metrics.sortino_ratio(dr),
         "calmar": metrics.calmar_ratio(dr),
         "omega": metrics.omega_ratio(dr),
         "max_drawdown": mdd,
@@ -53,7 +55,6 @@ def _compute_metrics(sim: SimResult) -> dict:
         "profit_factor": metrics.profit_factor(dr),
         "cvar_5": metrics.cvar(dr, 0.05),
         "return_skew": metrics.return_skew(dr),
-        "composite": metrics.composite_objective(sortino, mdd, tir),
         "total_fees": sim.total_fees,
         "rebalance_count": sim.rebalance_count,
         "final_value": sim.final_value,

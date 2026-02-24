@@ -106,9 +106,15 @@ def rebalance_cost_ratio(sim: SimResult) -> float:
     return sim.total_rebalance_cost / sim.total_fees
 
 
-def composite_objective(sortino_val: float, max_dd: float, tir: float) -> float:
-    """sortino × (1 - max_dd) × time_in_range."""
-    return sortino_val * (1.0 - max_dd) * tir
+def composite_objective(net_return: float, max_dd: float) -> float:
+    """Risk-adjusted net return: net_return - max_drawdown.
+
+    net_return = final_value / initial_capital - 1.
+    Additive form avoids sign-inversion: higher return and lower drawdown
+    always improve the score, regardless of whether the strategy is
+    profitable or not.
+    """
+    return net_return - max_dd
 
 
 def _cumulative(returns: list[float]) -> list[float]:
