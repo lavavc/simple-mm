@@ -49,7 +49,7 @@ export function GlobalPositionCard({ position }: GlobalPositionCardProps) {
             </div>
             <div>
               <span className="text-muted-foreground block">USD</span>
-              <span>{formatNumber(position.total_usdc + position.total_usdt, 2)}</span>
+              <span>{formatNumber(Number(position.total_usdc) + Number(position.total_usdt), 2)}</span>
             </div>
           </div>
         </div>
