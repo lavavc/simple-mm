@@ -167,6 +167,7 @@ async def get_status():
                 paused=venue.paused,
                 position=position,
                 price=price_response,
+                params=venue.params.model_dump() if hasattr(venue, "params") and venue.params else None,
             )
         )
 

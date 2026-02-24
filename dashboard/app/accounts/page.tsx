@@ -26,6 +26,14 @@ const roleInfo: Record<string, { name: string; description: string }> = {
     name: 'Aerodrome Trade',
     description: 'Arbitrage swap execution account',
   },
+  'pancakeswap-lp': {
+    name: 'PancakeSwap LP',
+    description: 'Liquidity provision account for PancakeSwap DEX',
+  },
+  'pancakeswap-trade': {
+    name: 'PancakeSwap Trade',
+    description: 'Arbitrage swap execution account',
+  },
   blockradar: {
     name: 'Blockradar',
     description: 'B2C wallet system funding account',

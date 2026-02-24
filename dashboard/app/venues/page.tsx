@@ -27,6 +27,13 @@ const venueInfo: Record<
     type: 'CEX',
     description: 'Nigerian crypto exchange. Order ladder management for cNGN/USDT.',
   },
+  pancakeswap: {
+    name: 'PancakeSwap',
+    chain: 'BSC',
+    chainId: 56,
+    type: 'DEX',
+    description: 'Concentrated liquidity AMM on BSC. Primary DEX for cNGN/USDT pair.',
+  },
   blockradar: {
     name: 'Blockradar',
     chain: 'Base',
@@ -151,60 +158,60 @@ function VenueDetail({ venue }: { venue: VenueStatus }) {
         </div>
 
         {/* Parameters section */}
-        <div className="mt-6 pt-4 border-t">
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-sm font-medium">Parameters</h4>
-            <Button variant="ghost" size="sm" disabled>
-              Edit
-            </Button>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            {venue.name === 'aerodrome' && (
-              <>
-                <div>
-                  <span className="text-muted-foreground block">SD Multiplier</span>
-                  <span>1.5</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground block">Max Utilization</span>
-                  <span>80%</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground block">Rebalance Threshold</span>
-                  <span>5%</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground block">Max Slippage</span>
-                  <span>1%</span>
-                </div>
-              </>
-            )}
-            {venue.name === 'quidax' && (
-              <>
-                <div>
-                  <span className="text-muted-foreground block">Ladder Levels</span>
-                  <span>10</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground block">Increment</span>
-                  <span>0.000001</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground block">Liquidity/Level</span>
-                  <span>5%</span>
-                </div>
-              </>
-            )}
-            {venue.name === 'blockradar' && (
-              <>
+        {venue.params && (
+          <div className="mt-6 pt-4 border-t">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium">Parameters</h4>
+              <Button variant="ghost" size="sm" disabled>
+                Edit
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              {(venue.name === 'aerodrome' || venue.name === 'pancakeswap') && (
+                <>
+                  <div>
+                    <span className="text-muted-foreground block">SD Multiplier</span>
+                    <span>{String(venue.params.sd_multiplier)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block">Rebalance Threshold</span>
+                    <span>{String(venue.params.rebalance_threshold_percent)}%</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block">Max Slippage</span>
+                    <span>{String(venue.params.max_slippage_percent)}%</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block">Downside Skew</span>
+                    <span>{String(venue.params.downside_skew)}</span>
+                  </div>
+                </>
+              )}
+              {venue.name === 'quidax' && (
+                <>
+                  <div>
+                    <span className="text-muted-foreground block">Ladder Enabled</span>
+                    <span>{venue.params.ladder_enabled ? 'Yes' : 'No'}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block">Order Size cNGN</span>
+                    <span>{String(venue.params.order_size_cngn)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground block">Order Size USDT</span>
+                    <span>{String(venue.params.order_size_usdt)}</span>
+                  </div>
+                </>
+              )}
+              {venue.name === 'blockradar' && (
                 <div>
                   <span className="text-muted-foreground block">Spread</span>
-                  <span>15 bps</span>
+                  <span>{String(venue.params.spread_bps)} bps</span>
                 </div>
-              </>
-            )}
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );

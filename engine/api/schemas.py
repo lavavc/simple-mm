@@ -61,6 +61,7 @@ class VenueStatus(BaseModel):
     last_action: Optional[int] = None
     position: Optional[Position] = None
     price: Optional[VenuePriceResponse] = None  # Current price at this venue
+    params: Optional[dict] = None  # Live venue parameters (DexParams, CexParams, etc.)
 
 
 class SystemStatus(BaseModel):

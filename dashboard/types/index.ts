@@ -44,6 +44,7 @@ export interface VenueStatus {
   last_action?: number;
   position?: Position;
   price?: VenuePriceResponse;
+  params?: Record<string, unknown>;
 }
 
 export interface SystemStatus {
