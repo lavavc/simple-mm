@@ -4,6 +4,7 @@ import pytest
 from decimal import Decimal
 
 from engine.api.schemas import ArbitrageParams
+from engine.config import settings
 from engine.core.arbitrage.inventory import InventoryTracker, InventoryState
 
 
@@ -242,17 +243,19 @@ class TestPerAccountStable:
         assert tracker._state.per_account_stable["pancakeswap"] == Decimal("2300")
 
     def test_flags_low_when_below_threshold(self, tracker):
-        tracker.initialize_account_stable({"aerodrome": Decimal("1500")})
-        # Drain below min_account_stablecoin_usd ($1000 default)
-        tracker.update_account_inventory("aerodrome", Decimal("600"), is_buy=True)
+        threshold = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
+        tracker.initialize_account_stable({"aerodrome": threshold * 2})
+        # Drain to half the threshold
+        tracker.update_account_inventory("aerodrome", threshold * Decimal("1.5"), is_buy=True)
         assert "aerodrome" in tracker._state.low_inventory_venues
 
     def test_clears_flag_when_above_threshold(self, tracker):
-        tracker.initialize_account_stable({"aerodrome": Decimal("1500")})
-        tracker.update_account_inventory("aerodrome", Decimal("600"), is_buy=True)
+        threshold = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
+        tracker.initialize_account_stable({"aerodrome": threshold * 2})
+        tracker.update_account_inventory("aerodrome", threshold * Decimal("1.5"), is_buy=True)
         assert "aerodrome" in tracker._state.low_inventory_venues
         # Receive stablecoin — back above threshold
-        tracker.update_account_inventory("aerodrome", Decimal("600"), is_buy=False)
+        tracker.update_account_inventory("aerodrome", threshold * Decimal("1.5"), is_buy=False)
         assert "aerodrome" not in tracker._state.low_inventory_venues
 
 

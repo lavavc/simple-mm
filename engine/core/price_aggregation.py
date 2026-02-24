@@ -77,7 +77,7 @@ CNGN_NGN_VENUES: frozenset[str] = frozenset()
 # Chain IDs for DEX venues; None = off-chain / no chain
 VENUE_CHAINS: dict[str, int | None] = {
     "aerodrome": 8453, "pancakeswap": 56,
-    "quidax": None, "bybit": None, "blockradar": None, "fair_value": None,
+    "quidax": None, "bybit": None, "blockradar": None,
 }
 DEX_VENUES: frozenset[str] = frozenset({"aerodrome", "pancakeswap"})
 

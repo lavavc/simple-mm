@@ -126,11 +126,6 @@ class ArbitrageDetector:
                 if opp_reverse:
                     opportunities.append(opp_reverse)
 
-        # --- Strategy 2: Fair-value divergence detection ---
-        if self.blended_calculator is not None:
-            fair_value_opps = await self._detect_fair_value_divergences(normalized)
-            opportunities.extend(fair_value_opps)
-
         # Sort by expected profit descending
         opportunities.sort(key=lambda x: x.expected_profit_usd, reverse=True)
 
@@ -141,60 +136,6 @@ class ArbitrageDetector:
                 best_spread_bps=opportunities[0].gross_spread_bps,
                 best_profit_usd=float(opportunities[0].expected_profit_usd),
             )
-
-        return opportunities
-
-    async def _detect_fair_value_divergences(
-        self,
-        normalized: dict[str, NormalizedPrice],
-    ) -> list[ArbitrageOpportunity]:
-        """Compare each venue against the blended fair value.
-
-        If a venue's price diverges from the TWAP/VWAP by more than
-        min_spread_bps, it signals an opportunity to trade that venue
-        back toward fair value.
-
-        Returns:
-            List of fair-value based opportunities.
-        """
-        assert self.blended_calculator is not None
-
-        try:
-            blended = await self.blended_calculator.get_blended_price()
-        except Exception as e:
-            logger.warning("blended_price_unavailable_for_arb", error=str(e))
-            return []
-
-        fair_value = blended.vwap
-        if fair_value <= 0:
-            return []
-
-        opportunities = []
-
-        for venue, np in normalized.items():
-            venue_price = np.cngn_usd
-            if venue_price <= 0:
-                continue
-
-            # Check if venue is cheap relative to fair value (buy at venue, "sell" at fair value)
-            opp = self._check_opportunity(
-                buy_venue=venue,
-                buy_price=venue_price,
-                sell_venue="fair_value",
-                sell_price=fair_value,
-            )
-            if opp:
-                opportunities.append(opp)
-
-            # Check if venue is expensive relative to fair value
-            opp_reverse = self._check_opportunity(
-                buy_venue="fair_value",
-                buy_price=fair_value,
-                sell_venue=venue,
-                sell_price=venue_price,
-            )
-            if opp_reverse:
-                opportunities.append(opp_reverse)
 
         return opportunities
 
