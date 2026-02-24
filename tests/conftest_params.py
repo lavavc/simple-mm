@@ -6,7 +6,7 @@ directly to avoid breaking when production defaults change.
 """
 
 from decimal import Decimal
-from engine.api.schemas import DexParams, ArbitrageParams
+from engine.api.schemas import DexParams
 
 
 def make_dex_params(**overrides) -> DexParams:
@@ -35,25 +35,3 @@ def make_dex_params(**overrides) -> DexParams:
     return DexParams(**defaults)
 
 
-def make_arbitrage_params(**overrides) -> ArbitrageParams:
-    """
-    Create ArbitrageParams with test-friendly defaults.
-
-    Usage:
-        params = make_arbitrage_params()
-        params = make_arbitrage_params(min_spread_bps=200)
-    """
-    defaults = {
-        "min_spread_bps": 150,
-        "min_net_profit_bps": 50,
-        "dex_swap_fee_bps": 30,
-        "dex_slippage_bps": 20,
-        "cex_taker_fee_bps": 25,
-        "max_single_trade_usd": Decimal("1000"),
-        "max_daily_volume_usd": Decimal("10000"),
-        "max_daily_loss_usd": Decimal("50"),
-        "max_inventory_imbalance_usd": Decimal("5000"),
-        "scan_interval_seconds": 30,
-    }
-    defaults.update(overrides)
-    return ArbitrageParams(**defaults)

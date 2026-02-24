@@ -37,7 +37,7 @@ class TestInitialState:
 
     def test_starts_at_zero(self, tracker):
         state = tracker.state
-        assert state.daily_volume_usd == Decimal("0")
+        assert tracker._rolling_volume_usd() == Decimal("0")
         assert state.daily_profit_usd == Decimal("0")
         assert state.daily_loss_usd == Decimal("0")
         assert state.cngn_imbalance_usd == Decimal("0")
@@ -159,7 +159,7 @@ class TestTradeRecording:
             cngn_price_usd=Decimal("1"),  # 1 cNGN = $1 for easy math
         )
 
-        assert tracker.state.daily_volume_usd == Decimal("500")
+        assert tracker._rolling_volume_usd() == Decimal("500")
         assert tracker.state.daily_profit_usd == Decimal("25")
         assert tracker.state.daily_loss_usd == Decimal("0")
         assert tracker.state.cngn_imbalance_usd == Decimal("100")
@@ -171,7 +171,7 @@ class TestTradeRecording:
             cngn_price_usd=Decimal("1"),  # 1 cNGN = $1 for easy math
         )
 
-        assert tracker.state.daily_volume_usd == Decimal("500")
+        assert tracker._rolling_volume_usd() == Decimal("500")
         assert tracker.state.daily_profit_usd == Decimal("0")
         assert tracker.state.daily_loss_usd == Decimal("10")
         assert tracker.state.cngn_imbalance_usd == Decimal("-50")
@@ -180,7 +180,7 @@ class TestTradeRecording:
         tracker.record_trade_complete("t1", Decimal("200"), Decimal("10"), Decimal("50"))
         tracker.record_trade_complete("t2", Decimal("300"), Decimal("15"), Decimal("75"))
 
-        assert tracker.state.daily_volume_usd == Decimal("500")
+        assert tracker._rolling_volume_usd() == Decimal("500")
         assert tracker.state.daily_profit_usd == Decimal("25")
 
     def test_record_trade_start(self, tracker):
@@ -205,6 +205,7 @@ class TestStatusDict:
             "consecutive_failures",
             "circuit_breaker_active",
             "circuit_breaker_reason",
+            "low_inventory_venues",
         }
         assert set(status.keys()) == expected_keys
 
@@ -213,3 +214,124 @@ class TestStatusDict:
         status = tracker.get_status_dict()
         assert status["daily_volume_usd"] == Decimal("100")
         assert status["daily_profit_usd"] == Decimal("5")
+
+
+# =============================================================================
+# Per-account stablecoin tracking
+# =============================================================================
+
+
+class TestPerAccountStable:
+
+    def test_initialize_seeds_correctly(self, tracker):
+        tracker.initialize_account_stable({
+            "aerodrome": Decimal("5000"),
+            "pancakeswap": Decimal("3000"),
+        })
+        assert tracker._state.per_account_stable["aerodrome"] == Decimal("5000")
+        assert tracker._state.initial_account_stable["aerodrome"] == Decimal("5000")
+
+    def test_buy_reduces_balance(self, tracker):
+        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
+        tracker.update_account_inventory("aerodrome", Decimal("500"), is_buy=True)
+        assert tracker._state.per_account_stable["aerodrome"] == Decimal("4500")
+
+    def test_sell_increases_balance(self, tracker):
+        tracker.initialize_account_stable({"pancakeswap": Decimal("2000")})
+        tracker.update_account_inventory("pancakeswap", Decimal("300"), is_buy=False)
+        assert tracker._state.per_account_stable["pancakeswap"] == Decimal("2300")
+
+    def test_flags_low_when_below_threshold(self, tracker):
+        tracker.initialize_account_stable({"aerodrome": Decimal("1500")})
+        # Drain below min_account_stablecoin_usd ($1000 default)
+        tracker.update_account_inventory("aerodrome", Decimal("600"), is_buy=True)
+        assert "aerodrome" in tracker._state.low_inventory_venues
+
+    def test_clears_flag_when_above_threshold(self, tracker):
+        tracker.initialize_account_stable({"aerodrome": Decimal("1500")})
+        tracker.update_account_inventory("aerodrome", Decimal("600"), is_buy=True)
+        assert "aerodrome" in tracker._state.low_inventory_venues
+        # Receive stablecoin — back above threshold
+        tracker.update_account_inventory("aerodrome", Decimal("600"), is_buy=False)
+        assert "aerodrome" not in tracker._state.low_inventory_venues
+
+
+# =============================================================================
+# get_rebalance_cost_bps
+# =============================================================================
+
+
+class TestGetRebalanceCost:
+
+    def test_full_stock_returns_zero(self, tracker):
+        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
+        assert tracker.get_rebalance_cost_bps("aerodrome") == 0
+
+    def test_half_drained_returns_half_cost(self, tracker):
+        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
+        tracker.update_account_inventory("aerodrome", Decimal("2500"), is_buy=True)
+        cost = tracker.get_rebalance_cost_bps("aerodrome")
+        assert cost == 5  # 50% drained → 5 of 10 bps
+
+    def test_empty_returns_full_cost(self, tracker):
+        tracker.initialize_account_stable({"aerodrome": Decimal("1000")})
+        tracker.update_account_inventory("aerodrome", Decimal("1000"), is_buy=True)
+        cost = tracker.get_rebalance_cost_bps("aerodrome")
+        assert cost == 10
+
+    def test_no_initial_data_returns_fallback(self, tracker):
+        # No seeding — should return cross_chain_rebalance_bps
+        cost = tracker.get_rebalance_cost_bps("aerodrome")
+        assert cost == tracker.params.cross_chain_rebalance_bps
+
+
+# =============================================================================
+# Delta ratio check in can_trade
+# =============================================================================
+
+
+class TestDeltaRatioCheck:
+
+    def test_no_snapshot_check_skipped(self, tracker):
+        # total_portfolio_usd = 0 → check skipped
+        allowed, reason = tracker.can_trade(Decimal("100"))
+        assert allowed is True
+
+    def test_under_max_delta_ratio_allowed(self, tracker):
+        tracker.update_portfolio_snapshot(Decimal("500"), Decimal("1000"))  # 50% < 60%
+        allowed, reason = tracker.can_trade(Decimal("100"))
+        assert allowed is True
+
+    def test_over_max_delta_ratio_blocked(self, tracker):
+        tracker.update_portfolio_snapshot(Decimal("700"), Decimal("1000"))  # 70% > 60%
+        allowed, reason = tracker.can_trade(Decimal("100"))
+        assert allowed is False
+        assert "max delta ratio" in reason.lower()
+
+    def test_exactly_at_max_delta_ratio_blocked(self, tracker):
+        tracker.update_portfolio_snapshot(Decimal("600"), Decimal("1000"))  # exactly 60%
+        allowed, reason = tracker.can_trade(Decimal("100"))
+        assert allowed is False
+
+
+# =============================================================================
+# can_trade with venue flags
+# =============================================================================
+
+
+class TestCanTradeWithVenueFlags:
+
+    def test_buy_venue_flagged_is_blocked(self, tracker):
+        tracker._state.low_inventory_venues.add("aerodrome")
+        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="aerodrome")
+        assert allowed is False
+        assert "aerodrome" in reason.lower()
+
+    def test_sell_venue_flagged_is_allowed(self, tracker):
+        tracker._state.low_inventory_venues.add("pancakeswap")
+        allowed, reason = tracker.can_trade(Decimal("100"), sell_venue="pancakeswap")
+        assert allowed is True  # sell-side flag doesn't block
+
+    def test_no_flag_is_allowed(self, tracker):
+        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="aerodrome")
+        assert allowed is True

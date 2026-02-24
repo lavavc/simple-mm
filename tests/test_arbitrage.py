@@ -5,7 +5,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import ArbitrageParams, ArbitrageOpportunity
-from engine.core.arbitrage.detector import ArbitrageDetector
+from engine.core.arbitrage.detector import ArbitrageDetector, _optimal_cngn_amount
 from engine.core.price_aggregation import (
     PriceNormalizer,
     NormalizedPrice,
@@ -34,7 +34,6 @@ def relaxed_params():
         min_spread_bps=50,
         min_net_profit_bps=10,
         dex_swap_fee_bps=30,
-        dex_slippage_bps=10,
         cex_taker_fee_bps=15,
         max_single_trade_usd=Decimal("500"),
     )
@@ -58,13 +57,13 @@ class TestFeeEstimation:
     """Test fee calculation for venue pairs."""
 
     def test_dex_to_dex_fees(self, default_params):
-        """Both sides DEX: 2 × (swap_fee + slippage)."""
+        """Cross-chain DEX pair: 2 × swap_fee + rebalance cost fallback."""
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=default_params,
         )
         fees = detector._estimate_fees("aerodrome", "pancakeswap")
-        expected = 2 * (default_params.dex_swap_fee_bps + default_params.dex_slippage_bps)
+        expected = 2 * default_params.dex_swap_fee_bps + default_params.cross_chain_rebalance_bps
         assert fees == expected
 
     def test_dex_to_cex_fees(self, default_params):
@@ -74,10 +73,7 @@ class TestFeeEstimation:
             params=default_params,
         )
         fees = detector._estimate_fees("aerodrome", "bybit")
-        expected = (
-            default_params.dex_swap_fee_bps + default_params.dex_slippage_bps
-            + default_params.cex_taker_fee_bps
-        )
+        expected = default_params.dex_swap_fee_bps + default_params.cex_taker_fee_bps
         assert fees == expected
 
     def test_fair_value_has_no_fees(self, default_params):
@@ -87,9 +83,7 @@ class TestFeeEstimation:
             params=default_params,
         )
         fees = detector._estimate_fees("fair_value", "aerodrome")
-        # Only the DEX side
-        expected = default_params.dex_swap_fee_bps + default_params.dex_slippage_bps
-        assert fees == expected
+        assert fees == default_params.dex_swap_fee_bps
 
 
 # =============================================================================
@@ -163,25 +157,14 @@ class TestCheckOpportunity:
 class TestRecommendedSize:
     """Test trade size calculation."""
 
-    def test_large_spread_full_size(self, relaxed_params):
-        """Large spread buffer should use full max size."""
+    def test_no_reserves_returns_max(self, relaxed_params):
+        """Without reserve data, returns max_single_trade_usd."""
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=relaxed_params,
         )
-        # 200 bps net, well above min of 10 → full size
-        size = detector._calculate_recommended_size(200)
+        size = detector._calculate_recommended_size(Decimal("0.0007"), None, "", "")
         assert size == relaxed_params.max_single_trade_usd
-
-    def test_small_spread_reduced_size(self, relaxed_params):
-        """Spread close to minimum should reduce size."""
-        detector = ArbitrageDetector(
-            price_aggregator=MagicMock(),
-            params=relaxed_params,
-        )
-        # 30 bps net, buffer of 20 (< 50) → 50% of max
-        size = detector._calculate_recommended_size(30)
-        assert size == relaxed_params.max_single_trade_usd * Decimal("0.5")
 
 
 # =============================================================================
@@ -261,6 +244,7 @@ class TestDetectOpportunities:
 
     @pytest.mark.asyncio
     async def test_results_sorted_by_profit(self, relaxed_params):
+
         """Opportunities should be sorted by expected_profit_usd descending."""
         mock_agg = AsyncMock()
         mock_agg.fetch_all.return_value = {
@@ -287,3 +271,151 @@ class TestDetectOpportunities:
         if len(opps) >= 2:
             for i in range(len(opps) - 1):
                 assert opps[i].expected_profit_usd >= opps[i + 1].expected_profit_usd
+
+
+# =============================================================================
+# Cross-chain fee estimation
+# =============================================================================
+
+
+class TestCrossChainFeeEstimation:
+    """Cross-chain DEX pairs should add inventory-weighted rebalancing cost."""
+
+    def test_cross_chain_dex_pair_adds_rebalance_cost(self, default_params):
+        """aerodrome (Base) ↔ pancakeswap (BSC) adds cross_chain_rebalance_bps."""
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=default_params,
+        )
+        fees = detector._estimate_fees("aerodrome", "pancakeswap")
+        assert fees == 2 * default_params.dex_swap_fee_bps + default_params.cross_chain_rebalance_bps
+
+    def test_same_chain_dex_pair_no_extra_cost(self, default_params):
+        """aerodrome ↔ aerodrome (same chain) should not add rebalance cost."""
+        from unittest.mock import patch
+        from engine.core.price_aggregation import VENUE_CHAINS
+        # Temporarily make both venues share the same chain_id
+        with patch.dict(VENUE_CHAINS, {"aerodrome": 8453, "pancakeswap": 8453}):
+            detector = ArbitrageDetector(
+                price_aggregator=MagicMock(),
+                params=default_params,
+            )
+            fees = detector._estimate_fees("aerodrome", "pancakeswap")
+        assert fees == 2 * default_params.dex_swap_fee_bps
+
+    def test_fair_value_pair_no_rebalance_cost(self, default_params):
+        """fair_value is not a DEX venue so no rebalance cost is added."""
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=default_params,
+        )
+        fees = detector._estimate_fees("fair_value", "aerodrome")
+        assert fees == default_params.dex_swap_fee_bps
+
+    def test_cost_scales_with_inventory_level(self, default_params):
+        """Rebalance cost should scale with inventory drain via inventory_tracker."""
+        from engine.core.arbitrage.inventory import InventoryTracker
+        tracker = InventoryTracker(default_params)
+        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
+        tracker.update_account_inventory("aerodrome", Decimal("2500"), is_buy=True)
+
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=default_params,
+            inventory_tracker=tracker,
+        )
+        fees = detector._estimate_fees("aerodrome", "pancakeswap")
+        # 50% drained → 5 bps rebalance cost
+        assert fees == 2 * default_params.dex_swap_fee_bps + 5
+
+# =============================================================================
+# Optimal sizing
+# =============================================================================
+
+
+class TestOptimalSizing:
+    """Test pool-depth-aware trade sizing."""
+
+    def test_equal_price_pools_gives_zero(self):
+        """Identical pools → no profitable trade."""
+        delta = _optimal_cngn_amount(
+            Decimal("1000000"), Decimal("700"),
+            Decimal("1000000"), Decimal("700"),
+        )
+        assert delta == Decimal("0")
+
+    def test_divergent_pools_gives_correct_delta(self):
+        """Known reserves → verify formula output."""
+        # Pool A: buy side (cheap cNGN) — more cNGN relative to stable
+        # Pool B: sell side (expensive cNGN) — less cNGN relative to stable
+        cngn_A, stable_A = Decimal("2000000"), Decimal("1000")
+        cngn_B, stable_B = Decimal("1000000"), Decimal("1000")
+        delta = _optimal_cngn_amount(cngn_A, stable_A, cngn_B, stable_B)
+        # Manual: k_A=2e9, k_B=1e9, sqrt_kA=~44721, sqrt_kB=~31623
+        # delta = (31623*2000000 - 44721*1000000) / (44721 + 31623) ≈ 247_000
+        assert delta > 0
+        expected = (
+            (Decimal("1000000000").sqrt() * cngn_A - Decimal("2000000000").sqrt() * cngn_B)
+            / (Decimal("2000000000").sqrt() + Decimal("1000000000").sqrt())
+        )
+        assert abs(delta - expected) < Decimal("1")
+
+    def test_negative_clamped_to_zero(self):
+        """Buy pool more expensive than sell pool → 0."""
+        # Pool A: expensive cNGN (low cNGN, high stable)
+        # Pool B: cheap cNGN (high cNGN, low stable)
+        delta = _optimal_cngn_amount(
+            Decimal("500000"), Decimal("1000"),
+            Decimal("2000000"), Decimal("700"),
+        )
+        assert delta == Decimal("0")
+
+    def test_formula_runs_uncapped(self, relaxed_params):
+        """With deep divergent pools the formula returns a size larger than max_single_trade_usd."""
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=relaxed_params,
+        )
+        reserves = {
+            "aerodrome": (Decimal("1e12"), Decimal("1e9")),
+            "pancakeswap": (Decimal("1e9"), Decimal("1e12")),
+        }
+        size = detector._calculate_recommended_size(
+            Decimal("0.0007"), reserves, "aerodrome", "pancakeswap",
+        )
+        assert size > relaxed_params.max_single_trade_usd
+
+    def test_falls_back_when_no_reserves(self, relaxed_params):
+        """No reserve data → returns max_single_trade_usd."""
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=relaxed_params,
+        )
+        size = detector._calculate_recommended_size(Decimal("0.0007"), None, "", "")
+        assert size == relaxed_params.max_single_trade_usd
+
+    def test_falls_back_when_one_side_missing(self, relaxed_params):
+        """Only one DEX has reserves → returns max_single_trade_usd."""
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=relaxed_params,
+        )
+        reserves = {"aerodrome": (Decimal("1000000"), Decimal("700"))}
+        size = detector._calculate_recommended_size(
+            Decimal("0.0007"), reserves, "aerodrome", "pancakeswap",
+        )
+        assert size == relaxed_params.max_single_trade_usd
+
+    def test_full_stock_adds_zero_rebalance(self, default_params):
+        """When buy-side is fully stocked, rebalance cost should be 0."""
+        from engine.core.arbitrage.inventory import InventoryTracker
+        tracker = InventoryTracker(default_params)
+        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
+
+        detector = ArbitrageDetector(
+            price_aggregator=MagicMock(),
+            params=default_params,
+            inventory_tracker=tracker,
+        )
+        fees = detector._estimate_fees("aerodrome", "pancakeswap")
+        assert fees == 2 * default_params.dex_swap_fee_bps

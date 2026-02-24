@@ -4,6 +4,8 @@ from pydantic import BaseModel
 from typing import Optional, Literal
 from decimal import Decimal
 
+from engine.config import settings
+
 
 class PriceQuote(BaseModel):
     """Price quote from aggregated sources."""
@@ -164,28 +166,36 @@ class BlendedPriceResponse(BaseModel):
 
 
 class ArbitrageParams(BaseModel):
-    """Parameters for arbitrage detection and execution."""
+    """Parameters for arbitrage detection and execution.
+
+    All defaults come from engine.config.Settings so there is one source of truth.
+    Override via environment variables or the PUT /api/arbitrage/params endpoint.
+    """
 
     # Detection thresholds
-    min_spread_bps: int = 150  # 1.5% minimum gross spread to consider
-    min_net_profit_bps: int = 50  # 0.5% minimum profit after fees
+    min_spread_bps: int = settings.arbitrage_min_spread_bps
+    min_net_profit_bps: int = settings.arbitrage_min_net_profit_bps
 
     # Fee estimates (in basis points)
-    dex_swap_fee_bps: int = 30  # DEX swap fee (e.g., 0.3% for typical pools)
-    dex_slippage_bps: int = 20  # Expected slippage on DEX
-    cex_taker_fee_bps: int = 25  # CEX taker fee
+    dex_swap_fee_bps: int = settings.arbitrage_dex_swap_fee_bps
+    cex_taker_fee_bps: int = settings.arbitrage_cex_taker_fee_bps
 
     # Position limits
-    max_single_trade_usd: Decimal = Decimal("1000")  # Max per opportunity
-    max_daily_volume_usd: Decimal = Decimal("10000")  # Daily volume cap
-    max_inventory_imbalance_usd: Decimal = Decimal("5000")  # Max one-sided exposure
+    max_single_trade_usd: Decimal = Decimal(str(settings.arbitrage_max_single_trade_usd))
+    max_daily_volume_usd: Decimal = Decimal(str(settings.arbitrage_max_daily_volume_usd))
+    max_inventory_imbalance_usd: Decimal = Decimal(str(settings.arbitrage_max_inventory_imbalance_usd))
 
     # Timing
-    scan_interval_seconds: int = 30
+    scan_interval_seconds: int = settings.arbitrage_scan_interval
 
     # Circuit breakers
-    max_consecutive_failures: int = 3  # Stop after N failures in a row
-    max_daily_loss_usd: Decimal = Decimal("500")  # Stop if daily loss exceeds
+    max_consecutive_failures: int = settings.arbitrage_max_consecutive_failures
+    max_daily_loss_usd: Decimal = Decimal(str(settings.arbitrage_max_daily_loss_usd))
+
+    # Cross-chain inventory
+    cross_chain_rebalance_bps: int = settings.arbitrage_cross_chain_rebalance_bps
+    max_delta_ratio: Decimal = Decimal(str(settings.arbitrage_max_delta_ratio))
+    min_account_stablecoin_usd: Decimal = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
 
 
 class ArbitrageOpportunity(BaseModel):
@@ -235,6 +245,7 @@ class ArbitrageStatus(BaseModel):
     circuit_breaker_active: bool
     consecutive_failures: int
     params: ArbitrageParams
+    low_inventory_venues: list[str] = []
 
 
 # === Account Schemas ===

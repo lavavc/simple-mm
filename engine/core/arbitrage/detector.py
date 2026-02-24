@@ -9,6 +9,7 @@ import structlog
 
 from engine.api.schemas import ArbitrageParams, ArbitrageOpportunity
 from engine.core.venue_prices import VenuePriceAggregator, VenuePrice
+from engine.core.arbitrage.inventory import InventoryTracker
 from engine.core.price_aggregation import (
     PriceNormalizer,
     BlendedPriceCalculator,
@@ -16,9 +17,25 @@ from engine.core.price_aggregation import (
     USDT_NGN_VENUES,
     CNGN_USD_VENUES,
     CNGN_NGN_VENUES,
+    VENUE_CHAINS,
+    DEX_VENUES,
 )
 
 logger = structlog.get_logger()
+
+
+def _optimal_cngn_amount(
+    cngn_A: Decimal, stable_A: Decimal,
+    cngn_B: Decimal, stable_B: Decimal,
+) -> Decimal:
+    """Closed-form profit-maximising cNGN trade size between two constant-product pools."""
+    k_A = cngn_A * stable_A
+    k_B = cngn_B * stable_B
+    if k_A <= 0 or k_B <= 0:
+        return Decimal("0")
+    sqrt_kA = k_A.sqrt()
+    sqrt_kB = k_B.sqrt()
+    return max(Decimal("0"), (sqrt_kB * cngn_A - sqrt_kA * cngn_B) / (sqrt_kA + sqrt_kB))
 
 
 class ArbitrageDetector:
@@ -38,6 +55,8 @@ class ArbitrageDetector:
         params: ArbitrageParams,
         normalizer: PriceNormalizer | None = None,
         blended_calculator: BlendedPriceCalculator | None = None,
+        inventory_tracker: InventoryTracker | None = None,
+        dex_venues: dict | None = None,
     ):
         """
         Initialize arbitrage detector.
@@ -48,11 +67,14 @@ class ArbitrageDetector:
             normalizer: Shared price normalizer (creates default if None)
             blended_calculator: Optional blended price calculator for
                 fair-value based detection
+            dex_venues: Dict of DEX venue name to adapter (for reserve fetching)
         """
         self.price_aggregator = price_aggregator
         self.params = params
         self.normalizer = normalizer or PriceNormalizer()
         self.blended_calculator = blended_calculator
+        self.inventory_tracker = inventory_tracker
+        self.dex_venues = dex_venues or {}
 
     async def detect_opportunities(self) -> list[ArbitrageOpportunity]:
         """
@@ -71,6 +93,12 @@ class ArbitrageDetector:
             logger.debug("insufficient_venues_for_arbitrage", count=len(normalized))
             return []
 
+        reserves: dict[str, tuple[Decimal, Decimal]] = {}
+        for name, venue in self.dex_venues.items():
+            r = venue.get_virtual_reserves()
+            if r:
+                reserves[name] = r
+
         opportunities = []
 
         # --- Strategy 1: Pairwise venue comparison ---
@@ -83,6 +111,7 @@ class ArbitrageDetector:
                     normalized[buy_venue].cngn_usd,
                     sell_venue,
                     normalized[sell_venue].cngn_usd,
+                    reserves=reserves,
                 )
                 if opp:
                     opportunities.append(opp)
@@ -92,6 +121,7 @@ class ArbitrageDetector:
                     normalized[sell_venue].cngn_usd,
                     buy_venue,
                     normalized[buy_venue].cngn_usd,
+                    reserves=reserves,
                 )
                 if opp_reverse:
                     opportunities.append(opp_reverse)
@@ -174,6 +204,7 @@ class ArbitrageDetector:
         buy_price: Decimal,
         sell_venue: str,
         sell_price: Decimal,
+        reserves: dict | None = None,
     ) -> Optional[ArbitrageOpportunity]:
         """
         Check if buying at buy_price and selling at sell_price is profitable.
@@ -204,7 +235,6 @@ class ArbitrageDetector:
         if gross_spread_bps < self.params.min_spread_bps:
             return None
 
-        # Estimate total fees
         total_fees_bps = self._estimate_fees(buy_venue, sell_venue)
 
         net_spread_bps = gross_spread_bps - total_fees_bps
@@ -220,8 +250,9 @@ class ArbitrageDetector:
             )
             return None
 
-        # Calculate recommended size and expected profit
-        recommended_size = self._calculate_recommended_size(net_spread_bps)
+        recommended_size = self._calculate_recommended_size(
+            buy_price, reserves, buy_venue, sell_venue,
+        )
         expected_profit = recommended_size * Decimal(net_spread_bps) / Decimal("10000")
 
         return ArbitrageOpportunity(
@@ -238,58 +269,62 @@ class ArbitrageDetector:
             status="detected",
         )
 
+    def _swap_fee_bps(self, venue: str) -> int:
+        """Per-venue swap fee: reads from on-chain adapter if available, else global fallback."""
+        if venue in self.dex_venues:
+            return self.dex_venues[venue].get_fee_bps(self.params.dex_swap_fee_bps)
+        return self.params.dex_swap_fee_bps
+
     def _estimate_fees(self, buy_venue: str, sell_venue: str) -> int:
-        """
-        Estimate total fees for a buy/sell pair in basis points.
+        """Estimate total fees for a buy/sell pair in basis points.
 
-        Args:
-            buy_venue: Venue to buy from
-            sell_venue: Venue to sell to
-
-        Returns:
-            Estimated total fees in basis points
+        DEX swap fees are read from the pool contract via get_fee_bps().
+        Price impact is not included here — it is captured in trade sizing
+        via _optimal_cngn_amount when both venues have on-chain reserve data.
         """
         total_bps = 0
 
-        # Buy side fees
         if buy_venue in CNGN_USD_VENUES:  # DEX
-            total_bps += self.params.dex_swap_fee_bps
-            total_bps += self.params.dex_slippage_bps
+            total_bps += self._swap_fee_bps(buy_venue)
         elif buy_venue in USDT_NGN_VENUES:  # CEX/P2P
             total_bps += self.params.cex_taker_fee_bps
         # "fair_value" has no execution fees (it's a reference)
 
-        # Sell side fees
         if sell_venue in CNGN_USD_VENUES:  # DEX
-            total_bps += self.params.dex_swap_fee_bps
-            total_bps += self.params.dex_slippage_bps
+            total_bps += self._swap_fee_bps(sell_venue)
         elif sell_venue in USDT_NGN_VENUES:  # CEX/P2P
             total_bps += self.params.cex_taker_fee_bps
 
+        # Cross-chain DEX pair: add inventory-weighted rebalancing cost
+        if (
+            buy_venue in DEX_VENUES
+            and sell_venue in DEX_VENUES
+            and VENUE_CHAINS.get(buy_venue) != VENUE_CHAINS.get(sell_venue)
+        ):
+            if self.inventory_tracker:
+                total_bps += self.inventory_tracker.get_rebalance_cost_bps(buy_venue)
+            else:
+                total_bps += self.params.cross_chain_rebalance_bps
+
         return total_bps
 
-    def _calculate_recommended_size(self, net_spread_bps: int) -> Decimal:
+    def _calculate_recommended_size(
+        self,
+        buy_price: Decimal,
+        reserves: dict | None,
+        buy_venue: str,
+        sell_venue: str,
+    ) -> Decimal:
+        """Optimal USD trade size from pool reserves.
+
+        Returns the profit-maximising size derived from both pools' depth.
+        Falls back to max_single_trade_usd when reserve data is unavailable
+        (e.g. DEX+CEX pairs where only one side is a constant-product pool).
         """
-        Calculate recommended trade size in USD.
-
-        Considers:
-        - Max single trade limit
-        - Higher spread = can trade larger size
-
-        Args:
-            net_spread_bps: Net spread after fees
-
-        Returns:
-            Recommended trade size in USD
-        """
-        # Start with max allowed
-        size = self.params.max_single_trade_usd
-
-        # Scale down if spread is close to minimum
-        spread_buffer = net_spread_bps - self.params.min_net_profit_bps
-        if spread_buffer < 50:  # Less than 0.5% buffer
-            size = size * Decimal("0.5")
-        elif spread_buffer < 100:  # Less than 1% buffer
-            size = size * Decimal("0.75")
-
-        return size
+        if reserves and buy_venue in reserves and sell_venue in reserves:
+            cngn_A, stable_A = reserves[buy_venue]
+            cngn_B, stable_B = reserves[sell_venue]
+            delta = _optimal_cngn_amount(cngn_A, stable_A, cngn_B, stable_B)
+            if delta > 0:
+                return delta * buy_price
+        return self.params.max_single_trade_usd

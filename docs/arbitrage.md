@@ -32,7 +32,7 @@ Scans all venue pairs for price divergences:
 1. Fetches normalized prices from all venues
 2. Compares each pair (both directions)
 3. Calculates gross spread in basis points
-4. Estimates fees (swap fees, slippage, taker fees)
+4. Estimates fees (swap fees read from chain, taker fees)
 5. Filters opportunities meeting `min_net_profit_bps` threshold
 6. Returns sorted by expected profit
 
@@ -40,11 +40,10 @@ Scans all venue pairs for price divergences:
 
 Manages risk through limits and circuit breakers:
 
-- **Daily volume cap** - Stops trading after reaching limit
+- **Rolling 24h volume cap** - Stops trading after reaching limit (no midnight reset burst)
 - **Inventory imbalance** - Prevents one-sided exposure
-- **Daily loss limit** - Circuit breaker on losses
+- **Daily loss limit** - Circuit breaker on losses (resets at midnight UTC)
 - **Consecutive failures** - Circuit breaker after N failures
-- Resets daily at midnight UTC
 
 ### ArbitrageExecutor
 
@@ -63,7 +62,7 @@ Buy leg always executes first; sell leg uses the exact cNGN amount received. Eit
 # Enable/disable arbitrage scanning
 ARBITRAGE_ENABLED=true
 
-# Phase 1: detection only (no trades)
+# Enable/disable live trading
 ARBITRAGE_EXECUTION_ENABLED=false
 
 # Scan interval in seconds
@@ -72,7 +71,7 @@ ARBITRAGE_SCAN_INTERVAL=30
 # Thresholds
 ARBITRAGE_MIN_SPREAD_BPS=150           # 1.5% minimum gross spread
 ARBITRAGE_MIN_NET_PROFIT_BPS=50        # 0.5% minimum after fees
-ARBITRAGE_MAX_SINGLE_TRADE_USD=1000    # Max per opportunity
+ARBITRAGE_MAX_SINGLE_TRADE_USD=100     # Fallback when pool reserves unavailable
 ARBITRAGE_MAX_DAILY_VOLUME_USD=10000   # Daily volume cap
 ARBITRAGE_MAX_INVENTORY_IMBALANCE_USD=5000  # Max one-sided exposure
 ```
@@ -88,12 +87,11 @@ class ArbitrageParams(BaseModel):
     min_net_profit_bps: int = 50       # 0.5% minimum after fees
 
     # Fee estimates (basis points)
-    dex_swap_fee_bps: int = 30         # DEX swap fee
-    dex_slippage_bps: int = 20         # Expected slippage
+    dex_swap_fee_bps: int = 30         # Fallback if on-chain fee() call fails
     cex_taker_fee_bps: int = 25        # CEX taker fee
 
     # Position limits
-    max_single_trade_usd: Decimal = Decimal("1000")
+    max_single_trade_usd: Decimal = Decimal("100")   # Fallback when pool reserves unavailable
     max_daily_volume_usd: Decimal = Decimal("10000")
     max_inventory_imbalance_usd: Decimal = Decimal("5000")
 
@@ -196,7 +194,7 @@ Opportunities are broadcast to connected clients:
     "gross_spread_bps": 175,
     "net_spread_bps": 85,
     "expected_profit_usd": 8.50,
-    "recommended_size_usd": 1000,
+    "recommended_size_usd": 100,
     "timestamp": 1707235200000
   }
 }
@@ -213,27 +211,58 @@ Quidax is used for two distinct and independent purposes:
 
 These never interfere: the order ladder runs on its own schedule, and arb market orders hit the best available price immediately regardless of what ladder orders are resting in the book.
 
+## Cross-Chain DEX Arbitrage
+
+As the cNGN issuer with permanent inventory on both Base (Aerodrome) and BSC (PancakeSwap), the two legs of a DEX↔DEX trade are **independent** — no bridge required:
+
+- **Buy leg (Base):** Spend USDC, receive cNGN on Aerodrome
+- **Sell leg (BSC):** Spend cNGN, receive USDT on PancakeSwap
+
+Global cNGN delta = zero (bought on one chain, sold on the other). Profit is the USD spread: `(sell_price − buy_price) × amount_cNGN`.
+
+### Fee model
+
+| Component | Cost |
+|-----------|------|
+| DEX swap fees (both legs) | varies — read from pool on startup (PancakeSwap ≈ 100 bps, Aerodrome 5–30 bps) |
+| Inventory-weighted rebalance cost | 0–10 bps |
+
+The rebalance cost scales linearly from 0 bps (fully stocked) to `cross_chain_rebalance_bps` (10 bps, empty). With PancakeSwap's 100 bps pool fee, you need well over 150 bps gross spread to profit — see [when-to-arb.md](when-to-arb.md).
+
+This is a fair proxy when trying to account for the cost to bridge per unit of inventory. There is a fixed gas cost for bridging, and we ideally want to do it in big batches, infrequently. The fee model here imposes no penalty when inventory is balanced, but scales the bps spread we need to be proitable as our inventory gets to levels where a rebalance and bridge event will be required.
+
+### Per-account stablecoin tracking
+
+`InventoryTracker` estimates stablecoin balances per venue after each trade leg. When a buy-side venue balance falls below `min_account_stablecoin_usd` ($1,000), that direction is automatically paused and surfaced in `low_inventory_venues` on the status response.
+
 ## Fee Estimation
 
 The detector estimates total fees for each venue pair:
 
 | Venue Type | Fee Components |
 |------------|---------------|
-| DEX (buy or sell) | `dex_swap_fee_bps` + `dex_slippage_bps` = 50 bps |
+| DEX (buy or sell) | Pool swap fee read from chain at startup (`dex_swap_fee_bps` = 30 bps fallback) |
 | CEX (buy or sell) | `cex_taker_fee_bps` = 25 bps |
+| Cross-chain DEX↔DEX | +0–10 bps rebalance cost (inventory-weighted) |
 | Reference | 0 (benchmark only, not tradeable) |
 
-**Example**: DEX → CEX arbitrage = 50 + 25 = 75 bps total fees
+Slippage is not modelled separately — it is captured in trade sizing via the constant-product optimal formula. See [when-to-arb.md](when-to-arb.md).
 
-An opportunity with 150 bps gross spread would have ~75 bps net profit.
+**Example**: Aerodrome (5 bps pool) → Quidax = 5 + 25 = 30 bps total fees. An opportunity with 150 bps gross spread would yield ~120 bps net.
 
-## Validation Checklist
+## The Numeraire
 
-Before enabling execution (Phase 2+):
+What should the numeraire be in this system?
 
-- [ ] Detection running for 1-2 weeks without issues
-- [ ] Opportunities correlate with manual spot checks
-- [ ] Fee estimates align with actual on-chain/CEX costs
-- [ ] False positive rate acceptable
-- [ ] Spread distribution understood (typical size, frequency)
-- [ ] Circuit breakers tested
+Let's consider a DEX <> DEX arb trade again:
+
+- Leg 1 (Base): Spend USDC, receive cNGN → stablecoin down on Base, cNGN up on Base
+- Leg 2 (BSC): Spend cNGN, receive USDT → cNGN down on BSC, stablecoin up on BSC
+
+Global cNGN delta = zero (bought Y on one chain, sold Y on another). We've just converted USDC on Base into USDT on BSC at a favourable rate. The profit is naturally USD-denominated:
+
+So the numeraire in our system is USD because it matches what we actually earn — a stablecoin surplus.
+
+However, as the issuer, there's a deeper layer: cNGN we buy back is a liability we've extinguished at a discount. **It is worth considering how to account for this long-term**.
+
+Since global cNGN delta is zero per trade, this cross-DEX arb type never changes the cNGN/stable ratio globally. It only changes per-chain distribution. The 60% limit therefore only. The real risk to track is per-chain stablecoin exhaustion and the cross-chain rebalancing cost when BSC is full of USDT but Base is short of USDC.

@@ -194,16 +194,7 @@ async def lifespan(app: FastAPI):
 
     # Arbitrage engine
     if settings.arbitrage_enabled:
-        from decimal import Decimal
-
-        arb_params = ArbitrageParams(
-            min_spread_bps=settings.arbitrage_min_spread_bps,
-            min_net_profit_bps=settings.arbitrage_min_net_profit_bps,
-            max_single_trade_usd=Decimal(str(settings.arbitrage_max_single_trade_usd)),
-            max_daily_volume_usd=Decimal(str(settings.arbitrage_max_daily_volume_usd)),
-            max_inventory_imbalance_usd=Decimal(str(settings.arbitrage_max_inventory_imbalance_usd)),
-            scan_interval_seconds=settings.arbitrage_scan_interval,
-        )
+        arb_params = ArbitrageParams()
 
         arbitrage_engine = ArbitrageEngine(
             price_aggregator=price_aggregator,
@@ -220,15 +211,7 @@ async def lifespan(app: FastAPI):
         )
 
     # Scheduler
-    scheduler_config = SchedulerConfig(
-        price_update_interval=settings.price_update_interval,
-        position_sync_interval=settings.position_sync_interval,
-        dex_check_interval=settings.dex_check_interval,
-        cex_sync_interval=settings.cex_sync_interval,
-        rebalance_check_interval=settings.rebalance_check_interval,
-        arbitrage_scan_interval=settings.arbitrage_scan_interval,
-        balance_check_interval=settings.balance_check_interval,
-    )
+    scheduler_config = SchedulerConfig()
 
     scheduler = TradingScheduler(
         price_aggregator=price_aggregator,

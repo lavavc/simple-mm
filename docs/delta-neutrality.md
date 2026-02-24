@@ -2,25 +2,6 @@
 
 This document describes how the CNGN trading system defines and maintains delta neutrality across all trading venues.
 
----
-
-## Table of Contents
-
-1. [Definition](#1-definition)
-2. [How Delta Is Calculated](#2-how-delta-is-calculated)
-3. [Configuration Parameters](#3-configuration-parameters)
-4. [Mechanisms for Maintaining Delta Neutrality](#4-mechanisms-for-maintaining-delta-neutrality)
-5. [Current Limitations](#5-current-limitations)
-6. [Recommendations](#6-recommendations)
-7. [USD vs NGN: Calculation Basis and Tradeoffs](#7-usd-vs-ngn-calculation-basis-and-tradeoffs)
-8. [Alternative Delta Strategies](#8-alternative-delta-strategies)
-9. [Liquidity, Solvency, and Profitability](#9-liquidity-solvency-and-profitability)
-10. [Data Flow Diagram](#10-data-flow-diagram)
-11. [Related Files](#11-related-files)
-12. [Testing Considerations](#12-testing-considerations)
-
----
-
 ## 1. Definition
 
 **Delta neutrality** in this system means maintaining a target balance between cNGN token holdings and stablecoin (USDC/USDT) holdings by USD value.
@@ -31,8 +12,6 @@ target_delta = 0.5 (50% cNGN, 50% stablecoins)
 ```
 
 A delta ratio of 0.5 means the portfolio holds equal USD-value in cNGN and stablecoins. This minimizes directional exposure to cNGN price movements while capturing trading profits from spreads and arbitrage.
-
----
 
 ## 2. How Delta Is Calculated
 
@@ -65,11 +44,11 @@ The arbitrage engine tracks its own inventory imbalance separately:
 @dataclass
 class InventoryState:
     cngn_imbalance_usd: Decimal = Decimal("0")  # Positive = net long cNGN from arb trades
-    daily_volume_usd: Decimal = Decimal("0")
+    trade_log: list = field(default_factory=list)  # (timestamp_ms, size_usd) — rolling 24h window
     daily_profit_usd: Decimal = Decimal("0")
 ```
 
-This tracks the net directional exposure from arbitrage trades specifically, independent of the overall portfolio.
+This tracks the net directional exposure from arbitrage trades specifically, independent of the overall portfolio. Volume is tracked as a rolling 24h window (not a midnight-reset daily counter) to prevent exposure bursts at day boundaries.
 
 ### 2.3 API Response
 
@@ -86,8 +65,6 @@ This tracks the net directional exposure from arbitrage trades specifically, ind
 }
 ```
 
----
-
 ## 3. Configuration Parameters
 
 | Parameter | Default | Location | Purpose |
@@ -95,19 +72,17 @@ This tracks the net directional exposure from arbitrage trades specifically, ind
 | `target_delta_ratio` | 0.5 | `config.py` | Target 50/50 cNGN/USD split |
 | `delta_alert_threshold_percent` | 10.0 | `config.py` | Alert if deviation > 10% |
 | `portfolio_delta_interval` | 120s | `config.py` | Check delta every 2 minutes |
-| `venue_divergence_rebalance_bps` | 200 | `SchedulerConfig` | Rebalance DEX if venue price diverges 2% from fair value |
+| `venue_divergence_rebalance_bps` | 200 | `config.py` | Rebalance DEX if venue price diverges 2% from fair value |
 
 **Arbitrage-specific limits:**
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
 | `max_inventory_imbalance_usd` | $5,000 | Max one-sided exposure from arb trades |
-| `max_single_trade_usd` | $1,000 | Max per arbitrage opportunity |
+| `max_single_trade_usd` | $100 | Max per arbitrage opportunity |
 | `max_daily_volume_usd` | $10,000 | Max daily arbitrage volume |
 | `max_daily_loss_usd` | $500 | Circuit breaker: stop if losses exceed |
 | `max_consecutive_failures` | 3 | Circuit breaker: stop after N failures |
-
----
 
 ## 4. Mechanisms for Maintaining Delta Neutrality
 
@@ -146,22 +121,24 @@ upper_price = mean_price + (std_dev * 1.5)
 
 ### 4.2 Capital Allocation Controls
 
-**File**: `engine/venues/dex/base.py` (`calculate_mint_amounts`)
+**File**: `engine/api/schemas.py` (`DexParams`)
 
-When creating LP positions, three constraints apply:
+LP deployment is controlled by two explicit amount fields — nothing is deployed until they are set:
 
 ```python
 class DexParams:
-    max_utilization_percent: Decimal = Decimal("80.0")  # Max % of balance to deploy
-    min_reserve_token0: Decimal = Decimal("0")           # Min cNGN to keep in wallet
-    min_reserve_token1: Decimal = Decimal("0")           # Min USDC to keep in wallet
-    max_position_usd: Optional[Decimal] = None           # Hard cap on position size
+    # Capital allocation - explicit amounts to deploy (0 = deploy nothing)
+    deploy_token0: Decimal = Decimal("0")  # Absolute token0 amount for LP
+    deploy_token1: Decimal = Decimal("0")  # Absolute token1 amount for LP
 ```
 
-The system applies these sequentially:
-1. Apply utilization cap (80% of available balance)
-2. Subtract minimum reserves
-3. Apply USD hard cap if configured
+Set via the API (auth required):
+```
+PATCH /api/venues/aerodrome/params
+{"deploy_token0": "500000", "deploy_token1": "600"}
+```
+
+The engine caps each value to the actual wallet balance, so setting large numbers will not overdraft.
 
 ### 4.3 Arbitrage Inventory Limits
 
@@ -175,8 +152,8 @@ def can_trade(self, trade_size_usd) -> tuple[bool, str | None]:
     if self._state.circuit_breaker_active:
         return False, "Circuit breaker active"
 
-    # Check 2: Daily volume limit
-    if self._state.daily_volume_usd + trade_size_usd > self.params.max_daily_volume_usd:
+    # Check 2: Rolling 24h volume limit
+    if self._rolling_volume_usd() + trade_size_usd > self.params.max_daily_volume_usd:
         return False, "Would exceed daily volume limit"
 
     # Check 3: Inventory imbalance limit
@@ -211,8 +188,6 @@ if deviation_percent > self.config.delta_alert_threshold_percent:
     )
 ```
 
----
-
 ## 5. Current Limitations
 
 ### 5.1 No Active Portfolio Rebalancing
@@ -235,25 +210,11 @@ if deviation_percent > self.config.delta_alert_threshold_percent:
 
 **Current behavior**: System tracks directional exposure from arb trades, but the calculation depends on `cngn_delta` parameter being passed correctly by the executor (which is not yet implemented).
 
-### 5.4 Capital Allocation Defaults Are Permissive
-
-**Gap**: Default settings allow deploying up to 80% of capital with no minimum reserves.
-
-**Risk**: Could leave insufficient capital for rebalancing trades or gas.
-
-### 5.5 Daily Reset Discontinuity
-
-**Gap**: Arbitrage inventory imbalance resets at midnight UTC.
-
-**Risk**: If system accumulates $4,500 imbalance at 11:50 PM, it allows another $500. At midnight, resets to $0, allowing $5,000 more—effectively $5,500 in 20 minutes.
-
----
-
 ## 6. Recommendations
 
 ### 6.1 Implement Active Portfolio Rebalancing
 
-Add a new method to execute rebalancing trades when delta deviates significantly:
+Add a method to execute rebalancing trades when delta deviates significantly:
 
 ```python
 async def _rebalance_portfolio_delta(self):
@@ -284,31 +245,7 @@ if abs(portfolio_delta - target) > Decimal("0.15"):  # 15% deviation
     rebalance_reason = "portfolio_delta_deviation"
 ```
 
-### 6.3 Conservative Default Configuration
-
-Recommend changing defaults:
-
-```python
-# More conservative capital allocation
-max_utilization_percent: Decimal = Decimal("60.0")  # Down from 80%
-min_reserve_token0: Decimal = Decimal("10000")       # Keep 10k cNGN
-min_reserve_token1: Decimal = Decimal("50")          # Keep $50 stables
-max_position_usd: Decimal = Decimal("500")           # Start small
-```
-
-### 6.4 Rolling Inventory Window
-
-Replace daily reset with rolling 24-hour window:
-
-```python
-def _get_rolling_imbalance(self) -> Decimal:
-    """Calculate imbalance over rolling 24-hour window."""
-    cutoff = time.time() - 86400
-    recent_trades = [t for t in self._trades if t.timestamp > cutoff]
-    return sum(t.cngn_delta for t in recent_trades)
-```
-
-### 6.5 Position Sizing by Delta
+### 6.3 Position Sizing by Delta
 
 Adjust LP position size based on current delta state:
 
@@ -330,97 +267,7 @@ def calculate_mint_amounts(self, reference_price_usd, current_delta: Decimal):
 
 ---
 
-## 7. USD vs NGN: Calculation Basis and Tradeoffs
-
-### 7.1 Current Implementation
-
-The system uses **two different normalizations** depending on context:
-
-| Component | Normalization | Example Value | Used For |
-|-----------|---------------|---------------|----------|
-| Engine (`price_aggregation.py`) | cNGN/USD | 0.000606 | Arbitrage detection, delta calculation, VWAP |
-| Dashboard (`utils.ts`) | NGN/USD | 1650 | Human-readable display |
-
-**Engine normalization (cNGN/USD):**
-```python
-# engine/core/price_aggregation.py
-# All venues normalized to: "how many USD per 1 cNGN"
-
-USDT_NGN (Bybit): cNGN/USD = 1 / 1650 = 0.000606
-cNGN/USDC (Aerodrome): cNGN/USD = 0.000606 (direct)
-cNGN/NGN (Blockradar): cNGN/USD = 1.0 / 1650 = 0.000606 (cross-rate)
-```
-
-**Dashboard normalization (NGN/USD):**
-```typescript
-// dashboard/lib/utils.ts
-// All venues normalized to: "how many NGN per 1 USD"
-
-USDT/NGN (Bybit): 1650 (direct)
-cNGN/USDC (Aerodrome): 1 / 0.000606 = 1650 (inverted)
-```
-
-### 7.2 Venue Data Formats
-
-| Venue | Raw Pair | Raw Example | Meaning |
-|-------|----------|-------------|---------|
-| Bybit P2P | USDT/NGN | 1650 | "1 USDT costs 1650 NGN" |
-| Quidax | cNGN/USDT | 0.000606 | "1 cNGN costs 0.000606 USDT" |
-| Aerodrome | cNGN/USDC | 0.000606 | "1 cNGN costs 0.000606 USDC" |
-| PancakeSwap | cNGN/USDT | 0.000610 | "1 cNGN costs 0.000610 USDT" |
-| Blockradar | cNGN/NGN | 1.0 | "1 cNGN = 1 NGN" (peg rate) |
-
-### 7.3 Tradeoffs
-
-**USD-based calculation (current engine approach):**
-
-| Pros | Cons |
-|------|------|
-| Standard numeraire for risk limits | Small decimals (0.0006) prone to precision errors |
-| Easier cross-venue comparison | Less intuitive for Nigerian operators |
-| Consistent with DeFi conventions | Requires inversion for NGN-quoted venues |
-| Risk limits naturally in USD | Blockradar cNGN/NGN needs cross-rate |
-
-**NGN-based calculation (alternative):**
-
-| Pros | Cons |
-|------|------|
-| Matches Bybit P2P format directly | NGN itself is volatile |
-| Large numbers easier to reason about | Risk limits would drift with NGN/USD |
-| More intuitive for local operators | Inconsistent with stablecoin venues |
-| No inversion needed for P2P/CEX | Cross-venue spreads harder to compare |
-
-### 7.4 Recommendation
-
-**Keep USD as the primary calculation basis** because:
-
-1. **Risk limits must be stable**: A $5,000 inventory limit means the same thing regardless of NGN movements
-2. **Stablecoins are the hedge**: Our stable leg is USDC/USDT, not NGN
-3. **Cross-venue comparison**: DEX pools quote in USD terms already
-4. **Industry standard**: Most trading systems use USD as numeraire
-
-**However, improve precision handling:**
-
-```python
-# Use quantize() for consistent decimal places
-cngn_usd = (Decimal("1") / usdt_ngn_rate).quantize(Decimal("0.00000001"))
-```
-
-### 7.5 Blockradar Cross-Rate Dependency
-
-Blockradar quotes cNGN/NGN (the peg rate, ~1.0). To normalize this to USD:
-
-```
-cNGN/USD = blockradar_mid / usdt_ngn_rate
-```
-
-**Risk**: If the USDT/NGN source (Bybit) is stale or unavailable, Blockradar prices cannot be normalized.
-
-**Mitigation**: Track Blockradar peg health separately. A deviation from 1.0 indicates cNGN depegging from NGN, which is useful information regardless of USD conversion.
-
----
-
-## 8. Alternative Delta Strategies
+## 7. Alternative Delta Strategies
 
 Beyond the simple 50/50 static delta target, consider these more sophisticated approaches:
 
@@ -527,9 +374,9 @@ def calculate_optimal_hedge():
 
 ---
 
-## 9. Liquidity, Solvency, and Profitability
+## 8. Liquidity, Solvency, and Profitability
 
-### 9.1 Liquidity Management
+### 8.1 Liquidity Management
 
 **Definition**: Having enough of each asset to fulfill trading obligations.
 
@@ -564,7 +411,7 @@ async def check_liquidity():
 # withdraw from Aerodrome LP and transfer to Quidax
 ```
 
-### 9.2 Solvency Constraints
+### 8.2 Solvency Constraints
 
 **Definition**: Total assets exceed total liabilities; can meet all obligations.
 
@@ -590,7 +437,7 @@ async def check_solvency():
         await trigger_circuit_breaker("NAV below minimum")
 ```
 
-### 9.3 Profitability Optimization
+### 8.3 Profitability Optimization
 
 **Revenue sources:**
 1. DEX LP fees (swap fees collected)
@@ -653,7 +500,7 @@ def score_opportunity(opp: ArbitrageOpportunity) -> Decimal:
     return expected_return * venue_reliability * (1 - execution_risk)
 ```
 
-### 9.4 Combined Health Score
+### 8.4 Combined Health Score
 
 Aggregate liquidity, solvency, and profitability into a single health metric:
 
@@ -678,7 +525,7 @@ def calculate_health() -> SystemHealth:
 
 ---
 
-## 10. Data Flow Diagram
+## 9. Data Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -725,7 +572,7 @@ def calculate_health() -> SystemHealth:
 
 ---
 
-## 11. Related Files
+## 10. Related Files
 
 | File | Purpose |
 |------|---------|
@@ -738,7 +585,7 @@ def calculate_health() -> SystemHealth:
 
 ---
 
-## 12. Testing Considerations
+## 11. Testing Considerations
 
 Delta neutrality logic should be tested with:
 

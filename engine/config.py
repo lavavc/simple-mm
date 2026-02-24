@@ -44,13 +44,11 @@ class Settings(BaseSettings):
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
-    # Scheduler intervals (seconds)
+    # Scheduler intervals (seconds) — all SchedulerConfig defaults live here, nowhere else
     price_update_interval: int = 30
     position_sync_interval: int = 60
     dex_check_interval: int = 120
     cex_sync_interval: int = 300
-    rate_sync_interval: int = 300
-    rebalance_check_interval: int = 120
 
     # Trading parameters
     target_delta_ratio: float = 0.5
@@ -64,12 +62,19 @@ class Settings(BaseSettings):
     arbitrage_execution_enabled: bool = False  # Phase 1: detection only
     arbitrage_scan_interval: int = 30  # seconds
 
-    # Arbitrage thresholds (can be overridden via API)
-    arbitrage_min_spread_bps: int = 150  # 1.5% minimum gross spread
-    arbitrage_min_net_profit_bps: int = 50  # 0.5% minimum after fees
-    arbitrage_max_single_trade_usd: float = 1000.0
+    # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
+    arbitrage_min_spread_bps: int = 150          # 1.5% minimum gross spread
+    arbitrage_min_net_profit_bps: int = 50       # 0.5% minimum after fees
+    arbitrage_dex_swap_fee_bps: int = 30         # Fallback if on-chain fee() call fails
+    arbitrage_cex_taker_fee_bps: int = 25        # CEX taker fee
+    arbitrage_max_single_trade_usd: float = 100.0          # Fallback when pool reserves unavailable
     arbitrage_max_daily_volume_usd: float = 10000.0
     arbitrage_max_inventory_imbalance_usd: float = 5000.0
+    arbitrage_max_consecutive_failures: int = 3
+    arbitrage_max_daily_loss_usd: float = 500.0
+    arbitrage_cross_chain_rebalance_bps: int = 10
+    arbitrage_max_delta_ratio: float = 0.60
+    arbitrage_min_account_stablecoin_usd: float = 1000.0
 
     # Account management
     use_test_accounts: bool = False  # Use Anvil test mnemonic (for local dev)

@@ -63,18 +63,23 @@ class ArbitrageEngine:
         self.execution_enabled = execution_enabled
 
         # Initialize components
+        self.inventory = InventoryTracker(params)
+        from engine.venues.dex.base import BaseDexAdapter
+        dex_venues = {k: v for k, v in venues.items() if isinstance(v, BaseDexAdapter)}
         self.detector = ArbitrageDetector(
             price_aggregator,
             params,
             normalizer=normalizer,
             blended_calculator=blended_calculator,
+            inventory_tracker=self.inventory,
+            dex_venues=dex_venues,
         )
         self.executor = ArbitrageExecutor(venues, execution_enabled)
-        self.inventory = InventoryTracker(params)
 
         # State
         self._enabled = True
         self._last_scan_timestamp: Optional[int] = None
+        self._inventory_seeded = False
 
     @property
     def enabled(self) -> bool:
@@ -102,6 +107,9 @@ class ArbitrageEngine:
         """
         if not self._enabled:
             return []
+
+        if not self._inventory_seeded:
+            await self._seed_account_inventory()
 
         self._last_scan_timestamp = int(time.time() * 1000)
 
@@ -178,7 +186,11 @@ class ArbitrageEngine:
         db = await get_db()
 
         # Check if we can trade
-        can_trade, reason = self.inventory.can_trade(opp.recommended_size_usd)
+        can_trade, reason = self.inventory.can_trade(
+            opp.recommended_size_usd,
+            buy_venue=opp.buy_venue,
+            sell_venue=opp.sell_venue,
+        )
         if not can_trade:
             logger.info(
                 "arbitrage_execution_blocked",
@@ -207,12 +219,17 @@ class ArbitrageEngine:
         success, actual_profit, error = await self.executor.execute(opp)
 
         if success and actual_profit is not None:
+            # Update per-account stablecoin estimates
+            self.inventory.update_account_inventory(opp.buy_venue, opp.recommended_size_usd, is_buy=True)
+            amount_cngn = opp.recommended_size_usd / opp.buy_price if opp.buy_price > 0 else Decimal("0")
+            self.inventory.update_account_inventory(opp.sell_venue, amount_cngn * opp.sell_price, is_buy=False)
+
             # Record successful trade
             self.inventory.record_trade_complete(
                 opp.id,
                 opp.recommended_size_usd,
                 actual_profit,
-                Decimal("0"),  # cNGN delta - would be calculated from actual trades
+                Decimal("0"),  # cNGN delta is zero for cross-DEX arb
             )
             await db.update_arbitrage_opportunity(
                 opp.id,
@@ -264,6 +281,7 @@ class ArbitrageEngine:
             circuit_breaker_active=inventory_status["circuit_breaker_active"],
             consecutive_failures=inventory_status["consecutive_failures"],
             params=self.params,
+            low_inventory_venues=inventory_status["low_inventory_venues"],
         )
 
     def update_params(self, params: ArbitrageParams):
@@ -281,3 +299,22 @@ class ArbitrageEngine:
     def reset_circuit_breaker(self):
         """Manually reset circuit breaker."""
         self.inventory.reset_circuit_breaker()
+
+    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal):
+        """Pass portfolio snapshot from scheduler to inventory tracker."""
+        self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd)
+
+    async def _seed_account_inventory(self):
+        """Read trade-account stablecoin balances once at first scan."""
+        from engine.venues.dex.base import BaseDexAdapter
+        balances: dict[str, Decimal] = {}
+        for name, venue in self.venues.items():
+            if isinstance(venue, BaseDexAdapter):
+                try:
+                    raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
+                    balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)
+                except Exception as e:
+                    logger.warning("account_stable_seed_failed", venue=name, error=str(e))
+        if balances:
+            self.inventory.initialize_account_stable(balances)
+        self._inventory_seeded = True

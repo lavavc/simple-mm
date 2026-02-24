@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import structlog
 
+from engine.config import settings
 from engine.core.venue_prices import VenuePriceAggregator
 from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
@@ -23,23 +24,22 @@ logger = structlog.get_logger()
 
 @dataclass
 class SchedulerConfig:
-    """Configuration for scheduler intervals (in seconds)."""
+    """Configuration for scheduler intervals and thresholds.
 
-    price_update_interval: int = 30
-    position_sync_interval: int = 60
-    dex_check_interval: int = 120
-    cex_sync_interval: int = 300
-    rebalance_check_interval: int = 120
-    arbitrage_scan_interval: int = 30
-    balance_check_interval: int = 300
-    portfolio_delta_interval: int = 120
+    All defaults come from engine.config.Settings — edit config.py to change them.
+    """
 
-    # Portfolio delta management
-    target_delta_ratio: Decimal = Decimal("0.5")  # 50/50 cNGN/USD
-    delta_alert_threshold_percent: Decimal = Decimal("10.0")
+    price_update_interval: int = settings.price_update_interval
+    position_sync_interval: int = settings.position_sync_interval
+    dex_check_interval: int = settings.dex_check_interval
+    cex_sync_interval: int = settings.cex_sync_interval
+    arbitrage_scan_interval: int = settings.arbitrage_scan_interval
+    balance_check_interval: int = settings.balance_check_interval
+    portfolio_delta_interval: int = settings.portfolio_delta_interval
 
-    # Venue-vs-fair-value divergence threshold for LP rebalance (basis points)
-    venue_divergence_rebalance_bps: int = 200
+    target_delta_ratio: Decimal = Decimal(str(settings.target_delta_ratio))
+    delta_alert_threshold_percent: Decimal = Decimal(str(settings.delta_alert_threshold_percent))
+    venue_divergence_rebalance_bps: int = settings.venue_divergence_rebalance_bps
 
 
 class TradingScheduler:
@@ -399,6 +399,9 @@ class TradingScheduler:
                     "confidence": blended.confidence,
                 },
             })
+
+            if self.arbitrage_engine and total_usd_value > 0:
+                self.arbitrage_engine.update_portfolio_snapshot(cngn_usd_value, total_usd_value)
 
             logger.info(
                 "portfolio_delta_checked",

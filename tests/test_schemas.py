@@ -106,7 +106,7 @@ class TestArbitrageParams:
         assert p.min_spread_bps == 150
         assert p.min_net_profit_bps == 50
         assert p.dex_swap_fee_bps == 30
-        assert p.max_single_trade_usd == Decimal("1000")
+        assert p.max_single_trade_usd == Decimal("100")
 
     def test_custom_values(self):
         p = ArbitrageParams(

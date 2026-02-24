@@ -481,6 +481,61 @@ class BaseDexAdapter(VenueAdapter, ABC):
             "price": self._sqrt_price_to_decimal(slot0[0]),
         }
 
+    def get_fee_bps(self, fallback: int = 30) -> int:
+        """Pool swap fee in basis points, fetched once from chain and cached.
+
+        Converts from Uniswap fee units (10000 = 1%) to bps (100 = 1%).
+        Falls back to ``fallback`` if the RPC call fails.
+        """
+        if not hasattr(self, "_fee_bps"):
+            try:
+                fee_raw = self.pool_contract.functions.fee().call()
+                self._fee_bps: int | None = fee_raw // 100
+            except Exception as e:
+                logger.warning("fee_fetch_failed", venue=self.name, error=str(e))
+                self._fee_bps = None
+        return self._fee_bps if self._fee_bps is not None else fallback
+
+    @property
+    def cngn_decimals(self) -> int:
+        return self.config.token1_decimals if self.config.invert_price else self.config.token0_decimals
+
+    @property
+    def stable_decimals(self) -> int:
+        return self.config.token0_decimals if self.config.invert_price else self.config.token1_decimals
+
+    @property
+    def stable_address(self) -> str:
+        return self.config.token0_address if self.config.invert_price else self.config.token1_address
+
+    @property
+    def cngn_address(self) -> str:
+        return self.config.token1_address if self.config.invert_price else self.config.token0_address
+
+    @property
+    def stable_token(self):
+        return self.token0 if self.config.invert_price else self.token1
+
+    def get_virtual_reserves(self) -> tuple[Decimal, Decimal] | None:
+        """Return (cngn_virtual, stable_virtual) in human-readable units for the active tick."""
+        try:
+            sqrt_price_x96 = self.get_current_state()["sqrt_price_x96"]
+            result = self.w3.eth.call({"to": self.pool_contract.address, "data": LIQUIDITY_SELECTOR})
+            if len(result) < 32:
+                return None
+            L = Decimal(int.from_bytes(result[:32], "big"))
+            sqrtP = Decimal(sqrt_price_x96) / Decimal(2**96)
+            if sqrtP == 0:
+                return None
+            x = L / sqrtP / Decimal(10 ** self.config.token0_decimals)
+            y = L * sqrtP / Decimal(10 ** self.config.token1_decimals)
+            if self.config.invert_price:   # token0=stable, token1=cNGN
+                return y, x
+            return x, y                    # token0=cNGN, token1=stable
+        except Exception as e:
+            logger.warning("get_virtual_reserves_failed", venue=self.name, error=str(e))
+            return None
+
     def get_position_state(self, token_id: int) -> Optional[PositionState]:
         """Get position details from NFT manager."""
         try:

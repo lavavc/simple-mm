@@ -111,13 +111,13 @@ class ArbitrageExecutor:
             )
 
         current_price = price_quote.mid  # stablecoin per cNGN
-        amount_in_raw = int(amount_usd * Decimal(10 ** venue.config.token1_decimals))
+        amount_in_raw = int(amount_usd * Decimal(10 ** venue.stable_decimals))
 
         slippage = Decimal(_ARB_SLIPPAGE_BPS) / Decimal(10000)
         expected_cngn = amount_usd / current_price
-        min_out_raw = int(expected_cngn * (1 - slippage) * Decimal(10 ** venue.config.token0_decimals))
+        min_out_raw = int(expected_cngn * (1 - slippage) * Decimal(10 ** venue.cngn_decimals))
 
-        result = await venue.swap(venue.config.token1_address, amount_in_raw, min_out_raw)
+        result = await venue.swap(venue.stable_address, amount_in_raw, min_out_raw)
 
         return ArbitrageTrade(
             id=0,
@@ -145,10 +145,10 @@ class ArbitrageExecutor:
         price_quote = await venue.get_current_price()
         current_price = price_quote.mid if price_quote else Decimal("0")
 
-        amount_in_raw = int(amount_cngn * Decimal(10 ** venue.config.token0_decimals))
-        min_out_raw = int(min_amount_out_usd * Decimal(10 ** venue.config.token1_decimals))
+        amount_in_raw = int(amount_cngn * Decimal(10 ** venue.cngn_decimals))
+        min_out_raw = int(min_amount_out_usd * Decimal(10 ** venue.stable_decimals))
 
-        result = await venue.swap(venue.config.token0_address, amount_in_raw, min_out_raw)
+        result = await venue.swap(venue.cngn_address, amount_in_raw, min_out_raw)
 
         return ArbitrageTrade(
             id=0,

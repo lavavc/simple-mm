@@ -74,6 +74,13 @@ USDT_NGN_VENUES = {"bybit"}
 CNGN_USD_VENUES = {"quidax", "aerodrome", "pancakeswap"}
 CNGN_NGN_VENUES = {"blockradar"}
 
+# Chain IDs for DEX venues; None = off-chain / no chain
+VENUE_CHAINS: dict[str, int | None] = {
+    "aerodrome": 8453, "pancakeswap": 56,
+    "quidax": None, "bybit": None, "blockradar": None, "fair_value": None,
+}
+DEX_VENUES: frozenset[str] = frozenset({"aerodrome", "pancakeswap"})
+
 
 def classify_venue(venue: str) -> str:
     """Return the pair basis for a venue name."""

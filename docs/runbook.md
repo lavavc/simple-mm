@@ -64,16 +64,24 @@ Quidax detects on-chain deposits asynchronously (webhook-based). Send from the `
 
 ## Environment variables checklist
 
+Required secrets — these have no code defaults and must be set:
+
 ```
-WALLET_MNEMONIC=           # 12 or 24 word BIP39 phrase
-BLOCKRADAR_API_KEY=        # from Blockradar dashboard
-BLOCKRADAR_WALLET_ID=      # master wallet ID
+WALLET_MNEMONIC=             # 12 or 24 word BIP39 phrase
+BLOCKRADAR_API_KEY=          # from Blockradar dashboard
+BLOCKRADAR_WALLET_ID=        # master wallet ID
 BLOCKRADAR_DEPOSIT_ADDRESS=  # on-chain address to fund the master wallet (from Blockradar dashboard)
-QUIDAX_API_KEY=            # from Quidax account settings
-DASHBOARD_API_TOKEN=       # any secret string, used for protected API calls
-BASE_RPC_URL=              # defaults to https://mainnet.base.org (fine for now)
-BSC_RPC_URL=               # defaults to https://bsc-dataseed.binance.org (fine for now)
+QUIDAX_API_KEY=              # from Quidax account settings
+DASHBOARD_API_TOKEN=         # any secret string, used for protected API calls
+ALCHEMY_KEY=                 # recommended; otherwise public RPC nodes are used
 ```
+
+When enabling live trading, also set:
+```
+ARBITRAGE_EXECUTION_ENABLED=true
+```
+
+All other tunable parameters (arbitrage thresholds, scheduler intervals, fee estimates) have code defaults in `engine/config.py`. Override in `.env` only when the default needs changing for a specific deployment. See `.env.example` for a full list of overridable variables.
 
 ## Server setup (first time)
 

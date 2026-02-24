@@ -16,8 +16,10 @@ logger = structlog.get_logger()
 class InventoryState:
     """Current inventory state for risk management."""
 
-    # Running totals for the day
-    daily_volume_usd: Decimal = Decimal("0")
+    # Rolling trade log: list of (timestamp_ms, size_usd) for 24h volume tracking
+    trade_log: list = field(default_factory=list)
+
+    # Daily P&L (resets at midnight; volume uses rolling window instead)
     daily_profit_usd: Decimal = Decimal("0")
     daily_loss_usd: Decimal = Decimal("0")
 
@@ -32,6 +34,15 @@ class InventoryState:
     # Timestamps
     day_start_timestamp: int = 0
     last_trade_timestamp: int = 0
+
+    # Per-account stablecoin tracking
+    per_account_stable: dict[str, Decimal] = field(default_factory=dict)
+    initial_account_stable: dict[str, Decimal] = field(default_factory=dict)
+    low_inventory_venues: set[str] = field(default_factory=set)
+
+    # Portfolio snapshot (fed from scheduler every 120s)
+    cngn_value_usd: Decimal = Decimal("0")
+    total_portfolio_usd: Decimal = Decimal("0")
 
 
 class InventoryTracker:
@@ -70,10 +81,8 @@ class InventoryTracker:
         if self._state.day_start_timestamp < day_start:
             logger.info(
                 "resetting_daily_inventory_counters",
-                previous_volume=float(self._state.daily_volume_usd),
                 previous_profit=float(self._state.daily_profit_usd),
             )
-            self._state.daily_volume_usd = Decimal("0")
             self._state.daily_profit_usd = Decimal("0")
             self._state.daily_loss_usd = Decimal("0")
             self._state.day_start_timestamp = day_start
@@ -85,7 +94,17 @@ class InventoryTracker:
                 self._state.consecutive_failures = 0
                 logger.info("circuit_breaker_reset_daily")
 
-    def can_trade(self, trade_size_usd: Decimal) -> tuple[bool, Optional[str]]:
+    def _rolling_volume_usd(self) -> Decimal:
+        """Sum of trade sizes in the past 24 hours."""
+        cutoff = int(time.time() * 1000) - 86_400_000
+        return sum((v for ts, v in self._state.trade_log if ts > cutoff), Decimal("0"))
+
+    def can_trade(
+        self,
+        trade_size_usd: Decimal,
+        buy_venue: str = "",
+        sell_venue: str = "",
+    ) -> tuple[bool, Optional[str]]:
         """
         Check if a trade is allowed given current limits.
 
@@ -101,8 +120,8 @@ class InventoryTracker:
         if self._state.circuit_breaker_active:
             return False, f"Circuit breaker active: {self._state.circuit_breaker_reason}"
 
-        # 2. Check daily volume limit
-        new_volume = self._state.daily_volume_usd + trade_size_usd
+        # 2. Check rolling 24h volume limit
+        new_volume = self._rolling_volume_usd() + trade_size_usd
         if new_volume > self.params.max_daily_volume_usd:
             return False, (
                 f"Would exceed daily volume limit: "
@@ -124,6 +143,19 @@ class InventoryTracker:
                 f"Daily loss limit reached: "
                 f"{float(self._state.daily_loss_usd):.2f} >= {float(self.params.max_daily_loss_usd):.2f}"
             )
+
+        # 5. Per-account stablecoin — block if buy-side venue is flagged low
+        if buy_venue and buy_venue in self._state.low_inventory_venues:
+            return False, f"Low stablecoin inventory on {buy_venue} — rebalance needed"
+
+        # 6. Global delta ratio — pre-trade portfolio guard
+        if self._state.total_portfolio_usd > 0:
+            current_ratio = self._state.cngn_value_usd / self._state.total_portfolio_usd
+            if current_ratio >= self.params.max_delta_ratio:
+                return False, (
+                    f"Portfolio already at {float(current_ratio):.0%} cNGN — "
+                    f"above max delta ratio {float(self.params.max_delta_ratio):.0%}"
+                )
 
         return True, None
 
@@ -173,7 +205,7 @@ class InventoryTracker:
         """
         self._reset_daily_if_needed()
 
-        self._state.daily_volume_usd += size_usd
+        self._state.trade_log.append((int(time.time() * 1000), size_usd))
 
         if profit_usd >= 0:
             self._state.daily_profit_usd += profit_usd
@@ -203,7 +235,7 @@ class InventoryTracker:
             opportunity_id=opportunity_id,
             size_usd=float(size_usd),
             profit_usd=float(profit_usd),
-            daily_volume=float(self._state.daily_volume_usd),
+            rolling_volume_24h=float(self._rolling_volume_usd()),
             daily_profit=float(self._state.daily_profit_usd),
             inventory_imbalance=float(self._state.cngn_imbalance_usd),
         )
@@ -249,7 +281,7 @@ class InventoryTracker:
         logger.error(
             "circuit_breaker_triggered",
             reason=reason,
-            daily_volume=float(self._state.daily_volume_usd),
+            rolling_volume_24h=float(self._rolling_volume_usd()),
             daily_loss=float(self._state.daily_loss_usd),
             consecutive_failures=self._state.consecutive_failures,
         )
@@ -261,15 +293,52 @@ class InventoryTracker:
         self._state.consecutive_failures = 0
         logger.info("circuit_breaker_manually_reset")
 
+    def initialize_account_stable(self, venue_balances: dict[str, Decimal]):
+        """Seed per-account stablecoin from on-chain balances (called once at startup)."""
+        self._state.per_account_stable = dict(venue_balances)
+        self._state.initial_account_stable = dict(venue_balances)
+        logger.info("account_stable_initialized", venues=list(venue_balances.keys()))
+
+    def update_account_inventory(self, venue: str, delta_usd: Decimal, is_buy: bool):
+        """Adjust estimated stablecoin balance after a trade leg. Flags low inventory."""
+        current = self._state.per_account_stable.get(venue, Decimal("0"))
+        if is_buy:
+            current -= delta_usd  # Spending stablecoin to buy cNGN
+        else:
+            current += delta_usd  # Receiving stablecoin from selling cNGN
+        self._state.per_account_stable[venue] = current
+
+        if current < self.params.min_account_stablecoin_usd:
+            self._state.low_inventory_venues.add(venue)
+            logger.warning("low_stablecoin_inventory", venue=venue, balance_usd=float(current))
+        else:
+            self._state.low_inventory_venues.discard(venue)
+
+    def get_rebalance_cost_bps(self, buy_venue: str) -> int:
+        """Returns 0 when fully stocked, cross_chain_rebalance_bps when empty."""
+        initial = self._state.initial_account_stable.get(buy_venue)
+        if not initial or initial <= 0:
+            return self.params.cross_chain_rebalance_bps  # Conservative fallback
+        current = self._state.per_account_stable.get(buy_venue, Decimal("0"))
+        fraction = min(Decimal("1"), current / initial)
+        cost = self.params.cross_chain_rebalance_bps * (1 - float(fraction))
+        return round(cost)
+
+    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal):
+        """Called by scheduler every 120s to keep delta ratio check current."""
+        self._state.cngn_value_usd = cngn_value_usd
+        self._state.total_portfolio_usd = total_usd
+
     def get_status_dict(self) -> dict:
         """Get current status as a dict for API responses."""
         self._reset_daily_if_needed()
         return {
-            "daily_volume_usd": self._state.daily_volume_usd,
+            "daily_volume_usd": self._rolling_volume_usd(),
             "daily_profit_usd": self._state.daily_profit_usd,
             "daily_loss_usd": self._state.daily_loss_usd,
             "cngn_imbalance_usd": self._state.cngn_imbalance_usd,
             "consecutive_failures": self._state.consecutive_failures,
             "circuit_breaker_active": self._state.circuit_breaker_active,
             "circuit_breaker_reason": self._state.circuit_breaker_reason,
+            "low_inventory_venues": sorted(self._state.low_inventory_venues),
         }
