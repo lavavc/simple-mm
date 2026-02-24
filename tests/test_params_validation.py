@@ -18,12 +18,14 @@ class TestDexParamsValidation:
         """
         params = DexParams()
 
-        assert params.sd_multiplier == Decimal("1.5")
+        assert params.sd_multiplier == Decimal("2.5")
         assert params.min_tick_width == 100
         assert params.max_tick_width == 1000
         assert params.lookback_points is None
-        assert params.rebalance_threshold_percent == Decimal("5.0")
+        assert params.rebalance_threshold_percent == Decimal("10.0")
         assert params.max_slippage_percent == Decimal("1.0")
+        assert params.downside_skew == Decimal("0.4")
+        assert params.ewma_lambda == Decimal("0.99")
         assert params.deploy_token0 == Decimal("0")
         assert params.deploy_token1 == Decimal("0")
 
