@@ -11,7 +11,6 @@ from engine.core.price_aggregation import (
     BlendedPrice,
     CNGN_USD_PAIRS,
     INVERTED_PAIRS,
-    NGN_CROSS_PAIRS,
 )
 from engine.core.venue_prices import VenuePrice
 
@@ -74,8 +73,8 @@ def _make_venue_prices() -> dict[str, VenuePrice]:
 class TestPairClassification:
     """Pair strings must be in the right normalization set.
 
-    To add a new pair: add its string to CNGN_USD_PAIRS, INVERTED_PAIRS,
-    or NGN_CROSS_PAIRS in price_aggregation.py — nothing else needs changing.
+    To add a new pair: add its string to CNGN_USD_PAIRS or INVERTED_PAIRS
+    in price_aggregation.py — nothing else needs changing.
     """
 
     def test_cngn_usdc_is_direct(self):
@@ -92,9 +91,6 @@ class TestPairClassification:
 
     def test_usdt_cngn_is_inverted(self):
         assert "USDT/cNGN" in INVERTED_PAIRS
-
-    def test_cngn_ngn_needs_cross_rate(self):
-        assert "cNGN/NGN" in NGN_CROSS_PAIRS
 
 
 # =============================================================================
@@ -166,8 +162,8 @@ class TestPriceNormalizer:
         assert "blockradar" in result
         assert result["blockradar"].cngn_usd == Decimal("0.000722")
 
-    def test_normalize_blockradar_rejects_peg_rate(self):
-        """Old blockradar peg-rate snapshots (mid ≈ 1.0) must be rejected."""
+    def test_normalize_unknown_pair_skipped(self):
+        """Unknown pairs are silently skipped."""
         prices = {
             "blockradar": _make_venue_price(
                 "blockradar", "cNGN/NGN",

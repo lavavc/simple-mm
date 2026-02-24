@@ -79,6 +79,18 @@ export function VenueCard({ venue }: VenueCardProps) {
           <div className="text-sm text-muted-foreground mb-3">No price data</div>
         )}
 
+        {venue.name === 'blockradar' && venue.position?.rates && (
+          <div className="mt-3 space-y-1">
+            <h4 className="text-xs font-medium text-muted-foreground">Live Rates (cNGN/USD)</h4>
+            {Object.entries(venue.position.rates).map(([key, rate]) => (
+              <div key={key} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{key.replace('_', '/')}</span>
+                <span className="font-mono">{formatNumber(rate, 6)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {venue.position && (
           <div className="pt-2 border-t">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">

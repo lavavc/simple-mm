@@ -144,6 +144,15 @@ class TradingScheduler:
             )
             logger.info("portfolio_delta_job_registered")
 
+        if "blockradar" in self.venues:
+            self.scheduler.add_job(
+                self._sync_blockradar_rates,
+                IntervalTrigger(seconds=self.config.price_update_interval),
+                id="blockradar_rate_sync",
+                replace_existing=True,
+            )
+            logger.info("blockradar_rate_sync_job_registered")
+
         self.scheduler.start()
         self._started = True
         logger.info("scheduler_started")
@@ -654,3 +663,31 @@ class TradingScheduler:
 
         except Exception as e:
             logger.error("balance_check_failed", error=str(e))
+
+    # ------------------------------------------------------------------
+    # Blockradar rate syncing
+    # ------------------------------------------------------------------
+
+    async def _sync_blockradar_rates(self):
+        from engine.venues.wallet.blockradar import BlockradarAdapter, _ROUTES
+
+        blockradar = self.venues.get("blockradar")
+        if not isinstance(blockradar, BlockradarAdapter) or not blockradar._current_rates_usd:
+            return
+
+        if not self.blended_calculator:
+            return
+
+        blended = await self.blended_calculator.get_blended_price()
+        fair = blended.vwap  # excludes blockradar
+        if fair <= 0:
+            return
+
+        lower = fair * Decimal("1.0030")  # 30 bps above fair
+        upper = fair * Decimal("1.0050")  # 50 bps above fair
+
+        for route in _ROUTES:
+            current_usd = blockradar._current_rates_usd.get(route.key)
+            if not current_usd or not (lower <= current_usd <= upper):
+                target_raw = Decimal("1") / lower if route.invert else lower
+                await blockradar.set_rate(route, target_raw)

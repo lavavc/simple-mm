@@ -118,13 +118,12 @@ async def init_venues(acct_manager: AccountManager | None = None):
         )
         logger.info("venue_initialized", venue="quidax")
 
-    # Blockradar (wallet system)
-    if settings.blockradar_api_key:
-        venues["blockradar"] = BlockradarAdapter(
-            api_key=settings.blockradar_api_key,
-            wallet_id=settings.blockradar_wallet_id,
-        )
-        logger.info("venue_initialized", venue="blockradar")
+    # Blockradar (wallet system) — public rate endpoints need no key
+    venues["blockradar"] = BlockradarAdapter(
+        api_key=settings.blockradar_api_key,
+        wallet_id=settings.blockradar_wallet_id,
+    )
+    logger.info("venue_initialized", venue="blockradar", rate_setting=bool(settings.blockradar_api_key))
 
 
 @asynccontextmanager

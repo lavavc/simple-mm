@@ -18,6 +18,8 @@ from engine.core.price_aggregation import (
 
 logger = structlog.get_logger()
 
+_NON_TRADEABLE_VENUES = frozenset({"bybit", "blockradar"})
+
 
 def _optimal_cngn_amount(
     cngn_A: Decimal, stable_A: Decimal,
@@ -97,7 +99,7 @@ class ArbitrageDetector:
         opportunities = []
 
         # --- Strategy 1: Pairwise venue comparison ---
-        venue_names = list(normalized.keys())
+        venue_names = [v for v in normalized.keys() if v not in _NON_TRADEABLE_VENUES]
         for i, buy_venue in enumerate(venue_names):
             for sell_venue in venue_names[i + 1:]:
                 # Check both directions

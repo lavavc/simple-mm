@@ -39,6 +39,7 @@ class Position(BaseModel):
     open_orders: Optional[dict] = None
     pool_tvl_usd: Optional[Decimal] = None
     volume_24h_usd: Optional[Decimal] = None
+    rates: Optional[dict[str, Decimal]] = None  # per-route cNGN/USD rates (blockradar only)
 
 
 class VenuePriceResponse(BaseModel):

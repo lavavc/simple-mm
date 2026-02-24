@@ -73,10 +73,12 @@ class BlendedPrice:
 # To support a new pair from any venue, add its string to the right set — nothing else changes.
 CNGN_USD_PAIRS = frozenset({"cNGN/USDC", "cNGN/USDT"})          # mid IS cNGN/USD
 INVERTED_PAIRS = frozenset({"USDC/cNGN", "USDT/cNGN", "USDT/NGN"})  # 1/mid IS cNGN/USD
-NGN_CROSS_PAIRS = frozenset({"cNGN/NGN"})                        # needs USDT/NGN cross-rate
 
 # USDT_NGN_VENUES: used only by the TWAP path which has no pair info (DB snapshots).
 USDT_NGN_VENUES = frozenset({"bybit"})
+
+# Venues excluded from VWAP/TWAP fair-value calculations (rate-setters, not price takers).
+BLOCKRADAR_VENUES = frozenset({"blockradar"})
 
 
 class PriceNormalizer:
@@ -88,7 +90,6 @@ class PriceNormalizer:
     Rules:
     - CNGN_USD_PAIRS  (e.g. cNGN/USDC): mid is already cNGN/USD
     - INVERTED_PAIRS  (e.g. USDT/NGN):  1/mid = cNGN/USD
-    - NGN_CROSS_PAIRS (e.g. cNGN/NGN):  mid / usdt_ngn_rate = cNGN/USD (second pass)
     """
 
     def normalize(
@@ -97,8 +98,6 @@ class PriceNormalizer:
     ) -> dict[str, NormalizedPrice]:
         """Normalize all venue prices to cNGN/USD."""
         normalized: dict[str, NormalizedPrice] = {}
-        usdt_ngn_mid: Optional[Decimal] = None
-        cross_rate_pending: list[tuple[str, VenuePrice]] = []
 
         for venue, price in venue_prices.items():
             if not price.is_valid or price.quote is None:
@@ -109,16 +108,13 @@ class PriceNormalizer:
 
             if pair in INVERTED_PAIRS:
                 if mid > 0:
-                    cngn_usd = Decimal("1") / mid
                     normalized[venue] = NormalizedPrice(
                         venue=venue,
-                        cngn_usd=cngn_usd,
+                        cngn_usd=Decimal("1") / mid,
                         raw_quote=price.quote,
                         basis=pair,
                         timestamp=price.quote.timestamp,
                     )
-                    if usdt_ngn_mid is None:
-                        usdt_ngn_mid = mid
 
             elif pair in CNGN_USD_PAIRS:
                 if Decimal("0") < mid < Decimal("1"):
@@ -130,23 +126,7 @@ class PriceNormalizer:
                         timestamp=price.quote.timestamp,
                     )
 
-            elif pair in NGN_CROSS_PAIRS:
-                cross_rate_pending.append((venue, price))
-
             # Unknown pairs are silently skipped.
-
-        # Second pass: cross-rate pairs (cNGN/NGN needs a USDT/NGN reference)
-        if usdt_ngn_mid and usdt_ngn_mid > 0:
-            for venue, price in cross_rate_pending:
-                mid = price.quote.mid  # type: ignore[union-attr]
-                if mid > 0:
-                    normalized[venue] = NormalizedPrice(
-                        venue=venue,
-                        cngn_usd=mid / usdt_ngn_mid,
-                        raw_quote=price.quote,  # type: ignore[arg-type]
-                        basis=price.pair,
-                        timestamp=price.quote.timestamp,  # type: ignore[union-attr]
-                    )
 
         logger.debug(
             "prices_normalized",
@@ -296,6 +276,8 @@ class BlendedPriceCalculator:
             # Determine the venue from the source string
             # Source may be "quidax", "bybit_p2p", "aerodrome_pool", etc.
             venue_name = self._source_to_venue(source)
+            if venue_name in BLOCKRADAR_VENUES:
+                continue
             cngn_usd = self._normalize_single_price(venue_name, mid)
 
             if cngn_usd and cngn_usd > 0:
@@ -334,8 +316,11 @@ class BlendedPriceCalculator:
         venue_prices = await self.price_aggregator.fetch_all()
         normalized = self.normalizer.normalize(venue_prices)
 
-        # VWAP across venues right now
-        vwap = self.compute_vwap(normalized)
+        # Exclude rate-setter venues from fair-value metrics
+        fair_normalized = {k: v for k, v in normalized.items() if k not in BLOCKRADAR_VENUES}
+
+        # VWAP across venues right now (blockradar excluded)
+        vwap = self.compute_vwap(fair_normalized)
 
         # TWAP over 5 minutes and 1 hour
         twap_5m = await self.compute_twap(window_seconds=300)
@@ -348,9 +333,9 @@ class BlendedPriceCalculator:
             twap_1h = vwap
 
         # Confidence: based on how many sources agree within 1%
-        confidence = self._compute_confidence(normalized, vwap)
+        confidence = self._compute_confidence(fair_normalized, vwap)
 
-        venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}
+        venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}  # all venues for display
 
         blended = BlendedPrice(
             vwap=vwap,
@@ -413,7 +398,7 @@ class BlendedPriceCalculator:
             return mid          # cNGN/USD (all current non-Bybit venues)
         if mid > Decimal("100"):
             return Decimal("1") / mid  # unexpected large-NGN quote
-        return None  # ambiguous range (e.g. old cNGN/NGN peg snapshots ≈ 1.0)
+        return None  # ambiguous range: mid between 1–100 can't be safely classified
 
     @staticmethod
     def _compute_confidence(

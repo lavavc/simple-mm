@@ -26,6 +26,7 @@ export interface Position {
   open_orders?: Record<string, unknown>;
   pool_tvl_usd?: number;
   volume_24h_usd?: number;
+  rates?: Record<string, number>;  // per-route cNGN/USD rates (blockradar only)
 }
 
 export interface VenuePriceResponse {
