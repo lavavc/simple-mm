@@ -73,7 +73,8 @@ class ArbitrageExecutor:
 
             if sell_trade is None or sell_trade.status == "failed":
                 err = (sell_trade.error if sell_trade else None) or "unknown"
-                return False, None, f"Sell leg failed: {err}"
+                buy_tx = buy_trade.tx_hash or ""
+                return False, None, f"HALF_OPEN:{buy_tx}:{err}"
 
             actual_profit = amount_cngn * opportunity.sell_price - size_usd
 
@@ -119,12 +120,18 @@ class ArbitrageExecutor:
 
         result = await venue.swap(venue.stable_address, amount_in_raw, min_out_raw)
 
+        actual_cngn = (
+            Decimal(result.output_raw) / Decimal(10 ** venue.cngn_decimals)
+            if result.output_raw
+            else expected_cngn
+        )
+
         return ArbitrageTrade(
             id=0,
             opportunity_id=opportunity_id,
             venue=venue_name,
             side="buy",
-            amount=expected_cngn,
+            amount=actual_cngn,
             price=current_price,
             tx_hash=result.hash or None,
             status="confirmed" if result.status == "confirmed" else "failed",

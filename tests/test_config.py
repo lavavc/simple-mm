@@ -16,7 +16,7 @@ class TestSettings:
         assert s.db_path == "./data/cngn.db"
         assert s.price_update_interval == 30
         assert s.arbitrage_enabled is True
-        assert s.arbitrage_execution_enabled is False
+        assert s.arbitrage_execution_enabled is True
 
     def test_rpc_urls_default(self):
         s = Settings()

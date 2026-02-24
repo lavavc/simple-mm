@@ -23,7 +23,6 @@ PANCAKESWAP_CNGN_USDT_CONFIG = PoolConfig(
     token0_decimals=18,
     token1_decimals=6,
     tick_spacing=200,
-    pool_fee=10000,  # 1% fee tier (tick_spacing=200 → fee=10000 in PancakeSwap V3)
     invert_price=True,  # Native price is cNGN/USDT (~1340); we want USDT/cNGN (~0.000747)
 )
 
@@ -76,7 +75,6 @@ class PancakeSwapAdapter(BaseDexAdapter):
                 token0_decimals=config.token0_decimals,
                 token1_decimals=config.token1_decimals,
                 tick_spacing=config.tick_spacing,
-                pool_fee=config.pool_fee,
             )
 
         super().__init__(

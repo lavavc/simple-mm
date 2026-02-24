@@ -45,7 +45,6 @@ class PoolConfig:
     token0_decimals: int
     token1_decimals: int
     tick_spacing: int
-    pool_fee: Optional[int] = None  # Fee tier for protocols that use fee != tick_spacing (e.g. PancakeSwap)
     invert_price: bool = False  # True when native pool price must be inverted (e.g. PancakeSwap: USDT/cNGN → cNGN/USD)
 
 
@@ -116,6 +115,9 @@ LIQUIDITY_SELECTOR = bytes.fromhex("1a686502")
 
 # Function selector for balanceOf(address): keccak256("balanceOf(address)")[:4] = 0x70a08231
 _BALANCE_OF_SIG = bytes.fromhex("70a08231")
+
+# Uniswap V3 Swap event topic: keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
+_SWAP_EVENT_TOPIC = bytes.fromhex("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67")
 
 # DexScreener chain identifiers
 DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
@@ -517,6 +519,11 @@ class BaseDexAdapter(VenueAdapter, ABC):
     def stable_token(self):
         return self.token0 if self.config.invert_price else self.token1
 
+    @property
+    def fee_param(self) -> int:
+        """Raw fee tier for router calls. Fetched from chain once and cached."""
+        return self.get_fee_bps() * 100
+
     def get_virtual_reserves(self) -> tuple[Decimal, Decimal] | None:
         """Return (cngn_virtual, stable_virtual) in human-readable units for the active tick."""
         try:
@@ -740,7 +747,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
         amount0_min = int(amount0 * (1 - slippage))
         amount1_min = int(amount1 * (1 - slippage))
 
-        fee_param = self.config.pool_fee if self.config.pool_fee is not None else self.config.tick_spacing
+        fee_param = self.fee_param
         mint_params = (
             Web3.to_checksum_address(self.config.token0_address),
             Web3.to_checksum_address(self.config.token1_address),
@@ -832,7 +839,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
 
-        fee_param = self.config.pool_fee if self.config.pool_fee is not None else self.config.tick_spacing
+        fee_param = self.fee_param
         swap_params = (
             Web3.to_checksum_address(token_in),
             Web3.to_checksum_address(token_out),
@@ -848,7 +855,19 @@ class BaseDexAdapter(VenueAdapter, ABC):
             self._get_tx_params(self.trade_account)
         )
 
-        return await self._send_transaction(tx, self.trade_account)
+        return await self._send_transaction(tx, self.trade_account, capture_swap_output=True)
+
+    async def ensure_trade_approvals(self):
+        """Pre-approve router to spend both tokens from the trade account (max uint256).
+
+        Called once at startup so swap() never needs an approval tx during execution.
+        Safe to call repeatedly — _approve_if_needed skips if allowance is already sufficient.
+        """
+        for token_address in [self.config.token0_address, self.config.token1_address]:
+            await self._approve_if_needed(
+                token_address, self.config.router_address, 1,
+                account=self.trade_account,
+            )
 
     # === Price/tick math ===
 
@@ -889,7 +908,28 @@ class BaseDexAdapter(VenueAdapter, ABC):
             "chainId": self.config.chain_id,
         }
 
-    async def _send_transaction(self, tx: dict, account) -> TxResult:
+    def _parse_swap_output(self, receipt) -> Optional[int]:
+        """Parse the cNGN-side amount from the pool's Swap event in a tx receipt.
+
+        Returns abs(amount0) for non-inverted pools (token0=cNGN) or abs(amount1)
+        for inverted pools (token1=cNGN).  For a buy this equals cNGN received;
+        for a sell this equals cNGN sent.
+        """
+        pool_addr = self.config.pool_address.lower()
+        for log in receipt.get("logs", []):
+            if (
+                log["address"].lower() == pool_addr
+                and len(log["topics"]) >= 1
+                and log["topics"][0] == _SWAP_EVENT_TOPIC
+            ):
+                data = log["data"]
+                if len(data) >= 64:
+                    amount0 = int.from_bytes(data[:32], "big", signed=True)
+                    amount1 = int.from_bytes(data[32:64], "big", signed=True)
+                    return abs(amount1 if self.config.invert_price else amount0)
+        return None
+
+    async def _send_transaction(self, tx: dict, account, capture_swap_output: bool = False) -> TxResult:
         """Sign, send, and wait for transaction. Serializes per-account to prevent nonce collisions."""
         try:
             # Estimate gas (nonce doesn't affect gas, so do this outside the lock)
@@ -910,6 +950,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
             )
 
             status = "confirmed" if receipt["status"] == 1 else "failed"
+            output_raw = self._parse_swap_output(receipt) if capture_swap_output and status == "confirmed" else None
 
             logger.info(
                 "transaction_sent",
@@ -923,6 +964,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
                 hash=tx_hash.hex(),
                 status=status,
                 gas_used=receipt["gasUsed"],
+                output_raw=output_raw,
             )
         except Exception as e:
             logger.error("transaction_failed", venue=self.name, error=str(e))

@@ -165,6 +165,30 @@ class ArbitrageEngine:
                 # Phase 2+: Would execute here
                 await self._execute_opportunity(opp)
 
+            # Follow-on execution loop: re-detect with fresh prices until market clears
+            if self.execution_enabled:
+                for _ in range(4):
+                    more = await self.detector.detect_opportunities()
+                    if not more:
+                        break
+                    for opp in more:
+                        await db.insert_arbitrage_opportunity(opp)
+                        self.broadcast({
+                            "type": "arbitrage_opportunity",
+                            "data": {
+                                "id": opp.id,
+                                "buy_venue": opp.buy_venue,
+                                "sell_venue": opp.sell_venue,
+                                "gross_spread_bps": opp.gross_spread_bps,
+                                "net_spread_bps": opp.net_spread_bps,
+                                "expected_profit_usd": float(opp.expected_profit_usd),
+                                "recommended_size_usd": float(opp.recommended_size_usd),
+                                "timestamp": opp.timestamp,
+                            },
+                        })
+                        await self._execute_opportunity(opp)
+                    opportunities.extend(more)
+
             return opportunities
 
         except Exception as e:
@@ -244,6 +268,24 @@ class ArbitrageEngine:
                     "profit_usd": float(actual_profit),
                 },
             })
+        elif error and error.startswith("HALF_OPEN:"):
+            # Buy confirmed but sell failed — cNGN is stuck in trade account
+            parts = error.split(":", 2)
+            buy_tx = parts[1] if len(parts) > 1 else ""
+            sell_err = parts[2] if len(parts) > 2 else error
+            logger.error(
+                "arbitrage_half_open",
+                opportunity_id=opp.id,
+                buy_tx=buy_tx,
+                sell_error=sell_err,
+            )
+            self.inventory.record_trade_failure(opp.id, error)
+            await db.update_arbitrage_opportunity(opp.id, status="abandoned", reason=error)
+            self.broadcast({
+                "type": "alert",
+                "severity": "critical",
+                "message": f"Half-open arb {opp.id}: buy {buy_tx} confirmed but sell failed: {sell_err}",
+            })
         else:
             # Record failure
             self.inventory.record_trade_failure(opp.id, error or "Unknown error")
@@ -305,7 +347,7 @@ class ArbitrageEngine:
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd)
 
     async def _seed_account_inventory(self):
-        """Read trade-account stablecoin balances once at first scan."""
+        """Read trade-account stablecoin balances and pre-approve router at first scan."""
         from engine.venues.dex.base import BaseDexAdapter
         balances: dict[str, Decimal] = {}
         for name, venue in self.venues.items():
@@ -315,6 +357,10 @@ class ArbitrageEngine:
                     balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)
                 except Exception as e:
                     logger.warning("account_stable_seed_failed", venue=name, error=str(e))
+                try:
+                    await venue.ensure_trade_approvals()
+                except Exception as e:
+                    logger.warning("trade_approval_failed", venue=name, error=str(e))
         if balances:
             self.inventory.initialize_account_stable(balances)
         self._inventory_seeded = True

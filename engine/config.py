@@ -59,7 +59,7 @@ class Settings(BaseSettings):
 
     # Arbitrage settings
     arbitrage_enabled: bool = True
-    arbitrage_execution_enabled: bool = False  # Phase 1: detection only
+    arbitrage_execution_enabled: bool = True
     arbitrage_scan_interval: int = 30  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
