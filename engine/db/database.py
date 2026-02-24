@@ -150,13 +150,6 @@ class Database:
             """
         )
         await self._conn.commit()
-        # Migrations for existing databases
-        for col, typedef in [("pool_tvl_usd", "REAL"), ("volume_24h_usd", "REAL")]:
-            try:
-                await self._conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {typedef}")
-                await self._conn.commit()
-            except Exception:
-                pass  # Column already exists
 
     # === System State ===
 
