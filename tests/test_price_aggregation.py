@@ -84,8 +84,8 @@ class TestVenueClassification:
     def test_aerodrome_classified_as_cngn_usdc(self):
         assert classify_venue("aerodrome") == "cNGN/USDC"
 
-    def test_blockradar_classified_as_cngn_ngn(self):
-        assert classify_venue("blockradar") == "cNGN/NGN"
+    def test_blockradar_classified_as_cngn_usdc(self):
+        assert classify_venue("blockradar") == "cNGN/USDC"
 
     def test_unknown_venue(self):
         assert classify_venue("unknown_exchange") == "unknown"
