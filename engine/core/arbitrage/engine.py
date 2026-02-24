@@ -172,21 +172,7 @@ class ArbitrageEngine:
                     if not more:
                         break
                     for opp in more:
-                        await db.insert_arbitrage_opportunity(opp)
-                        self.broadcast({
-                            "type": "arbitrage_opportunity",
-                            "data": {
-                                "id": opp.id,
-                                "buy_venue": opp.buy_venue,
-                                "sell_venue": opp.sell_venue,
-                                "gross_spread_bps": opp.gross_spread_bps,
-                                "net_spread_bps": opp.net_spread_bps,
-                                "expected_profit_usd": float(opp.expected_profit_usd),
-                                "recommended_size_usd": float(opp.recommended_size_usd),
-                                "timestamp": opp.timestamp,
-                            },
-                        })
-                        await self._execute_opportunity(opp)
+                        await self._execute_opportunity(opp, track=False)
                     opportunities.extend(more)
 
             return opportunities
@@ -200,100 +186,52 @@ class ArbitrageEngine:
             })
             return []
 
-    async def _execute_opportunity(self, opp: ArbitrageOpportunity):
-        """
-        Execute an arbitrage opportunity (Phase 2+).
+    async def _execute_opportunity(self, opp: ArbitrageOpportunity, track: bool = True):
+        """Execute an arbitrage opportunity. Set track=False for follow-on executions."""
+        db = await get_db() if track else None
 
-        Args:
-            opp: The opportunity to execute
-        """
-        db = await get_db()
-
-        # Check if we can trade
         can_trade, reason = self.inventory.can_trade(
             opp.recommended_size_usd,
             buy_venue=opp.buy_venue,
             sell_venue=opp.sell_venue,
         )
         if not can_trade:
-            logger.info(
-                "arbitrage_execution_blocked",
-                opportunity_id=opp.id,
-                reason=reason,
-            )
-            await db.update_arbitrage_opportunity(
-                opp.id,
-                status="abandoned",
-                reason=reason,
-            )
+            logger.info("arbitrage_execution_blocked", opportunity_id=opp.id, reason=reason)
+            if track:
+                await db.update_arbitrage_opportunity(opp.id, status="abandoned", reason=reason)
             return
 
-        # Record trade start
-        self.inventory.record_trade_start(
-            opp.id,
-            opp.recommended_size_usd,
-            opp.buy_venue,
-            opp.sell_venue,
-        )
+        self.inventory.record_trade_start(opp.id, opp.recommended_size_usd, opp.buy_venue, opp.sell_venue)
+        if track:
+            await db.update_arbitrage_opportunity(opp.id, status="executing")
 
-        # Update status to executing
-        await db.update_arbitrage_opportunity(opp.id, status="executing")
-
-        # Execute
         success, actual_profit, error = await self.executor.execute(opp)
 
         if success and actual_profit is not None:
-            # Update per-account stablecoin estimates
             self.inventory.update_account_inventory(opp.buy_venue, opp.recommended_size_usd, is_buy=True)
             amount_cngn = opp.recommended_size_usd / opp.buy_price if opp.buy_price > 0 else Decimal("0")
             self.inventory.update_account_inventory(opp.sell_venue, amount_cngn * opp.sell_price, is_buy=False)
-
-            # Record successful trade
-            self.inventory.record_trade_complete(
-                opp.id,
-                opp.recommended_size_usd,
-                actual_profit,
-                Decimal("0"),  # cNGN delta is zero for cross-DEX arb
-            )
-            await db.update_arbitrage_opportunity(
-                opp.id,
-                status="completed",
-                actual_profit_usd=float(actual_profit),
-            )
-
-            self.broadcast({
-                "type": "arbitrage_completed",
-                "data": {
-                    "id": opp.id,
-                    "profit_usd": float(actual_profit),
-                },
-            })
+            self.inventory.record_trade_complete(opp.id, opp.recommended_size_usd, actual_profit, Decimal("0"))
+            if track:
+                await db.update_arbitrage_opportunity(opp.id, status="completed", actual_profit_usd=float(actual_profit))
+                self.broadcast({"type": "arbitrage_completed", "data": {"id": opp.id, "profit_usd": float(actual_profit)}})
         elif error and error.startswith("HALF_OPEN:"):
-            # Buy confirmed but sell failed — cNGN is stuck in trade account
             parts = error.split(":", 2)
             buy_tx = parts[1] if len(parts) > 1 else ""
             sell_err = parts[2] if len(parts) > 2 else error
-            logger.error(
-                "arbitrage_half_open",
-                opportunity_id=opp.id,
-                buy_tx=buy_tx,
-                sell_error=sell_err,
-            )
+            logger.error("arbitrage_half_open", opportunity_id=opp.id, buy_tx=buy_tx, sell_error=sell_err)
             self.inventory.record_trade_failure(opp.id, error)
-            await db.update_arbitrage_opportunity(opp.id, status="abandoned", reason=error)
+            if track:
+                await db.update_arbitrage_opportunity(opp.id, status="abandoned", reason=error)
             self.broadcast({
                 "type": "alert",
                 "severity": "critical",
                 "message": f"Half-open arb {opp.id}: buy {buy_tx} confirmed but sell failed: {sell_err}",
             })
         else:
-            # Record failure
             self.inventory.record_trade_failure(opp.id, error or "Unknown error")
-            await db.update_arbitrage_opportunity(
-                opp.id,
-                status="abandoned",
-                reason=error,
-            )
+            if track:
+                await db.update_arbitrage_opportunity(opp.id, status="abandoned", reason=error)
 
     async def get_status(self) -> ArbitrageStatus:
         """

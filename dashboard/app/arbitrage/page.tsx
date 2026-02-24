@@ -71,7 +71,7 @@ export default function ArbitragePage() {
               <Badge variant={status?.enabled ? 'success' : 'secondary'}>
                 {status?.enabled ? 'Enabled' : 'Disabled'}
               </Badge>
-              <Badge variant="info">Detection Only</Badge>
+              {status?.detection_only && <Badge variant="info">Detection Only</Badge>}
             </div>
           </CardContent>
         </Card>
