@@ -129,18 +129,27 @@ class BlockradarAdapter(VenueAdapter):
         return data.get("data", [])
 
     async def get_current_price(self) -> Optional[PriceQuote]:
-        """Get current CNGN/USDC rate via swap quote."""
+        """Get current cNGN/USDC rate from the public rates endpoint."""
         try:
-            quote = await self.get_cngn_to_usdc_quote(Decimal("1000"))
-            if quote.rate <= 0:
-                logger.warning("blockradar_zero_rate", raw=quote.raw_response)
+            client = await self._get_client()
+            response = await client.get(
+                f"{self.base_url}/assets/rates",
+                params={"currency": "cNGN", "assets": "USDC"},
+            )
+            response.raise_for_status()
+            data = response.json().get("data", {})
+            rate_str = data.get("USDC", {}).get("CNGN")
+            if not rate_str:
+                return None
+            rate = Decimal(rate_str)
+            if rate <= 0:
                 return None
             return PriceQuote(
                 source="blockradar",
                 timestamp=int(time.time() * 1000),
-                bid=quote.rate,
-                ask=quote.rate,
-                mid=quote.rate,
+                bid=rate,
+                ask=rate,
+                mid=rate,
             )
         except Exception as e:
             logger.debug("blockradar_price_unavailable", error=str(e))
