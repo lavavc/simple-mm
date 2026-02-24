@@ -142,7 +142,7 @@ class BlockradarAdapter(VenueAdapter):
             pair="cNGN/*",
             timestamp=int(time.time() * 1000),
             balances={"cngn": Decimal("0"), "usdc": Decimal("0")},
-            rates=dict(self._current_rates_usd) or None,
+            rates=dict(self._current_rates_raw) or None,
         )
 
     async def get_assets(self) -> list[dict]:
