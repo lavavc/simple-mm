@@ -83,6 +83,7 @@ class PositionState:
     tokens_owed_1: int
     price_lower: Decimal
     price_upper: Decimal
+    current_price: Decimal
     in_range: bool
 
 
@@ -546,7 +547,8 @@ class BaseDexAdapter(VenueAdapter, ABC):
             if liquidity == 0:
                 return None
 
-            current_tick = self.get_current_state()["tick"]
+            state = self.get_current_state()
+            current_tick = state["tick"]
 
             return PositionState(
                 token_id=token_id,
@@ -557,6 +559,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
                 tokens_owed_1=pos[9],
                 price_lower=self._tick_to_price(tick_lower),
                 price_upper=self._tick_to_price(tick_upper),
+                current_price=state["price"],
                 in_range=tick_lower <= current_tick <= tick_upper,
             )
         except Exception as e:
@@ -648,15 +651,24 @@ class BaseDexAdapter(VenueAdapter, ABC):
         if len(prices) < 2:
             raise ValueError("Insufficient price history for SD calculation")
 
-        # Calculate mean and standard deviation
         float_prices = [float(p) for p in prices]
         mean_price = statistics.mean(float_prices)
-        std_dev = statistics.stdev(float_prices)
 
-        # Range = mean +/- (SD * multiplier)
+        # EWMA volatility: σ²_t = λ·σ²_{t-1} + (1-λ)·r²_t
+        lam = float(self.params.ewma_lambda)
+        returns = [(float_prices[i] - float_prices[i - 1]) / float_prices[i - 1]
+                   for i in range(1, len(float_prices))]
+        var = sum(r * r for r in returns) / len(returns)  # seed
+        for r in returns:
+            var = lam * var + (1 - lam) * r * r
+        std_dev = mean_price * math.sqrt(var)  # convert return-vol → price-vol
+
+        # Asymmetric range: skew controls fraction of total width allocated below mean
         multiplier = float(self.params.sd_multiplier)
-        lower_price = mean_price - (std_dev * multiplier)
-        upper_price = mean_price + (std_dev * multiplier)
+        skew = float(self.params.downside_skew)
+        total = std_dev * multiplier * 2
+        lower_price = mean_price - total * skew
+        upper_price = mean_price + total * (1 - skew)
 
         # Ensure positive
         lower_price = max(lower_price, 0.0001)

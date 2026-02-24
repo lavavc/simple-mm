@@ -230,29 +230,18 @@ class TradingScheduler:
         })
 
     # ------------------------------------------------------------------
-    # DEX rebalance (tick-range + venue-vs-fair-value divergence)
+    # DEX rebalance (out-of-range with minimum distance threshold)
     # ------------------------------------------------------------------
 
     async def _check_dex_rebalance(self):
         """Check if DEX positions need rebalancing.
 
-        Two checks:
-        1. Is the LP position still in-range?
-        2. Has the venue's price drifted from blended fair value?
-
-        Check 2 catches situations where the LP is technically in-range
-        but the pool price has moved away from fair value, indicating the
-        position is being arbed against and should be repositioned.
+        Rebalances only when the active tick exits the LP range AND the price
+        has moved at least rebalance_threshold_percent beyond the boundary.
+        This avoids churning on brief range exits.
         """
         if not self._trading_enabled:
             return
-
-        blended = None
-        if self.blended_calculator:
-            try:
-                blended = await self.blended_calculator.get_blended_price()
-            except Exception as e:
-                logger.warning("blended_price_unavailable_for_rebalance", error=str(e))
 
         for name in ["aerodrome", "pancakeswap"]:
             if name not in self.venues:
@@ -276,40 +265,33 @@ class TradingScheduler:
                     continue
 
                 needs_rebalance = False
-                rebalance_reason = ""
 
-                # Check 1: tick range
                 if not position.in_range:
-                    needs_rebalance = True
-                    rebalance_reason = "position_out_of_range"
-                    logger.info(
-                        "position_out_of_range",
-                        venue=name,
-                        token_id=position.token_id,
-                        range_lower=float(position.price_lower),
-                        range_upper=float(position.price_upper),
-                    )
-
-                # Check 2: venue price vs blended fair value
-                if not needs_rebalance and blended and blended.vwap > 0:
-                    venue_price = blended.venue_prices.get(name)
-                    if venue_price and venue_price > 0:
-                        divergence_bps = int(
-                            abs(venue_price - blended.vwap)
-                            / blended.vwap
-                            * 10000
+                    # Measure how far current price is past the breached boundary
+                    if position.current_price < position.price_lower and position.price_lower > 0:
+                        distance_pct = float(
+                            (position.price_lower - position.current_price)
+                            / position.price_lower * 100
                         )
-                        if divergence_bps > self.config.venue_divergence_rebalance_bps:
-                            needs_rebalance = True
-                            rebalance_reason = "venue_diverged_from_fair_value"
-                            logger.info(
-                                "venue_price_diverged",
-                                venue=name,
-                                venue_price=float(venue_price),
-                                fair_value=float(blended.vwap),
-                                divergence_bps=divergence_bps,
-                                threshold_bps=self.config.venue_divergence_rebalance_bps,
-                            )
+                    else:
+                        distance_pct = float(
+                            (position.current_price - position.price_upper)
+                            / position.price_upper * 100
+                        )
+
+                    threshold = float(venue.params.rebalance_threshold_percent)
+                    if distance_pct >= threshold:
+                        needs_rebalance = True
+                        logger.info(
+                            "position_out_of_range",
+                            venue=name,
+                            token_id=position.token_id,
+                            range_lower=float(position.price_lower),
+                            range_upper=float(position.price_upper),
+                            current_price=float(position.current_price),
+                            distance_pct=round(distance_pct, 2),
+                            threshold_pct=threshold,
+                        )
 
                 if needs_rebalance:
                     self.broadcast({
