@@ -16,10 +16,9 @@ import { usePoolMetricsHistory } from '@/lib/hooks/useQueries';
 import type { PoolMetricPoint } from '@/types';
 
 const TIME_WINDOWS = [
-  { label: '1h',  minutes: 60 },
-  { label: '6h',  minutes: 360 },
   { label: '24h', minutes: 1440 },
   { label: '7d',  minutes: 10080 },
+  { label: '30d', minutes: 43200 },
 ] as const;
 
 const COLORS = {
@@ -45,10 +44,9 @@ function buildChartData(
   if (!points.length) return { tvl: [], vol: [] };
 
   const bucketMs =
-    minutes <= 60   ? 60_000 :
-    minutes <= 360  ? 300_000 :
-    minutes <= 1440 ? 1_800_000 :
-                      3_600_000;
+    minutes <= 1440  ? 1_800_000 :   // 30m buckets for 24h
+    minutes <= 10080 ? 3_600_000 :   // 1h buckets for 7d
+                       21_600_000;   // 6h buckets for 30d
 
   const tvlBuckets = new Map<number, Record<string, number>>();
   const volBuckets = new Map<number, Record<string, number>>();
@@ -68,7 +66,7 @@ function buildChartData(
   const fmt = (ts: number) =>
     minutes <= 1440
       ? new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-      : new Date(ts).toLocaleDateString('en-US', { weekday: 'short', hour: '2-digit' });
+      : new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
   const toRows = (map: Map<number, Record<string, number>>) =>
     Array.from(map.entries())

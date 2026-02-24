@@ -802,7 +802,7 @@ _DEX_POOLS = [
 
 
 @router.get("/pool-metrics/history")
-async def get_pool_metrics_history(minutes: int = Query(1440, ge=60, le=10080)):
+async def get_pool_metrics_history(minutes: int = Query(1440, ge=1440, le=43200)):
     """Return historical pool TVL and volume from stored position snapshots."""
     db = await get_db()
     from_ts = int((time.time() - minutes * 60) * 1000)
