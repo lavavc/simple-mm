@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import {
-  LineChart,
+  ComposedChart,
   Line,
   XAxis,
   YAxis,
@@ -21,15 +21,12 @@ const TIME_WINDOWS = [
   { label: '30d', minutes: 43200 },
 ] as const;
 
-const COLORS = {
-  aerodrome:   '#1976D2',
-  pancakeswap: '#7B1FA2',
-};
-
-const NAMES = {
-  aerodrome:   'Aerodrome',
-  pancakeswap: 'PancakeSwap',
-};
+const SERIES = {
+  aero_tvl: { label: 'Aero TVL',      color: '#1976D2', axis: 'left'  },
+  ps_tvl:   { label: 'PS TVL',        color: '#7B1FA2', axis: 'left'  },
+  aero_vol: { label: 'Aero 24hr Vol', color: '#42A5F5', axis: 'right' },
+  ps_vol:   { label: 'PS 24hr Vol',   color: '#CE93D8', axis: 'right' },
+} as const;
 
 function fmtUsd(v: number) {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
@@ -37,29 +34,26 @@ function fmtUsd(v: number) {
   return `$${Math.round(v)}`;
 }
 
-function buildChartData(
-  points: PoolMetricPoint[],
-  minutes: number,
-): { tvl: Record<string, number | string>[]; vol: Record<string, number | string>[] } {
-  if (!points.length) return { tvl: [], vol: [] };
+function buildChartData(points: PoolMetricPoint[], minutes: number) {
+  if (!points.length) return [];
 
   const bucketMs =
-    minutes <= 1440  ? 1_800_000 :   // 30m buckets for 24h
-    minutes <= 10080 ? 3_600_000 :   // 1h buckets for 7d
-                       21_600_000;   // 6h buckets for 30d
+    minutes <= 1440  ? 1_800_000 :
+    minutes <= 10080 ? 3_600_000 :
+                       21_600_000;
 
-  const tvlBuckets = new Map<number, Record<string, number>>();
-  const volBuckets = new Map<number, Record<string, number>>();
+  const buckets = new Map<number, Record<string, number>>();
 
   for (const p of points) {
     const bucket = Math.floor(p.timestamp / bucketMs) * bucketMs;
-    if (p.pool_tvl_usd != null) {
-      if (!tvlBuckets.has(bucket)) tvlBuckets.set(bucket, {});
-      tvlBuckets.get(bucket)![p.venue] = p.pool_tvl_usd;
-    }
-    if (p.volume_24h_usd != null) {
-      if (!volBuckets.has(bucket)) volBuckets.set(bucket, {});
-      volBuckets.get(bucket)![p.venue] = p.volume_24h_usd;
+    if (!buckets.has(bucket)) buckets.set(bucket, {});
+    const b = buckets.get(bucket)!;
+    if (p.venue === 'aerodrome') {
+      if (p.pool_tvl_usd   != null) b.aero_tvl = p.pool_tvl_usd;
+      if (p.volume_24h_usd != null) b.aero_vol = p.volume_24h_usd;
+    } else if (p.venue === 'pancakeswap') {
+      if (p.pool_tvl_usd   != null) b.ps_tvl = p.pool_tvl_usd;
+      if (p.volume_24h_usd != null) b.ps_vol = p.volume_24h_usd;
     }
   }
 
@@ -68,83 +62,15 @@ function buildChartData(
       ? new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
       : new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  const toRows = (map: Map<number, Record<string, number>>) =>
-    Array.from(map.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([ts, vals]) => ({ time: fmt(ts), ...vals }));
-
-  return { tvl: toRows(tvlBuckets), vol: toRows(volBuckets) };
-}
-
-function MetricChart({
-  data,
-  title,
-}: {
-  data: Record<string, number | string>[];
-  title: string;
-}) {
-  const venues = Object.keys(COLORS) as (keyof typeof COLORS)[];
-  return (
-    <div>
-      <p className="text-xs font-medium text-muted-foreground mb-2">{title}</p>
-      {data.length === 0 ? (
-        <div className="h-36 flex items-center justify-center text-xs text-muted-foreground">
-          Waiting for data&hellip;
-        </div>
-      ) : (
-        <div className="h-36">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data}>
-              <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
-              <YAxis
-                tick={{ fontSize: 9 }}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={fmtUsd}
-                width={44}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'hsl(var(--card))',
-                  border: '1px solid hsl(var(--border))',
-                  borderRadius: '8px',
-                  fontSize: '11px',
-                }}
-                formatter={(value: number, name: string) => [
-                  fmtUsd(value),
-                  NAMES[name as keyof typeof NAMES] || name,
-                ]}
-              />
-              <Legend
-                formatter={(v) => NAMES[v as keyof typeof NAMES] || v}
-                wrapperStyle={{ fontSize: '10px' }}
-              />
-              {venues.map((venue) => (
-                <Line
-                  key={venue}
-                  type="monotone"
-                  dataKey={venue}
-                  stroke={COLORS[venue]}
-                  strokeWidth={2}
-                  dot={false}
-                  connectNulls
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </div>
-  );
+  return Array.from(buckets.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([ts, vals]) => ({ time: fmt(ts), ...vals }));
 }
 
 export function PoolMetricsChart() {
   const [minutes, setMinutes] = useState(1440);
   const { data: points } = usePoolMetricsHistory(minutes);
-  const { tvl, vol } = useMemo(
-    () => buildChartData(points ?? [], minutes),
-    [points, minutes],
-  );
+  const chartData = useMemo(() => buildChartData(points ?? [], minutes), [points, minutes]);
 
   return (
     <Card>
@@ -164,9 +90,66 @@ export function PoolMetricsChart() {
           ))}
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <MetricChart data={tvl} title="Pool TVL (USD)" />
-        <MetricChart data={vol} title="24h Volume (USD)" />
+      <CardContent>
+        {chartData.length === 0 ? (
+          <div className="h-64 flex items-center justify-center text-sm text-muted-foreground">
+            Waiting for data&hellip;
+          </div>
+        ) : (
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData}>
+                <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
+                <YAxis
+                  yAxisId="left"
+                  tick={{ fontSize: 9 }}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={fmtUsd}
+                  width={48}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize: 9 }}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={fmtUsd}
+                  width={48}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--card))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '8px',
+                    fontSize: '11px',
+                  }}
+                  formatter={(value: number, name: string) => [
+                    fmtUsd(value),
+                    SERIES[name as keyof typeof SERIES]?.label ?? name,
+                  ]}
+                />
+                <Legend
+                  verticalAlign="bottom"
+                  wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }}
+                  formatter={(name) => SERIES[name as keyof typeof SERIES]?.label ?? name}
+                />
+                {(Object.keys(SERIES) as (keyof typeof SERIES)[]).map((key) => (
+                  <Line
+                    key={key}
+                    type="monotone"
+                    dataKey={key}
+                    yAxisId={SERIES[key].axis}
+                    stroke={SERIES[key].color}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                  />
+                ))}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
