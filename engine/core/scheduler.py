@@ -127,11 +127,13 @@ class TradingScheduler:
             logger.info("arbitrage_scan_job_registered")
 
         if self.account_manager:
+            from datetime import datetime, timezone
             self.scheduler.add_job(
                 self._check_balances,
                 IntervalTrigger(seconds=self.config.balance_check_interval),
                 id="balance_check",
                 replace_existing=True,
+                next_run_time=datetime.now(timezone.utc),
             )
             logger.info("balance_check_job_registered")
 
