@@ -73,9 +73,9 @@ export interface VenueLabel {
 
 export const VENUE_LABELS: Record<string, VenueLabel> = {
   aerodrome: { name: 'Aerodrome', chain: 'Base', type: 'DEX' },
-  quidax: { name: 'Quidax', chain: 'CEX', type: 'CEX' },
-  blockradar: { name: 'Blockradar', chain: 'Base', type: 'B2C' },
   pancakeswap: { name: 'PancakeSwap', chain: 'BSC', type: 'DEX' },
+  assetchain: { name: 'AssetChain', chain: 'Mainnet', type: 'DEX' },
+  quidax: { name: 'Quidax', chain: 'CEX', type: 'CEX' },
   bybit: { name: 'Bybit P2P', chain: 'P2P', type: 'P2P' },
 };
 
@@ -84,6 +84,7 @@ export const VENUE_COLORS: Record<string, string> = {
   quidax: '#2E7D32',
   aerodrome: '#1976D2',
   pancakeswap: '#7B1FA2',
+  assetchain: '#10B981',
   blockradar: '#455A64',
 };
 
@@ -100,6 +101,7 @@ const SOURCE_MAP: Record<string, SourceInfo> = {
   quidax: { venue: 'quidax', pair: 'cNGN/USDT' },
   aerodrome_pool: { venue: 'aerodrome', pair: 'cNGN/USDC' },
   pancakeswap_pool: { venue: 'pancakeswap', pair: 'cNGN/USDT' },
+  assetchain_pool: { venue: 'assetchain', pair: 'cNGN/USDT' },
   blockradar: { venue: 'blockradar', pair: 'cNGN/USDC' },
 };
 

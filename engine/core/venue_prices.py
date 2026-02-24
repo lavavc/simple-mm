@@ -537,6 +537,8 @@ def create_venue_aggregator(
     aerodrome_reader: "Optional[PoolPriceReader]" = None,
     pancakeswap_adapter: "Optional[VenueAdapter]" = None,
     pancakeswap_reader: "Optional[PoolPriceReader]" = None,
+    assetchain_adapter: "Optional[VenueAdapter]" = None,
+    assetchain_reader: "Optional[PoolPriceReader]" = None,
     blockradar_adapter: "Optional[VenueAdapter]" = None,
 ) -> VenuePriceAggregator:
     """Create a venue price aggregator with configured sources."""
@@ -562,6 +564,14 @@ def create_venue_aggregator(
             pair="cNGN/USDT",
             adapter=pancakeswap_adapter,
             reader=pancakeswap_reader,
+        )
+    )
+    sources.append(
+        DexAdapterPriceSource(
+            venue_name="assetchain",
+            pair="cNGN/USDT",
+            adapter=assetchain_adapter,
+            reader=assetchain_reader,
         )
     )
 

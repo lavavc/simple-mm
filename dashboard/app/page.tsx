@@ -12,10 +12,12 @@ interface CurvePoint {
   size: number;
   cngn_pancake: number;
   cngn_aero: number;
+  cngn_assetchain: number;
   profit: number;
   profit_no_fee: number;
   cngn_pancake_no_fee: number;
   cngn_aero_no_fee: number;
+  cngn_assetchain_no_fee: number;
   min_acceptable_usd: number;
 }
 
@@ -24,10 +26,12 @@ interface DexArbData {
   prices: {
     pancakeswap: number;
     aerodrome: number;
+    assetchain: number;
   };
   stats: {
     pancake_liquidity_cngn_raw: string;
     aerodrome_liquidity_cngn_raw: string;
+    assetchain_liquidity_cngn_raw: string;
   };
   curve: CurvePoint[];
   optimal_arb: {
@@ -40,6 +44,7 @@ interface DexArbData {
     slippage_tolerance_bps?: number;
     pancake_fee_bps?: number;
     aerodrome_fee_bps?: number;
+    assetchain_fee_bps?: number;
     estimated_gas_usd?: number;
   };
 }
@@ -66,8 +71,8 @@ export default function DashboardPage() {
 
   const resolvedCurveData = curveData || {
     timestamp: 0,
-    prices: { pancakeswap: 0, aerodrome: 0 },
-    stats: { pancake_liquidity_cngn_raw: "0", aerodrome_liquidity_cngn_raw: "0" },
+    prices: { pancakeswap: 0, aerodrome: 0, assetchain: 0 },
+    stats: { pancake_liquidity_cngn_raw: "0", aerodrome_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0" },
     curve: [],
     optimal_arb: {
       direction: "_____",

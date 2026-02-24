@@ -20,14 +20,17 @@ getcontext().prec = 50
 # Extract RPC URLs from .env (fallback to public if missing)
 BSC_RPC = os.getenv("BSC_RPC_URL", "https://bsc-dataseed.binance.org/")
 BASE_RPC = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+ASSETCHAIN_RPC = os.getenv("ASSETCHAIN_RPC_URL", "https://mainnet-rpc.assetchain.org")
 
 # Pool Addresses
 PANCAKE_POOL = "0xb84e7c912a1034ad674bba8859fca84f1f614a29"
 AERO_POOL = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
+ASSETCHAIN_POOL = "0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1"
 
 # Token Decimals
 # BSC: USDT (token0) has 18 decimals, cNGN (token1) has 6 decimals
 # BASE: cNGN (token0) has 6 decimals, USDC (token1) has 6 decimals
+# ASSETCHAIN: USDT (token0) has 18 decimals, cNGN (token1) has 6 decimals
 
 # ABI Selectors
 SLOT0_SELECTOR = "0x3850c7bd"
@@ -93,9 +96,12 @@ def v3_swap_math_token1_to_token0(amount_in: Decimal, sqrt_p: Decimal, liquidity
 async def main():
     print("Fetching live V3 sqrtPriceX96, liquidity, and fee directly from nodes...")
     try:
-        (bsc_sqrt, bsc_liq, pancake_fee_bps), (base_sqrt, base_liq, aero_fee_bps) = await asyncio.gather(
+        (bsc_sqrt, bsc_liq, pancake_fee_bps), \
+        (base_sqrt, base_liq, aero_fee_bps), \
+        (asset_sqrt, asset_liq, asset_fee_bps) = await asyncio.gather(
             get_v3_pool_state(BSC_RPC, PANCAKE_POOL),
             get_v3_pool_state(BASE_RPC, AERO_POOL),
+            get_v3_pool_state(ASSETCHAIN_RPC, ASSETCHAIN_POOL)
         )
     except Exception as e:
         print(f"Failed to fetch on-chain data: {e}")
@@ -109,18 +115,43 @@ async def main():
     # Aerodrome: token0=cNGN(6 dec), token1=USDC(6 dec).
     a_price_usd = ((base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6))
 
+    # AssetChain: token0=USDT(18 dec), token1=cNGN(6 dec).
+    assetchain_price_t0_in_t1 = ((asset_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
+    asset_price_usd = Decimal(1) / assetchain_price_t0_in_t1
+
     print("=================================================================")
     print("          EXACT V3 OFF-CHAIN ARBITRAGE OPTIMIZER                 ")
     print("=================================================================")
-    print(f"PancakeSwap (BSC) Price:  ${p_price_usd:.7f} | Fee: {pancake_fee_bps} bps (live)")
-    print(f"Aerodrome (Base) Price:   ${a_price_usd:.7f} | Fee: {aero_fee_bps} bps (live)")
-    print(f"BSC Active Liquidity:     {bsc_liq}")
-    print(f"Base Active Liquidity:    {base_liq}")
+    print(f"PancakeSwap (BSC) Price:     ${p_price_usd:.7f} | Fee: {pancake_fee_bps} bps (live)")
+    print(f"Aerodrome (Base) Price:      ${a_price_usd:.7f} | Fee: {aero_fee_bps} bps (live)")
+    print(f"AssetChain (Mainnet) Price:  ${asset_price_usd:.7f} | Fee: {asset_fee_bps} bps (live)")
+    print(f"BSC Active Liquidity:        {bsc_liq}")
+    print(f"Base Active Liquidity:       {base_liq}")
+    print(f"AssetChain Active Liquidity: {asset_liq}")
 
-    spread_bps = abs((a_price_usd - p_price_usd) / max(p_price_usd, a_price_usd)) * 10000
-    total_fee_bps = pancake_fee_bps + aero_fee_bps
-    print(f"Gross Spread:             {spread_bps:.2f} bps")
-    print(f"Total Fees:               {total_fee_bps} bps (live from chain)")
+    prices = {
+        "PancakeSwap": p_price_usd,
+        "Aerodrome": a_price_usd,
+        "AssetChain": asset_price_usd
+    }
+    
+    highest_venue = max(prices, key=prices.get)
+    lowest_venue = min(prices, key=prices.get)
+    highest_price = prices[highest_venue]
+    lowest_price = prices[lowest_venue]
+    
+    spread_bps = abs((highest_price - lowest_price) / highest_price) * 10000
+    
+    fees_map = {
+        "PancakeSwap": pancake_fee_bps,
+        "Aerodrome": aero_fee_bps,
+        "AssetChain": asset_fee_bps
+    }
+    total_fee_bps = fees_map[highest_venue] + fees_map[lowest_venue]
+    
+    print(f"\nOptimal Route: Buy on {lowest_venue} -> Sell on {highest_venue}")
+    print(f"Gross Spread:                {spread_bps:.2f} bps")
+    print(f"Total Fees:                  {total_fee_bps} bps (live from chain)")
     print("=================================================================")
 
     if spread_bps < total_fee_bps:

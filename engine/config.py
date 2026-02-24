@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     base_rpc_url: str = "https://mainnet.base.org"
     bsc_rpc_url: str = "https://bsc-dataseed.binance.org"
     eth_rpc_url: str = "https://eth.llamarpc.com"
+    assetchain_rpc_url: str = "https://mainnet-rpc.assetchain.org"
 
     @model_validator(mode="after")
     def apply_alchemy_key(self) -> "Settings":

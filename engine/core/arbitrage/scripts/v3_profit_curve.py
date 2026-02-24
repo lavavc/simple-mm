@@ -16,9 +16,11 @@ getcontext().prec = 50
 # Configure variables
 BSC_RPC = os.getenv("BSC_RPC_URL", "https://bsc-dataseed.binance.org/")
 BASE_RPC = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+ASSETCHAIN_RPC = os.getenv("ASSETCHAIN_RPC_URL", "https://mainnet-rpc.assetchain.org")
 
 PANCAKE_POOL = "0xb84e7c912a1034ad674bba8859fca84f1f614a29"
 AERO_POOL = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
+ASSETCHAIN_POOL = "0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1"
 
 SLOT0_SELECTOR = "0x3850c7bd"
 LIQUIDITY_SELECTOR = "0x1a686502"
@@ -109,23 +111,29 @@ def calc_aerodrome_buy_cngn(amount_usdc_in: Decimal, sqrt_p: Decimal, liquidity:
 
 async def main():
     print("Fetching live V3 data (slot0, liquidity, fee) from chain...")
-    # Fetch both pools in parallel — each pool call is also parallelised internally
-    (bsc_sqrt, bsc_liq, pancake_fee), (base_sqrt, base_liq, aero_fee) = await asyncio.gather(
+    # Fetch all pools in parallel
+    (bsc_sqrt, bsc_liq, pancake_fee), \
+    (base_sqrt, base_liq, aero_fee), \
+    (asset_sqrt, asset_liq, asset_fee) = await asyncio.gather(
         get_v3_pool_state(BSC_RPC, PANCAKE_POOL),
         get_v3_pool_state(BASE_RPC, AERO_POOL),
+        get_v3_pool_state(ASSETCHAIN_RPC, ASSETCHAIN_POOL)
     )
 
     pancake_price = ((bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
     p_price_usd = Decimal(1) / pancake_price
     a_price_usd = ((base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6))
+    asset_price = ((asset_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
+    asset_price_usd = Decimal(1) / asset_price
 
     print("=================================================================")
     print("        V3 PRICE IMPACT & PROFIT CURVE SIMULATOR                 ")
     print("=================================================================")
-    print(f"PancakeSwap Price: ${p_price_usd:.7f} | Fee: {pancake_fee * 100:.4f}% (live from chain)")
-    print(f"Aerodrome Price:   ${a_price_usd:.7f} | Fee: {aero_fee * 100:.4f}% (live from chain)")
+    print(f"PancakeSwap Price: ${p_price_usd:.7f} | Fee: {pancake_fee * 100:.4f}%")
+    print(f"Aerodrome Price:   ${a_price_usd:.7f} | Fee: {aero_fee * 100:.4f}%")
+    print(f"AssetChain Price:  ${asset_price_usd:.7f} | Fee: {asset_fee * 100:.4f}%")
     print("-----------------------------------------------------------------")
-    print(f"{'Invest ($)':<10} | {'Got cNGN(Pancake)':<17} | {'Got cNGN(Aero)':<16} | {'Net Profit ($)':<15}")
+    print(f"{'Invest ($)':<10} | {'Got cNGN(Pancake)':<17} | {'Got cNGN(Asset)':<17} | {'Net Profit ($)':<15}")
     print("-" * 65)
 
     test_sizes = [1, 10, 50, 100, 500, 1000, 2500, 5000, 10000, 50000, 100000]
@@ -133,18 +141,16 @@ async def main():
     for size in test_sizes:
         investment_usd = Decimal(str(size))
 
-        # 1. Buy cNGN on PancakeSwap using live fee
+        # We test buying on Pancake and AssetChain
+        # Pancake buys (token0=USDT -> token1=cNGN) -- same as AssetChain structure
         cngn_received_pancake = calc_pancake_buy_cngn(investment_usd, bsc_sqrt, bsc_liq, pancake_fee)
+        cngn_received_asset = calc_pancake_buy_cngn(investment_usd, asset_sqrt, asset_liq, asset_fee)
 
-        # 2. Buy cNGN on Aerodrome (side-by-side comparison)
-        cngn_received_aero = calc_aerodrome_buy_cngn(investment_usd, base_sqrt, base_liq, aero_fee)
-
-        # 3. Round-trip: sell Pancake's cNGN on Aerodrome
-        usd_returned = calc_aerodrome_sell_cngn(cngn_received_pancake, base_sqrt, base_liq, aero_fee)
-
+        # Let's say we do a round-trip: sell cNGN bought on AssetChain over on Aerodrome
+        usd_returned = calc_aerodrome_sell_cngn(cngn_received_asset, base_sqrt, base_liq, aero_fee)
         net_profit = usd_returned - investment_usd
 
-        print(f"${size:<9,d} | {int(cngn_received_pancake):<17,d} | {int(cngn_received_aero):<16,d} | ${net_profit:<14,.2f}")
+        print(f"${size:<9,d} | {int(cngn_received_pancake):<17,d} | {int(cngn_received_asset):<17,d} | ${net_profit:<14,.2f}")
 
 if __name__ == "__main__":
     asyncio.run(main())
