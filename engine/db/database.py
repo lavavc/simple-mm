@@ -389,9 +389,16 @@ class Database:
     # === Alerts ===
 
     async def insert_alert(
-        self, severity: str, category: str, message: str
+        self, severity: str, category: str, message: str, dedup: bool = False
     ) -> int:
-        """Insert an alert and return its ID."""
+        """Insert an alert and return its ID. If dedup=True, skip if an identical unacknowledged alert exists."""
+        if dedup:
+            cursor = await self._conn.execute(
+                "SELECT id FROM alerts WHERE category=? AND message=? AND acknowledged=0 LIMIT 1",
+                (category, message),
+            )
+            if await cursor.fetchone():
+                return 0
         cursor = await self._conn.execute(
             """
             INSERT INTO alerts (timestamp, severity, category, message)

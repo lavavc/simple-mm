@@ -631,6 +631,7 @@ class TradingScheduler:
                         severity="warning",
                         category="refill",
                         message=f"Account {balance.role} needs refill: {', '.join(balance.refill_reasons)}",
+                        dedup=True,
                     )
 
                     self.broadcast({
