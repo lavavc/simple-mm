@@ -169,6 +169,13 @@ export interface PoolMetrics {
   volume_24h_usd: number | null;
 }
 
+export interface PoolMetricPoint {
+  timestamp: number;
+  venue: string;
+  pool_tvl_usd: number | null;
+  volume_24h_usd: number | null;
+}
+
 /** Row from the price_snapshots table (returned by GET /api/price/history). */
 export interface PriceSnapshot {
   id: number;

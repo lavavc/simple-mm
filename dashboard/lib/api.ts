@@ -13,6 +13,7 @@ import type {
   BlendedPriceResponse,
   NormalizedPriceResponse,
   PoolMetrics,
+  PoolMetricPoint,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
@@ -171,6 +172,9 @@ export const api = {
   // Pool metrics (DexScreener)
   getPoolMetrics: (): Promise<PoolMetrics[]> =>
     fetchJson(`${API_BASE}/pool-metrics`),
+
+  getPoolMetricsHistory: (minutes: number): Promise<PoolMetricPoint[]> =>
+    fetchJson(`${API_BASE}/pool-metrics/history?minutes=${minutes}`),
 
   // Alerts
   getAlerts: (limit = 20): Promise<Alert[]> =>

@@ -340,36 +340,32 @@ class TestNormalizeSinglePrice:
 
 
 class TestConfidence:
-    """Test confidence score computation."""
+    """Test confidence score computation: 90% at 5 venues, -20% per missing venue."""
 
-    def test_perfect_agreement(self):
-        """All venues at same price → 100% confidence."""
-        normalized = {
-            "a": NormalizedPrice(venue="a", cngn_usd=Decimal("0.000700"), raw_quote=PriceQuote(source="a", timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")), basis="cNGN/USDC", timestamp=0),
-            "b": NormalizedPrice(venue="b", cngn_usd=Decimal("0.000700"), raw_quote=PriceQuote(source="b", timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")), basis="cNGN/USDT", timestamp=0),
-        }
-        confidence = BlendedPriceCalculator._compute_confidence(normalized, Decimal("0.000700"))
-        assert confidence == 1.0
+    def _np(self, venue: str) -> NormalizedPrice:
+        return NormalizedPrice(
+            venue=venue, cngn_usd=Decimal("0.000700"),
+            raw_quote=PriceQuote(source=venue, timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")),
+            basis="cNGN/USDC", timestamp=0,
+        )
 
-    def test_one_outlier(self):
-        """One venue far from VWAP → partial confidence."""
-        normalized = {
-            "a": NormalizedPrice(venue="a", cngn_usd=Decimal("0.000700"), raw_quote=PriceQuote(source="a", timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")), basis="cNGN/USDC", timestamp=0),
-            "b": NormalizedPrice(venue="b", cngn_usd=Decimal("0.000700"), raw_quote=PriceQuote(source="b", timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")), basis="cNGN/USDT", timestamp=0),
-            "c": NormalizedPrice(venue="c", cngn_usd=Decimal("0.000800"), raw_quote=PriceQuote(source="c", timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")), basis="cNGN/USDT", timestamp=0),
-        }
-        confidence = BlendedPriceCalculator._compute_confidence(normalized, Decimal("0.000700"))
-        # a and b agree (within 1%), c is 14% off
-        assert confidence == pytest.approx(2 / 3, abs=0.01)
+    def test_all_five_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap", "blockradar"]}
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.9)
+
+    def test_four_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap"]}
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.7)
+
+    def test_three_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome"]}
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.5)
+
+    def test_one_venue(self):
+        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}) == pytest.approx(0.1)
 
     def test_empty_returns_zero(self):
-        assert BlendedPriceCalculator._compute_confidence({}, Decimal("0.0007")) == 0.0
-
-    def test_zero_vwap_returns_zero(self):
-        normalized = {
-            "a": NormalizedPrice(venue="a", cngn_usd=Decimal("0.000700"), raw_quote=PriceQuote(source="a", timestamp=0, bid=Decimal("0"), ask=Decimal("0"), mid=Decimal("0")), basis="cNGN/USDC", timestamp=0),
-        }
-        assert BlendedPriceCalculator._compute_confidence(normalized, Decimal("0")) == 0.0
+        assert BlendedPriceCalculator._compute_confidence({}) == 0.0
 
 
 # =============================================================================

@@ -17,8 +17,8 @@ export function VenueCard({ venue }: VenueCardProps) {
   const priceError = venue.price?.error;
 
   const normalized = venue.price ? normalizeToNgnUsd(venue.price) : null;
-  // Don't show spread for DEX venues (AMM pools don't have order book spreads)
-  const spread = normalized && !isDex(venue.name) ? spreadBps(normalized) : null;
+  // Don't show spread for DEX venues (AMM pools don't have order book spreads) or blockradar (rate-setter)
+  const spread = normalized && !isDex(venue.name) && venue.name !== 'blockradar' ? spreadBps(normalized) : null;
 
   return (
     <Card className="hover:border-primary/50 transition-colors">

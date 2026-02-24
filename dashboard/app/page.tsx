@@ -6,7 +6,7 @@ import { BlendedPriceCard } from '@/components/cards/BlendedPriceCard';
 import { VenueCard } from '@/components/cards/VenueCard';
 import { ArbitrageCard } from '@/components/cards/ArbitrageCard';
 import { AlertsList } from '@/components/cards/AlertsList';
-import { PoolMetricsCard } from '@/components/cards/PoolMetricsCard';
+import { PoolMetricsChart } from '@/components/charts/PoolMetricsChart';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
 import {
   useStatus,
@@ -74,11 +74,11 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* DEX Pool Metrics */}
-      <PoolMetricsCard />
-
       {/* Venue Price Comparison Chart */}
       <VenuePriceChart blended={blendedPrice} />
+
+      {/* DEX Pool Metrics */}
+      <PoolMetricsChart />
 
       {/* Bottom row: Arbitrage and Alerts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

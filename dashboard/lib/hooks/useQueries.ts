@@ -73,6 +73,14 @@ export function usePoolMetrics() {
   });
 }
 
+export function usePoolMetricsHistory(minutes: number) {
+  return useQuery({
+    queryKey: ['poolMetricsHistory', minutes],
+    queryFn: () => api.getPoolMetricsHistory(minutes),
+    refetchInterval: 60_000,
+  });
+}
+
 // ── Mutations ───────────────────────────────────────────────────────────────
 
 

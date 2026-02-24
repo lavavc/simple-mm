@@ -332,8 +332,8 @@ class BlendedPriceCalculator:
         if twap_1h == 0:
             twap_1h = vwap
 
-        # Confidence: based on how many sources agree within 1%
-        confidence = self._compute_confidence(fair_normalized, vwap)
+        # Confidence: 90% when all venues report, minus 20% per missing venue
+        confidence = self._compute_confidence(normalized)
 
         venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}  # all venues for display
 
@@ -401,22 +401,7 @@ class BlendedPriceCalculator:
         return None  # ambiguous range: mid between 1–100 can't be safely classified
 
     @staticmethod
-    def _compute_confidence(
-        normalized: dict[str, NormalizedPrice],
-        vwap: Decimal,
-    ) -> float:
-        """Compute confidence score 0-1 based on source agreement.
-
-        Confidence is the fraction of venues whose price is within 1% of VWAP.
-        """
-        if not normalized or vwap <= 0:
-            return 0.0
-
-        agreeing = 0
-        for np in normalized.values():
-            if np.cngn_usd > 0:
-                deviation = abs(np.cngn_usd - vwap) / vwap
-                if deviation <= Decimal("0.01"):  # Within 1%
-                    agreeing += 1
-
-        return agreeing / len(normalized)
+    def _compute_confidence(normalized: dict[str, NormalizedPrice]) -> float:
+        """Confidence score: 90% at full venue count, minus 20% per missing venue."""
+        TOTAL_VENUES = 5  # bybit, quidax, aerodrome, pancakeswap, blockradar
+        return max(0.0, 0.9 - 0.2 * (TOTAL_VENUES - len(normalized)))

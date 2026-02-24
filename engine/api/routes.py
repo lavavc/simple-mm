@@ -801,6 +801,14 @@ _DEX_POOLS = [
 ]
 
 
+@router.get("/pool-metrics/history")
+async def get_pool_metrics_history(minutes: int = Query(1440, ge=60, le=10080)):
+    """Return historical pool TVL and volume from stored position snapshots."""
+    db = await get_db()
+    from_ts = int((time.time() - minutes * 60) * 1000)
+    return await db.get_pool_metrics_history(["aerodrome", "pancakeswap"], from_ts)
+
+
 @router.get("/pool-metrics")
 async def get_pool_metrics():
     """Return 24h volume and TVL for all DEX pools (reuses venue adapter cache)."""
