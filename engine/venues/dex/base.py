@@ -119,6 +119,10 @@ _BALANCE_OF_SIG = bytes.fromhex("70a08231")
 # Uniswap V3 Swap event topic: keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
 _SWAP_EVENT_TOPIC = bytes.fromhex("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67")
 
+# Function selector for fee(): keccak256("fee()")[:4] = 0xddca3f43
+# Returns uint24 fee tier (e.g. 10000 = 1%, 3000 = 0.3%, 500 = 0.05%)
+FEE_SELECTOR = bytes.fromhex("ddca3f43")
+
 # DexScreener chain identifiers
 DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
 
@@ -306,6 +310,9 @@ class BaseDexAdapter(VenueAdapter, ABC):
         # Per-account nonce locks to prevent concurrent transaction collisions
         self._nonce_locks: dict[str, asyncio.Lock] = {}
 
+        # Cached pool fee in bps — fetched once from the chain at init time
+        self._pool_fee_bps: Optional[int] = None
+
         # Token contracts for balance queries
         self.token0 = self.w3.eth.contract(
             address=Web3.to_checksum_address(pool_config.token0_address),
@@ -332,6 +339,46 @@ class BaseDexAdapter(VenueAdapter, ABC):
     def get_router_abi(self) -> list:
         """Return the swap router ABI."""
         pass
+
+    def get_pool_fee_bps(self) -> int:
+        """Return the pool's fee tier in basis points, fetched from chain and cached.
+
+        Calls ``fee()`` on the pool contract once and caches the result for the
+        lifetime of this adapter instance — zero latency on every subsequent call.
+        Falls back to the config value if the RPC call fails.
+
+        Returns:
+            Fee in basis points (e.g. 100 = 1%, 30 = 0.3%, 5 = 0.05%)
+        """
+        if self._pool_fee_bps is not None:
+            return self._pool_fee_bps
+
+        try:
+            result = self.w3.eth.call(
+                {"to": self.pool_contract.address, "data": FEE_SELECTOR}
+            )
+            # fee() returns uint24, right-padded to 32 bytes
+            fee_raw = int.from_bytes(result[:32], "big")  # e.g. 10000 for 1%
+            # Convert from pool units (1e6 denominator) to bps (1e4 denominator)
+            self._pool_fee_bps = fee_raw // 100
+            logger.info(
+                "pool_fee_fetched",
+                venue=self.name,
+                fee_raw=fee_raw,
+                fee_bps=self._pool_fee_bps,
+            )
+        except Exception as e:
+            # Fall back to config value if RPC call fails
+            fallback = self.config.pool_fee or (self.config.tick_spacing * 50)
+            self._pool_fee_bps = fallback // 100
+            logger.warning(
+                "pool_fee_fetch_failed",
+                venue=self.name,
+                error=str(e),
+                fallback_bps=self._pool_fee_bps,
+            )
+
+        return self._pool_fee_bps
 
     # === VenueAdapter implementation ===
 

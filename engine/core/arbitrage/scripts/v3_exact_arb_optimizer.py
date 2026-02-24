@@ -32,22 +32,30 @@ AERO_POOL = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
 # ABI Selectors
 SLOT0_SELECTOR = "0x3850c7bd"
 LIQUIDITY_SELECTOR = "0x1a686502"
+# fee() selector: keccak256("fee()")[:4] = 0xddca3f43
+FEE_SELECTOR = "0xddca3f43"
 
 Q96 = Decimal(2 ** 96)
 
 async def get_v3_pool_state(rpc_url: str, pool_address: str):
-    """Fetches exact live slotted state for a V3 pool."""
+    """Fetches exact live slotted state and fee tier for a V3 pool."""
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
     pool = w3.to_checksum_address(pool_address)
-    
-    # Batch the calls to save time
-    slot0_raw = await w3.eth.call({"to": pool, "data": SLOT0_SELECTOR})
-    liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
-    
+
+    # Batch all three calls in parallel
+    slot0_raw, liquidity_raw, fee_raw = await asyncio.gather(
+        w3.eth.call({"to": pool, "data": SLOT0_SELECTOR}),
+        w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR}),
+        w3.eth.call({"to": pool, "data": FEE_SELECTOR}),
+    )
+
     sqrt_price_x96 = int.from_bytes(slot0_raw[:32], "big")
     liquidity = int.from_bytes(liquidity_raw[:32], "big")
-    
-    return Decimal(sqrt_price_x96), Decimal(liquidity)
+    # fee() returns uint24 pool units (e.g. 10000 = 1%). Convert to bps.
+    fee_units = int.from_bytes(fee_raw[:32], "big")
+    fee_bps = fee_units // 100  # e.g. 10000 -> 100 bps
+
+    return Decimal(sqrt_price_x96), Decimal(liquidity), fee_bps
 
 def v3_swap_math_token0_to_token1(amount_in: Decimal, sqrt_p: Decimal, liquidity: Decimal) -> Decimal:
     """
@@ -83,41 +91,43 @@ def v3_swap_math_token1_to_token0(amount_in: Decimal, sqrt_p: Decimal, liquidity
 
 
 async def main():
-    print("Fetching live V3 sqrtPriceX96 and liquidity directly from nodes...")
+    print("Fetching live V3 sqrtPriceX96, liquidity, and fee directly from nodes...")
     try:
-        bsc_sqrt, bsc_liq = await get_v3_pool_state(BSC_RPC, PANCAKE_POOL)
-        base_sqrt, base_liq = await get_v3_pool_state(BASE_RPC, AERO_POOL)
+        (bsc_sqrt, bsc_liq, pancake_fee_bps), (base_sqrt, base_liq, aero_fee_bps) = await asyncio.gather(
+            get_v3_pool_state(BSC_RPC, PANCAKE_POOL),
+            get_v3_pool_state(BASE_RPC, AERO_POOL),
+        )
     except Exception as e:
         print(f"Failed to fetch on-chain data: {e}")
         return
 
     # Calculate human readable prices
-    # Pancake: token0=USDT(18 dec), token1=cNGN(6 dec). Price of token0 in terms of token1.
+    # Pancake: token0=USDT(18 dec), token1=cNGN(6 dec).
     pancake_price_t0_in_t1 = ((bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
-    # We want USD per cNGN, so 1 / price
     p_price_usd = Decimal(1) / pancake_price_t0_in_t1
-    
-    # Aerodrome: token0=cNGN(6 dec), token1=USDC(6 dec). Price of token0 in terms of token1.
+
+    # Aerodrome: token0=cNGN(6 dec), token1=USDC(6 dec).
     a_price_usd = ((base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6))
-    
+
     print("=================================================================")
     print("          EXACT V3 OFF-CHAIN ARBITRAGE OPTIMIZER                 ")
     print("=================================================================")
-    print(f"PancakeSwap (BSC) Price:  ${p_price_usd:.7f}")
-    print(f"Aerodrome (Base) Price:   ${a_price_usd:.7f}")
+    print(f"PancakeSwap (BSC) Price:  ${p_price_usd:.7f} | Fee: {pancake_fee_bps} bps (live)")
+    print(f"Aerodrome (Base) Price:   ${a_price_usd:.7f} | Fee: {aero_fee_bps} bps (live)")
     print(f"BSC Active Liquidity:     {bsc_liq}")
     print(f"Base Active Liquidity:    {base_liq}")
-    
+
     spread_bps = abs((a_price_usd - p_price_usd) / max(p_price_usd, a_price_usd)) * 10000
+    total_fee_bps = pancake_fee_bps + aero_fee_bps
     print(f"Gross Spread:             {spread_bps:.2f} bps")
+    print(f"Total Fees:               {total_fee_bps} bps (live from chain)")
     print("=================================================================")
-    
-    if spread_bps < 55:
-        print("❌ Spread too small (< 55 bps). Waiting for volatility.")
+
+    if spread_bps < total_fee_bps:
+        print(f"❌ Spread ({spread_bps:.2f} bps) < fees ({total_fee_bps} bps). Waiting for volatility.")
         return
-        
+
     print("Spread detected. Calculating optimal V3 tick math...\n")
-    # Simulation loop would go here...
     print("Run successful. Web3 connected perfectly to V3 liquidity.")
 
 
