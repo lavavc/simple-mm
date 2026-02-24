@@ -32,7 +32,7 @@ PANCAKESWAP_CNGN_USDT_CONFIG = PoolConfig(
     token1_symbol="cNGN",
     token0_decimals=18,
     token1_decimals=6,
-    tick_spacing=200,  # PancakeSwap V3 tick spacing (2500 bps fee tier)
+    tick_spacing=1,  # PancakeSwap V3 tick spacing (1 bps fee tier)
 )
 
 

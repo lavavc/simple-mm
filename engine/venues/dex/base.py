@@ -17,6 +17,13 @@ from web3 import Web3
 from web3.types import TxReceipt
 
 from engine.api.schemas import Position, PriceQuote, LPPosition, TxResult, DexParams
+from engine.math.v3 import (
+    sqrt_price_x96_to_decimal as _sqrt_price_x96_to_decimal,
+    tick_to_price as _v3_tick_to_price,
+    price_to_tick as _v3_price_to_tick,
+    align_tick,
+    constrain_tick_width,
+)
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
@@ -88,20 +95,8 @@ class PositionState:
 # =============================================================================
 
 
-def sqrt_price_x96_to_decimal(
-    sqrt_price_x96: int,
-    token0_decimals: int,
-    token1_decimals: int,
-) -> Decimal:
-    """Convert a UniswapV3/CL sqrtPriceX96 value to a human-readable price.
-
-    Returns the price of token0 denominated in token1, adjusted for
-    the decimal difference between the two tokens.
-    """
-    price = (Decimal(sqrt_price_x96) / Decimal(2**96)) ** 2
-    decimal_diff = token0_decimals - token1_decimals
-    price *= Decimal(10**decimal_diff)
-    return price
+# Re-export so existing callers (PoolPriceReader, tests) keep working.
+sqrt_price_x96_to_decimal = _sqrt_price_x96_to_decimal
 
 
 # Function selector for slot0(): keccak256("slot0()")[:4] = 0x3850c7bd
@@ -525,27 +520,17 @@ class BaseDexAdapter(VenueAdapter, ABC):
         tick_upper = self._price_to_tick(Decimal(str(upper_price)))
 
         # Align to tick spacing
-        tick_lower = (tick_lower // self.config.tick_spacing) * self.config.tick_spacing
-        tick_upper = (
-            (tick_upper // self.config.tick_spacing) + 1
-        ) * self.config.tick_spacing
+        tick_lower = align_tick(tick_lower, self.config.tick_spacing, "down")
+        tick_upper = align_tick(tick_upper, self.config.tick_spacing, "up")
 
-        # Apply min/max width constraints
-        tick_width = tick_upper - tick_lower
-        if tick_width < self.params.min_tick_width:
-            mid = (tick_lower + tick_upper) // 2
-            tick_lower = mid - self.params.min_tick_width // 2
-            tick_upper = mid + self.params.min_tick_width // 2
-        elif tick_width > self.params.max_tick_width:
-            mid = (tick_lower + tick_upper) // 2
-            tick_lower = mid - self.params.max_tick_width // 2
-            tick_upper = mid + self.params.max_tick_width // 2
-
-        # Re-align to tick spacing after width constraints (width adjustment can un-align)
-        tick_lower = (tick_lower // self.config.tick_spacing) * self.config.tick_spacing
-        tick_upper = (
-            (tick_upper // self.config.tick_spacing) + 1
-        ) * self.config.tick_spacing
+        # Apply min/max width constraints + re-align
+        tick_lower, tick_upper = constrain_tick_width(
+            tick_lower,
+            tick_upper,
+            self.params.min_tick_width,
+            self.params.max_tick_width,
+            self.config.tick_spacing,
+        )
 
         logger.info(
             "calculated_tick_range",
@@ -703,16 +688,11 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
     def _tick_to_price(self, tick: int) -> Decimal:
         """Convert tick to price."""
-        price = Decimal("1.0001") ** tick
-        decimal_diff = self.config.token0_decimals - self.config.token1_decimals
-        price *= Decimal(10**decimal_diff)
-        return price
+        return _v3_tick_to_price(tick, self.config.token0_decimals, self.config.token1_decimals)
 
     def _price_to_tick(self, price: Decimal) -> int:
         """Convert price to tick."""
-        decimal_diff = self.config.token0_decimals - self.config.token1_decimals
-        adjusted = float(price) / (10**decimal_diff)
-        return int(math.log(adjusted) / math.log(1.0001))
+        return _v3_price_to_tick(price, self.config.token0_decimals, self.config.token1_decimals)
 
     # === Transaction helpers ===
 
