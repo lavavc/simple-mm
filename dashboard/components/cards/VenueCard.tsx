@@ -82,7 +82,7 @@ export function VenueCard({ venue }: VenueCardProps) {
         {venue.position && (
           <div className="pt-2 border-t">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              {Object.entries(venue.position.balances).map(([token, amount]) => (
+              {Object.entries(venue.position.balances).filter(([, amount]) => Number(amount) > 0).map(([token, amount]) => (
                 <div key={token} className="flex justify-between">
                   <span className="text-muted-foreground uppercase">{token}</span>
                   <span>{formatNumber(amount as number, token === 'cngn' ? 0 : 2)}</span>

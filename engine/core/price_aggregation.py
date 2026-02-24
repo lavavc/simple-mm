@@ -71,8 +71,8 @@ class BlendedPrice:
 
 # Venue classification by native pair type
 USDT_NGN_VENUES = {"bybit"}
-CNGN_USD_VENUES = {"quidax", "aerodrome", "pancakeswap"}
-CNGN_NGN_VENUES = {"blockradar"}
+CNGN_USD_VENUES = {"quidax", "aerodrome", "pancakeswap", "blockradar"}
+CNGN_NGN_VENUES: frozenset[str] = frozenset()
 
 # Chain IDs for DEX venues; None = off-chain / no chain
 VENUE_CHAINS: dict[str, int | None] = {
@@ -449,7 +449,9 @@ class BlendedPriceCalculator:
         if venue in USDT_NGN_VENUES:
             return Decimal("1") / mid
         elif venue in CNGN_USD_VENUES:
-            return mid
+            # cNGN/USD must always be < 1 (1 USD = 1000+ NGN).
+            # Guards against old blockradar DB snapshots where mid ≈ 1.0 (NGN peg).
+            return mid if mid < Decimal("1") else None
         elif venue in CNGN_NGN_VENUES:
             # Cannot normalize without a cross-rate; skip in TWAP
             return None

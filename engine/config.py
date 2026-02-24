@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     arbitrage_max_daily_loss_usd: float = 500.0
     arbitrage_cross_chain_rebalance_bps: int = 10
     arbitrage_max_delta_ratio: float = 0.60
-    arbitrage_min_account_stablecoin_usd: float = 1000.0
+    arbitrage_min_account_stablecoin_usd: float = 50.0
 
     # Account management
     use_test_accounts: bool = False  # Use Anvil test mnemonic (for local dev)
