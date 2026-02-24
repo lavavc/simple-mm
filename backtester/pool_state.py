@@ -21,6 +21,11 @@ class PoolState:
     def __init__(self) -> None:
         self.tick_map: dict[int, int] = {}  # tick → liquidityNet (signed)
 
+    def copy(self) -> PoolState:
+        ps = PoolState()
+        ps.tick_map = self.tick_map.copy()
+        return ps
+
     def apply_mint(self, tick_lower: int, tick_upper: int, liquidity_delta: int) -> None:
         self.tick_map[tick_lower] = self.tick_map.get(tick_lower, 0) + liquidity_delta
         self.tick_map[tick_upper] = self.tick_map.get(tick_upper, 0) - liquidity_delta

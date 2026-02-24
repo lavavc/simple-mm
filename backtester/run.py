@@ -5,8 +5,9 @@ import csv
 import sys
 from pathlib import Path
 
-from backtester.data import load_events
+from backtester.data import load_events, MintEvent, BurnEvent
 from backtester.params import generate_grid, BacktestParams
+from backtester.pool_state import PoolState
 from backtester.simulator import (
     simulate_pool,
     SimResult,
@@ -24,14 +25,16 @@ POOLS = {
 
 
 def _run_grid(
-    events, pool_config: PoolConfig, grid: list[BacktestParams]
+    events, pool_config: PoolConfig, grid: list[BacktestParams],
+    initial_pool_state: PoolState | None = None,
 ) -> list[tuple[BacktestParams, SimResult, dict]]:
     rows = []
     total = len(grid)
     for i, params in enumerate(grid, 1):
         if i % 100 == 0:
             print(f"  {i}/{total}", file=sys.stderr)
-        sim = simulate_pool(events, params, pool_config, params.initial_capital_usd)
+        sim = simulate_pool(events, params, pool_config, params.initial_capital_usd,
+                            initial_pool_state=initial_pool_state)
         m = _compute_metrics(sim, params.initial_capital_usd)
         rows.append((params, sim, m))
     return rows
@@ -72,15 +75,24 @@ def _walk_forward(
     print(f"Walk-forward: train={len(train_events)} events, val={len(val_events)} events",
           file=sys.stderr)
 
+    # Build pool state from training events so validation starts with correct liquidity
+    pool_state_at_split = PoolState()
+    for ev in train_events:
+        if isinstance(ev, MintEvent):
+            pool_state_at_split.apply_mint(ev.tick_lower, ev.tick_upper, ev.liquidity_delta)
+        elif isinstance(ev, BurnEvent):
+            pool_state_at_split.apply_burn(ev.tick_lower, ev.tick_upper, ev.liquidity_delta)
+
     # Train
     print("Training...", file=sys.stderr)
     train_rows = _run_grid(train_events, pool_config, grid)
     train_rows.sort(key=lambda r: r[2]["composite"], reverse=True)
 
-    # Validate top N
+    # Validate top N (with pool state carried from training)
     top_params = [r[0] for r in train_rows[:top_n]]
     print(f"Validating top {top_n}...", file=sys.stderr)
-    val_rows = _run_grid(val_events, pool_config, top_params)
+    val_rows = _run_grid(val_events, pool_config, top_params,
+                         initial_pool_state=pool_state_at_split)
 
     results = []
     for (p, _, train_m), (_, _, val_m) in zip(train_rows[:top_n], val_rows):
