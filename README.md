@@ -190,3 +190,8 @@ The `calculate_mint_amounts()` method returns the final amounts in raw token uni
 | `lookback_points` | int | None | Limit price history for SD calculation |
 | `rebalance_threshold_percent` | Decimal | 5.0 | % out of range before rebalancing |
 | `max_slippage_percent` | Decimal | 1.0 | Max slippage for swaps |
+
+**How to Run Backtester Module**
+```
+python3 -m backtester.run --csv data/Aerodrome\&Pancakeswap_HistoricalData.csv --pool both --walkforward
+```
