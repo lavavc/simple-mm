@@ -33,8 +33,8 @@ class BlockradarRoute:
 _ROUTES: list[BlockradarRoute] = [
     BlockradarRoute("cngn_usdc", "cNGN", "USDC", "USDC", "CNGN", False),
     BlockradarRoute("cngn_usdt", "cNGN", "USDT", "USDT", "CNGN", False),
-    BlockradarRoute("usdt_cngn", "USDT", "cNGN", "cNGN", "USDT", True),
-    BlockradarRoute("usdc_cngn", "USDC", "cNGN", "cNGN", "USDC", True),
+    BlockradarRoute("usdt_cngn", "USDT", "cNGN", "CNGN", "USDT", True),
+    BlockradarRoute("usdc_cngn", "USDC", "cNGN", "CNGN", "USDC", True),
 ]
 
 _MIN_AMOUNTS: dict[str, str] = {
