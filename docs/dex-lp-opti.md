@@ -16,7 +16,7 @@ Implementation: [engine/venues/dex/base.py](../engine/venues/dex/base.py) (`calc
 | `preemptive_rebalance` | true, false | discrete | `false` = reactive (rebalance after exiting range by threshold). `true` = pre-emptive (rebalance when price is within threshold of range edge, still in range) |
 | `rebalance_threshold_percent` | 1, 3, 5, 10, 15 | discrete | How far past (reactive) or before (pre-emptive) the range boundary to trigger |
 | `ewma_lambda` | 0.95, 0.975, 0.99, 0.999 | discrete | EWMA decay rate for mean and SD. Lower = more reactive, higher = smoother |
-| `downside_skew` | 0.5, 0.6, 0.7, 0.8 | discrete | Fraction of range below the mean. 0.5 = symmetric, 0.8 = 80% downside |
+| `downside_skew` | 0.5, 0.6, 0.7, 0.8 | discrete | Fraction of range below the new center-tick which will be set to the EWMA mean price. 0.5 = symmetric, 0.8 = 80% downside |
 | `venue_divergence_rebalance_bps` | 100, 200, 300, 500 | discrete | Second rebalance trigger, fires independently of out-of-range check |
 
 ~11 × 5 × 2 × 4 × 4 × 4 = **7,040 combinations**. Use walk-forward validation (section 4) to catch overfitting.
@@ -229,10 +229,8 @@ y = L × (√P - √p_a)
 
 Position value at any point: `V(P) = x × P + y`. IL is the difference between this and holding the initial token mix:
 
-```
 IL = V_hold(P) - V_LP(P)
-   = (x_initial × P + y_initial) - (x(P) × P + y(P))
-```
+   = $2 * \frac{ \sqrt{\frac{new_price_ratio}{old_price_ratio}}}{1 + \frac{new_price_ratio}{old_price_ratio}} - 1$ 
 
 If P exits the range: all value concentrates into one token (all x below p_a, all y above p_b), and IL is at its maximum for that range. This is the worst case that a rebalance realizes.
 
