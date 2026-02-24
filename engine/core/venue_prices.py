@@ -329,7 +329,14 @@ class QuidaxPriceSource(VenuePriceSource):
 
 
 class BlockradarPriceSource(VenuePriceSource):
-    """Fetches cNGN/USDC swap quote from the Blockradar adapter."""
+    """Fetches the cNGN/USDC rate from the Blockradar public rates API.
+
+    To add another Blockradar pair (e.g. cNGN/USDT, USDC/cNGN):
+    - Create a second subclass with a different `name` and `pair`
+    - Pass the matching `currency`/`assets` params to the adapter
+    - Register it in `create_venue_aggregator`
+    - Add the pair string to the right constant in price_aggregation.py
+    """
 
     name = "blockradar"
     pair = "cNGN/USDC"

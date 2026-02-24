@@ -14,11 +14,6 @@ from engine.core.price_aggregation import (
     PriceNormalizer,
     BlendedPriceCalculator,
     NormalizedPrice,
-    USDT_NGN_VENUES,
-    CNGN_USD_VENUES,
-    CNGN_NGN_VENUES,
-    VENUE_CHAINS,
-    DEX_VENUES,
 )
 
 logger = structlog.get_logger()
@@ -225,22 +220,23 @@ class ArbitrageDetector:
         """
         total_bps = 0
 
-        if buy_venue in CNGN_USD_VENUES:  # DEX
+        if buy_venue in self.dex_venues:
             total_bps += self._swap_fee_bps(buy_venue)
-        elif buy_venue in USDT_NGN_VENUES:  # CEX/P2P
+        else:  # CEX / off-chain
             total_bps += self.params.cex_taker_fee_bps
-        # "fair_value" has no execution fees (it's a reference)
 
-        if sell_venue in CNGN_USD_VENUES:  # DEX
+        if sell_venue in self.dex_venues:
             total_bps += self._swap_fee_bps(sell_venue)
-        elif sell_venue in USDT_NGN_VENUES:  # CEX/P2P
+        else:  # CEX / off-chain
             total_bps += self.params.cex_taker_fee_bps
 
         # Cross-chain DEX pair: add inventory-weighted rebalancing cost
+        buy_dex = self.dex_venues.get(buy_venue)
+        sell_dex = self.dex_venues.get(sell_venue)
         if (
-            buy_venue in DEX_VENUES
-            and sell_venue in DEX_VENUES
-            and VENUE_CHAINS.get(buy_venue) != VENUE_CHAINS.get(sell_venue)
+            buy_dex is not None
+            and sell_dex is not None
+            and buy_dex.config.chain_id != sell_dex.config.chain_id
         ):
             if self.inventory_tracker:
                 total_bps += self.inventory_tracker.get_rebalance_cost_bps(buy_venue)

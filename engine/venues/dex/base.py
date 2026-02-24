@@ -867,12 +867,13 @@ class BaseDexAdapter(VenueAdapter, ABC):
         """Build base transaction parameters with EIP-1559 gas."""
         latest = self.w3.eth.get_block("latest")
         base_fee = latest.get("baseFeePerGas", self.w3.eth.gas_price)
+        priority_fee = self.w3.to_wei(0.1, "gwei")
 
         return {
             "from": account.address,
             "nonce": self.w3.eth.get_transaction_count(account.address),
-            "maxFeePerGas": int(base_fee * 1.5),
-            "maxPriorityFeePerGas": self.w3.to_wei(0.1, "gwei"),
+            "maxFeePerGas": (2 * int(base_fee)) + priority_fee,
+            "maxPriorityFeePerGas": priority_fee,
             "chainId": self.config.chain_id,
         }
 

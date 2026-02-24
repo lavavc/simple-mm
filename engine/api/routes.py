@@ -11,6 +11,7 @@ import structlog
 
 from engine.config import settings
 from engine.db import get_db
+from engine.venues.dex.base import BaseDexAdapter
 from engine.api.schemas import (
     PriceQuote,
     Position,
@@ -424,9 +425,9 @@ async def update_venue_params(venue: str, params: dict):
 
     venue_adapter = _venues[venue]
     if hasattr(venue_adapter, "params"):
-        if venue in ["aerodrome", "pancakeswap"]:
+        if isinstance(venue_adapter, BaseDexAdapter):
             venue_adapter.params = DexParams(**params)
-        elif venue == "quidax":
+        else:
             venue_adapter.params = CexParams(**params)
 
     logger.info("venue_params_updated", venue=venue, params=params)
@@ -509,10 +510,11 @@ async def trigger_venue_sync(venue: str):
     try:
         ref_price = await _get_reference_price_ngn()
 
-        if venue == "quidax" and ref_price:
-            await _venues[venue].sync_order_ladder(ref_price)
+        venue_adapter = _venues[venue]
+        if hasattr(venue_adapter, "sync_order_ladder") and ref_price:
+            await venue_adapter.sync_order_ladder(ref_price)
         else:
-            await _venues[venue].get_position()
+            await venue_adapter.get_position()
 
         logger.info("manual_sync_triggered", venue=venue)
         return {"status": "synced", "venue": venue}

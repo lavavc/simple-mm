@@ -69,126 +69,83 @@ class BlendedPrice:
 # =============================================================================
 
 
-# Venue classification by native pair type
-USDT_NGN_VENUES = {"bybit"}
-CNGN_USD_VENUES = {"quidax", "aerodrome", "pancakeswap", "blockradar"}
-CNGN_NGN_VENUES: frozenset[str] = frozenset()
+# Pair-based normalization constants.
+# To support a new pair from any venue, add its string to the right set — nothing else changes.
+CNGN_USD_PAIRS = frozenset({"cNGN/USDC", "cNGN/USDT"})          # mid IS cNGN/USD
+INVERTED_PAIRS = frozenset({"USDC/cNGN", "USDT/cNGN", "USDT/NGN"})  # 1/mid IS cNGN/USD
+NGN_CROSS_PAIRS = frozenset({"cNGN/NGN"})                        # needs USDT/NGN cross-rate
 
-# Chain IDs for DEX venues; None = off-chain / no chain
-VENUE_CHAINS: dict[str, int | None] = {
-    "aerodrome": 8453, "pancakeswap": 56,
-    "quidax": None, "bybit": None, "blockradar": None,
-}
-DEX_VENUES: frozenset[str] = frozenset({"aerodrome", "pancakeswap"})
-
-
-def classify_venue(venue: str) -> str:
-    """Return the pair basis for a venue name."""
-    if venue in USDT_NGN_VENUES:
-        return "USDT/NGN"
-    elif venue in CNGN_USD_VENUES:
-        return "cNGN/USDC"
-    elif venue in CNGN_NGN_VENUES:
-        return "cNGN/NGN"
-    return "unknown"
+# USDT_NGN_VENUES: used only by the TWAP path which has no pair info (DB snapshots).
+USDT_NGN_VENUES = frozenset({"bybit"})
 
 
 class PriceNormalizer:
     """Converts all venue prices to cNGN/USD common basis.
 
-    Normalization rules:
-    - USDT/NGN venues (Bybit, Quidax): cNGN/USD = 1 / mid  (cNGN ≈ NGN, USDT ≈ USD)
-    - cNGN/USDC venues (Aerodrome, PancakeSwap): already cNGN/USD  (USDC ≈ USD)
-    - cNGN/NGN venues (Blockradar): needs a USDT/NGN cross-rate to normalise
+    Dispatches on price.pair (not venue name), so adding a new pair from any
+    venue only requires adding its string to the appropriate constant above.
 
-    Blockradar normalization:
-      The Blockradar mid is in NGN-per-cNGN (should be ~1.0 if cNGN=NGN).
-      To get cNGN/USD we need: cNGN_USD = blockradar_mid / usdt_ngn_rate
-      We use the best available USDT/NGN rate from other venues for the cross.
+    Rules:
+    - CNGN_USD_PAIRS  (e.g. cNGN/USDC): mid is already cNGN/USD
+    - INVERTED_PAIRS  (e.g. USDT/NGN):  1/mid = cNGN/USD
+    - NGN_CROSS_PAIRS (e.g. cNGN/NGN):  mid / usdt_ngn_rate = cNGN/USD (second pass)
     """
 
     def normalize(
         self,
         venue_prices: dict[str, VenuePrice],
     ) -> dict[str, NormalizedPrice]:
-        """Normalize all venue prices to cNGN/USD.
-
-        Args:
-            venue_prices: Raw venue prices from VenuePriceAggregator.
-
-        Returns:
-            Dict of venue name -> NormalizedPrice (only valid venues included).
-        """
+        """Normalize all venue prices to cNGN/USD."""
         normalized: dict[str, NormalizedPrice] = {}
-
-        # First pass: normalize everything except cNGN/NGN venues
-        # (we need USDT/NGN from other venues to cross-rate Blockradar)
         usdt_ngn_mid: Optional[Decimal] = None
+        cross_rate_pending: list[tuple[str, VenuePrice]] = []
 
         for venue, price in venue_prices.items():
             if not price.is_valid or price.quote is None:
                 continue
 
             mid = price.quote.mid
-            basis = classify_venue(venue)
+            pair = price.pair
 
-            if venue in USDT_NGN_VENUES:
+            if pair in INVERTED_PAIRS:
                 if mid > 0:
                     cngn_usd = Decimal("1") / mid
                     normalized[venue] = NormalizedPrice(
                         venue=venue,
                         cngn_usd=cngn_usd,
                         raw_quote=price.quote,
-                        basis=basis,
+                        basis=pair,
                         timestamp=price.quote.timestamp,
                     )
-                    # Keep track of a USDT/NGN mid for Blockradar cross-rate
                     if usdt_ngn_mid is None:
                         usdt_ngn_mid = mid
 
-            elif venue in CNGN_USD_VENUES:
-                if mid > 0:
-                    normalized[venue] = NormalizedPrice(
-                        venue=venue,
-                        cngn_usd=mid,
-                        raw_quote=price.quote,
-                        basis=basis,
-                        timestamp=price.quote.timestamp,
-                    )
-
-            elif venue in CNGN_NGN_VENUES:
-                # Handled in second pass
-                pass
-
-            else:
-                # Unknown venue – use directly if it looks like cNGN/USD
+            elif pair in CNGN_USD_PAIRS:
                 if Decimal("0") < mid < Decimal("1"):
                     normalized[venue] = NormalizedPrice(
                         venue=venue,
                         cngn_usd=mid,
                         raw_quote=price.quote,
-                        basis="unknown",
+                        basis=pair,
                         timestamp=price.quote.timestamp,
                     )
 
-        # Second pass: normalize Blockradar using USDT/NGN cross-rate
-        if usdt_ngn_mid and usdt_ngn_mid > 0:
-            for venue, price in venue_prices.items():
-                if venue not in CNGN_NGN_VENUES:
-                    continue
-                if not price.is_valid or price.quote is None:
-                    continue
+            elif pair in NGN_CROSS_PAIRS:
+                cross_rate_pending.append((venue, price))
 
-                mid = price.quote.mid  # NGN per cNGN (~1.0)
+            # Unknown pairs are silently skipped.
+
+        # Second pass: cross-rate pairs (cNGN/NGN needs a USDT/NGN reference)
+        if usdt_ngn_mid and usdt_ngn_mid > 0:
+            for venue, price in cross_rate_pending:
+                mid = price.quote.mid  # type: ignore[union-attr]
                 if mid > 0:
-                    cngn_usd = mid / usdt_ngn_mid
-                    basis = classify_venue(venue)
                     normalized[venue] = NormalizedPrice(
                         venue=venue,
-                        cngn_usd=cngn_usd,
-                        raw_quote=price.quote,
-                        basis=basis,
-                        timestamp=price.quote.timestamp,
+                        cngn_usd=mid / usdt_ngn_mid,
+                        raw_quote=price.quote,  # type: ignore[arg-type]
+                        basis=price.pair,
+                        timestamp=price.quote.timestamp,  # type: ignore[union-attr]
                     )
 
         logger.debug(
@@ -442,26 +399,21 @@ class BlendedPriceCalculator:
 
     @staticmethod
     def _normalize_single_price(venue: str, mid: Decimal) -> Optional[Decimal]:
-        """Normalize a single (venue, mid) pair to cNGN/USD."""
+        """Normalize a single (venue, mid) pair to cNGN/USD.
+
+        Used by the TWAP path, which reads DB snapshots that carry no pair info.
+        Known USDT/NGN venues are handled explicitly; everything else uses
+        value-range heuristics (cNGN/USD is always < 1, USDT/NGN is always > 100).
+        """
         if mid <= 0:
             return None
-
         if venue in USDT_NGN_VENUES:
             return Decimal("1") / mid
-        elif venue in CNGN_USD_VENUES:
-            # cNGN/USD must always be < 1 (1 USD = 1000+ NGN).
-            # Guards against old blockradar DB snapshots where mid ≈ 1.0 (NGN peg).
-            return mid if mid < Decimal("1") else None
-        elif venue in CNGN_NGN_VENUES:
-            # Cannot normalize without a cross-rate; skip in TWAP
-            return None
-        else:
-            # Heuristic: if small, treat as cNGN/USD; if large, treat as USDT/NGN
-            if mid < Decimal("1"):
-                return mid
-            elif mid > Decimal("100"):
-                return Decimal("1") / mid
-            return None
+        if mid < Decimal("1"):
+            return mid          # cNGN/USD (all current non-Bybit venues)
+        if mid > Decimal("100"):
+            return Decimal("1") / mid  # unexpected large-NGN quote
+        return None  # ambiguous range (e.g. old cNGN/NGN peg snapshots ≈ 1.0)
 
     @staticmethod
     def _compute_confidence(

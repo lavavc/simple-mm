@@ -9,10 +9,9 @@ from engine.core.price_aggregation import (
     BlendedPriceCalculator,
     NormalizedPrice,
     BlendedPrice,
-    classify_venue,
-    USDT_NGN_VENUES,
-    CNGN_USD_VENUES,
-    CNGN_NGN_VENUES,
+    CNGN_USD_PAIRS,
+    INVERTED_PAIRS,
+    NGN_CROSS_PAIRS,
 )
 from engine.core.venue_prices import VenuePrice
 
@@ -72,23 +71,30 @@ def _make_venue_prices() -> dict[str, VenuePrice]:
 # =============================================================================
 
 
-class TestVenueClassification:
-    """Test venue classification."""
+class TestPairClassification:
+    """Pair strings must be in the right normalization set.
 
-    def test_bybit_classified_as_usdt_ngn(self):
-        assert classify_venue("bybit") == "USDT/NGN"
+    To add a new pair: add its string to CNGN_USD_PAIRS, INVERTED_PAIRS,
+    or NGN_CROSS_PAIRS in price_aggregation.py — nothing else needs changing.
+    """
 
-    def test_quidax_classified_as_cngn_usdc(self):
-        assert classify_venue("quidax") == "cNGN/USDC"
+    def test_cngn_usdc_is_direct(self):
+        assert "cNGN/USDC" in CNGN_USD_PAIRS
 
-    def test_aerodrome_classified_as_cngn_usdc(self):
-        assert classify_venue("aerodrome") == "cNGN/USDC"
+    def test_cngn_usdt_is_direct(self):
+        assert "cNGN/USDT" in CNGN_USD_PAIRS
 
-    def test_blockradar_classified_as_cngn_usdc(self):
-        assert classify_venue("blockradar") == "cNGN/USDC"
+    def test_usdt_ngn_is_inverted(self):
+        assert "USDT/NGN" in INVERTED_PAIRS
 
-    def test_unknown_venue(self):
-        assert classify_venue("unknown_exchange") == "unknown"
+    def test_usdc_cngn_is_inverted(self):
+        assert "USDC/cNGN" in INVERTED_PAIRS
+
+    def test_usdt_cngn_is_inverted(self):
+        assert "USDT/cNGN" in INVERTED_PAIRS
+
+    def test_cngn_ngn_needs_cross_rate(self):
+        assert "cNGN/NGN" in NGN_CROSS_PAIRS
 
 
 # =============================================================================
@@ -146,29 +152,22 @@ class TestPriceNormalizer:
         assert "aerodrome" in result
         assert result["aerodrome"].cngn_usd == Decimal("0.000696")
 
-    def test_normalize_blockradar_with_cross_rate(self):
-        """Blockradar cNGN/NGN needs USDT/NGN cross-rate."""
+    def test_normalize_blockradar_direct_cngn_usd(self):
+        """Blockradar now reports cNGN/USD directly — used as-is."""
         prices = {
-            "bybit": _make_venue_price(
-                "bybit", "USDT/NGN",
-                bid=Decimal("1436"), ask=Decimal("1438"), mid=Decimal("1437"),
-                source="bybit_p2p",
-            ),
             "blockradar": _make_venue_price(
-                "blockradar", "cNGN/NGN",
-                bid=Decimal("0.998"), ask=Decimal("1.002"), mid=Decimal("1.0"),
+                "blockradar", "cNGN/USDC",
+                bid=Decimal("0.000720"), ask=Decimal("0.000724"), mid=Decimal("0.000722"),
                 source="blockradar",
             ),
         }
         result = self.normalizer.normalize(prices)
 
         assert "blockradar" in result
-        # cNGN/USD = blockradar_mid / usdt_ngn_mid = 1.0 / 1437 ≈ 0.000696
-        expected = Decimal("1.0") / Decimal("1437")
-        assert abs(result["blockradar"].cngn_usd - expected) < Decimal("0.000001")
+        assert result["blockradar"].cngn_usd == Decimal("0.000722")
 
-    def test_normalize_blockradar_without_cross_rate(self):
-        """Blockradar should be excluded if no USDT/NGN cross-rate available."""
+    def test_normalize_blockradar_rejects_peg_rate(self):
+        """Old blockradar peg-rate snapshots (mid ≈ 1.0) must be rejected."""
         prices = {
             "blockradar": _make_venue_price(
                 "blockradar", "cNGN/NGN",

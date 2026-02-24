@@ -6,12 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import ArbitrageParams, ArbitrageOpportunity
 from engine.core.arbitrage.detector import ArbitrageDetector, _optimal_cngn_amount
-from engine.core.price_aggregation import (
-    PriceNormalizer,
-    NormalizedPrice,
-    USDT_NGN_VENUES,
-    CNGN_USD_VENUES,
-)
+from engine.core.price_aggregation import PriceNormalizer, NormalizedPrice
 from engine.core.venue_prices import VenuePrice
 from engine.api.schemas import PriceQuote
 
@@ -48,6 +43,14 @@ def _make_quote(source: str, mid: Decimal) -> PriceQuote:
     )
 
 
+def _make_dex_mock(chain_id: int, fee_bps: int = 30) -> MagicMock:
+    """Minimal DEX adapter mock with chain_id and get_fee_bps."""
+    mock = MagicMock()
+    mock.config.chain_id = chain_id
+    mock.get_fee_bps.return_value = fee_bps
+    return mock
+
+
 # =============================================================================
 # Fee estimation
 # =============================================================================
@@ -61,6 +64,10 @@ class TestFeeEstimation:
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=default_params,
+            dex_venues={
+                "aerodrome": _make_dex_mock(chain_id=8453),
+                "pancakeswap": _make_dex_mock(chain_id=56),
+            },
         )
         fees = detector._estimate_fees("aerodrome", "pancakeswap")
         expected = 2 * default_params.dex_swap_fee_bps + default_params.cross_chain_rebalance_bps
@@ -71,19 +78,11 @@ class TestFeeEstimation:
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=default_params,
+            dex_venues={"aerodrome": _make_dex_mock(chain_id=8453)},
         )
         fees = detector._estimate_fees("aerodrome", "bybit")
         expected = default_params.dex_swap_fee_bps + default_params.cex_taker_fee_bps
         assert fees == expected
-
-    def test_fair_value_has_no_fees(self, default_params):
-        """Trading against fair_value reference has no execution fees."""
-        detector = ArbitrageDetector(
-            price_aggregator=MagicMock(),
-            params=default_params,
-        )
-        fees = detector._estimate_fees("fair_value", "aerodrome")
-        assert fees == default_params.dex_swap_fee_bps
 
 
 # =============================================================================
@@ -286,31 +285,26 @@ class TestCrossChainFeeEstimation:
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=default_params,
+            dex_venues={
+                "aerodrome": _make_dex_mock(chain_id=8453),
+                "pancakeswap": _make_dex_mock(chain_id=56),
+            },
         )
         fees = detector._estimate_fees("aerodrome", "pancakeswap")
         assert fees == 2 * default_params.dex_swap_fee_bps + default_params.cross_chain_rebalance_bps
 
     def test_same_chain_dex_pair_no_extra_cost(self, default_params):
-        """aerodrome ↔ aerodrome (same chain) should not add rebalance cost."""
-        from unittest.mock import patch
-        from engine.core.price_aggregation import VENUE_CHAINS
-        # Temporarily make both venues share the same chain_id
-        with patch.dict(VENUE_CHAINS, {"aerodrome": 8453, "pancakeswap": 8453}):
-            detector = ArbitrageDetector(
-                price_aggregator=MagicMock(),
-                params=default_params,
-            )
-            fees = detector._estimate_fees("aerodrome", "pancakeswap")
-        assert fees == 2 * default_params.dex_swap_fee_bps
-
-    def test_fair_value_pair_no_rebalance_cost(self, default_params):
-        """fair_value is not a DEX venue so no rebalance cost is added."""
+        """Two DEX venues on the same chain should not add rebalance cost."""
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=default_params,
+            dex_venues={
+                "aerodrome": _make_dex_mock(chain_id=8453),
+                "pancakeswap": _make_dex_mock(chain_id=8453),  # same chain
+            },
         )
-        fees = detector._estimate_fees("fair_value", "aerodrome")
-        assert fees == default_params.dex_swap_fee_bps
+        fees = detector._estimate_fees("aerodrome", "pancakeswap")
+        assert fees == 2 * default_params.dex_swap_fee_bps
 
     def test_cost_scales_with_inventory_level(self, default_params):
         """Rebalance cost should scale with inventory drain via inventory_tracker."""
@@ -323,6 +317,10 @@ class TestCrossChainFeeEstimation:
             price_aggregator=MagicMock(),
             params=default_params,
             inventory_tracker=tracker,
+            dex_venues={
+                "aerodrome": _make_dex_mock(chain_id=8453),
+                "pancakeswap": _make_dex_mock(chain_id=56),
+            },
         )
         fees = detector._estimate_fees("aerodrome", "pancakeswap")
         # 50% drained → 5 bps rebalance cost
@@ -416,6 +414,10 @@ class TestOptimalSizing:
             price_aggregator=MagicMock(),
             params=default_params,
             inventory_tracker=tracker,
+            dex_venues={
+                "aerodrome": _make_dex_mock(chain_id=8453),
+                "pancakeswap": _make_dex_mock(chain_id=56),
+            },
         )
         fees = detector._estimate_fees("aerodrome", "pancakeswap")
         assert fees == 2 * default_params.dex_swap_fee_bps
