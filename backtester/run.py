@@ -37,7 +37,7 @@ def _run_grid(
     return rows
 
 
-def _compute_metrics(sim: SimResult, initial_capital: float = 1000.0) -> dict:
+def _compute_metrics(sim: SimResult, initial_capital: float = 5000.0) -> dict:
     dr = sim.daily_returns
     mdd = metrics.max_drawdown(metrics._cumulative(dr)) if dr else 0.0
     tir = metrics.time_in_range_pct(sim)

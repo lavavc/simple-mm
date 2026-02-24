@@ -14,7 +14,7 @@ class BacktestParams:
     # Fixed guardrails
     min_tick_width: int = 50
     max_tick_width: int = 1000
-    initial_capital_usd: float = 1000.0
+    initial_capital_usd: float = 5000.0
     gas_cost_usd: float = 0.05
 
 

@@ -181,7 +181,7 @@ def simulate_pool(
     events: list[Event],
     params: BacktestParams,
     pool_config: PoolConfig,
-    initial_capital_usd: float = 1000.0,
+    initial_capital_usd: float = 5000.0,
 ) -> SimResult:
     """Run one backtest for a single parameter set on one pool."""
     ewma = EWMACalculator(params.ewma_lambda)
