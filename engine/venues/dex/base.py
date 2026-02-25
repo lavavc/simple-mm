@@ -659,16 +659,16 @@ class BaseDexAdapter(VenueAdapter, ABC):
             raise ValueError("Insufficient price history for SD calculation")
 
         float_prices = [float(p) for p in prices]
-        mean_price = statistics.mean(float_prices)
 
-        # EWMA volatility: σ²_t = λ·σ²_{t-1} + (1-λ)·r²_t
+        # EWMA mean and variance on raw prices — online, no pre-seed (matches backtester)
         lam = float(self.params.ewma_lambda)
-        returns = [(float_prices[i] - float_prices[i - 1]) / float_prices[i - 1]
-                   for i in range(1, len(float_prices))]
-        var = sum(r * r for r in returns) / len(returns)  # seed
-        for r in returns:
-            var = lam * var + (1 - lam) * r * r
-        std_dev = mean_price * math.sqrt(var)  # convert return-vol → price-vol
+        mean = float_prices[0]
+        var = 0.0
+        for x in float_prices[1:]:
+            delta = x - mean
+            mean = lam * mean + (1 - lam) * x
+            var = lam * var + (1 - lam) * delta * delta
+        std_dev = math.sqrt(var)
 
         # Asymmetric range: skew controls fraction of total width allocated below mean
         multiplier = float(self.params.sd_multiplier)
@@ -684,11 +684,10 @@ class BaseDexAdapter(VenueAdapter, ABC):
         tick_lower = self._price_to_tick(Decimal(str(lower_price)))
         tick_upper = self._price_to_tick(Decimal(str(upper_price)))
 
-        # Align to tick spacing
-        tick_lower = (tick_lower // self.config.tick_spacing) * self.config.tick_spacing
-        tick_upper = (
-            (tick_upper // self.config.tick_spacing) + 1
-        ) * self.config.tick_spacing
+        # Align to tick spacing: floor for lower, ceil for upper (only moves when misaligned)
+        spacing = self.config.tick_spacing
+        tick_lower = math.floor(tick_lower / spacing) * spacing
+        tick_upper = math.ceil(tick_upper / spacing) * spacing
 
         # Apply min/max width constraints
         tick_width = tick_upper - tick_lower
@@ -701,16 +700,14 @@ class BaseDexAdapter(VenueAdapter, ABC):
             tick_lower = mid - self.params.max_tick_width // 2
             tick_upper = mid + self.params.max_tick_width // 2
 
-        # Re-align to tick spacing after width constraints (width adjustment can un-align)
-        tick_lower = (tick_lower // self.config.tick_spacing) * self.config.tick_spacing
-        tick_upper = (
-            (tick_upper // self.config.tick_spacing) + 1
-        ) * self.config.tick_spacing
+        # Re-align after width constraints
+        tick_lower = math.floor(tick_lower / spacing) * spacing
+        tick_upper = math.ceil(tick_upper / spacing) * spacing
 
         logger.info(
             "calculated_tick_range",
             venue=self.name,
-            mean_price=mean_price,
+            mean_price=mean,
             std_dev=std_dev,
             tick_lower=tick_lower,
             tick_upper=tick_upper,

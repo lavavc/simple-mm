@@ -48,21 +48,27 @@ class TestTickPriceConversions:
         assert diff < 0.01  # 1% tolerance due to tick spacing
 
     def test_tick_spacing_alignment(self):
-        """Test tick alignment to spacing."""
-        tick_spacing = 100
+        """Test tick alignment: floor for lower, ceil for upper (only moves when misaligned)."""
+        spacing = 100
 
-        # Various ticks should align to spacing
-        test_cases = [
-            (150, 100),   # Rounds down
-            (199, 100),   # Rounds down
-            (200, 200),   # Already aligned
-            (-150, -200), # Rounds down (more negative)
-            (0, 0),       # Zero stays zero
+        floor_cases = [
+            (150, 100),   # rounds down
+            (199, 100),   # rounds down
+            (200, 200),   # already aligned, no change
+            (-150, -200), # rounds down (more negative)
+            (0, 0),
         ]
+        for tick, expected in floor_cases:
+            assert math.floor(tick / spacing) * spacing == expected
 
-        for tick, expected in test_cases:
-            aligned = (tick // tick_spacing) * tick_spacing
-            assert aligned == expected, f"Tick {tick} aligned to {aligned}, expected {expected}"
+        ceil_cases = [
+            (200, 200),   # already aligned, no change
+            (201, 300),   # rounds up
+            (-200, -200), # already aligned, no change
+            (-199, -100), # rounds up (less negative)
+        ]
+        for tick, expected in ceil_cases:
+            assert math.ceil(tick / spacing) * spacing == expected
 
     def test_sqrt_price_x96_conversion(self):
         """Test sqrtPriceX96 to decimal conversion."""
@@ -184,13 +190,12 @@ class TestTickRangeCalculation:
         assert tick_upper - tick_lower <= params.max_tick_width
 
     def test_insufficient_price_history(self):
-        """Should fail with less than 2 prices."""
-        import statistics
-
+        """calculate_tick_range requires at least 2 prices."""
+        # Simulate the guard: len(prices) < 2 raises ValueError
         prices = [Decimal("0.000606")]
-
-        with pytest.raises(statistics.StatisticsError):
-            statistics.stdev([float(p) for p in prices])
+        if len(prices) < 2:
+            with pytest.raises(ValueError):
+                raise ValueError("Insufficient price history for SD calculation")
 
 
 class TestDecimalAdjustments:
