@@ -32,6 +32,15 @@ interface DexArbData {
         pancake_liquidity_cngn_raw: string;
         aerodrome_liquidity_cngn_raw: string;
         assetchain_liquidity_cngn_raw: string;
+        pancake_stable?: number;
+        pancake_cngn?: number;
+        aerodrome_stable?: number;
+        aerodrome_cngn?: number;
+        assetchain_stable?: number;
+        assetchain_cngn?: number;
+        pancake_ts?: number;
+        aerodrome_ts?: number;
+        assetchain_ts?: number;
     };
     curve: CurvePoint[];
     optimal_arb: {
@@ -112,7 +121,11 @@ export default function DexArbPage() {
     const resolvedCurveData = curveData || {
         timestamp: 0,
         prices: { pancakeswap: 0, aerodrome: 0, assetchain: 0 },
-        stats: { pancake_liquidity_cngn_raw: "0", aerodrome_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0" },
+        stats: {
+            pancake_liquidity_cngn_raw: "0", aerodrome_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0",
+            pancake_stable: 0, pancake_cngn: 0, aerodrome_stable: 0, aerodrome_cngn: 0, assetchain_stable: 0, assetchain_cngn: 0,
+            pancake_ts: 0, aerodrome_ts: 0, assetchain_ts: 0
+        },
         curve: [],
         optimal_arb: {
             direction: "_____",
@@ -425,9 +438,23 @@ export default function DexArbPage() {
                                                     {formatNumber((1 / (resolvedCurveData.prices.pancakeswap || 1)) * (1 - (resolvedCurveData.optimal_arb.pancake_fee_bps || 1) / 10000), 2)} cNGN
                                                 </div>
                                             </div>
+                                            <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
+                                                <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
+                                                <div className="flex justify-between items-end mb-1">
+                                                    <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.pancake_stable || 0, 2)} USDT</div>
+                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.pancake_cngn || 0, 2)} cNGN</div>
+                                                </div>
+                                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
+                                                    <div
+                                                        className="h-full bg-[#2563eb]"
+                                                        style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.pancake_stable || 0) / ((resolvedCurveData.stats.pancake_stable || 1) + (resolvedCurveData.stats.pancake_cngn || 1) / 1500)) * 100))}%` }}
+                                                    />
+                                                    <div className="h-full flex-1 bg-emerald-400" />
+                                                </div>
+                                            </div>
                                         </div>
                                         <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
-                                            {timeSinceLastPacket}S AGO
+                                            {resolvedCurveData.stats.pancake_ts ? Math.max(0, Math.floor(now / 1000 - resolvedCurveData.stats.pancake_ts)) : timeSinceLastPacket}S AGO
                                         </p>
                                     </CardContent>
                                 </Card>
@@ -454,9 +481,23 @@ export default function DexArbPage() {
                                                     {formatNumber((1 / (resolvedCurveData.prices.aerodrome || 1)) * (1 - (resolvedCurveData.optimal_arb.aerodrome_fee_bps || 5) / 10000), 2)} cNGN
                                                 </div>
                                             </div>
+                                            <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
+                                                <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
+                                                <div className="flex justify-between items-end mb-1">
+                                                    <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.aerodrome_stable || 0, 2)} USDC</div>
+                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.aerodrome_cngn || 0, 2)} cNGN</div>
+                                                </div>
+                                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
+                                                    <div
+                                                        className="h-full bg-[#2563eb]"
+                                                        style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.aerodrome_stable || 0) / ((resolvedCurveData.stats.aerodrome_stable || 1) + (resolvedCurveData.stats.aerodrome_cngn || 1) / 1500)) * 100))}%` }}
+                                                    />
+                                                    <div className="h-full flex-1 bg-emerald-400" />
+                                                </div>
+                                            </div>
                                         </div>
                                         <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
-                                            {timeSinceLastPacket}S AGO
+                                            {resolvedCurveData.stats.aerodrome_ts ? Math.max(0, Math.floor(now / 1000 - resolvedCurveData.stats.aerodrome_ts)) : timeSinceLastPacket}S AGO
                                         </p>
                                     </CardContent>
                                 </Card>
@@ -483,9 +524,23 @@ export default function DexArbPage() {
                                                     {formatNumber((1 / (resolvedCurveData.prices.assetchain || 1)) * (1 - (resolvedCurveData.optimal_arb.assetchain_fee_bps || 30) / 10000), 2)} cNGN
                                                 </div>
                                             </div>
+                                            <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
+                                                <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
+                                                <div className="flex justify-between items-end mb-1">
+                                                    <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.assetchain_stable || 0, 2)} USDT</div>
+                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.assetchain_cngn || 0, 2)} cNGN</div>
+                                                </div>
+                                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
+                                                    <div
+                                                        className="h-full bg-[#2563eb]"
+                                                        style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.assetchain_stable || 0) / ((resolvedCurveData.stats.assetchain_stable || 1) + (resolvedCurveData.stats.assetchain_cngn || 1) / 1500)) * 100))}%` }}
+                                                    />
+                                                    <div className="h-full flex-1 bg-emerald-400" />
+                                                </div>
+                                            </div>
                                         </div>
                                         <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
-                                            {timeSinceLastPacket}S AGO
+                                            {resolvedCurveData.stats.assetchain_ts ? Math.max(0, Math.floor(now / 1000 - resolvedCurveData.stats.assetchain_ts)) : timeSinceLastPacket}S AGO
                                         </p>
                                     </CardContent>
                                 </Card>

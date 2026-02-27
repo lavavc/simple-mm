@@ -19,7 +19,6 @@ const navItems = [
   { href: '/prices', label: 'Prices', icon: TrendingUp },
   { href: '/venues', label: 'Venues', icon: Building2 },
   { href: '/arbitrage', label: 'Arbitrage', icon: ArrowRightLeft },
-  { href: '/dex-arb', label: 'DEX Arb', icon: ArrowRightLeft },
   { href: '/accounts', label: 'Accounts', icon: Wallet },
   { href: '/alerts', label: 'Alerts', icon: Bell },
 ];

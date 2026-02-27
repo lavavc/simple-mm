@@ -15,6 +15,7 @@ import statistics
 import structlog
 
 from web3 import Web3
+from web3.middleware import geth_poa_middleware
 from web3.types import TxReceipt
 
 from engine.api.schemas import Position, PriceQuote, LPPosition, TxResult, DexParams
@@ -45,6 +46,7 @@ class PoolConfig:
     token0_decimals: int
     token1_decimals: int
     tick_spacing: int
+    pool_fee: Optional[int] = None  # Fee tier for protocols that use fee != tick_spacing (e.g. PancakeSwap)
     invert_price: bool = False  # True when native pool price must be inverted (e.g. PancakeSwap: USDT/cNGN → cNGN/USD)
 
 
@@ -63,6 +65,8 @@ class PoolReadConfig:
 
     rpc_url: str
     pool_address: str
+    token0_address: str
+    token1_address: str
     token0_symbol: str
     token1_symbol: str
     token0_decimals: int
@@ -290,6 +294,9 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
         # Web3 setup
         self.w3 = Web3(Web3.HTTPProvider(pool_config.rpc_url))
+        
+        # Add POA middleware for chains like BSC/AssetChain that use non-standard block extraData
+        self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
         self.lp_account = self.w3.eth.account.from_key(lp_private_key)
         self.trade_account = self.w3.eth.account.from_key(trade_private_key)
 

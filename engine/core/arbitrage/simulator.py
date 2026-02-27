@@ -8,6 +8,7 @@ from engine.config import settings
 from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
 from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
 from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+from engine.venues.dex.base import PoolReadConfig
 from web3 import AsyncWeb3
 import structlog
 
@@ -23,22 +24,69 @@ PANCAKE_FEE = Decimal("0.0001")
 AERO_FEE = Decimal("0.0005")
 ASSETCHAIN_FEE = Decimal("0.0030")
 
-async def get_v3_pool_state(rpc_url: str, pool_address: str):
+# Cache to prevent making duplicate RPC calls for liquidity if the tick hasn't changed.
+# Structure: { pool_address: {"tick": int, "liquidity": Decimal, "sqrt_p": Decimal, "timestamp": float} }
+_POOL_CACHE: dict[str, dict] = {}
+
+def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | None, Decimal | None, Decimal | None, float | None]:
+    """Retrieve the latest known state from memory without network calls."""
+    data = _POOL_CACHE.get(pool_address)
+    if data:
+        return data["sqrt_p"], data["liquidity"], data.get("balance0"), data.get("balance1"), data.get("timestamp")
+    return None, None, None, None, None
+
+async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str = None) -> bool:
+    """Fetches the state for a single pool and updates the cache. Returns True if successful."""
+    rpc_url = rpc_url_override or config.rpc_url
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
-    pool = w3.to_checksum_address(pool_address)
+    pool = w3.to_checksum_address(config.pool_address)
     
-    # Try fetching, catch timeout
     try:
         slot0_raw = await w3.eth.call({"to": pool, "data": SLOT0_SELECTOR})
-        liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
+        sqrt_price_x96 = Decimal(int.from_bytes(slot0_raw[:32], "big"))
         
-        sqrt_price_x96 = int.from_bytes(slot0_raw[:32], "big")
-        liquidity = int.from_bytes(liquidity_raw[:32], "big")
+        tick_bytes = slot0_raw[32:64][-3:] 
+        tick = int.from_bytes(tick_bytes, "big", signed=True)
+
+        cached_data = _POOL_CACHE.get(config.pool_address)
         
-        return Decimal(sqrt_price_x96), Decimal(liquidity)
+        # Always fetch balanceOf for accurate depth, but cache liquidity if tick is identical
+        t0_call = "0x70a08231" + pool[2:].zfill(64)
+        t1_call = "0x70a08231" + pool[2:].zfill(64)
+        
+        balance0_raw = await w3.eth.call({"to": w3.to_checksum_address(config.token0_address), "data": t0_call})
+        balance1_raw = await w3.eth.call({"to": w3.to_checksum_address(config.token1_address), "data": t1_call})
+        
+        balance0 = Decimal(int.from_bytes(balance0_raw[:32], "big")) / Decimal(10**config.token0_decimals)
+        balance1 = Decimal(int.from_bytes(balance1_raw[:32], "big")) / Decimal(10**config.token1_decimals)
+        
+        if cached_data and cached_data["tick"] == tick:
+            liquidity = cached_data["liquidity"]
+            logger.debug("v3_pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
+        else:
+            liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
+            liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
+            logger.debug("v3_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
+            
+        _POOL_CACHE[config.pool_address] = {
+            "tick": tick,
+            "liquidity": liquidity,
+            "sqrt_p": sqrt_price_x96,
+            "balance0": balance0,
+            "balance1": balance1,
+            "timestamp": time.time()
+        }
+        return True
     except Exception as e:
-        logger.error("v3_pool_state_fetch_error", error=str(e), rpc=rpc_url)
-        return None, None
+        logger.error("v3_pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=config.pool_address)
+        return False
+
+async def seed_pool_states():
+    """Initializes the memory state manager by fetching all pools once."""
+    logger.info("seeding_initial_v3_pool_states")
+    await update_single_pool_state(PANCAKESWAP_POOL_READ_CONFIG, settings.bsc_rpc_url)
+    await update_single_pool_state(AERODROME_POOL_READ_CONFIG, settings.base_rpc_url)
+    await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
 
 def calc_assetchain_buy_cngn(amount_usdt_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
     if liquidity == 0 or sqrt_p == 0: return Decimal(0)
@@ -107,12 +155,16 @@ def calc_assetchain_sell_cngn(amount_cngn_in: Decimal, sqrt_p: Decimal, liquidit
     return amount_out_raw / Decimal(10**18)
 
 async def generate_v3_profit_curve() -> dict:
-    """Generates the side-by-side exact V3 curve data over a set of investment sizes. Returns dict suitable for JSON broadcast."""
-    bsc_sqrt, bsc_liq = await get_v3_pool_state(settings.bsc_rpc_url, PANCAKESWAP_POOL_READ_CONFIG.pool_address)
-    base_sqrt, base_liq = await get_v3_pool_state(settings.base_rpc_url, AERODROME_POOL_READ_CONFIG.pool_address)
-    asset_sqrt, asset_liq = await get_v3_pool_state(settings.assetchain_rpc_url, ASSETCHAIN_POOL_READ_CONFIG.pool_address)
+    """Generates the side-by-side exact V3 curve data over a set of investment sizes from CACHED memory."""
+    bsc_sqrt, bsc_liq, bsc_b0, bsc_b1, bsc_ts = get_cached_pool_state(PANCAKESWAP_POOL_READ_CONFIG.pool_address)
+    base_sqrt, base_liq, base_b0, base_b1, base_ts = get_cached_pool_state(AERODROME_POOL_READ_CONFIG.pool_address)
+    asset_sqrt, asset_liq, asset_b0, asset_b1, asset_ts = get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
     
     if not bsc_sqrt or not base_sqrt or not asset_sqrt:
+        # If any cache is completely empty, trigger a silent re-seed and abort this calculation run
+        logger.warning("v3_profit_curve_cache_miss_aborting_calc")
+        import asyncio
+        asyncio.create_task(seed_pool_states())
         return {}
 
     pancake_price = ((bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
@@ -122,6 +174,10 @@ async def generate_v3_profit_curve() -> dict:
     
     asset_price = ((asset_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
     asset_price_usd = float(Decimal(1) / asset_price)
+    
+    pancake_stable, pancake_cngn = bsc_b0, bsc_b1
+    aero_cngn, aero_stable = base_b0, base_b1
+    asset_stable, asset_cngn = asset_b0, asset_b1
 
     test_sizes = [1, 10, 50, 100, 500, 1000, 2500, 5000, 10000, 50000, 100000]
     
@@ -260,7 +316,16 @@ async def generate_v3_profit_curve() -> dict:
         "stats": {
             "pancake_liquidity_cngn_raw": str(bsc_liq),
             "aerodrome_liquidity_cngn_raw": str(base_liq),
-            "assetchain_liquidity_cngn_raw": str(asset_liq)
+            "assetchain_liquidity_cngn_raw": str(asset_liq),
+            "pancake_stable": float(pancake_stable or 0),
+            "pancake_cngn": float(pancake_cngn or 0),
+            "aerodrome_stable": float(aero_stable or 0),
+            "aerodrome_cngn": float(aero_cngn or 0),
+            "assetchain_stable": float(asset_stable or 0),
+            "assetchain_cngn": float(asset_cngn or 0),
+            "pancake_ts": float(bsc_ts or 0),
+            "aerodrome_ts": float(base_ts or 0),
+            "assetchain_ts": float(asset_ts or 0)
         },
         "curve": curve,
         "optimal_arb": {
