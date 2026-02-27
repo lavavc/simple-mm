@@ -22,6 +22,7 @@ class ArbitrageWebSocketListener:
     def __init__(self, broadcast: Callable[[dict], Any]):
         self.broadcast = broadcast
         self._running = False
+        
         self._tasks: list[asyncio.Task] = []
         
         # Debounce tracking
