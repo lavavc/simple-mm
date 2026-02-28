@@ -54,11 +54,16 @@ export function useEventStream() {
     ws.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        console.log('[SOCKET EVENT]', event.type, event.data);
         const keys = EVENT_TO_KEYS[event.type];
         if (keys) {
           for (const key of keys) {
             qc.invalidateQueries({ queryKey: key });
           }
+        }
+
+        if (event.type === 'dex_arb_curve' && event.data) {
+          qc.setQueryData(['dex_arb_curve'], event.data);
         }
 
         if (event.type === 'arbitrage_opportunity' && event.data) {
@@ -67,6 +72,16 @@ export function useEventStream() {
             type: 'arbitrage',
             title: `${d.buy_venue} → ${d.sell_venue}`,
             message: `Spread: ${d.net_spread_bps} bps | Est. profit: $${Number(d.expected_profit_usd).toFixed(2)}`,
+            data: d,
+          });
+        }
+
+        if (event.type === 'dex_arb_opportunity' && event.data) {
+          const d = event.data;
+          addNotification({
+            type: 'arbitrage',
+            title: `DEX: ${d.direction.replace(/_/g, ' ')}`,
+            message: `Size: $${d.optimal_size_usd} | V3 Live Profit: $${d.expected_profit_usd.toFixed(2)}`,
             data: d,
           });
         }
