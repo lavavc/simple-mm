@@ -19,8 +19,9 @@ SWAP_EVENT_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115f
 class ArbitrageWebSocketListener:
     """Listens for DEX Swaps via WebSockets to trigger curve calculations instantly."""
 
-    def __init__(self, broadcast: Callable[[dict], Any]):
+    def __init__(self, broadcast: Callable[[dict], Any], on_update: Callable[[], Any] | None = None):
         self.broadcast = broadcast
+        self.on_update = on_update
         self._running = False
         
         self._tasks: list[asyncio.Task] = []
@@ -137,6 +138,10 @@ class ArbitrageWebSocketListener:
             # We change this to HTTP base URLs if using Alchemy WSS configs interchangeably
             http_url = rpc_url.replace("wss://", "https://")
             await update_single_pool_state(pool_config, rpc_url_override=http_url)
+            
+            # Fire the instant callback so the dashboard receives the newly cached spot price
+            if self.on_update:
+                await self.on_update()
             
             # Now calculate the global curve with the globally cached states
             curve_data = await generate_v3_profit_curve()

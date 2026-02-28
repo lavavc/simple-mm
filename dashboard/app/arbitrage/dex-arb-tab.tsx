@@ -270,8 +270,8 @@ export default function DexArbPage() {
                                         <div className="flex justify-between items-start text-[10px] font-mono">
                                             <span className="text-white/50 whitespace-nowrap mr-4">Initial Pool Spread</span>
                                             <div className="text-right">
-                                                <div className="text-emerald-400/90 text-[11px]">+{Math.abs((resolvedCurveData.prices.aerodrome - resolvedCurveData.prices.pancakeswap) / resolvedCurveData.prices.pancakeswap * 10000).toFixed(0)} BPS</div>
-                                                <div className="text-white/40 text-[9px] mt-0.5 whitespace-nowrap">PANC: ${resolvedCurveData.prices.pancakeswap.toFixed(6)} | AERO: ${resolvedCurveData.prices.aerodrome.toFixed(6)}</div>
+                                                <div className="text-emerald-400/90 text-[11px]">+{Math.abs(((resolvedCurveData.prices.aerodrome || 0) - (resolvedCurveData.prices.pancakeswap || 0)) / (resolvedCurveData.prices.pancakeswap || 1) * 10000).toFixed(0)} BPS</div>
+                                                <div className="text-white/40 text-[9px] mt-0.5 whitespace-nowrap">PANC: ${(resolvedCurveData.prices.pancakeswap || 0).toFixed(6)} | AERO: ${(resolvedCurveData.prices.aerodrome || 0).toFixed(6)}</div>
                                             </div>
                                         </div>
                                         <div className="flex justify-between items-start text-[10px] font-mono">
@@ -427,7 +427,7 @@ export default function DexArbPage() {
                                     <CardContent className="px-4 pb-4 pt-2">
                                         <div className="flex items-center gap-2 mb-2">
                                             <TrendingUp className="h-4 w-4 text-emerald-500/50" />
-                                            <span className="text-xl font-bold font-mono tracking-tight text-white">${resolvedCurveData.prices.pancakeswap.toFixed(7)}</span>
+                                            <span className="text-xl font-bold font-mono tracking-tight text-white">${(resolvedCurveData.prices.pancakeswap || 0).toFixed(7)}</span>
                                             <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">USD</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono border-t border-white/[0.05] pt-3">
@@ -435,7 +435,7 @@ export default function DexArbPage() {
                                                 <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">IMPLIED RATE</div>
                                                 <div className="flex items-center gap-1.5 text-emerald-400">
                                                     <ArrowRightLeft className="h-3 w-3" />
-                                                    {formatNumber((1 / (resolvedCurveData.prices.pancakeswap || 1)) * (1 - (resolvedCurveData.optimal_arb.pancake_fee_bps || 1) / 10000), 2)} cNGN
+                                                    {formatNumber(1 / (resolvedCurveData.prices.pancakeswap || 1), 2)} cNGN
                                                 </div>
                                             </div>
                                             <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
@@ -470,7 +470,7 @@ export default function DexArbPage() {
                                     <CardContent className="px-4 pb-4 pt-2">
                                         <div className="flex items-center gap-2 mb-2">
                                             <TrendingUp className="h-4 w-4 text-emerald-500/50" />
-                                            <span className="text-xl font-bold font-mono tracking-tight text-white">${resolvedCurveData.prices.aerodrome.toFixed(7)}</span>
+                                            <span className="text-xl font-bold font-mono tracking-tight text-white">${(resolvedCurveData.prices.aerodrome || 0).toFixed(7)}</span>
                                             <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">USD</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono border-t border-white/[0.05] pt-3">
@@ -478,7 +478,7 @@ export default function DexArbPage() {
                                                 <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">IMPLIED RATE</div>
                                                 <div className="flex items-center gap-1.5 text-emerald-400">
                                                     <ArrowRightLeft className="h-3 w-3" />
-                                                    {formatNumber((1 / (resolvedCurveData.prices.aerodrome || 1)) * (1 - (resolvedCurveData.optimal_arb.aerodrome_fee_bps || 5) / 10000), 2)} cNGN
+                                                    {formatNumber(1 / (resolvedCurveData.prices.aerodrome || 1), 2)} cNGN
                                                 </div>
                                             </div>
                                             <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
@@ -521,7 +521,7 @@ export default function DexArbPage() {
                                                 <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">IMPLIED RATE</div>
                                                 <div className="flex items-center gap-1.5 text-emerald-400">
                                                     <ArrowRightLeft className="h-3 w-3" />
-                                                    {formatNumber((1 / (resolvedCurveData.prices.assetchain || 1)) * (1 - (resolvedCurveData.optimal_arb.assetchain_fee_bps || 30) / 10000), 2)} cNGN
+                                                    {formatNumber(1 / (resolvedCurveData.prices.assetchain || 1), 2)} cNGN
                                                 </div>
                                             </div>
                                             <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">

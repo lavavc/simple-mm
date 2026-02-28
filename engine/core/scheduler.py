@@ -81,7 +81,10 @@ class TradingScheduler:
         self.scheduler = AsyncIOScheduler()
         self._trading_enabled = True
         self._started = False
-        self.ws_listener = ArbitrageWebSocketListener(self.broadcast)
+        self.ws_listener = ArbitrageWebSocketListener(
+            broadcast=self.broadcast,
+            on_update=self._update_price
+        )
 
     @property
     def trading_enabled(self) -> bool:

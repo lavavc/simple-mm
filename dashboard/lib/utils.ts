@@ -148,10 +148,19 @@ export function normalizeToNgnUsd(
     return { bid, ask, mid };
   }
 
-  // cNGN/USDC or cNGN/USDT: invert (0.0007 USD/cNGN → ~1430 NGN/USD)
+  // cNGN/USDC or cNGN/USDT: normalize to NGN per 1 USD (e.g. ~1430 NGN/USD)
   if (price.pair === 'cNGN/USDC' || price.pair === 'cNGN/USDT') {
     if (!bid || !ask) return null;
-    const result = { bid: 1 / ask, ask: 1 / bid, mid: 1 / mid };
+
+    // Auto-detect direction:
+    // Some venues output ~0.0007 (USD per NGN) -> Needs inversion
+    // Others output ~1400 (NGN per USD) -> Does not need inversion
+    const normalizedMid = mid < 1 ? 1 / mid : mid;
+    const normalizedBid = bid < 1 ? 1 / ask : bid;
+    const normalizedAsk = ask < 1 ? 1 / bid : ask;
+
+    const result = { bid: normalizedBid, ask: normalizedAsk, mid: normalizedMid };
+    console.log("[NORMALIZE]", price.venue, "in:", mid, "out:", result.mid);
     return isFinite(result.mid) ? result : null;
   }
 

@@ -190,7 +190,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             </CardContent>
           </Card>
 
-          {/* Liquidity Sensor or Empty Space */}
           {venue.position?.lp_position ? (
             <Card className={`bg-[#12161C] border rounded-sm shadow-none transition-colors duration-500 ${venue.position.lp_position.in_range ? 'border-emerald-500/30' : 'border-yellow-500/30'}`}>
               <CardHeader className={`p-3 border-b flex flex-row items-center justify-between ${venue.position.lp_position.in_range ? 'border-emerald-500/10 bg-emerald-500/[0.02]' : 'border-yellow-500/10 bg-yellow-500/[0.02]'}`}>
@@ -239,7 +238,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
               <CardHeader className="p-3 border-b border-white/[0.02]">
                 <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
-                  <Gauge className="h-4 w-4" /> LIQUIDITY SENSOR
+                  <Gauge className="h-4 w-4" /> VENUE SPOT PRICE
                 </div>
               </CardHeader>
               <CardContent className="py-12 flex flex-col items-center justify-center text-center">
@@ -251,8 +250,18 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                   </div>
                 ) : (
                   <>
-                    <ActivityIcon className="h-6 w-6 text-white/20 mb-3" />
-                    <div className="text-[11px] font-mono text-white/40 uppercase tracking-widest">NO AMM POSITION DETECTED</div>
+                    <div className="text-3xl font-mono text-white tracking-tight mb-2">
+                      ${venue.price?.quote?.mid ? venue.price.quote.mid.toFixed(7) : '0.0000000'}
+                    </div>
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className="text-[10px] text-emerald-500/70 uppercase tracking-widest font-mono border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded-sm">MID PRICE</span>
+                      <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">{venue.price?.pair || 'cNGN/USD'}</span>
+                    </div>
+
+                    <div className="h-px w-24 bg-white/10 mb-4" />
+
+                    <ActivityIcon className="h-4 w-4 text-white/10 mb-2" />
+                    <div className="text-[10px] font-mono text-white/30 uppercase tracking-widest">NO AMM POSITION DETECTED</div>
                   </>
                 )}
               </CardContent>

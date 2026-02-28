@@ -86,6 +86,7 @@ export default function PricesPage() {
   const { data: prices, isLoading } = usePrices();
   const { data: blended } = useBlendedPrice();
 
+  console.log('[API HTTP PRICES]', isLoading ? 'Loading...' : prices);
 
   const normalizedPrices = prices
     ?.map((p) => ({ venue: p.venue, normalized: normalizeToNgnUsd(p) }))

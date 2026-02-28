@@ -993,7 +993,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
             async with self._nonce_locks[account.address]:
                 tx["nonce"] = self.w3.eth.get_transaction_count(account.address, "pending")
                 signed = account.sign_transaction(tx)
-                tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
 
             # Wait for receipt
             receipt: TxReceipt = self.w3.eth.wait_for_transaction_receipt(

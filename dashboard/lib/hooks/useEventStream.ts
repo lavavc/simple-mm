@@ -54,6 +54,7 @@ export function useEventStream() {
     ws.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        console.log('[SOCKET EVENT]', event.type, event.data);
         const keys = EVENT_TO_KEYS[event.type];
         if (keys) {
           for (const key of keys) {
