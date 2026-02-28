@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     base_rpc_url: str = "https://mainnet.base.org"
     bsc_rpc_url: str = "https://bsc-dataseed.binance.org"
     eth_rpc_url: str = "https://eth.llamarpc.com"
+    assetchain_rpc_url: str = "https://mainnet-rpc.assetchain.org"
+    
+    # Websocket endpoints
+    base_wss_url: str = ""
+    bsc_wss_url: str = ""
 
     @model_validator(mode="after")
     def apply_alchemy_key(self) -> "Settings":
@@ -32,6 +37,9 @@ class Settings(BaseSettings):
             self.base_rpc_url = f"https://base-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
             self.bsc_rpc_url = f"https://bnb-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
             self.eth_rpc_url = f"https://eth-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+            # Injecting WSS endpoints for the Event Listener
+            self.base_wss_url = f"wss://base-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+            self.bsc_wss_url = f"wss://bnb-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
         return self
 
     # Venue API keys
@@ -44,8 +52,8 @@ class Settings(BaseSettings):
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
-    # Scheduler intervals (seconds) — all SchedulerConfig defaults live here, nowhere else
-    price_update_interval: int = 30
+    # Scheduler intervals (seconds)
+    price_update_interval: int = 10
     position_sync_interval: int = 60
     dex_check_interval: int = 120
     cex_sync_interval: int = 300
@@ -58,9 +66,13 @@ class Settings(BaseSettings):
     venue_divergence_rebalance_bps: int = 200  # Rebalance DEX if venue drifts >2% from fair value
 
     # Arbitrage settings
-    arbitrage_enabled: bool = True
-    arbitrage_execution_enabled: bool = True
-    arbitrage_scan_interval: int = 30  # seconds
+    # Arbitrage globally disabled while testing dashboard analytics
+    arbitrage_enabled: bool = False
+    
+    # ----------------------------------------------------
+    # Arbitrage Engine Defaults
+    arbitrage_execution_enabled: bool = False  # Phase 1: detection only
+    arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
     arbitrage_min_spread_bps: int = 150          # 1.5% minimum gross spread

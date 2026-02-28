@@ -14,6 +14,8 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.base import BaseDexAdapter
+from engine.core.arbitrage.simulator import generate_v3_profit_curve
+from engine.core.arbitrage.listener import ArbitrageWebSocketListener
 
 if TYPE_CHECKING:
     from engine.core.arbitrage import ArbitrageEngine
@@ -28,6 +30,7 @@ class SchedulerConfig:
 
     All defaults come from engine.config.Settings — edit config.py to change them.
     """
+    dex_arb_curve_interval: int = 10
 
     price_update_interval: int = settings.price_update_interval
     position_sync_interval: int = settings.position_sync_interval
@@ -78,6 +81,10 @@ class TradingScheduler:
         self.scheduler = AsyncIOScheduler()
         self._trading_enabled = True
         self._started = False
+        self.ws_listener = ArbitrageWebSocketListener(
+            broadcast=self.broadcast,
+            on_update=self._update_price
+        )
 
     @property
     def trading_enabled(self) -> bool:
@@ -93,6 +100,8 @@ class TradingScheduler:
             IntervalTrigger(seconds=self.config.price_update_interval),
             id="price_update",
             replace_existing=True,
+            max_instances=3,
+            misfire_grace_time=15,
         )
 
         self.scheduler.add_job(
@@ -100,6 +109,8 @@ class TradingScheduler:
             IntervalTrigger(seconds=self.config.position_sync_interval),
             id="position_sync",
             replace_existing=True,
+            max_instances=2,
+            misfire_grace_time=15,
         )
 
         self.scheduler.add_job(
@@ -107,6 +118,7 @@ class TradingScheduler:
             IntervalTrigger(seconds=self.config.dex_check_interval),
             id="dex_rebalance",
             replace_existing=True,
+            max_instances=2,
         )
 
         self.scheduler.add_job(
@@ -114,6 +126,8 @@ class TradingScheduler:
             IntervalTrigger(seconds=self.config.cex_sync_interval),
             id="cex_sync",
             replace_existing=True,
+            max_instances=2,
+            misfire_grace_time=10,
         )
 
 
@@ -123,6 +137,8 @@ class TradingScheduler:
                 IntervalTrigger(seconds=self.config.arbitrage_scan_interval),
                 id="arbitrage_scan",
                 replace_existing=True,
+                max_instances=3,
+                misfire_grace_time=10,
             )
             logger.info("arbitrage_scan_job_registered")
 
@@ -152,8 +168,26 @@ class TradingScheduler:
                 IntervalTrigger(seconds=self.config.price_update_interval),
                 id="blockradar_rate_sync",
                 replace_existing=True,
+                max_instances=3,
+                misfire_grace_time=10,
             )
             logger.info("blockradar_rate_sync_job_registered")
+
+        # Start the WebSocket Event-Driven Listener
+        import asyncio
+        asyncio.create_task(self.ws_listener.start())
+
+        # Keep the old stream running every 10 seconds purely as a fallback 
+        # for chains without WebSocket support (like AssetChain).
+        self.scheduler.add_job(
+            self._stream_dex_arb_curve,
+            IntervalTrigger(seconds=10),
+            id="dex_arb_curve_stream",
+            replace_existing=True,
+            max_instances=2,
+            misfire_grace_time=30,
+        )
+        logger.info("dex_arb_curve_stream_job_registered_as_fallback")
 
         self.scheduler.start()
         self._started = True
@@ -161,6 +195,8 @@ class TradingScheduler:
 
     def stop(self):
         if self._started:
+            import asyncio
+            asyncio.create_task(self.ws_listener.stop())
             self.scheduler.shutdown(wait=False)
             self._started = False
             logger.info("scheduler_stopped")
@@ -607,6 +643,99 @@ class TradingScheduler:
                 )
         except Exception as e:
             logger.error("arbitrage_scan_failed", error=str(e))
+
+    async def _stream_dex_arb_curve(self):
+        """Generates the live V3 profit curve and streams it to the frontend dashboard.
+        This runs every 10 seconds as a pure fallback for chains WITHOUT active WebSockets.
+        """
+        try:
+            from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_single_pool_state
+            from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
+            from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
+            from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+            
+            # Map of chain identifiers to their RPC and Pool addresses
+            venues_to_check = [
+                ("bsc", self.config.bsc_rpc_url if hasattr(self.config, 'bsc_rpc_url') else settings.bsc_rpc_url, PANCAKESWAP_POOL_READ_CONFIG),
+                ("base", self.config.base_rpc_url if hasattr(self.config, 'base_rpc_url') else settings.base_rpc_url, AERODROME_POOL_READ_CONFIG),
+                ("assetchain", self.config.assetchain_rpc_url if hasattr(self.config, 'assetchain_rpc_url') else settings.assetchain_rpc_url, ASSETCHAIN_POOL_READ_CONFIG)
+            ]
+            
+            state_updated = False
+            
+            # Only poll chains that DO NOT have an active WebSocket connection
+            for chain_name, rpc_url, pool_config in venues_to_check:
+                if chain_name not in self.ws_listener.active_connections:
+                    success = await update_single_pool_state(pool_config, rpc_url_override=rpc_url)
+                    if success:
+                        state_updated = True
+                        logger.debug("fallback_poller_updated_state", chain=chain_name)
+                        
+            # If the fallback poller actually found new data, trigger the math calculation
+            if state_updated:
+                curve_data = await generate_v3_profit_curve()
+                if curve_data:
+                    self.broadcast({
+                        "type": "dex_arb_curve",
+                        "data": curve_data
+                    })
+                    
+                    # Check for profitable live V3 Arb
+                    optimal = curve_data.get("optimal_arb", {})
+                if optimal.get("expected_profit_usd", -1) > 0:
+                    import uuid
+                    import time
+                    from engine.api.schemas import DexArbOpportunity
+                    from engine.db.database import get_db
+
+                    db = await get_db()
+                    
+                    # Expire old ones
+                    cutoff_ts = int(time.time() * 1000) - 60000
+                    await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
+
+                    # Deduplication Strategy: don't slam the DB with 10 records a second 
+                    # if we are already 'Targeting' or 'Routing' the exact same vector.
+                    direction = optimal["direction"]
+                    existing_active = await db._conn.execute(
+                        "SELECT id FROM dex_arbitrage_opportunities WHERE status IN ('detected', 'executing') AND direction = ? ORDER BY timestamp DESC LIMIT 1",
+                        (direction,)
+                    )
+                    existing_row = await existing_active.fetchone()
+
+                    if existing_row:
+                        opp_id = existing_row['id']
+                    else:
+                        opp_id = f"dex-arb-{uuid.uuid4()}"
+                        opportunity = DexArbOpportunity(
+                            id=opp_id,
+                            timestamp=int(time.time() * 1000),
+                            direction=direction,
+                            optimal_size_usd=optimal["optimal_size_usd"],
+                            expected_profit_usd=optimal["expected_profit_usd"],
+                            cngn_transferred=optimal["cngn_transferred"],
+                            expected_usd_out=optimal["expected_usd_out"],
+                            status="detected",
+                            net_spread_bps=optimal.get("net_spread_bps", 0),
+                            pancake_price=curve_data.get("prices", {}).get("pancakeswap"),
+                            aerodrome_price=curve_data.get("prices", {}).get("aerodrome"),
+                            slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
+                            pancake_fee_bps=optimal.get("pancake_fee_bps"),
+                            aerodrome_fee_bps=optimal.get("aerodrome_fee_bps"),
+                            estimated_gas_usd=optimal.get("estimated_gas_usd")
+                        )
+                        await db.insert_dex_arbitrage_opportunity(opportunity)
+
+                    # Augment broadcast data with the ID so frontend can track it
+                    broadcast_data = optimal.copy()
+                    broadcast_data["id"] = opp_id
+
+                    self.broadcast({
+                        "type": "dex_arb_opportunity",
+                        "data": broadcast_data
+                    })
+        except Exception as e:
+            logger.error("dex_arb_curve_stream_failed", error=str(e))
 
     # ------------------------------------------------------------------
     # Account balance monitoring

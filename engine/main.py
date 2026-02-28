@@ -21,6 +21,7 @@ from engine.core.arbitrage import ArbitrageEngine
 from engine.core.accounts import AccountManager, AccountRole
 from engine.venues.dex.aerodrome import AerodromeAdapter, AERODROME_POOL_READ_CONFIG
 from engine.venues.dex.pancakeswap import PancakeSwapAdapter, PANCAKESWAP_POOL_READ_CONFIG
+from engine.venues.dex.assetchain import AssetChainAdapter, ASSETCHAIN_POOL_READ_CONFIG
 from engine.venues.dex.base import PoolPriceReader
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
@@ -165,20 +166,24 @@ async def lifespan(app: FastAPI):
     pancakeswap_reader = PoolPriceReader(
         config=PANCAKESWAP_POOL_READ_CONFIG, source_name="pancakeswap"
     )
+    assetchain_reader = PoolPriceReader(
+        config=ASSETCHAIN_POOL_READ_CONFIG, source_name="assetchain"
+    )
     logger.info(
         "pool_price_readers_initialized",
         aerodrome_rpc=AERODROME_POOL_READ_CONFIG.rpc_url,
         pancakeswap_rpc=PANCAKESWAP_POOL_READ_CONFIG.rpc_url,
+        assetchain_rpc=ASSETCHAIN_POOL_READ_CONFIG.rpc_url,
     )
 
-    # Price aggregator: adapter > reader for each DEX
+    # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
+    from engine.core.arbitrage.simulator import seed_pool_states
+    await seed_pool_states()
+
+    # Price aggregator: reads directly from the simulator cache for DEXs
     price_aggregator = create_venue_aggregator(
         bybit_enabled=True,
         quidax_enabled=True,
-        aerodrome_adapter=venues.get("aerodrome"),
-        aerodrome_reader=aerodrome_reader,
-        pancakeswap_adapter=venues.get("pancakeswap"),
-        pancakeswap_reader=pancakeswap_reader,
         blockradar_adapter=venues.get("blockradar"),
     )
     logger.info("price_aggregator_initialized", venues=list(price_aggregator.sources.keys()))

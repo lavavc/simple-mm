@@ -362,67 +362,53 @@ class BlockradarPriceSource(VenuePriceSource):
 
 
 class DexAdapterPriceSource(VenuePriceSource):
-    """Wraps a live VenueAdapter or a lightweight PoolPriceReader as a price source.
+    """Wraps the global simulator cache as a zero-latency price source.
 
-    Fallback chain:
-      1. Full adapter (``get_current_price()``) -- requires private keys
-      2. PoolPriceReader (``get_price()``) -- read-only, no keys
-
-    Returns None when neither source can provide a price.
+    Instead of making redundant RPC calls, this source instantly pulls the 
+    most recent mathematical `sqrtPriceX96` from the Arbitrage WebSocket Listener.
     """
 
     def __init__(
         self,
         venue_name: str,
         pair: str,
-        adapter: "Optional[VenueAdapter]" = None,
-        reader: "Optional[PoolPriceReader]" = None,
-        cache_seconds: int = 30,
+        pool_address: str,
     ):
         self.name = venue_name
         self.pair = pair
-        self._adapter = adapter
-        self._reader = reader
-        self._cache_seconds = cache_seconds
-        self._cache: Optional[tuple[PriceQuote, float]] = None
-
-    def set_adapter(self, adapter: "VenueAdapter"):
-        """Attach a live adapter (can be called after construction)."""
-        self._adapter = adapter
-
-    def set_reader(self, reader: "PoolPriceReader"):
-        """Attach a read-only pool price reader (can be called after construction)."""
-        self._reader = reader
+        self.pool_address = pool_address
 
     async def fetch_price(self) -> Optional[PriceQuote]:
-        if self._cache:
-            quote, fetched_at = self._cache
-            if time.time() - fetched_at < self._cache_seconds:
-                return quote
-
-        # Tier 1: Full adapter (has private keys, can trade)
-        if self._adapter is not None:
-            try:
-                quote = await self._adapter.get_current_price()
-                if quote is not None:
-                    self._cache = (quote, time.time())
-                    return quote
-            except Exception as e:
-                logger.warning("dex_adapter_price_failed", venue=self.name, error=str(e))
-
-        # Tier 2: Read-only pool reader (RPC only, no keys)
-        if self._reader is not None:
-            try:
-                quote = self._reader.get_price()
-                if quote is not None:
-                    self._cache = (quote, time.time())
-                    return quote
-            except Exception as e:
-                logger.warning("pool_reader_price_failed", venue=self.name, error=str(e))
-
-        # No source available or all sources failed
-        logger.warning("dex_price_unavailable", venue=self.name, has_adapter=self._adapter is not None, has_reader=self._reader is not None)
-        return None
+        from engine.core.arbitrage.simulator import get_cached_pool_state, Q96
+        
+        sqrt_p, _, _, _, timestamp = get_cached_pool_state(self.pool_address)
+        
+        if sqrt_p is None:
+            logger.warning("dex_price_cache_miss", venue=self.name)
+            return None
+            
+        # Convert Uniswap V3 sqrtPriceX96 to standard human-readable format
+        if self.name == "aerodrome":
+            # Aerodrome: Token0=cNGN (6 dec), Token1=USDC (6 dec)
+            # sqrtP^2 * 10^(6-6) = USDC per cNGN directly (~0.00073)
+            # No inversion needed — already in USD per cNGN format
+            price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (6 - 6))
+            human_price = price  # already USD/cNGN
+            logger.info("dex_price_math_aerodrome", sqrt_p=float(sqrt_p), raw_ratio=float(price), usd_per_cngn=float(human_price))
+        else:
+            # PancakeSwap & AssetChain: Token0=USDT/USDC (18 dec), Token1=cNGN (6 dec)
+            # sqrtP^2 * 10^(18-6) gives raw cNGN per USDT, invert to get USD per cNGN
+            price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (18 - 6))
+            human_price = Decimal(1) / price if price > 0 else Decimal(0)
+            logger.info("dex_price_math_other", venue=self.name, sqrt_p=float(sqrt_p), raw_ratio=float(price), usd_per_cngn=float(human_price))
+            
+        return PriceQuote(
+            source="simulator_cache",
+            timestamp=int((timestamp or time.time()) * 1000),
+            bid=human_price,
+            ask=human_price,
+            mid=human_price,
+        )
 
 
 # =============================================================================
@@ -533,10 +519,6 @@ class VenuePriceAggregator:
 def create_venue_aggregator(
     bybit_enabled: bool = True,
     quidax_enabled: bool = True,
-    aerodrome_adapter: "Optional[VenueAdapter]" = None,
-    aerodrome_reader: "Optional[PoolPriceReader]" = None,
-    pancakeswap_adapter: "Optional[VenueAdapter]" = None,
-    pancakeswap_reader: "Optional[PoolPriceReader]" = None,
     blockradar_adapter: "Optional[VenueAdapter]" = None,
 ) -> VenuePriceAggregator:
     """Create a venue price aggregator with configured sources."""
@@ -547,21 +529,30 @@ def create_venue_aggregator(
 
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
+        
+    from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
+    from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
+    from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
 
     sources.append(
         DexAdapterPriceSource(
             venue_name="aerodrome",
             pair="cNGN/USDC",
-            adapter=aerodrome_adapter,
-            reader=aerodrome_reader,
+            pool_address=AERODROME_POOL_READ_CONFIG.pool_address,
         )
     )
     sources.append(
         DexAdapterPriceSource(
             venue_name="pancakeswap",
             pair="cNGN/USDT",
-            adapter=pancakeswap_adapter,
-            reader=pancakeswap_reader,
+            pool_address=PANCAKESWAP_POOL_READ_CONFIG.pool_address,
+        )
+    )
+    sources.append(
+        DexAdapterPriceSource(
+            venue_name="assetchain",
+            pair="cNGN/USDT",
+            pool_address=ASSETCHAIN_POOL_READ_CONFIG.pool_address,
         )
     )
 
