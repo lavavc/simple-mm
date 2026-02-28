@@ -88,71 +88,40 @@ async def seed_pool_states():
     await update_single_pool_state(AERODROME_POOL_READ_CONFIG, settings.base_rpc_url)
     await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
 
-def calc_assetchain_buy_cngn(amount_usdt_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
+# ========== V3 EXACT MATH FUNCTIONS ==========
+
+def v3_swap_token0_for_token1(amount_token0_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, fee: Decimal, t0_decimals: int, t1_decimals: int) -> Decimal:
+    """
+    Exact V3 single-tick swap math for Token0 -> Token1.
+    Formula: sqrtP_new = (L * sqrtP) / (L + amount_in * sqrtP)
+    """
     if liquidity == 0 or sqrt_p == 0: return Decimal(0)
-    fee = ASSETCHAIN_FEE if apply_fee else Decimal(0)
-    amount_in_after_fee = amount_usdt_in * (Decimal("1") - fee)
-    amount_in_raw = amount_in_after_fee * Decimal(10**18)
+    
+    amount_in_after_fee = amount_token0_in * (Decimal("1") - fee)
+    amount_in_raw = amount_in_after_fee * Decimal(10**t0_decimals)
     
     numerator = liquidity * sqrt_p
     denominator = (liquidity * Q96) + (amount_in_raw * sqrt_p)
     sqrt_p_new = (numerator * Q96) / denominator
     amount_out_raw = (liquidity * (sqrt_p - sqrt_p_new)) / Q96
-    return amount_out_raw / Decimal(10**6)
-
-def calc_pancake_buy_cngn(amount_usdt_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
-    if liquidity == 0 or sqrt_p == 0: return Decimal(0)
-    fee = PANCAKE_FEE if apply_fee else Decimal(0)
-    amount_in_after_fee = amount_usdt_in * (Decimal("1") - fee)
-    amount_in_raw = amount_in_after_fee * Decimal(10**18)
     
-    numerator = liquidity * sqrt_p
-    denominator = (liquidity * Q96) + (amount_in_raw * sqrt_p)
-    sqrt_p_new = (numerator * Q96) / denominator
-    amount_out_raw = (liquidity * (sqrt_p - sqrt_p_new)) / Q96
-    return amount_out_raw / Decimal(10**6)
+    return amount_out_raw / Decimal(10**t1_decimals)
 
-def calc_aerodrome_buy_cngn(amount_usdc_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
+def v3_swap_token1_for_token0(amount_token1_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, fee: Decimal, t0_decimals: int, t1_decimals: int) -> Decimal:
+    """
+    Exact V3 single-tick swap math for Token1 -> Token0.
+    Formula: sqrtP_new = sqrtP + (amount_in * Q96) / L
+    amount_out = L * (sqrtP_new - sqrtP) / (sqrtP * sqrtP_new)
+    """
     if liquidity == 0 or sqrt_p == 0: return Decimal(0)
-    fee = AERO_FEE if apply_fee else Decimal(0)
-    amount_in_after_fee = amount_usdc_in * (Decimal("1") - fee)
-    amount_in_raw = amount_in_after_fee * Decimal(10**6)
+
+    amount_in_after_fee = amount_token1_in * (Decimal("1") - fee)
+    amount_in_raw = amount_in_after_fee * Decimal(10**t1_decimals)
     
     sqrt_p_new = sqrt_p + (amount_in_raw * Q96) / liquidity
     amount_out_raw = (liquidity * Q96 * (sqrt_p_new - sqrt_p)) / (sqrt_p * sqrt_p_new)
-    return amount_out_raw / Decimal(10**6)
-
-def calc_aerodrome_sell_cngn(amount_cngn_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
-    if liquidity == 0 or sqrt_p == 0: return Decimal(0)
-    fee = AERO_FEE if apply_fee else Decimal(0)
-    amount_in_after_fee = amount_cngn_in * (Decimal("1") - fee)
-    amount_in_raw = amount_in_after_fee * Decimal(10**6)
     
-    numerator = liquidity * sqrt_p
-    denominator = (liquidity * Q96) + (amount_in_raw * sqrt_p)
-    sqrt_p_new = (numerator * Q96) / denominator
-    amount_out_raw = (liquidity * (sqrt_p - sqrt_p_new)) / Q96
-    return amount_out_raw / Decimal(10**6)
-
-def calc_pancake_sell_cngn(amount_cngn_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
-    if liquidity == 0 or sqrt_p == 0: return Decimal(0)
-    fee = PANCAKE_FEE if apply_fee else Decimal(0)
-    amount_in_after_fee = amount_cngn_in * (Decimal("1") - fee)
-    amount_in_raw = amount_in_after_fee * Decimal(10**6)
-    
-    sqrt_p_new = sqrt_p + (amount_in_raw * Q96) / liquidity
-    amount_out_raw = (liquidity * Q96 * (sqrt_p_new - sqrt_p)) / (sqrt_p * sqrt_p_new)
-    return amount_out_raw / Decimal(10**18)
-
-def calc_assetchain_sell_cngn(amount_cngn_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, apply_fee: bool = True) -> Decimal:
-    if liquidity == 0 or sqrt_p == 0: return Decimal(0)
-    fee = ASSETCHAIN_FEE if apply_fee else Decimal(0)
-    amount_in_after_fee = amount_cngn_in * (Decimal("1") - fee)
-    amount_in_raw = amount_in_after_fee * Decimal(10**6)
-    
-    sqrt_p_new = sqrt_p + (amount_in_raw * Q96) / liquidity
-    amount_out_raw = (liquidity * Q96 * (sqrt_p_new - sqrt_p)) / (sqrt_p * sqrt_p_new)
-    return amount_out_raw / Decimal(10**18)
+    return amount_out_raw / Decimal(10**t0_decimals)
 
 async def generate_v3_profit_curve() -> dict:
     """Generates the side-by-side exact V3 curve data over a set of investment sizes from CACHED memory."""
@@ -186,16 +155,16 @@ async def generate_v3_profit_curve() -> dict:
         investment_usd = Decimal(str(size))
         
         # 1. With Fees (Actual Cash Return)
-        cngn_pancake = calc_pancake_buy_cngn(investment_usd, bsc_sqrt, bsc_liq, apply_fee=True)
-        cngn_aero = calc_aerodrome_buy_cngn(investment_usd, base_sqrt, base_liq, apply_fee=True)
-        cngn_assetchain = calc_assetchain_buy_cngn(investment_usd, asset_sqrt, asset_liq, apply_fee=True)
-        usd_returned = calc_aerodrome_sell_cngn(cngn_pancake, base_sqrt, base_liq, apply_fee=True)
+        cngn_pancake = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
+        cngn_aero = v3_swap_token1_for_token0(investment_usd, base_sqrt, base_liq, AERO_FEE, 6, 6)
+        cngn_assetchain = v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
+        usd_returned = v3_swap_token0_for_token1(cngn_pancake, base_sqrt, base_liq, AERO_FEE, 6, 6)
         
         # 2. Without Fees (Theoretical Return - Just Price Impact)
-        cngn_pancake_no_fee = calc_pancake_buy_cngn(investment_usd, bsc_sqrt, bsc_liq, apply_fee=False)
-        cngn_aero_no_fee = calc_aerodrome_buy_cngn(investment_usd, base_sqrt, base_liq, apply_fee=False)
-        cngn_assetchain_no_fee = calc_assetchain_buy_cngn(investment_usd, asset_sqrt, asset_liq, apply_fee=False)
-        usd_returned_no_fee = calc_aerodrome_sell_cngn(cngn_pancake_no_fee, base_sqrt, base_liq, apply_fee=False)
+        cngn_pancake_no_fee = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, Decimal(0), 18, 6)
+        cngn_aero_no_fee = v3_swap_token1_for_token0(investment_usd, base_sqrt, base_liq, Decimal(0), 6, 6)
+        cngn_assetchain_no_fee = v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, Decimal(0), 18, 6)
+        usd_returned_no_fee = v3_swap_token0_for_token1(cngn_pancake_no_fee, base_sqrt, base_liq, Decimal(0), 6, 6)
 
         # 3. Slippage Tolerance Check (0.10% = subtract 10 basis points from the expected payout)
         slippage_tolerance = Decimal("0.0010") # 0.10%
@@ -227,11 +196,11 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 1: Buy on PancakeSwap, Sell identical cNGN amount from Base inventory
     for size in range(10, max_usd + step, step):
         usd_in_bsc = Decimal(size)
-        cngn_acquired_bsc = calc_pancake_buy_cngn(usd_in_bsc, bsc_sqrt, bsc_liq)
+        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
         
         # We don't bridge. We immediately sell the identical amount of cNGN we just bought
         # out of our pre-existing inventory on the Base chain.
-        usd_out_base = calc_aerodrome_sell_cngn(cngn_acquired_bsc, base_sqrt, base_liq)
+        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_bsc, base_sqrt, base_liq, AERO_FEE, 6, 6)
         
         if usd_out_base - usd_in_bsc > best_profit:
             best_profit = usd_out_base - usd_in_bsc
@@ -243,10 +212,10 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 2: Buy on Aerodrome, Sell identical cNGN amount from BSC inventory
     for size in range(10, max_usd + step, step):
         usd_in_base = Decimal(size)
-        cngn_acquired_base = calc_aerodrome_buy_cngn(usd_in_base, base_sqrt, base_liq)
+        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, AERO_FEE, 6, 6)
         
         # Immediate sell from PancakeSwap inventory
-        usd_out_bsc = calc_pancake_sell_cngn(cngn_acquired_base, bsc_sqrt, bsc_liq)
+        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_base, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
         
         if usd_out_bsc - usd_in_base > best_profit:
             best_profit = usd_out_bsc - usd_in_base
@@ -258,8 +227,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 3: Buy on AssetChain, Sell from Base inventory
     for size in range(10, max_usd + step, step):
         usd_in_asset = Decimal(size)
-        cngn_acquired_asset = calc_assetchain_buy_cngn(usd_in_asset, asset_sqrt, asset_liq)
-        usd_out_base = calc_aerodrome_sell_cngn(cngn_acquired_asset, base_sqrt, base_liq)
+        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
+        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_asset, base_sqrt, base_liq, AERO_FEE, 6, 6)
         if usd_out_base - usd_in_asset > best_profit:
             best_profit = usd_out_base - usd_in_asset
             best_size = usd_in_asset
@@ -270,8 +239,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 4: Buy on Base, Sell from AssetChain inventory
     for size in range(10, max_usd + step, step):
         usd_in_base = Decimal(size)
-        cngn_acquired_base = calc_aerodrome_buy_cngn(usd_in_base, base_sqrt, base_liq)
-        usd_out_asset = calc_assetchain_sell_cngn(cngn_acquired_base, asset_sqrt, asset_liq)
+        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, AERO_FEE, 6, 6)
+        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_base, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
         if usd_out_asset - usd_in_base > best_profit:
             best_profit = usd_out_asset - usd_in_base
             best_size = usd_in_base
@@ -282,8 +251,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 5: Buy on AssetChain, Sell from Pancake inventory
     for size in range(10, max_usd + step, step):
         usd_in_asset = Decimal(size)
-        cngn_acquired_asset = calc_assetchain_buy_cngn(usd_in_asset, asset_sqrt, asset_liq)
-        usd_out_bsc = calc_pancake_sell_cngn(cngn_acquired_asset, bsc_sqrt, bsc_liq)
+        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
+        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_asset, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
         if usd_out_bsc - usd_in_asset > best_profit:
             best_profit = usd_out_bsc - usd_in_asset
             best_size = usd_in_asset
@@ -294,8 +263,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 6: Buy on Pancake, Sell from AssetChain inventory
     for size in range(10, max_usd + step, step):
         usd_in_bsc = Decimal(size)
-        cngn_acquired_bsc = calc_pancake_buy_cngn(usd_in_bsc, bsc_sqrt, bsc_liq)
-        usd_out_asset = calc_assetchain_sell_cngn(cngn_acquired_bsc, asset_sqrt, asset_liq)
+        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
+        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_bsc, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
         if usd_out_asset - usd_in_bsc > best_profit:
             best_profit = usd_out_asset - usd_in_bsc
             best_size = usd_in_bsc
