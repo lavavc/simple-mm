@@ -5,26 +5,17 @@ from .abis import POOL_ABI, NFT_POSITION_MANAGER_ABI, ROUTER_ABI
 from engine.api.schemas import DexParams
 from engine.config import settings
 
-# ── Token addresses on AssetChain ───────────────────────────────────────
-CNGN_ASSETCHAIN = "0x7923C0f6FA3d1BA6EAFCAedAaD93e737Fd22FC4F"
-USDT_ASSETCHAIN = "0x26E490d30e73c36800788DC6d6315946C4BbEa24"
-
-# ── AssetChain V3 infrastructure ────────────────────────────────────────
-# Dummy addresses for router and NFT manager until live execution is enabled
-ASSETCHAIN_NFT_MANAGER = "0x0000000000000000000000000000000000000000"
-ASSETCHAIN_ROUTER = "0x0000000000000000000000000000000000000000"
-
 # ── Pool configuration ──────────────────────────────────────────────────
 # On-chain token ordering: token0=USDT(0x26E4...) < token1=cNGN(0x7923...)
 ASSETCHAIN_CNGN_USDT_CONFIG = PoolConfig(
     chain_id=42420,
     chain_name="assetchain",
     rpc_url=settings.assetchain_rpc_url,
-    pool_address="0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1",
-    nft_manager_address=ASSETCHAIN_NFT_MANAGER,
-    router_address=ASSETCHAIN_ROUTER,
-    token0_address=USDT_ASSETCHAIN,  # USDT is token0
-    token1_address=CNGN_ASSETCHAIN,  # cNGN is token1
+    pool_address=settings.assetchain_pool_address,
+    nft_manager_address=settings.assetchain_nft_manager_address,
+    router_address=settings.assetchain_router_address,
+    token0_address=settings.usdt_assetchain_address,  # USDT is token0
+    token1_address=settings.cngn_assetchain_address,  # cNGN is token1
     token0_symbol="USDT",
     token1_symbol="cNGN",
     token0_decimals=18,
@@ -37,9 +28,9 @@ ASSETCHAIN_CNGN_USDT_CONFIG = PoolConfig(
 # ── Read-only config for price fetching (no keys needed) ────────────────
 ASSETCHAIN_POOL_READ_CONFIG = PoolReadConfig(
     rpc_url=settings.assetchain_rpc_url,
-    pool_address="0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1",
-    token0_address=USDT_ASSETCHAIN,
-    token1_address=CNGN_ASSETCHAIN,
+    pool_address=settings.assetchain_pool_address,
+    token0_address=settings.usdt_assetchain_address,
+    token1_address=settings.cngn_assetchain_address,
     token0_symbol="USDT",
     token1_symbol="cNGN",
     token0_decimals=18,

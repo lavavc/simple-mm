@@ -381,7 +381,7 @@ class DexAdapterPriceSource(VenuePriceSource):
     async def fetch_price(self) -> Optional[PriceQuote]:
         from engine.core.arbitrage.simulator import get_cached_pool_state, Q96
         
-        sqrt_p, _, _, _, timestamp = get_cached_pool_state(self.pool_address)
+        sqrt_p, _, _, _, timestamp, _ = get_cached_pool_state(self.pool_address)
         
         if sqrt_p is None:
             logger.warning("dex_price_cache_miss", venue=self.name)

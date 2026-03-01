@@ -17,23 +17,19 @@ getcontext().prec = 50
 
 SLOT0_SELECTOR = "0x3850c7bd"
 LIQUIDITY_SELECTOR = "0x1a686502"
+FEE_SELECTOR = "0xddca3f43"
 Q96 = Decimal(2 ** 96)
-
-# Hardcoded constants from config
-PANCAKE_FEE = Decimal("0.0001")
-AERO_FEE = Decimal("0.0005")
-ASSETCHAIN_FEE = Decimal("0.0030")
 
 # Cache to prevent making duplicate RPC calls for liquidity if the tick hasn't changed.
 # Structure: { pool_address: {"tick": int, "liquidity": Decimal, "sqrt_p": Decimal, "timestamp": float} }
 _POOL_CACHE: dict[str, dict] = {}
 
-def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | None, Decimal | None, Decimal | None, float | None]:
+def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | None, Decimal | None, Decimal | None, float | None, Decimal | None]:
     """Retrieve the latest known state from memory without network calls."""
     data = _POOL_CACHE.get(pool_address)
     if data:
-        return data["sqrt_p"], data["liquidity"], data.get("balance0"), data.get("balance1"), data.get("timestamp")
-    return None, None, None, None, None
+        return data["sqrt_p"], data["liquidity"], data.get("balance0"), data.get("balance1"), data.get("timestamp"), data.get("fee")
+    return None, None, None, None, None, None
 
 async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str = None) -> bool:
     """Fetches the state for a single pool and updates the cache. Returns True if successful."""
@@ -62,15 +58,24 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
         
         if cached_data and cached_data["tick"] == tick:
             liquidity = cached_data["liquidity"]
+            fee = cached_data.get("fee", Decimal("0.0030"))
             logger.debug("v3_pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
         else:
             liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
             liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
+            
+            try:
+                fee_raw = await w3.eth.call({"to": pool, "data": FEE_SELECTOR})
+                fee = Decimal(int.from_bytes(fee_raw[:32], "big")) / Decimal(1000000)
+            except Exception:
+                fee = cached_data.get("fee", Decimal("0.0030")) if cached_data else Decimal("0.0030")
+                
             logger.debug("v3_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
             
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,
             "liquidity": liquidity,
+            "fee": fee,
             "sqrt_p": sqrt_price_x96,
             "balance0": balance0,
             "balance1": balance1,
@@ -125,9 +130,14 @@ def v3_swap_token1_for_token0(amount_token1_in: Decimal, sqrt_p: Decimal, liquid
 
 async def generate_v3_profit_curve() -> dict:
     """Generates the side-by-side exact V3 curve data over a set of investment sizes from CACHED memory."""
-    bsc_sqrt, bsc_liq, bsc_b0, bsc_b1, bsc_ts = get_cached_pool_state(PANCAKESWAP_POOL_READ_CONFIG.pool_address)
-    base_sqrt, base_liq, base_b0, base_b1, base_ts = get_cached_pool_state(AERODROME_POOL_READ_CONFIG.pool_address)
-    asset_sqrt, asset_liq, asset_b0, asset_b1, asset_ts = get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
+    bsc_sqrt, bsc_liq, bsc_b0, bsc_b1, bsc_ts, bsc_fee = get_cached_pool_state(PANCAKESWAP_POOL_READ_CONFIG.pool_address)
+    base_sqrt, base_liq, base_b0, base_b1, base_ts, base_fee = get_cached_pool_state(AERODROME_POOL_READ_CONFIG.pool_address)
+    asset_sqrt, asset_liq, asset_b0, asset_b1, asset_ts, asset_fee = get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
+    
+    # Defaults in case the cache returns None for the fee (e.g., failed to fetch during seeding)
+    bsc_fee = bsc_fee or Decimal("0.0001") # fallback 0.01%
+    base_fee = base_fee or Decimal("0.0005") # fallback 0.05%
+    asset_fee = asset_fee or Decimal("0.0030") # fallback 0.3%
     
     if not bsc_sqrt or not base_sqrt or not asset_sqrt:
         # If any cache is completely empty, trigger a silent re-seed and abort this calculation run
@@ -155,10 +165,10 @@ async def generate_v3_profit_curve() -> dict:
         investment_usd = Decimal(str(size))
         
         # 1. With Fees (Actual Cash Return)
-        cngn_pancake = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
-        cngn_aero = v3_swap_token1_for_token0(investment_usd, base_sqrt, base_liq, AERO_FEE, 6, 6)
-        cngn_assetchain = v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
-        usd_returned = v3_swap_token0_for_token1(cngn_pancake, base_sqrt, base_liq, AERO_FEE, 6, 6)
+        cngn_pancake = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
+        cngn_aero = v3_swap_token1_for_token0(investment_usd, base_sqrt, base_liq, base_fee, 6, 6)
+        cngn_assetchain = v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, asset_fee, 18, 6)
+        usd_returned = v3_swap_token0_for_token1(cngn_pancake, base_sqrt, base_liq, base_fee, 6, 6)
         
         # 2. Without Fees (Theoretical Return - Just Price Impact)
         cngn_pancake_no_fee = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, Decimal(0), 18, 6)
@@ -196,11 +206,11 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 1: Buy on PancakeSwap, Sell identical cNGN amount from Base inventory
     for size in range(10, max_usd + step, step):
         usd_in_bsc = Decimal(size)
-        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
+        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
         
         # We don't bridge. We immediately sell the identical amount of cNGN we just bought
         # out of our pre-existing inventory on the Base chain.
-        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_bsc, base_sqrt, base_liq, AERO_FEE, 6, 6)
+        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_bsc, base_sqrt, base_liq, base_fee, 6, 6)
         
         if usd_out_base - usd_in_bsc > best_profit:
             best_profit = usd_out_base - usd_in_bsc
@@ -212,10 +222,10 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 2: Buy on Aerodrome, Sell identical cNGN amount from BSC inventory
     for size in range(10, max_usd + step, step):
         usd_in_base = Decimal(size)
-        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, AERO_FEE, 6, 6)
+        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, base_fee, 6, 6)
         
         # Immediate sell from PancakeSwap inventory
-        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_base, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
+        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_base, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
         
         if usd_out_bsc - usd_in_base > best_profit:
             best_profit = usd_out_bsc - usd_in_base
@@ -227,8 +237,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 3: Buy on AssetChain, Sell from Base inventory
     for size in range(10, max_usd + step, step):
         usd_in_asset = Decimal(size)
-        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
-        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_asset, base_sqrt, base_liq, AERO_FEE, 6, 6)
+        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
+        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_asset, base_sqrt, base_liq, base_fee, 6, 6)
         if usd_out_base - usd_in_asset > best_profit:
             best_profit = usd_out_base - usd_in_asset
             best_size = usd_in_asset
@@ -239,8 +249,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 4: Buy on Base, Sell from AssetChain inventory
     for size in range(10, max_usd + step, step):
         usd_in_base = Decimal(size)
-        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, AERO_FEE, 6, 6)
-        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_base, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
+        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, base_fee, 6, 6)
+        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_base, asset_sqrt, asset_liq, asset_fee, 18, 6)
         if usd_out_asset - usd_in_base > best_profit:
             best_profit = usd_out_asset - usd_in_base
             best_size = usd_in_base
@@ -251,8 +261,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 5: Buy on AssetChain, Sell from Pancake inventory
     for size in range(10, max_usd + step, step):
         usd_in_asset = Decimal(size)
-        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
-        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_asset, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
+        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
+        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_asset, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
         if usd_out_bsc - usd_in_asset > best_profit:
             best_profit = usd_out_bsc - usd_in_asset
             best_size = usd_in_asset
@@ -263,8 +273,8 @@ async def generate_v3_profit_curve() -> dict:
     # DELTA BALANCING VECTOR 6: Buy on Pancake, Sell from AssetChain inventory
     for size in range(10, max_usd + step, step):
         usd_in_bsc = Decimal(size)
-        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, PANCAKE_FEE, 18, 6)
-        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_bsc, asset_sqrt, asset_liq, ASSETCHAIN_FEE, 18, 6)
+        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
+        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_bsc, asset_sqrt, asset_liq, asset_fee, 18, 6)
         if usd_out_asset - usd_in_bsc > best_profit:
             best_profit = usd_out_asset - usd_in_bsc
             best_size = usd_in_bsc

@@ -2,7 +2,7 @@
 
 import time
 from decimal import Decimal
-from typing import Optional, Any
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -843,7 +843,7 @@ async def get_pool_metrics():
 
 # === Alerts ===
 
-_alerts_db: list[dict[str, Any]] = [
+_alerts_db: list[dict[str, int | str | bool]] = [
     {
         "id": 1,
         "severity": "critical",
