@@ -189,25 +189,28 @@ async def generate_v3_profit_curve() -> dict:
     base_sqrt, base_liq, base_b0, base_b1, base_ts, base_fee = get_cached_pool_state(AERODROME_POOL_READ_CONFIG.pool_address)
     asset_sqrt, asset_liq, asset_b0, asset_b1, asset_ts, asset_fee = get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
     
-    # Any None fee means that pool's fee() call failed at seed time.
-    # We must not fall back to an assumed value — an incorrect fee can flip a
-    # loss into an apparent profit and trigger a real money-losing trade.
-    missing_fees = [
-        name for name, fee in [
-            ("pancakeswap", bsc_fee),
-            ("aerodrome", base_fee),
-            ("assetchain", asset_fee),
-        ] if fee is None
+    # Hard-block on execution venue fees (BSC + Base).
+    # An incorrect fee on these would flip a loss into apparent profit and trigger a real money-losing trade.
+    missing_execution_fees = [
+        name for name, fee in [("pancakeswap", bsc_fee), ("aerodrome", base_fee)]
+        if fee is None
     ]
-    if missing_fees:
+    if missing_execution_fees:
         logger.error(
             "v3_profit_curve_blocked_missing_fees",
-            pools=missing_fees,
+            pools=missing_execution_fees,
             note="arb curve generation aborted — re-seed will be attempted",
         )
         import asyncio
         asyncio.create_task(seed_pool_states())
         return {}
+
+    # AssetChain is watch-only — a missing fee skips ITS vectors but doesn't block BSC↔Base arb.
+    if asset_fee is None:
+        logger.warning(
+            "v3_profit_curve_assetchain_fee_missing",
+            note="skipping AssetChain delta-balance vectors this cycle",
+        )
 
     if not bsc_sqrt or not base_sqrt or not asset_sqrt:
         # If any cache is completely empty, trigger a silent re-seed and abort this calculation run
@@ -237,13 +240,19 @@ async def generate_v3_profit_curve() -> dict:
         # 1. With Fees (Actual Cash Return)
         cngn_pancake = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
         cngn_aero = v3_swap_token1_for_token0(investment_usd, base_sqrt, base_liq, base_fee, 6, 6)
-        cngn_assetchain = v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, asset_fee, 18, 6)
+        cngn_assetchain = (
+            v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, asset_fee, 18, 6)
+            if asset_fee is not None else None
+        )
+        cngn_assetchain_no_fee = (
+            v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, Decimal(0), 18, 6)
+            if asset_fee is not None else None
+        )
         usd_returned = v3_swap_token0_for_token1(cngn_pancake, base_sqrt, base_liq, base_fee, 6, 6)
-        
+
         # 2. Without Fees (Theoretical Return - Just Price Impact)
         cngn_pancake_no_fee = v3_swap_token0_for_token1(investment_usd, bsc_sqrt, bsc_liq, Decimal(0), 18, 6)
         cngn_aero_no_fee = v3_swap_token1_for_token0(investment_usd, base_sqrt, base_liq, Decimal(0), 6, 6)
-        cngn_assetchain_no_fee = v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, Decimal(0), 18, 6)
         usd_returned_no_fee = v3_swap_token0_for_token1(cngn_pancake_no_fee, base_sqrt, base_liq, Decimal(0), 6, 6)
 
         # 3. Slippage Tolerance Check (0.10% = subtract 10 basis points from the expected payout)
@@ -254,12 +263,12 @@ async def generate_v3_profit_curve() -> dict:
             "size": size,
             "cngn_pancake": float(cngn_pancake),
             "cngn_aero": float(cngn_aero),
-            "cngn_assetchain": float(cngn_assetchain),
+            "cngn_assetchain": float(cngn_assetchain) if cngn_assetchain is not None else None,
             "profit": float(usd_returned - investment_usd),
             "profit_no_fee": float(usd_returned_no_fee - investment_usd),
             "cngn_pancake_no_fee": float(cngn_pancake_no_fee),
             "cngn_aero_no_fee": float(cngn_aero_no_fee),
-            "cngn_assetchain_no_fee": float(cngn_assetchain_no_fee),
+            "cngn_assetchain_no_fee": float(cngn_assetchain_no_fee) if cngn_assetchain_no_fee is not None else None,
             "min_acceptable_usd": float(min_usd_acceptable)
         })
 
@@ -304,53 +313,55 @@ async def generate_v3_profit_curve() -> dict:
             best_cngn = cngn_acquired_base
             usd_out_expected = usd_out_bsc
 
-    # DELTA BALANCING VECTOR 3: Buy on AssetChain, Sell from Base inventory
-    for size in range(10, max_usd + step, step):
-        usd_in_asset = Decimal(size)
-        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
-        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_asset, base_sqrt, base_liq, base_fee, 6, 6)
-        if usd_out_base - usd_in_asset > best_profit:
-            best_profit = usd_out_base - usd_in_asset
-            best_size = usd_in_asset
-            best_dir = "ASSETCHAIN_TO_AERO_DELTA_BALANCE"
-            best_cngn = cngn_acquired_asset
-            usd_out_expected = usd_out_base
+    # DELTA BALANCING VECTOR 3-6: AssetChain vectors — only run if fee is available
+    if asset_fee is not None:
+        # VECTOR 3: Buy on AssetChain, Sell from Base inventory
+        for size in range(10, max_usd + step, step):
+            usd_in_asset = Decimal(size)
+            cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
+            usd_out_base = v3_swap_token0_for_token1(cngn_acquired_asset, base_sqrt, base_liq, base_fee, 6, 6)
+            if usd_out_base - usd_in_asset > best_profit:
+                best_profit = usd_out_base - usd_in_asset
+                best_size = usd_in_asset
+                best_dir = "ASSETCHAIN_TO_AERO_DELTA_BALANCE"
+                best_cngn = cngn_acquired_asset
+                usd_out_expected = usd_out_base
 
-    # DELTA BALANCING VECTOR 4: Buy on Base, Sell from AssetChain inventory
-    for size in range(10, max_usd + step, step):
-        usd_in_base = Decimal(size)
-        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, base_fee, 6, 6)
-        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_base, asset_sqrt, asset_liq, asset_fee, 18, 6)
-        if usd_out_asset - usd_in_base > best_profit:
-            best_profit = usd_out_asset - usd_in_base
-            best_size = usd_in_base
-            best_dir = "AERO_TO_ASSETCHAIN_DELTA_BALANCE"
-            best_cngn = cngn_acquired_base
-            usd_out_expected = usd_out_asset
+        # VECTOR 4: Buy on Base, Sell from AssetChain inventory
+        for size in range(10, max_usd + step, step):
+            usd_in_base = Decimal(size)
+            cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, base_fee, 6, 6)
+            usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_base, asset_sqrt, asset_liq, asset_fee, 18, 6)
+            if usd_out_asset - usd_in_base > best_profit:
+                best_profit = usd_out_asset - usd_in_base
+                best_size = usd_in_base
+                best_dir = "AERO_TO_ASSETCHAIN_DELTA_BALANCE"
+                best_cngn = cngn_acquired_base
+                usd_out_expected = usd_out_asset
 
-    # DELTA BALANCING VECTOR 5: Buy on AssetChain, Sell from Pancake inventory
-    for size in range(10, max_usd + step, step):
-        usd_in_asset = Decimal(size)
-        cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
-        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_asset, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
-        if usd_out_bsc - usd_in_asset > best_profit:
-            best_profit = usd_out_bsc - usd_in_asset
-            best_size = usd_in_asset
-            best_dir = "ASSETCHAIN_TO_PANCAKE_DELTA_BALANCE"
-            best_cngn = cngn_acquired_asset
-            usd_out_expected = usd_out_bsc
+        # VECTOR 5: Buy on AssetChain, Sell from Pancake inventory
+        for size in range(10, max_usd + step, step):
+            usd_in_asset = Decimal(size)
+            cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
+            usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_asset, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
+            if usd_out_bsc - usd_in_asset > best_profit:
+                best_profit = usd_out_bsc - usd_in_asset
+                best_size = usd_in_asset
+                best_dir = "ASSETCHAIN_TO_PANCAKE_DELTA_BALANCE"
+                best_cngn = cngn_acquired_asset
+                usd_out_expected = usd_out_bsc
 
-    # DELTA BALANCING VECTOR 6: Buy on Pancake, Sell from AssetChain inventory
-    for size in range(10, max_usd + step, step):
-        usd_in_bsc = Decimal(size)
-        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
-        usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_bsc, asset_sqrt, asset_liq, asset_fee, 18, 6)
-        if usd_out_asset - usd_in_bsc > best_profit:
-            best_profit = usd_out_asset - usd_in_bsc
-            best_size = usd_in_bsc
-            best_dir = "PANCAKE_TO_ASSETCHAIN_DELTA_BALANCE"
-            best_cngn = cngn_acquired_bsc
-            usd_out_expected = usd_out_asset
+        # VECTOR 6: Buy on Pancake, Sell from AssetChain inventory
+        for size in range(10, max_usd + step, step):
+            usd_in_bsc = Decimal(size)
+            cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
+            usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_bsc, asset_sqrt, asset_liq, asset_fee, 18, 6)
+            if usd_out_asset - usd_in_bsc > best_profit:
+                best_profit = usd_out_asset - usd_in_bsc
+                best_size = usd_in_bsc
+                best_dir = "PANCAKE_TO_ASSETCHAIN_DELTA_BALANCE"
+                best_cngn = cngn_acquired_bsc
+                usd_out_expected = usd_out_asset
 
     if best_size > 0:
         best_spread_bps = int(((usd_out_expected - best_size) / best_size) * 10000)
