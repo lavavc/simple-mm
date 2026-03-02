@@ -3,6 +3,7 @@ Exportable simulator to generate V3 profit curves for the frontend.
 """
 
 from decimal import Decimal, getcontext
+import asyncio
 import time
 from engine.config import settings
 from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
@@ -14,6 +15,44 @@ import structlog
 
 logger = structlog.get_logger()
 getcontext().prec = 50
+
+_FEE_MAX_ATTEMPTS = 3  # Total attempts for fee() RPC call
+_FEE_BACKOFF_BASE = 1  # seconds — doubles each retry (1s, 2s)
+
+
+async def _fetch_fee_with_retry(w3: AsyncWeb3, pool: str, pool_address: str) -> Decimal | None:
+    """Attempt to fetch pool fee() on-chain, retrying with exponential backoff.
+
+    Returns the fee as a fraction (e.g. 0.0001 for 0.01%) or None if all
+    attempts fail. Using None lets callers treat a missing fee as a hard
+    block rather than silently falling back to an assumed value.
+    """
+    last_err: Exception | None = None
+    for attempt in range(_FEE_MAX_ATTEMPTS):
+        try:
+            fee_raw = await w3.eth.call({"to": pool, "data": FEE_SELECTOR})
+            return Decimal(int.from_bytes(fee_raw[:32], "big")) / Decimal(1000000)
+        except Exception as e:
+            last_err = e
+            if attempt < _FEE_MAX_ATTEMPTS - 1:
+                wait = _FEE_BACKOFF_BASE * (2 ** attempt)  # 1s, 2s
+                logger.warning(
+                    "v3_pool_fee_fetch_retry",
+                    pool=pool_address,
+                    attempt=attempt + 1,
+                    retry_in_seconds=wait,
+                    error=str(e),
+                )
+                await asyncio.sleep(wait)
+
+    logger.error(
+        "v3_pool_fee_fetch_failed",
+        pool=pool_address,
+        attempts=_FEE_MAX_ATTEMPTS,
+        error=str(last_err),
+        note="fee stored as None — arb execution will be blocked until resolved",
+    )
+    return None
 
 SLOT0_SELECTOR = "0x3850c7bd"
 LIQUIDITY_SELECTOR = "0x1a686502"
@@ -58,18 +97,25 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
         
         if cached_data and cached_data["tick"] == tick:
             liquidity = cached_data["liquidity"]
-            fee = cached_data.get("fee", Decimal("0.0030"))
-            logger.debug("v3_pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
+            cached_fee = cached_data.get("fee")
+            if cached_fee is not None:
+                # Tick unchanged and fee is known — use the cache as-is.
+                fee = cached_fee
+                logger.debug("v3_pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
+            else:
+                # Fee was None from a previous failed fetch. Retry now so a
+                # transient RPC error doesn't leave us blocked indefinitely
+                # just because the tick hasn't changed.
+                logger.info(
+                    "v3_pool_fee_cache_null_retrying",
+                    pool=config.pool_address,
+                    tick=tick,
+                )
+                fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
         else:
             liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
             liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
-            
-            try:
-                fee_raw = await w3.eth.call({"to": pool, "data": FEE_SELECTOR})
-                fee = Decimal(int.from_bytes(fee_raw[:32], "big")) / Decimal(1000000)
-            except Exception:
-                fee = cached_data.get("fee", Decimal("0.0030")) if cached_data else Decimal("0.0030")
-                
+            fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
             logger.debug("v3_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
             
         _POOL_CACHE[config.pool_address] = {
@@ -81,6 +127,15 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
             "balance1": balance1,
             "timestamp": time.time()
         }
+
+        if fee is None:
+            logger.warning(
+                "v3_pool_state_incomplete",
+                pool=config.pool_address,
+                reason="fee fetch failed — state cached but marked incomplete",
+            )
+            return False
+
         return True
     except Exception as e:
         logger.error("v3_pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=config.pool_address)
@@ -134,11 +189,26 @@ async def generate_v3_profit_curve() -> dict:
     base_sqrt, base_liq, base_b0, base_b1, base_ts, base_fee = get_cached_pool_state(AERODROME_POOL_READ_CONFIG.pool_address)
     asset_sqrt, asset_liq, asset_b0, asset_b1, asset_ts, asset_fee = get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
     
-    # Defaults in case the cache returns None for the fee (e.g., failed to fetch during seeding)
-    bsc_fee = bsc_fee or Decimal("0.0001") # fallback 0.01%
-    base_fee = base_fee or Decimal("0.0005") # fallback 0.05%
-    asset_fee = asset_fee or Decimal("0.0030") # fallback 0.3%
-    
+    # Any None fee means that pool's fee() call failed at seed time.
+    # We must not fall back to an assumed value — an incorrect fee can flip a
+    # loss into an apparent profit and trigger a real money-losing trade.
+    missing_fees = [
+        name for name, fee in [
+            ("pancakeswap", bsc_fee),
+            ("aerodrome", base_fee),
+            ("assetchain", asset_fee),
+        ] if fee is None
+    ]
+    if missing_fees:
+        logger.error(
+            "v3_profit_curve_blocked_missing_fees",
+            pools=missing_fees,
+            note="arb curve generation aborted — re-seed will be attempted",
+        )
+        import asyncio
+        asyncio.create_task(seed_pool_states())
+        return {}
+
     if not bsc_sqrt or not base_sqrt or not asset_sqrt:
         # If any cache is completely empty, trigger a silent re-seed and abort this calculation run
         logger.warning("v3_profit_curve_cache_miss_aborting_calc")

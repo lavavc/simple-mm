@@ -137,7 +137,18 @@ class ArbitrageWebSocketListener:
             # (HTTP hit to get slot0 and liquidity block specifically)
             # We change this to HTTP base URLs if using Alchemy WSS configs interchangeably
             http_url = rpc_url.replace("wss://", "https://")
-            await update_single_pool_state(pool_config, rpc_url_override=http_url)
+            success = await update_single_pool_state(pool_config, rpc_url_override=http_url)
+
+            if not success:
+                # Price, balance, or fee fetch failed — debounce and retry once
+                # before giving up on this cycle.
+                logger.warning(
+                    "pool_state_fetch_incomplete_retrying",
+                    pool=pool_config.pool_address,
+                    retry_in_seconds=self._debounce_delay,
+                )
+                await asyncio.sleep(self._debounce_delay)
+                await update_single_pool_state(pool_config, rpc_url_override=http_url)
             
             # Fire the instant callback so the dashboard receives the newly cached spot price
             if self.on_update:
