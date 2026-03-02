@@ -133,23 +133,14 @@ class ArbitrageWebSocketListener:
             logger.info("executing_event_driven_curve_calc")
             from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_single_pool_state
             
-            # Fetch the newest precise state of the chain that just triggered the websocket event
-            # (HTTP hit to get slot0 and liquidity block specifically)
-            # We change this to HTTP base URLs if using Alchemy WSS configs interchangeably
+            # Fetch the newest state of the chain that triggered the event.
+            # _fetch_fee_with_retry already attempts 3× with backoff internally.
+            # If it still fails, generate_v3_profit_curve is the gate that blocks
+            # execution and fires a background seed retry — no inline retry needed.
             http_url = rpc_url.replace("wss://", "https://")
-            success = await update_single_pool_state(pool_config, rpc_url_override=http_url)
+            if not await update_single_pool_state(pool_config, rpc_url_override=http_url):
+                logger.warning("pool_state_fetch_incomplete", pool=pool_config.pool_address)
 
-            if not success:
-                # Price, balance, or fee fetch failed — debounce and retry once
-                # before giving up on this cycle.
-                logger.warning(
-                    "pool_state_fetch_incomplete_retrying",
-                    pool=pool_config.pool_address,
-                    retry_in_seconds=self._debounce_delay,
-                )
-                await asyncio.sleep(self._debounce_delay)
-                await update_single_pool_state(pool_config, rpc_url_override=http_url)
-            
             # Fire the instant callback so the dashboard receives the newly cached spot price
             if self.on_update:
                 await self.on_update()

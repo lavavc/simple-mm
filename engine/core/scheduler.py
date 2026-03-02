@@ -661,42 +661,23 @@ class TradingScheduler:
                 ("assetchain", self.config.assetchain_rpc_url if hasattr(self.config, 'assetchain_rpc_url') else settings.assetchain_rpc_url, ASSETCHAIN_POOL_READ_CONFIG)
             ]
             
-            state_updated = False
-            
-            # Poll chains that either:
-            #   (a) have no active WebSocket connection (routine fallback), OR
-            #   (b) have an active WebSocket but a None fee — meaning the fee()
-            #       call failed and won't self-heal until the next swap event,
-            #       which could be arbitrarily far in the future on a quiet pool.
-            from engine.core.arbitrage.simulator import get_cached_pool_state
+            # Poll every chain that has no active WebSocket — this covers AssetChain
+            # always, and BSC/Base if their connection dropped. generate_v3_profit_curve
+            # is always called after: it is the single gate that blocks on missing fees
+            # and fires seed_pool_states() as a background retry if anything is absent.
             for chain_name, rpc_url, pool_config in venues_to_check:
-                has_wss = chain_name in self.ws_listener.active_connections
-                _, _, _, _, _, cached_fee = get_cached_pool_state(pool_config.pool_address)
-                fee_missing = cached_fee is None
+                if chain_name not in self.ws_listener.active_connections:
+                    await update_single_pool_state(pool_config, rpc_url_override=rpc_url)
 
-                if not has_wss or fee_missing:
-                    if has_wss and fee_missing:
-                        logger.info(
-                            "fallback_poller_fee_recovery",
-                            chain=chain_name,
-                            reason="fee is None despite active WSS — forcing HTTP re-poll",
-                        )
-                    success = await update_single_pool_state(pool_config, rpc_url_override=rpc_url)
-                    if success:
-                        state_updated = True
-                        logger.debug("fallback_poller_updated_state", chain=chain_name)
-                        
-            # If the fallback poller actually found new data, trigger the math calculation
-            if state_updated:
-                curve_data = await generate_v3_profit_curve()
-                if curve_data:
-                    self.broadcast({
-                        "type": "dex_arb_curve",
-                        "data": curve_data
-                    })
-                    
-                    # Check for profitable live V3 Arb
-                    optimal = curve_data.get("optimal_arb", {})
+            curve_data = await generate_v3_profit_curve()
+            if curve_data:
+                self.broadcast({
+                    "type": "dex_arb_curve",
+                    "data": curve_data
+                })
+
+                # Check for profitable live V3 Arb
+                optimal = curve_data.get("optimal_arb", {})
                 if optimal.get("expected_profit_usd", -1) > 0:
                     import uuid
                     import time
