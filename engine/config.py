@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     base_rpc_url: str = "https://mainnet.base.org"
     bsc_rpc_url: str = "https://bsc-dataseed.binance.org"
     eth_rpc_url: str = "https://eth.llamarpc.com"
+    assetchain_rpc_url: str = "https://mainnet-rpc.assetchain.org"
+    
+    # Websocket endpoints
+    base_wss_url: str = ""
+    bsc_wss_url: str = ""
 
     @model_validator(mode="after")
     def apply_alchemy_key(self) -> "Settings":
@@ -32,6 +37,9 @@ class Settings(BaseSettings):
             self.base_rpc_url = f"https://base-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
             self.bsc_rpc_url = f"https://bnb-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
             self.eth_rpc_url = f"https://eth-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+            # Injecting WSS endpoints for the Event Listener
+            self.base_wss_url = f"wss://base-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
+            self.bsc_wss_url = f"wss://bnb-mainnet.g.alchemy.com/v2/{self.alchemy_key}"
         return self
 
     # Venue API keys
@@ -44,8 +52,8 @@ class Settings(BaseSettings):
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
-    # Scheduler intervals (seconds) — all SchedulerConfig defaults live here, nowhere else
-    price_update_interval: int = 30
+    # Scheduler intervals (seconds)
+    price_update_interval: int = 10
     position_sync_interval: int = 60
     dex_check_interval: int = 120
     cex_sync_interval: int = 300
@@ -58,9 +66,14 @@ class Settings(BaseSettings):
     venue_divergence_rebalance_bps: int = 200  # Rebalance DEX if venue drifts >2% from fair value
 
     # Arbitrage settings
+    # Global arbitrage toggle (must be True for both detection and execution)
     arbitrage_enabled: bool = True
+    
+    # ----------------------------------------------------
+    # Arbitrage Engine Defaults
+    # Controls if detected opportunities will actually trigger transactions
     arbitrage_execution_enabled: bool = True
-    arbitrage_scan_interval: int = 30  # seconds
+    arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
     arbitrage_min_spread_bps: int = 150          # 1.5% minimum gross spread
@@ -88,6 +101,8 @@ class Settings(BaseSettings):
     cngn_bsc_address: str = "0xa8aea66b361a8d53e8865c62d142167af28af058"
     usdt_bsc_address: str = "0x55d398326f99059fF775485246999027B3197955"
     usdt_eth_address: str = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    cngn_assetchain_address: str = "0x7923C0f6FA3d1BA6EAFCAedAaD93e737Fd22FC4F"
+    usdt_assetchain_address: str = "0x26E490d30e73c36800788DC6d6315946C4BbEa24"
 
     # Aerodrome contract addresses (Base)
     aerodrome_pool_address: str = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
@@ -98,6 +113,11 @@ class Settings(BaseSettings):
     pancakeswap_pool_address: str = "0xb84e7c912a1034ad674bba8859fca84f1f614a29"
     pancakeswap_nft_manager_address: str = "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364"
     pancakeswap_router_address: str = "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4"
+
+    # AssetChain contract addresses
+    assetchain_pool_address: str = "0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1"
+    assetchain_nft_manager_address: str = "0x0000000000000000000000000000000000000000"
+    assetchain_router_address: str = "0x0000000000000000000000000000000000000000"
 
     model_config = {
         "env_file": ".env",

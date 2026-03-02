@@ -15,6 +15,7 @@ import statistics
 import structlog
 
 from web3 import Web3
+from web3.middleware import geth_poa_middleware
 from web3.types import TxReceipt
 
 from engine.api.schemas import Position, PriceQuote, LPPosition, TxResult, DexParams
@@ -45,6 +46,7 @@ class PoolConfig:
     token0_decimals: int
     token1_decimals: int
     tick_spacing: int
+    pool_fee: Optional[int] = None  # Fee tier for protocols that use fee != tick_spacing (e.g. PancakeSwap)
     invert_price: bool = False  # True when native pool price must be inverted (e.g. PancakeSwap: USDT/cNGN → cNGN/USD)
 
 
@@ -63,6 +65,8 @@ class PoolReadConfig:
 
     rpc_url: str
     pool_address: str
+    token0_address: str
+    token1_address: str
     token0_symbol: str
     token1_symbol: str
     token0_decimals: int
@@ -118,6 +122,10 @@ _BALANCE_OF_SIG = bytes.fromhex("70a08231")
 
 # Uniswap V3 Swap event topic: keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
 _SWAP_EVENT_TOPIC = bytes.fromhex("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67")
+
+# Function selector for fee(): keccak256("fee()")[:4] = 0xddca3f43
+# Returns uint24 fee tier (e.g. 10000 = 1%, 3000 = 0.3%, 500 = 0.05%)
+FEE_SELECTOR = bytes.fromhex("ddca3f43")
 
 # DexScreener chain identifiers
 DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
@@ -286,6 +294,9 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
         # Web3 setup
         self.w3 = Web3(Web3.HTTPProvider(pool_config.rpc_url))
+        
+        # Add POA middleware for chains like BSC/AssetChain that use non-standard block extraData
+        self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
         self.lp_account = self.w3.eth.account.from_key(lp_private_key)
         self.trade_account = self.w3.eth.account.from_key(trade_private_key)
 
@@ -305,6 +316,9 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
         # Per-account nonce locks to prevent concurrent transaction collisions
         self._nonce_locks: dict[str, asyncio.Lock] = {}
+
+        # Cached pool fee in bps — fetched once from the chain at init time
+        self._pool_fee_bps: Optional[int] = None
 
         # Token contracts for balance queries
         self.token0 = self.w3.eth.contract(
@@ -332,6 +346,8 @@ class BaseDexAdapter(VenueAdapter, ABC):
     def get_router_abi(self) -> list:
         """Return the swap router ABI."""
         pass
+
+
 
     # === VenueAdapter implementation ===
 
@@ -939,7 +955,7 @@ class BaseDexAdapter(VenueAdapter, ABC):
             async with self._nonce_locks[account.address]:
                 tx["nonce"] = self.w3.eth.get_transaction_count(account.address, "pending")
                 signed = account.sign_transaction(tx)
-                tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
 
             # Wait for receipt
             receipt: TxReceipt = self.w3.eth.wait_for_transaction_receipt(
