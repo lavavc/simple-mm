@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -8,20 +9,93 @@ import {
   spreadBps,
   isDex,
   VENUE_LABELS,
+  VENUE_COLORS,
+  sourceToVenue,
+  normalizeSnapshotMid,
 } from '@/lib/utils';
-import { usePrices, useBlendedPrice } from '@/lib/hooks/useQueries';
+import { usePrices, useBlendedPrice, usePriceHistory } from '@/lib/hooks/useQueries';
 import { RefreshCw, TrendingUp, AlertCircle, Circle, Activity } from 'lucide-react';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
-import type { VenuePriceResponse } from '@/types';
+import {
+  AreaChart,
+  Area,
+  ResponsiveContainer,
+  Tooltip,
+} from 'recharts';
+import type { VenuePriceResponse, PriceSnapshot } from '@/types';
+
+// ── Per-venue sparkline ─────────────────────────────────────────────────────
+
+function buildSparkline(
+  snapshots: PriceSnapshot[],
+  venue: string,
+): { time: string; value: number }[] {
+  const bucketMs = 30_000; // 30s buckets
+  const buckets = new Map<number, number>();
+
+  for (const snap of snapshots) {
+    if (sourceToVenue(snap.source) !== venue) continue;
+    const mid = normalizeSnapshotMid(snap.source, Number(snap.mid));
+    if (mid === null) continue;
+    const bucket = Math.floor(snap.timestamp / bucketMs) * bucketMs;
+    if (!buckets.has(bucket)) buckets.set(bucket, mid);
+  }
+
+  return Array.from(buckets.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([ts, value]) => ({
+      time: new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      value,
+    }));
+}
 
 // ── Inline price card (per-venue) ──────────────────────────────────────────
 
-function PriceCard({ price }: { price: VenuePriceResponse }) {
+function PriceCard({
+  price,
+  sparklineData,
+}: {
+  price: VenuePriceResponse;
+  sparklineData: { time: string; value: number }[];
+}) {
   const label = VENUE_LABELS[price.venue] || { name: price.venue, chain: 'Unknown', type: '?' };
   const hasPrice = !!price.quote;
   const normalized = normalizeToNgnUsd(price);
-  // Don't show spread for DEX venues (AMM pools don't have order book spreads)
   const spread = normalized && !isDex(price.venue) ? spreadBps(normalized) : null;
+  const color = VENUE_COLORS[price.venue] || '#10B981';
+
+  // Absolute timestamp when this venue's price was produced.
+  // Anchored per card using its own age_seconds — so each card is independent.
+  const priceTs = useRef(Date.now() - Math.round(price.age_seconds) * 1000);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    priceTs.current = Date.now() - Math.round(price.age_seconds) * 1000;
+  }, [price.age_seconds]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const totalAge = Math.round((now - priceTs.current) / 1000);
+  const ageLabel = (() => {
+    if (totalAge < 5) return '● LIVE';
+    if (totalAge < 60) return `${totalAge}s ago`;
+    const m = Math.floor(totalAge / 60);
+    const s = totalAge % 60;
+    return `${m}m ${s}s ago`;
+  })();
+
+  const sparkMin = sparklineData.length
+    ? Math.min(...sparklineData.map((d) => d.value))
+    : 0;
+  const sparkMax = sparklineData.length
+    ? Math.max(...sparklineData.map((d) => d.value))
+    : 0;
+  const sparkDelta = sparklineData.length >= 2
+    ? sparklineData[sparklineData.length - 1].value - sparklineData[0].value
+    : 0;
 
   return (
     <Card className="hover:border-emerald-500/50 transition-colors bg-white/[0.02] border-white/[0.05]">
@@ -47,6 +121,60 @@ function PriceCard({ price }: { price: VenuePriceResponse }) {
                 <Badge variant="outline" className="text-[9px] bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-mono tracking-wider">{spread} BPS SPREAD</Badge>
               </div>
             )}
+
+            {/* Sparkline */}
+            {sparklineData.length > 1 && (
+              <div className="mt-3 mb-1">
+                <div className="flex items-center justify-between text-[8px] font-mono text-white/30 uppercase tracking-widest mb-1">
+                  <span>15M PRICE TRAIL</span>
+                  <span className={sparkDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                    {sparkDelta >= 0 ? '+' : ''}{formatNumber(sparkDelta, 1)}
+                  </span>
+                </div>
+                <div className="h-[52px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={sparklineData} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id={`spark-${price.venue}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={color} stopOpacity={0.25} />
+                          <stop offset="95%" stopColor={color} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#0B0E14',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          borderRadius: '2px',
+                          fontFamily: 'ui-monospace, monospace',
+                          fontSize: '9px',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          padding: '4px 8px',
+                        }}
+                        itemStyle={{ color: 'rgba(255,255,255,0.8)' }}
+                        labelStyle={{ color: 'rgba(255,255,255,0.3)', marginBottom: '2px' }}
+                        formatter={(v: number) => [formatNumber(v, 2), 'NGN/USD']}
+                      />
+                      <Area
+                        type="stepAfter"
+                        dataKey="value"
+                        stroke={color}
+                        strokeWidth={1.5}
+                        fill={`url(#spark-${price.venue})`}
+                        dot={false}
+                        activeDot={{ r: 3, fill: '#0B0E14', stroke: color, strokeWidth: 1.5 }}
+                        connectNulls
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex justify-between text-[8px] font-mono text-white/20 mt-0.5">
+                  <span>{formatNumber(sparkMin, 1)}</span>
+                  <span>{formatNumber(sparkMax, 1)}</span>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono border-t border-white/[0.05] pt-3">
               <div>
                 <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">BID</div>
@@ -57,8 +185,8 @@ function PriceCard({ price }: { price: VenuePriceResponse }) {
                 <div className="text-red-400">{formatNumber(normalized.ask, 2)}</div>
               </div>
             </div>
-            <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
-              {Math.round(price.age_seconds)}S AGO
+            <p className="text-[8px] text-white/30 tracking-widest font-mono mt-4 text-right tabular-nums">
+              {ageLabel}
             </p>
           </div>
         ) : hasPrice && price.pair === 'cNGN/NGN' ? (
@@ -85,8 +213,7 @@ function PriceCard({ price }: { price: VenuePriceResponse }) {
 export default function PricesPage() {
   const { data: prices, isLoading } = usePrices();
   const { data: blended } = useBlendedPrice();
-
-  console.log('[API HTTP PRICES]', isLoading ? 'Loading...' : prices);
+  const { data: snapshots } = usePriceHistory(15);
 
   const normalizedPrices = prices
     ?.map((p) => ({ venue: p.venue, normalized: normalizeToNgnUsd(p) }))
@@ -99,6 +226,13 @@ export default function PricesPage() {
       : null;
 
   const vwapNgn = blended && blended.vwap > 0 ? 1 / blended.vwap : null;
+
+  // Build per-venue sparklines from the shared history fetch
+  const sparklines = useMemo(() => {
+    const all = snapshots ?? [];
+    const venues = prices?.map((p) => p.venue) ?? [];
+    return Object.fromEntries(venues.map((v) => [v, buildSparkline(all, v)]));
+  }, [snapshots, prices]);
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-4rem)] bg-[#0B0E14] text-slate-300 p-2 md:p-4 animate-in fade-in duration-500 font-sans space-y-6">
@@ -218,7 +352,13 @@ export default function PricesPage() {
             </Card>
           ))
         ) : (
-          prices?.map((price) => <PriceCard key={price.venue} price={price} />)
+          prices?.map((price) => (
+            <PriceCard
+              key={price.venue}
+              price={price}
+              sparklineData={sparklines[price.venue] ?? []}
+            />
+          ))
         )}
       </div>
 

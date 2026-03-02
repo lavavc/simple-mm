@@ -251,7 +251,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                 ) : (
                   <>
                     <div className="text-3xl font-mono text-white tracking-tight mb-2">
-                      ${venue.price?.quote?.mid ? venue.price.quote.mid.toFixed(7) : '0.0000000'}
+                      ${venue.price?.quote?.mid ? Number(venue.price.quote.mid).toFixed(7) : '0.0000000'}
                     </div>
                     <div className="flex items-center gap-2 mb-4">
                       <span className="text-[10px] text-emerald-500/70 uppercase tracking-widest font-mono border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded-sm">MID PRICE</span>
