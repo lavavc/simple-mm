@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   Legend,
   ReferenceLine,
+  CartesianGrid,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -45,10 +46,10 @@ function buildChartData(
   // Choose bucket size based on window
   const bucketMs =
     windowMinutes <= 5 ? 30_000 :       // 30s buckets
-    windowMinutes <= 15 ? 60_000 :      // 1m buckets
-    windowMinutes <= 60 ? 120_000 :     // 2m buckets
-    windowMinutes <= 360 ? 600_000 :    // 10m buckets
-    1_800_000;                           // 30m buckets
+      windowMinutes <= 15 ? 60_000 :      // 1m buckets
+        windowMinutes <= 60 ? 120_000 :     // 2m buckets
+          windowMinutes <= 360 ? 600_000 :    // 10m buckets
+            1_800_000;                           // 30m buckets
 
   const venueSet = new Set<string>();
 
@@ -123,13 +124,13 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
 
   if (activeVenues.length === 0) {
     return (
-      <Card className="col-span-full">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Venue Price Comparison</CardTitle>
+      <Card className="col-span-full bg-white/[0.02] border-white/[0.05]">
+        <CardHeader className="border-b border-white/[0.05] pb-3">
+          <CardTitle className="text-[10px] font-mono font-bold tracking-widest uppercase text-white/50">Cross-Venue Price Trajectory</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-80 flex items-center justify-center text-muted-foreground">
-            Waiting for price history&hellip;
+          <div className="h-80 flex items-center justify-center text-[10px] font-mono uppercase tracking-widest text-white/30 animate-pulse">
+            WAITING FOR ORACLE HISTORY...
           </div>
         </CardContent>
       </Card>
@@ -137,31 +138,32 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
   }
 
   return (
-    <Card className="col-span-full">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">
-          Venue Price Comparison (NGN/USD)
+    <Card className="col-span-full bg-white/[0.02] border-white/[0.05]">
+      <CardHeader className="flex flex-row items-center justify-between border-b border-white/[0.05] pb-3 mb-4">
+        <CardTitle className="text-[10px] font-mono font-bold tracking-widest uppercase text-white/50">
+          Cross-Venue Price Trajectory (NGN/USD)
         </CardTitle>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-4">
           {spread !== null && (
-            <span className="text-xs text-muted-foreground mr-2">
-              Spread:{' '}
-              <span className={spread > 100 ? 'text-yellow-500' : 'text-green-500'}>
-                {spread} bps
+            <div className="flex items-center gap-2 text-[9px] font-mono uppercase tracking-widest">
+              <span className="text-white/30">SPREAD:</span>
+              <span className={spread > 100 ? 'text-yellow-500/80' : 'text-emerald-400'}>
+                {spread} BPS
               </span>
-            </span>
+            </div>
           )}
-          <div className="flex gap-1">
+          <div className="flex gap-1 bg-black/20 p-1 rounded-sm border border-white/[0.02]">
             {TIME_WINDOWS.map(({ label, minutes }) => (
-              <Button
+              <button
                 key={label}
-                variant={windowMinutes === minutes ? 'default' : 'ghost'}
-                size="sm"
-                className="h-6 px-2 text-xs"
                 onClick={() => setWindowMinutes(minutes)}
+                className={`px-3 py-1 text-[9px] font-mono tracking-widest uppercase rounded-sm transition-colors ${windowMinutes === minutes
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]'
+                    : 'text-white/30 hover:text-white/60 hover:bg-white/5 border border-transparent'
+                  }`}
               >
                 {label}
-              </Button>
+              </button>
             ))}
           </div>
         </div>
@@ -169,54 +171,70 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
       <CardContent>
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <XAxis dataKey="time" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+            <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.02)" vertical={false} />
+              <XAxis
+                dataKey="time"
+                tick={{ fill: 'rgba(255,255,255,0.3)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 9 }}
+                tickLine={false}
+                axisLine={false}
+                dy={10}
+              />
               <YAxis
                 domain={[priceRange.min, priceRange.max]}
-                tick={{ fontSize: 10 }}
+                tick={{ fill: 'rgba(255,255,255,0.3)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 9 }}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) => formatNumber(v, 0)}
                 width={50}
+                dx={-10}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: 'hsl(var(--card))',
-                  border: '1px solid hsl(var(--border))',
-                  borderRadius: '8px',
+                  backgroundColor: '#0B0E14',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '2px',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                  fontSize: '10px',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
                 }}
-                labelStyle={{ color: 'hsl(var(--foreground))' }}
+                itemStyle={{ color: 'rgba(255,255,255,0.8)' }}
+                labelStyle={{ color: 'rgba(255,255,255,0.4)', marginBottom: '8px' }}
                 formatter={(value: number, name: string) => [
                   formatNumber(value, 2),
                   VENUE_LABELS[name]?.name || name,
                 ]}
               />
               <Legend
-                formatter={(value) => VENUE_LABELS[value]?.name || value}
-                wrapperStyle={{ fontSize: '12px' }}
+                formatter={(value) => <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{VENUE_LABELS[value]?.name || value}</span>}
+                wrapperStyle={{ paddingTop: '20px' }}
               />
               {vwapNgn && isFinite(vwapNgn) && (
                 <ReferenceLine
                   y={vwapNgn}
-                  stroke="#fff"
+                  stroke="rgba(16,185,129,0.3)"
                   strokeDasharray="4 4"
                   strokeWidth={1}
                   label={{
                     value: `VWAP ${formatNumber(vwapNgn, 1)}`,
-                    position: 'right',
-                    fontSize: 10,
-                    fill: '#888',
+                    position: 'insideTopRight',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    fontSize: 9,
+                    fill: 'rgba(16,185,129,0.8)',
                   }}
                 />
               )}
               {activeVenues.map((venue) => (
                 <Line
                   key={venue}
-                  type="monotone"
+                  type="stepAfter"
                   dataKey={venue}
                   stroke={VENUE_COLORS[venue] || '#888'}
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   dot={false}
+                  activeDot={{ r: 4, fill: '#0B0E14', stroke: VENUE_COLORS[venue] || '#888', strokeWidth: 2 }}
                   connectNulls
                   name={venue}
                 />
@@ -224,9 +242,10 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <p className="text-xs text-muted-foreground mt-2 text-center">
-          Live price history. Tighter lines = better arbitrage execution. Spread &gt;150 bps indicates opportunity.
-        </p>
+        <div className="flex justify-between items-center text-[9px] text-white/20 mt-6 font-mono tracking-wide border-t border-white/[0.02] pt-3">
+          <span>&gt; LIVE HIGH-FREQUENCY ORACLE TRAJECTORY (TICK: ~30S)</span>
+          <span>&gt; OPTIMAL VECTOR: SPREAD &gt; 110 BPS TO OVERCOME FRAGMENTATION FEES</span>
+        </div>
       </CardContent>
     </Card>
   );
