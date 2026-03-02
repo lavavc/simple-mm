@@ -176,26 +176,6 @@ class Database:
         )
         await self._conn.commit()
 
-        # Database Migrations for dex_arbitrage_opportunities
-        columns_to_add = [
-            ("pancake_price", "REAL"),
-            ("aerodrome_price", "REAL"),
-            ("buy_tx_hash", "TEXT"),
-            ("sell_tx_hash", "TEXT"),
-            ("slippage_tolerance_bps", "INTEGER"),
-            ("pancake_fee_bps", "INTEGER"),
-            ("aerodrome_fee_bps", "INTEGER"),
-            ("estimated_gas_usd", "REAL")
-        ]
-        import sqlite3
-        for col, col_type in columns_to_add:
-            try:
-                await self._conn.execute(f"ALTER TABLE dex_arbitrage_opportunities ADD COLUMN {col} {col_type}")
-                await self._conn.commit()
-            except sqlite3.OperationalError:
-                # Column already exists
-                pass
-
     # === System State ===
 
     async def get_system_state(self, key: str) -> Optional[str]:

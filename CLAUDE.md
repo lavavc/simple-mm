@@ -2,3 +2,4 @@
 - Avoid code complexity and bloat at every opportunity. 
 - Before making significant code changes, ask clarifying questions.
 - Make documentation as succinct as possible. Avoid adding code blocks: just link to the relevant file instead.
+- DB migrations: never use `try/except` around `execute()`. Use `PRAGMA table_info(table)` to check for existing columns before ALTER TABLE. Caught execute() exceptions leave aiosqlite in a dirty state that hangs pytest.
