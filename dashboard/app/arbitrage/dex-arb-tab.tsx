@@ -177,7 +177,7 @@ export default function DexArbPage() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                {/* LEFT COLUMN: Controls & Status */}
+                {/* LEFT COLUMN: Controls & Statuss */}
                 <div className="lg:col-span-1 space-y-4">
                     <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
                         <CardHeader className="p-3 border-b border-white/[0.02]">
