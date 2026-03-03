@@ -188,26 +188,42 @@ export default function DexArbPage() {
                                 </div>
                             </div>
                         </CardHeader>
-                        <CardContent className={`p-4 space-y-4 ${isSyncing ? 'opacity-30' : ''}`}>
+                        <CardContent className="p-4 space-y-4">
                             <div>
                                 <div className="flex justify-between items-end mb-1">
                                     <span className="text-xs text-white/80">PancakeSwap <span className="text-white/50 text-[10px]">(BSC)</span></span>
-                                    <span className="font-mono text-sm text-white">{pancakeTrade ? `$${formatNumber(pancakeTrade.token_balances?.USDT || 0, 2)}` : 'Syncing...'}</span>
+                                    {pancakeTrade ? (
+                                        <span className="font-mono text-sm text-white">${formatNumber(pancakeTrade.token_balances?.USDT || 0, 2)}</span>
+                                    ) : (
+                                        <div className="h-4 w-16 bg-white/10 rounded-sm animate-pulse" />
+                                    )}
                                 </div>
-                                <div className="flex justify-between text-[10px] font-mono text-white/50">
+                                <div className="flex justify-between items-center text-[10px] font-mono text-white/50">
                                     <span>USDT</span>
-                                    <span>{pancakeTrade ? `${formatNumber(pancakeTrade.token_balances?.cNGN || 0, 0)} cNGN` : '--'}</span>
+                                    {pancakeTrade ? (
+                                        <span>{formatNumber(pancakeTrade.token_balances?.cNGN || 0, 0)} cNGN</span>
+                                    ) : (
+                                        <div className="h-3 w-20 bg-white/5 rounded-sm animate-pulse mt-0.5" />
+                                    )}
                                 </div>
                             </div>
                             <div className="h-px w-full bg-white/[0.05]"></div>
                             <div>
                                 <div className="flex justify-between items-end mb-1">
                                     <span className="text-xs text-white/80">Aerodrome <span className="text-white/50 text-[10px]">(Base)</span></span>
-                                    <span className="font-mono text-sm text-white">{aeroTrade ? `$${formatNumber(aeroTrade.token_balances?.USDC || 0, 2)}` : 'Syncing...'}</span>
+                                    {aeroTrade ? (
+                                        <span className="font-mono text-sm text-white">${formatNumber(aeroTrade.token_balances?.USDC || 0, 2)}</span>
+                                    ) : (
+                                        <div className="h-4 w-16 bg-white/10 rounded-sm animate-pulse" />
+                                    )}
                                 </div>
-                                <div className="flex justify-between text-[10px] font-mono text-white/50">
+                                <div className="flex justify-between items-center text-[10px] font-mono text-white/50">
                                     <span>USDC</span>
-                                    <span>{aeroTrade ? `${formatNumber(aeroTrade.token_balances?.cNGN || 0, 0)} cNGN` : '--'}</span>
+                                    {aeroTrade ? (
+                                        <span>{formatNumber(aeroTrade.token_balances?.cNGN || 0, 0)} cNGN</span>
+                                    ) : (
+                                        <div className="h-3 w-20 bg-white/5 rounded-sm animate-pulse mt-0.5" />
+                                    )}
                                 </div>
                             </div>
                         </CardContent>

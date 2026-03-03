@@ -123,16 +123,6 @@ function SpotArbitrageTab() {
                 MANUAL SCAN
               </button>
 
-              <button
-                disabled
-                className={`flex items-center gap-2 px-6 py-2 rounded-sm text-[11px] font-mono uppercase tracking-widest transition-all cursor-not-allowed ${status?.enabled
-                  ? 'bg-red-500/10 border border-red-500/30 text-red-500 shadow-[0_0_15px_rgba(239,68,68,0.1)]'
-                  : 'bg-white/5 border border-white/10 text-white/50'
-                  }`}
-              >
-                <Power className="h-3.5 w-3.5" />
-                {status?.enabled ? 'KILL SWITCH' : 'SYSTEM OFFLINE'}
-              </button>
             </>
           )}
         </div>
