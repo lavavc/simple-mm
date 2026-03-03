@@ -35,6 +35,28 @@ def _optimal_cngn_amount(
     return max(Decimal("0"), (sqrt_kB * cngn_A - sqrt_kA * cngn_B) / (sqrt_kA + sqrt_kB))
 
 
+def _optimal_cex_dex_amount(
+    cngn_pool: Decimal,
+    stable_pool: Decimal,
+    cex_price: Decimal,
+    fee_rate: Decimal,
+) -> Decimal:
+    """Closed-form optimal cNGN size when one leg is flat-price CEX, other is CPMM pool.
+
+    Works for both directions:
+      DEX-buy + CEX-sell: P_eff = cex * (1 - fee)
+      CEX-buy + DEX-sell: P_eff = cex * (1 + fee)
+    Sign convention: always returns a positive amount to trade.
+    """
+    k = cngn_pool * stable_pool
+    if k <= 0 or cex_price <= 0:
+        return Decimal("0")
+    p_eff = cex_price * (1 - fee_rate)
+    if p_eff <= 0:
+        return Decimal("0")
+    return max(Decimal("0"), (k / p_eff).sqrt() - cngn_pool)
+
+
 class ArbitrageDetector:
     """
     Detects arbitrage opportunities by comparing prices across venues.
@@ -189,7 +211,7 @@ class ArbitrageDetector:
             return None
 
         recommended_size = self._calculate_recommended_size(
-            buy_price, reserves, buy_venue, sell_venue,
+            buy_price, sell_price, reserves, buy_venue, sell_venue,
         )
         expected_profit = recommended_size * Decimal(net_spread_bps) / Decimal("10000")
 
@@ -250,20 +272,41 @@ class ArbitrageDetector:
     def _calculate_recommended_size(
         self,
         buy_price: Decimal,
+        sell_price: Decimal,
         reserves: dict | None,
         buy_venue: str,
         sell_venue: str,
     ) -> Decimal:
         """Optimal USD trade size from pool reserves.
 
-        Returns the profit-maximising size derived from both pools' depth.
-        Falls back to max_single_trade_usd when reserve data is unavailable
-        (e.g. DEX+CEX pairs where only one side is a constant-product pool).
+        Returns the profit-maximising size derived from pool depth.
+        Falls back to max_single_trade_usd when reserve data is unavailable.
         """
+        # AMM<>AMM: both sides have reserves
         if reserves and buy_venue in reserves and sell_venue in reserves:
             cngn_A, stable_A = reserves[buy_venue]
             cngn_B, stable_B = reserves[sell_venue]
             delta = _optimal_cngn_amount(cngn_A, stable_A, cngn_B, stable_B)
             if delta > 0:
                 return delta * buy_price
+
+        # CEX<>DEX: one flat-price side, one AMM
+        if reserves:
+            buy_is_dex = buy_venue in self.dex_venues and buy_venue in reserves
+            sell_is_dex = sell_venue in self.dex_venues and sell_venue in reserves
+            if buy_is_dex and sell_venue not in self.dex_venues:
+                # Buy DEX, sell CEX — P_eff uses sell (CEX) price with fee
+                cngn_pool, stable_pool = reserves[buy_venue]
+                fee_rate = Decimal(self._estimate_fees(buy_venue, sell_venue)) / Decimal("10000")
+                delta = _optimal_cex_dex_amount(cngn_pool, stable_pool, sell_price, fee_rate)
+                if delta > 0:
+                    return delta * buy_price
+            elif sell_is_dex and buy_venue not in self.dex_venues:
+                # Buy CEX, sell DEX — use buy (CEX) price
+                cngn_pool, stable_pool = reserves[sell_venue]
+                fee_rate = Decimal(self._estimate_fees(buy_venue, sell_venue)) / Decimal("10000")
+                delta = _optimal_cex_dex_amount(cngn_pool, stable_pool, buy_price, fee_rate)
+                if delta > 0:
+                    return delta * buy_price
+
         return self.params.max_single_trade_usd

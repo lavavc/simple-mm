@@ -48,6 +48,7 @@ _account_manager = None
 _token_contracts = None
 _blended_calculator = None
 _normalizer = None
+_quidax_lp = None
 
 
 def init_routes(
@@ -60,10 +61,11 @@ def init_routes(
     token_contracts=None,
     blended_calculator=None,
     normalizer=None,
+    quidax_lp=None,
 ):
     """Initialize route dependencies."""
     global _scheduler, _venues, _price_aggregator, _start_time, _arbitrage_engine
-    global _account_manager, _token_contracts, _blended_calculator, _normalizer
+    global _account_manager, _token_contracts, _blended_calculator, _normalizer, _quidax_lp
     _scheduler = scheduler
     _venues = venues
     _price_aggregator = price_aggregator
@@ -73,6 +75,7 @@ def init_routes(
     _token_contracts = token_contracts or {}
     _blended_calculator = blended_calculator
     _normalizer = normalizer
+    _quidax_lp = quidax_lp
 
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -498,6 +501,16 @@ async def get_quidax_deposit_address(currency: str):
     except Exception as e:
         logger.error("quidax_deposit_address_failed", currency=currency, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/webhooks/quidax")
+async def quidax_webhook(event: dict):
+    """Handle Quidax webhook events (order fills, deposit addresses, etc.)."""
+    if "quidax" in (_venues or {}):
+        await _venues["quidax"].handle_webhook(event)
+    if _quidax_lp is not None:
+        await _quidax_lp.handle_webhook(event)
+    return {"status": "ok"}
 
 
 # === Manual Action Routes ===

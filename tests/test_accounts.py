@@ -31,11 +31,12 @@ class TestAccountManagerInit:
         mgr = AccountManager(use_test_accounts=True)
         accounts = mgr.list_accounts()
 
-        assert len(accounts) == 6
+        assert len(accounts) == 7
         assert "aerodrome-lp" in accounts
         assert "aerodrome-trade" in accounts
         assert "blockradar" in accounts
-        assert "quidax" in accounts
+        assert "quidax-arb" in accounts
+        assert "quidax-lp" in accounts
         assert "pancakeswap-lp" in accounts
         assert "pancakeswap-trade" in accounts
 
@@ -43,7 +44,7 @@ class TestAccountManagerInit:
         """Should derive accounts from provided mnemonic."""
         mgr = AccountManager(mnemonic=ANVIL_TEST_MNEMONIC)
         accounts = mgr.list_accounts()
-        assert len(accounts) == 6
+        assert len(accounts) == 7
 
     def test_init_without_mnemonic_raises(self):
         """Should raise ValueError if no mnemonic is available."""
@@ -108,10 +109,10 @@ class TestAccountAccess:
         """Non-existent role should raise ValueError."""
         # Copy accounts dict and remove one to avoid mutating shared state
         saved = mgr._accounts.copy()
-        del mgr._accounts[AccountRole.QUIDAX]
+        del mgr._accounts[AccountRole.QUIDAX_ARB]
         try:
             with pytest.raises(ValueError, match="No account configured"):
-                mgr.get_account(AccountRole.QUIDAX)
+                mgr.get_account(AccountRole.QUIDAX_ARB)
         finally:
             mgr._accounts = saved
 
@@ -151,10 +152,10 @@ class TestThresholdUpdates:
 
     def test_update_invalid_role_raises(self, mgr):
         saved = mgr._configs.copy()
-        del mgr._configs[AccountRole.QUIDAX]
+        del mgr._configs[AccountRole.QUIDAX_ARB]
         try:
             with pytest.raises(ValueError, match="No config for role"):
-                mgr.update_thresholds(AccountRole.QUIDAX, min_balance_eth=Decimal("1"))
+                mgr.update_thresholds(AccountRole.QUIDAX_ARB, min_balance_eth=Decimal("1"))
         finally:
             mgr._configs = saved
 
