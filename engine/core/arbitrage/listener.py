@@ -149,6 +149,39 @@ class ArbitrageWebSocketListener:
             curve_data = await generate_v3_profit_curve()
             
             if curve_data:
+                # Save price snapshots to database so charts don't break
+                from engine.api.schemas import PriceQuote
+                from engine.db.database import get_db
+                import time
+
+                db = await get_db()
+                now_ms = int(time.time() * 1000)
+
+                if "pancakeswap" in curve_data.get("prices", {}):
+                    await db.insert_price_snapshot(PriceQuote(
+                        source="pancakeswap_pool",
+                        timestamp=now_ms,
+                        bid=curve_data["prices"]["pancakeswap"],
+                        ask=curve_data["prices"]["pancakeswap"],
+                        mid=curve_data["prices"]["pancakeswap"],
+                    ))
+                if "aerodrome" in curve_data.get("prices", {}):
+                    await db.insert_price_snapshot(PriceQuote(
+                        source="aerodrome_pool",
+                        timestamp=now_ms,
+                        bid=curve_data["prices"]["aerodrome"],
+                        ask=curve_data["prices"]["aerodrome"],
+                        mid=curve_data["prices"]["aerodrome"],
+                    ))
+                if "assetchain" in curve_data.get("prices", {}):
+                    await db.insert_price_snapshot(PriceQuote(
+                        source="assetchain_pool",
+                        timestamp=now_ms,
+                        bid=curve_data["prices"]["assetchain"],
+                        ask=curve_data["prices"]["assetchain"],
+                        mid=curve_data["prices"]["assetchain"],
+                    ))
+
                 self.broadcast({
                     "type": "dex_arb_curve",
                     "data": curve_data
