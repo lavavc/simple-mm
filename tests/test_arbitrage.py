@@ -162,7 +162,7 @@ class TestRecommendedSize:
             price_aggregator=MagicMock(),
             params=relaxed_params,
         )
-        size = detector._calculate_recommended_size(Decimal("0.0007"), None, "", "")
+        size = detector._calculate_recommended_size(Decimal("0.0007"), Decimal("0.0008"), None, "", "")
         assert size == relaxed_params.max_single_trade_usd
 
 
@@ -379,7 +379,7 @@ class TestOptimalSizing:
             "pancakeswap": (Decimal("1e9"), Decimal("1e12")),
         }
         size = detector._calculate_recommended_size(
-            Decimal("0.0007"), reserves, "aerodrome", "pancakeswap",
+            Decimal("0.0007"), Decimal("0.0008"), reserves, "aerodrome", "pancakeswap",
         )
         assert size > relaxed_params.max_single_trade_usd
 
@@ -389,7 +389,7 @@ class TestOptimalSizing:
             price_aggregator=MagicMock(),
             params=relaxed_params,
         )
-        size = detector._calculate_recommended_size(Decimal("0.0007"), None, "", "")
+        size = detector._calculate_recommended_size(Decimal("0.0007"), Decimal("0.0008"), None, "", "")
         assert size == relaxed_params.max_single_trade_usd
 
     def test_falls_back_when_one_side_missing(self, relaxed_params):
@@ -400,7 +400,7 @@ class TestOptimalSizing:
         )
         reserves = {"aerodrome": (Decimal("1000000"), Decimal("700"))}
         size = detector._calculate_recommended_size(
-            Decimal("0.0007"), reserves, "aerodrome", "pancakeswap",
+            Decimal("0.0007"), Decimal("0.0008"), reserves, "aerodrome", "pancakeswap",
         )
         assert size == relaxed_params.max_single_trade_usd
 

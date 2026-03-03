@@ -76,7 +76,10 @@ class ArbitrageExecutor:
                 buy_tx = buy_trade.tx_hash or ""
                 return False, None, f"HALF_OPEN:{buy_tx}:{err}"
 
-            actual_profit = amount_cngn * opportunity.sell_price - size_usd
+            # Use actual fill prices when available (CEX legs populate trade.price from response)
+            buy_price_usd = buy_trade.price or opportunity.buy_price
+            sell_price_usd = sell_trade.price or opportunity.sell_price
+            actual_profit = (sell_trade.amount * sell_price_usd) - (buy_trade.amount * buy_price_usd)
 
             logger.info(
                 "arbitrage_executed",
@@ -181,19 +184,17 @@ class ArbitrageExecutor:
         venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
         amount_cngn = amount_usd / limit_price
-        result = await venue.place_market_order("buy", amount_cngn)
-
-        success = bool(result.get("data"))
+        success, executed_cngn, avg_price, error = await venue.place_market_order("buy", amount_cngn)
         return ArbitrageTrade(
             id=0,
             opportunity_id=opportunity_id,
             venue=venue_name,
             side="buy",
-            amount=amount_cngn,
-            price=limit_price,
+            amount=executed_cngn if success else amount_cngn,
+            price=avg_price if success else limit_price,
             status="submitted" if success else "failed",
             timestamp=_now_ms(),
-            error=None if success else str(result.get("message", "Order placement failed")),
+            error=error,
         )
 
     async def execute_cex_sell(
@@ -206,17 +207,15 @@ class ArbitrageExecutor:
         """Place a market sell order on a CEX."""
         venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
-        result = await venue.place_market_order("sell", amount_cngn)
-
-        success = bool(result.get("data"))
+        success, executed_cngn, avg_price, error = await venue.place_market_order("sell", amount_cngn)
         return ArbitrageTrade(
             id=0,
             opportunity_id=opportunity_id,
             venue=venue_name,
             side="sell",
-            amount=amount_cngn,
-            price=limit_price,
+            amount=executed_cngn if success else amount_cngn,
+            price=avg_price if success else limit_price,
             status="submitted" if success else "failed",
             timestamp=_now_ms(),
-            error=None if success else str(result.get("message", "Order placement failed")),
+            error=error,
         )

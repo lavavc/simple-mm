@@ -68,6 +68,7 @@ class TradingScheduler:
         arbitrage_engine: "ArbitrageEngine | None" = None,
         account_manager: "AccountManager | None" = None,
         token_contracts: dict[str, str] | None = None,
+        quidax_lp=None,
     ):
         self.price_aggregator = price_aggregator
         self.venues = venues
@@ -77,6 +78,7 @@ class TradingScheduler:
         self.arbitrage_engine = arbitrage_engine
         self.account_manager = account_manager
         self.token_contracts = token_contracts or {}
+        self.quidax_lp = quidax_lp
 
         self.scheduler = AsyncIOScheduler()
         self._trading_enabled = True
@@ -152,6 +154,28 @@ class TradingScheduler:
                 next_run_time=datetime.now(timezone.utc),
             )
             logger.info("balance_check_job_registered")
+
+            # Auto-fund Quidax accounts from on-chain wallets
+            quidax_arb = self.venues.get("quidax")
+            if quidax_arb:
+                import functools
+                self.scheduler.add_job(
+                    functools.partial(self._auto_fund_quidax, quidax_arb, "quidax-arb"),
+                    IntervalTrigger(seconds=self.config.balance_check_interval),
+                    id="auto_fund_quidax_arb",
+                    replace_existing=True,
+                )
+                logger.info("auto_fund_quidax_arb_job_registered")
+            quidax_lp = self.quidax_lp or self.venues.get("quidax-lp")
+            if quidax_lp:
+                import functools
+                self.scheduler.add_job(
+                    functools.partial(self._auto_fund_quidax, quidax_lp, "quidax-lp"),
+                    IntervalTrigger(seconds=self.config.balance_check_interval),
+                    id="auto_fund_quidax_lp",
+                    replace_existing=True,
+                )
+                logger.info("auto_fund_quidax_lp_job_registered")
 
         if self.blended_calculator:
             self.scheduler.add_job(
@@ -359,14 +383,15 @@ class TradingScheduler:
         if not self._trading_enabled:
             return
 
-        quidax = self.venues.get("quidax")
-        if not quidax or quidax.paused:
+        # Ladder uses the LP adapter; arb adapter is reserved for arb execution only.
+        quidax_lp = self.quidax_lp or self.venues.get("quidax-lp")
+        if not quidax_lp or quidax_lp.paused:
             return
 
         try:
             reference_price = await self._get_reference_price_ngn()
             if reference_price:
-                await quidax.sync_order_ladder(reference_price)
+                await quidax_lp.sync_order_ladder(reference_price)
         except Exception as e:
             logger.error("cex_sync_failed", error=str(e))
 
@@ -791,6 +816,68 @@ class TradingScheduler:
 
         except Exception as e:
             logger.error("balance_check_failed", error=str(e))
+
+    # ------------------------------------------------------------------
+    # Quidax auto-funding
+    # ------------------------------------------------------------------
+
+    async def _auto_fund_quidax(self, adapter, account_role_str: str) -> None:
+        """Top up Quidax CEX balance from the on-chain HD wallet if below threshold."""
+        if not self.account_manager:
+            return
+
+        from engine.core.accounts import AccountRole
+
+        account_role = AccountRole(account_role_str)
+        position = await adapter.get_position()
+        balances = position.balances
+
+        token_contracts = {
+            "cNGN": settings.cngn_bsc_address,
+            "USDT": settings.usdt_bsc_address,
+        }
+        on_chain = await self.account_manager.get_balance(account_role, token_contracts)
+        on_chain_bal = on_chain.token_balances
+
+        tokens = [
+            ("cngn", "cNGN", settings.cngn_bsc_address, settings.quidax_min_cngn,
+             settings.quidax_top_up_cngn, settings.quidax_onchain_min_cngn),
+            ("usdt", "USDT", settings.usdt_bsc_address, settings.quidax_min_usdt,
+             settings.quidax_top_up_usdt, settings.quidax_onchain_min_usdt),
+        ]
+
+        for cex_key, chain_key, contract, min_cex, top_up, min_onchain in tokens:
+            if balances.get(cex_key, Decimal("0")) >= min_cex:
+                continue
+            chain_amount = on_chain_bal.get(chain_key, Decimal("0"))
+            if chain_amount > min_onchain + top_up:
+                deposit_addr = adapter._deposit_addresses.get(cex_key)
+                if deposit_addr:
+                    tx = await self.account_manager.transfer_erc20(
+                        account_role, contract, deposit_addr, top_up
+                    )
+                    logger.info(
+                        "auto_fund_quidax",
+                        role=account_role_str, token=chain_key,
+                        amount=float(top_up), tx=tx,
+                    )
+                else:
+                    logger.warning("quidax_deposit_address_missing", role=account_role_str, token=cex_key)
+            else:
+                db = await get_db()
+                await db.insert_alert(
+                    severity="warning",
+                    category="refill",
+                    message=(
+                        f"On-chain {chain_key} for {account_role_str} insufficient "
+                        f"({float(chain_amount):.2f}); manual refill needed"
+                    ),
+                    dedup=True,
+                )
+                self.broadcast({
+                    "type": "refill_alert",
+                    "data": {"role": account_role_str, "token": chain_key, "on_chain": float(chain_amount)},
+                })
 
     # ------------------------------------------------------------------
     # Blockradar rate syncing
