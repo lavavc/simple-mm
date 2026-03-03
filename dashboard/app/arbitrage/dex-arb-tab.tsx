@@ -7,6 +7,7 @@ import { formatNumber } from '@/lib/utils';
 import { ArrowRightLeft, Database, Zap, ArrowRight, AlertTriangle, Activity, TrendingUp, Circle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { useAccountBalances } from '@/lib/hooks/useQueries';
 
 interface CurvePoint {
     size: number;
@@ -106,6 +107,12 @@ export default function DexArbPage() {
     });
     const dexOpps: DexArbOpp[] = data || [];
 
+    const { data: accounts } = useAccountBalances();
+    const getTradeAccount = (v: string) => accounts?.find((a) => a.role === `${v}-trade`);
+    const pancakeTrade = getTradeAccount('pancakeswap');
+    const aeroTrade = getTradeAccount('aerodrome');
+    const assetTrade = getTradeAccount('assetchain');
+
     const [now, setNow] = React.useState(Date.now());
 
     React.useEffect(() => {
@@ -181,37 +188,42 @@ export default function DexArbPage() {
                                 </div>
                             </div>
                         </CardHeader>
-                        <CardContent className={`p-4 space-y-4 ${isSyncing ? 'opacity-30' : ''}`}>
+                        <CardContent className="p-4 space-y-4">
                             <div>
                                 <div className="flex justify-between items-end mb-1">
                                     <span className="text-xs text-white/80">PancakeSwap <span className="text-white/50 text-[10px]">(BSC)</span></span>
-                                    <span className="font-mono text-sm text-white">$15,000.00</span>
+                                    {pancakeTrade ? (
+                                        <span className="font-mono text-sm text-white">${formatNumber(pancakeTrade.token_balances?.USDT || 0, 2)}</span>
+                                    ) : (
+                                        <div className="h-4 w-16 bg-white/10 rounded-sm animate-pulse" />
+                                    )}
                                 </div>
-                                <div className="flex justify-between text-[10px] font-mono text-white/50">
+                                <div className="flex justify-between items-center text-[10px] font-mono text-white/50">
                                     <span>USDT</span>
-                                    <span>21,000,000 cNGN</span>
+                                    {pancakeTrade ? (
+                                        <span>{formatNumber(pancakeTrade.token_balances?.cNGN || 0, 0)} cNGN</span>
+                                    ) : (
+                                        <div className="h-3 w-20 bg-white/5 rounded-sm animate-pulse mt-0.5" />
+                                    )}
                                 </div>
                             </div>
                             <div className="h-px w-full bg-white/[0.05]"></div>
                             <div>
                                 <div className="flex justify-between items-end mb-1">
                                     <span className="text-xs text-white/80">Aerodrome <span className="text-white/50 text-[10px]">(Base)</span></span>
-                                    <span className="font-mono text-sm text-white">$15,000.00</span>
+                                    {aeroTrade ? (
+                                        <span className="font-mono text-sm text-white">${formatNumber(aeroTrade.token_balances?.USDC || 0, 2)}</span>
+                                    ) : (
+                                        <div className="h-4 w-16 bg-white/10 rounded-sm animate-pulse" />
+                                    )}
                                 </div>
-                                <div className="flex justify-between text-[10px] font-mono text-white/50">
+                                <div className="flex justify-between items-center text-[10px] font-mono text-white/50">
                                     <span>USDC</span>
-                                    <span>21,000,000 cNGN</span>
-                                </div>
-                            </div>
-                            <div className="h-px w-full bg-white/[0.05]"></div>
-                            <div>
-                                <div className="flex justify-between items-end mb-1">
-                                    <span className="text-xs text-white/80">AssetChain <span className="text-white/50 text-[10px]">(Mainnet)</span></span>
-                                    <span className="font-mono text-sm text-white">$15,000.00</span>
-                                </div>
-                                <div className="flex justify-between text-[10px] font-mono text-white/50">
-                                    <span>USDT</span>
-                                    <span>21,000,000 cNGN</span>
+                                    {aeroTrade ? (
+                                        <span>{formatNumber(aeroTrade.token_balances?.cNGN || 0, 0)} cNGN</span>
+                                    ) : (
+                                        <div className="h-3 w-20 bg-white/5 rounded-sm animate-pulse mt-0.5" />
+                                    )}
                                 </div>
                             </div>
                         </CardContent>
@@ -256,67 +268,104 @@ export default function DexArbPage() {
                                         </div>
                                     </div>
 
-                                    {/* Detailed breakdown section */}
-                                    <div className="space-y-2.5 border-t border-white/5 pt-3">
-                                        <div className="flex justify-between items-center text-[10px] font-mono">
-                                            <span className="text-white/50">Execution Path</span>
-                                            <span className="text-white/80 text-right">
-                                                {resolvedCurveData.optimal_arb.direction.includes('PANCAKE')
-                                                    ? 'USDT -> cNGN | cNGN -> USDC'
-                                                    : 'USDC -> cNGN | cNGN -> USDT'
-                                                }
-                                            </span>
-                                        </div>
-                                        <div className="flex justify-between items-start text-[10px] font-mono">
-                                            <span className="text-white/50 whitespace-nowrap mr-4">Initial Pool Spread</span>
-                                            <div className="text-right">
-                                                <div className="text-emerald-400/90 text-[11px]">+{Math.abs(((resolvedCurveData.prices.aerodrome || 0) - (resolvedCurveData.prices.pancakeswap || 0)) / (resolvedCurveData.prices.pancakeswap || 1) * 10000).toFixed(0)} BPS</div>
-                                                <div className="text-white/40 text-[9px] mt-0.5 whitespace-nowrap">PANC: ${(resolvedCurveData.prices.pancakeswap || 0).toFixed(6)} | AERO: ${(resolvedCurveData.prices.aerodrome || 0).toFixed(6)}</div>
-                                            </div>
-                                        </div>
-                                        <div className="flex justify-between items-start text-[10px] font-mono">
-                                            <span className="text-white/50">Net Spread</span>
-                                            <div className="text-right">
-                                                <div className="text-emerald-400/90 text-[11px]">+{resolvedCurveData.optimal_arb.net_spread_bps} BPS</div>
-                                                <div className="text-white/40 text-[9px] mt-0.5 whitespace-nowrap">Formula: ((USD Out - Opt Size) / Opt Size) * 10000</div>
-                                            </div>
-                                        </div>
-                                        <div className="flex justify-between items-center text-[10px] font-mono">
-                                            <span className="text-white/50">Expected Slippage</span>
-                                            <span className="text-yellow-500/90">{resolvedCurveData.optimal_arb.slippage_tolerance_bps ? `${(resolvedCurveData.optimal_arb.slippage_tolerance_bps / 100).toFixed(2)}% (${resolvedCurveData.optimal_arb.slippage_tolerance_bps} BPS)` : '0.10% (10 BPS)'} allowed</span>
-                                        </div>
-                                        <div className="flex justify-between items-start text-[10px] font-mono pt-1">
-                                            <span className="text-white/50">L2 Network Gas</span>
-                                            <div className="text-right">
-                                                <div className="text-white/80 text-[11px]">~${resolvedCurveData.optimal_arb.estimated_gas_usd?.toFixed(2) || '0.07'} total</div>
-                                                <div className="text-white/40 text-[9px] mt-0.5 whitespace-nowrap">Fetched dynamically via RPC</div>
-                                            </div>
-                                        </div>
-                                        <div className="flex justify-between items-center text-[10px] font-mono mt-2">
-                                            <span className="text-white/50">Pool Fees</span>
-                                            <span className="text-white/80">{resolvedCurveData.optimal_arb.pancake_fee_bps ? `${(resolvedCurveData.optimal_arb.pancake_fee_bps / 100).toFixed(2)}%` : '0.01%'} (PANC) | {resolvedCurveData.optimal_arb.aerodrome_fee_bps ? `${(resolvedCurveData.optimal_arb.aerodrome_fee_bps / 100).toFixed(2)}%` : '0.05%'} (AERO) | {resolvedCurveData.optimal_arb.assetchain_fee_bps ? `${(resolvedCurveData.optimal_arb.assetchain_fee_bps / 100).toFixed(2)}%` : '0.30%'} (ASST)</span>
-                                        </div>
-                                    </div>
+                                    {/* Detailed breakdown & Post-Trade sections */}
+                                    {(() => {
+                                        const dir = resolvedCurveData.optimal_arb.direction || '';
+                                        const parts = dir.split('_');
+                                        const fromVenue = parts[0] || 'PANCAKE';
+                                        const toVenue = parts[2] || 'AERO';
 
-                                    <div className="space-y-3 border-t border-white/10 pt-4 mb-4">
-                                        <div className="text-[11px] text-white/60 uppercase tracking-widest mb-1.5 font-bold">Post-Trade Inventory</div>
+                                        const getVenuePrice = (v: string) => {
+                                            if (v === 'PANCAKE') return resolvedCurveData.prices.pancakeswap || 0;
+                                            if (v === 'AERO') return resolvedCurveData.prices.aerodrome || 0;
+                                            if (v === 'ASSETCHAIN') return resolvedCurveData.prices.assetchain || 0;
+                                            return 0;
+                                        };
+                                        const getVenueShort = (v: string) => {
+                                            if (v === 'PANCAKE') return 'PANC';
+                                            if (v === 'AERO') return 'AERO';
+                                            if (v === 'ASSETCHAIN') return 'ASST';
+                                            return v;
+                                        };
+                                        const getStable = (v: string) => v === 'AERO' ? 'USDC' : 'USDT';
+                                        const getNetworkName = (v: string) => {
+                                            if (v === 'PANCAKE') return 'BSC Inventory';
+                                            if (v === 'AERO') return 'Base Inventory';
+                                            if (v === 'ASSETCHAIN') return 'AssetChain Inv';
+                                            return `${v} Inv`;
+                                        };
 
-                                        <div className="bg-black/20 p-2.5 rounded-sm border border-white/[0.05] flex justify-between items-center text-[11px] font-mono">
-                                            <span className="text-white/70">{resolvedCurveData.optimal_arb.direction.includes('PANCAKE') ? 'BSC Inventory' : 'Base Inventory'}</span>
-                                            <div className="text-right leading-tight">
-                                                <div className="text-red-400/90 text-xs">-${formatNumber(resolvedCurveData.optimal_arb.optimal_size_usd, 0)}</div>
-                                                <div className="text-emerald-400/70 mt-0.5">+{formatNumber(resolvedCurveData.optimal_arb.cngn_transferred, 0)} cNGN</div>
-                                            </div>
-                                        </div>
+                                        const priceFrom = getVenuePrice(fromVenue);
+                                        const priceTo = getVenuePrice(toVenue);
+                                        const shortFrom = getVenueShort(fromVenue);
+                                        const shortTo = getVenueShort(toVenue);
+                                        const fromNetwork = getNetworkName(fromVenue);
+                                        const toNetwork = getNetworkName(toVenue);
+                                        const initialSpreadBps = priceFrom && priceTo ? Math.abs((priceTo - priceFrom) / priceFrom * 10000).toFixed(0) : 0;
+                                        const execPath = `${getStable(fromVenue)} -> cNGN | cNGN -> ${getStable(toVenue)}`;
 
-                                        <div className="bg-black/20 p-2.5 rounded-sm border border-white/[0.05] flex justify-between items-center text-[11px] font-mono">
-                                            <span className="text-white/70">{resolvedCurveData.optimal_arb.direction.includes('PANCAKE') ? 'Base Inventory' : 'BSC Inventory'}</span>
-                                            <div className="text-right leading-tight">
-                                                <div className="text-emerald-400/90 text-xs">+${formatNumber(resolvedCurveData.optimal_arb.expected_usd_out, 2)}</div>
-                                                <div className="text-red-400/70 mt-0.5">-{formatNumber(resolvedCurveData.optimal_arb.cngn_transferred, 0)} cNGN</div>
-                                            </div>
-                                        </div>
-                                    </div>
+                                        return (
+                                            <>
+                                                <div className="space-y-3 border-t border-white/5 pt-3">
+                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Execution Path</span>
+                                                        <span className="text-white/80 text-right break-words max-w-[60%]">{execPath}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Initial Spread</span>
+                                                        <div className="text-right break-words max-w-[65%]">
+                                                            <div className="text-emerald-400/90 text-[11px]">+{initialSpreadBps} BPS</div>
+                                                            <div className="text-white/40 text-[9px] mt-0.5">{shortFrom}: ${priceFrom.toFixed(6)} | {shortTo}: ${priceTo.toFixed(6)}</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Net Spread</span>
+                                                        <div className="text-right break-words max-w-[65%]">
+                                                            <div className="text-emerald-400/90 text-[11px]">+{resolvedCurveData.optimal_arb.net_spread_bps} BPS</div>
+                                                            <div className="text-white/40 text-[9px] mt-0.5">Formula: ((Out - In) / In) * 10000</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Exp. Slippage</span>
+                                                        <span className="text-yellow-500/90 text-right break-words max-w-[60%] mt-0.5">{resolvedCurveData.optimal_arb.slippage_tolerance_bps ? `${(resolvedCurveData.optimal_arb.slippage_tolerance_bps / 100).toFixed(2)}% (${resolvedCurveData.optimal_arb.slippage_tolerance_bps} BPS)` : '0.10% (10 BPS)'} allow</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">L2 Gas</span>
+                                                        <div className="text-right break-words max-w-[60%]">
+                                                            <div className="text-white/80 text-[11px]">~${resolvedCurveData.optimal_arb.estimated_gas_usd?.toFixed(2) || '0.07'} total</div>
+                                                            <div className="text-white/40 text-[9px] mt-0.5">Dynamic RPC</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight pt-2 border-t border-white/[0.02]">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Pool Fees</span>
+                                                        <div className="text-right text-white/80 break-words max-w-[65%] mt-0.5 leading-relaxed">
+                                                            {resolvedCurveData.optimal_arb.pancake_fee_bps ? `${(resolvedCurveData.optimal_arb.pancake_fee_bps / 100).toFixed(2)}%` : '0.01%'} (PANC) | {resolvedCurveData.optimal_arb.aerodrome_fee_bps ? `${(resolvedCurveData.optimal_arb.aerodrome_fee_bps / 100).toFixed(2)}%` : '0.05%'} (AERO) | {resolvedCurveData.optimal_arb.assetchain_fee_bps ? `${(resolvedCurveData.optimal_arb.assetchain_fee_bps / 100).toFixed(2)}%` : '0.30%'} (ASST)
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-3 border-t border-white/10 pt-4 mb-4">
+                                                    <div className="text-[11px] text-white/60 uppercase tracking-widest mb-1.5 font-bold">Post-Trade Inventory</div>
+
+                                                    <div className="bg-black/20 p-2.5 rounded-sm border border-white/[0.05] flex justify-between items-center text-[11px] font-mono">
+                                                        <span className="text-white/70">{fromNetwork}</span>
+                                                        <div className="text-right leading-tight">
+                                                            <div className="text-red-400/90 text-xs">-${formatNumber(resolvedCurveData.optimal_arb.optimal_size_usd, 0)}</div>
+                                                            <div className="text-emerald-400/70 mt-0.5">+{formatNumber(resolvedCurveData.optimal_arb.cngn_transferred, 0)} cNGN</div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="bg-black/20 p-2.5 rounded-sm border border-white/[0.05] flex justify-between items-center text-[11px] font-mono">
+                                                        <span className="text-white/70">{toNetwork}</span>
+                                                        <div className="text-right leading-tight">
+                                                            <div className="text-emerald-400/90 text-xs">+${formatNumber(resolvedCurveData.optimal_arb.expected_usd_out, 2)}</div>
+                                                            <div className="text-red-400/70 mt-0.5">-{formatNumber(resolvedCurveData.optimal_arb.cngn_transferred, 0)} cNGN</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </>
+                                        );
+                                    })()}
 
                                     <Button className="w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-sm font-mono text-[11px] uppercase tracking-wider h-10 transition-colors mt-2">
                                         Execute Sequence
