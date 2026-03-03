@@ -295,6 +295,9 @@ class TestSourceToVenue:
     def test_blockradar(self):
         assert BlendedPriceCalculator._source_to_venue("blockradar") == "blockradar"
 
+    def test_assetchain_pool(self):
+        assert BlendedPriceCalculator._source_to_venue("assetchain_pool") == "assetchain"
+
     def test_unknown_passthrough(self):
         assert BlendedPriceCalculator._source_to_venue("something_new") == "something_new"
 
@@ -340,7 +343,7 @@ class TestNormalizeSinglePrice:
 
 
 class TestConfidence:
-    """Test confidence score computation: 90% at 5 venues, -20% per missing venue."""
+    """Test confidence score computation: 90% at 6 venues, -20% per missing venue."""
 
     def _np(self, venue: str) -> NormalizedPrice:
         return NormalizedPrice(
@@ -349,20 +352,24 @@ class TestConfidence:
             basis="cNGN/USDC", timestamp=0,
         )
 
+    def test_all_six_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap", "assetchain", "blockradar"]}
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.9)
+
     def test_all_five_venues(self):
         normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap", "blockradar"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.9)
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.7)
 
     def test_four_venues(self):
         normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.7)
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.5)
 
     def test_three_venues(self):
         normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.5)
+        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.3)
 
     def test_one_venue(self):
-        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}) == pytest.approx(0.1)
+        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}) == pytest.approx(0.0)
 
     def test_empty_returns_zero(self):
         assert BlendedPriceCalculator._compute_confidence({}) == 0.0
