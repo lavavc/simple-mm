@@ -378,6 +378,8 @@ class BlendedPriceCalculator:
             return "aerodrome"
         if "pancakeswap" in source_lower or "pancake" in source_lower:
             return "pancakeswap"
+        if "assetchain" in source_lower:
+            return "assetchain"
         if "blockradar" in source_lower:
             return "blockradar"
         return source_lower
@@ -403,5 +405,5 @@ class BlendedPriceCalculator:
     @staticmethod
     def _compute_confidence(normalized: dict[str, NormalizedPrice]) -> float:
         """Confidence score: 90% at full venue count, minus 20% per missing venue."""
-        TOTAL_VENUES = 5  # bybit, quidax, aerodrome, pancakeswap, blockradar
+        TOTAL_VENUES = 6  # bybit, quidax, aerodrome, pancakeswap, assetchain, blockradar
         return max(0.0, 0.9 - 0.2 * (TOTAL_VENUES - len(normalized)))
