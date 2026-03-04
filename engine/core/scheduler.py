@@ -884,7 +884,7 @@ class TradingScheduler:
                 continue
             chain_amount = on_chain_bal.get(chain_key, Decimal("0"))
             if chain_amount > min_onchain + top_up:
-                deposit_addr = adapter._deposit_addresses.get(cex_key)
+                deposit_addr = settings.quidax_deposit_address
                 if deposit_addr:
                     tx = await self.account_manager.transfer_erc20(
                         account_role, contract, deposit_addr, top_up

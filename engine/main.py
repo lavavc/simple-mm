@@ -223,14 +223,7 @@ async def lifespan(app: FastAPI):
             execution_enabled=settings.arbitrage_execution_enabled,
         )
 
-    # Initialize Quidax deposit addresses before scheduler starts
     _quidax_lp = venues.get("quidax-lp")
-    for _adapter in [venues.get("quidax"), _quidax_lp]:
-        if _adapter is not None:
-            try:
-                await _adapter.init_deposit_addresses(["cngn", "usdt"])
-            except Exception as e:
-                logger.error("quidax_deposit_address_init_failed", adapter=_adapter.name, error=str(e))
 
     # Scheduler
     scheduler_config = SchedulerConfig()

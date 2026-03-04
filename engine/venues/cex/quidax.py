@@ -30,7 +30,7 @@ class QuidaxAdapter(VenueAdapter):
         self,
         api_key: str,
         params: CexParams | None = None,
-        market: str = "cngnusdt",
+        market: str = "usdtcngn",
         base_url: str | None = None,
         name: str = "quidax",
         funding_role: str = "quidax-arb",
@@ -50,10 +50,9 @@ class QuidaxAdapter(VenueAdapter):
         self.api_key = api_key
         self.params = params or CexParams()
         self.market = market
-        self.base_url = base_url or "https://app.quidax.io/api/v1"
+        self.base_url = base_url or "https://openapi.quidax.io/exchange-open-api/api/v1/"
         self._funding_role = funding_role
         self._client: Optional[httpx.AsyncClient] = None
-        self._deposit_addresses: dict[str, str] = {}
         self._last_balances: dict[str, Decimal] = {}
         self.enabled = True
         self.paused = False
@@ -73,29 +72,6 @@ class QuidaxAdapter(VenueAdapter):
             await self._client.aclose()
             self._client = None
 
-    async def init_deposit_addresses(self, currencies: list[str]) -> None:
-        """Load or request deposit addresses for each currency.
-
-        Checks system_state for a cached address first; if missing, calls
-        get_deposit_address() and stores any synchronous response. Addresses
-        that arrive only via webhook are populated by handle_webhook().
-        """
-        db = await get_db()
-        for currency in currencies:
-            key = f"quidax_{self._funding_role}_deposit_{currency}"
-            stored = await db.get_system_state(key)
-            if stored:
-                self._deposit_addresses[currency] = stored
-                logger.info("quidax_deposit_address_loaded", role=self._funding_role, currency=currency)
-            else:
-                result = await self.get_deposit_address(currency)
-                address = (result.get("data") or {}).get("address", "")
-                if address:
-                    self._deposit_addresses[currency] = address
-                    await db.set_system_state(key, address)
-                    logger.info("quidax_deposit_address_fetched", role=self._funding_role, currency=currency)
-                else:
-                    logger.info("quidax_deposit_address_pending_webhook", role=self._funding_role, currency=currency)
 
     async def get_position(self) -> Position:
         """Fetch live cNGN and USDT balances from the Quidax wallet API."""
@@ -245,11 +221,9 @@ class QuidaxAdapter(VenueAdapter):
     ) -> tuple[bool, Decimal, Decimal, str | None]:
         """
         Place a market order with up to 5 retries on network/5xx errors.
-
         Args:
             side: "buy" or "sell"
             amount: Order amount in CNGN
-
         Returns:
             (success, executed_cngn, avg_price_usdt, error)
         """
@@ -262,15 +236,36 @@ class QuidaxAdapter(VenueAdapter):
                 await asyncio.sleep(delay)
             try:
                 response = await client.post(f"{self.base_url}/users/me/orders", json=payload)
+                
+                # Safely parse JSON once
+                try:
+                    resp_json = response.json()
+                except Exception:
+                    resp_json = {}
+
+                # Catch 4xx client errors immediately without retrying
                 if 400 <= response.status_code < 500:
-                    error = str(response.json().get("message", "Bad request"))
-                    return False, Decimal("0"), Decimal("0"), error
+                    error_msg = resp_json.get("message", response.text or f"HTTP {response.status_code}")
+                    return False, Decimal("0"), Decimal("0"), str(error_msg)
+
                 response.raise_for_status()
-                data = response.json().get("data", {})
-                executed_cngn = Decimal(str(data.get("executed_volume", {}).get("amount", "0")))
-                avg_price = Decimal(str(data.get("avg_price", {}).get("amount", "0")))
+                
+                if resp_json.get("status") != "success":
+                    error = str(resp_json.get("message", "Unknown Quidax Error"))
+                    return False, Decimal("0"), Decimal("0"), error
+                    
+                data = resp_json.get("data", {})
+                
+                # Safely extract amounts handling both string and dict formats from Quidax
+                vol_data = data.get("executed_volume", "0")
+                executed_cngn = Decimal(str(vol_data.get("amount", "0") if isinstance(vol_data, dict) else vol_data))
+                    
+                price_data = data.get("avg_price", "0")
+                avg_price = Decimal(str(price_data.get("amount", "0") if isinstance(price_data, dict) else price_data))
+                    
                 logger.debug("market_order_placed", side=side, amount=float(amount), attempt=attempt)
                 return True, executed_cngn, avg_price, None
+                
             except Exception as e:
                 last_error = str(e)
                 logger.warning("market_order_attempt_failed", side=side, attempt=attempt, error=last_error)
@@ -332,24 +327,6 @@ class QuidaxAdapter(VenueAdapter):
             orders_placed=orders_placed,
         )
 
-    async def get_deposit_address(self, currency: str) -> dict:
-        """
-        Get or create a deposit address for a currency on Quidax.
-
-        Args:
-            currency: Currency ticker (e.g. "cngn", "usdt")
-
-        Returns:
-            API response with deposit address details
-        """
-        open_api_url = "https://openapi.quidax.io/exchange-open-api/api/v1"
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{open_api_url}/users/me/wallets/{currency}/addresses",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            response.raise_for_status()
-            return response.json()
 
     async def handle_webhook(self, event: dict) -> None:
         """Handle Quidax webhook events."""
@@ -364,12 +341,3 @@ class QuidaxAdapter(VenueAdapter):
                 price=order.get("price"),
                 volume=order.get("executed_volume"),
             )
-        elif event_type == "wallet.address.generated":
-            currency = event["data"]["currency"].lower()
-            address = event["data"]["address"]
-            self._deposit_addresses[currency] = address
-            db = await get_db()
-            await db.set_system_state(
-                f"quidax_{self._funding_role}_deposit_{currency}", address
-            )
-            logger.info("quidax_deposit_address_received", role=self._funding_role, currency=currency)

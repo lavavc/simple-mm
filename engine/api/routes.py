@@ -492,15 +492,17 @@ async def deposit_to_blockradar(req: DepositRequest):
 
 @router.get("/venues/quidax/deposit-address/{currency}")
 async def get_quidax_deposit_address(currency: str):
-    """Get or create a deposit address for a currency on Quidax."""
-    if "quidax" not in _venues:
-        raise HTTPException(status_code=503, detail="Quidax not configured")
+    """Get the static deposit address for Quidax."""
+    if not settings.quidax_deposit_address:
+        raise HTTPException(status_code=503, detail="QUIDAX_DEPOSIT_ADDRESS not configured")
 
-    try:
-        return await _venues["quidax"].get_deposit_address(currency.lower())
-    except Exception as e:
-        logger.error("quidax_deposit_address_failed", currency=currency, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "success",
+        "data": {
+            "currency": currency.upper(),
+            "address": settings.quidax_deposit_address
+        }
+    }
 
 
 @router.post("/webhooks/quidax")
