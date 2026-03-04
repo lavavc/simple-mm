@@ -91,15 +91,15 @@ class Settings(BaseSettings):
     arbitrage_max_daily_loss_usd: float = 500.0
     arbitrage_cross_chain_rebalance_bps: int = 10
     arbitrage_max_delta_ratio: float = 0.60
-    arbitrage_min_account_stablecoin_usd: float = 50.0
+    arbitrage_min_account_stablecoin_usd: float = 10.0
 
     # Quidax auto-funding thresholds
     quidax_min_cngn: Decimal = Field(default=Decimal("10000"))
-    quidax_top_up_cngn: Decimal = Field(default=Decimal("50000"))
-    quidax_min_usdt: Decimal = Field(default=Decimal("50"))
-    quidax_top_up_usdt: Decimal = Field(default=Decimal("500"))
+    quidax_top_up_cngn: Decimal = Field(default=Decimal("20000"))
+    quidax_min_usdt: Decimal = Field(default=Decimal("10"))
+    quidax_top_up_usdt: Decimal = Field(default=Decimal("50"))
     quidax_onchain_min_cngn: Decimal = Field(default=Decimal("10000"))
-    quidax_onchain_min_usdt: Decimal = Field(default=Decimal("50"))
+    quidax_onchain_min_usdt: Decimal = Field(default=Decimal("10"))
 
     # Account management
     use_test_accounts: bool = False  # Use Anvil test mnemonic (for local dev)

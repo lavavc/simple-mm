@@ -56,7 +56,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDC"],
         min_balance_eth=Decimal("0.005"),
-        min_balance_tokens={"cNGN": Decimal("10000"), "USDC": Decimal("100")},
+        min_balance_tokens={"cNGN": Decimal("50000"), "USDC": Decimal("50")},
     ),
     AccountRole.AERODROME_TRADE: AccountConfig(
         role=AccountRole.AERODROME_TRADE,
@@ -65,7 +65,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDC"],
         min_balance_eth=Decimal("0.005"),
-        min_balance_tokens={"cNGN": Decimal("5000"), "USDC": Decimal("50")},
+        min_balance_tokens={"cNGN": Decimal("10000"), "USDC": Decimal("10")},
     ),
     AccountRole.BLOCKRADAR: AccountConfig(
         role=AccountRole.BLOCKRADAR,
@@ -83,7 +83,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
-        min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("500")},
+        min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("10")},
     ),
     AccountRole.QUIDAX_LP: AccountConfig(
         role=AccountRole.QUIDAX_LP,
@@ -92,7 +92,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
-        min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("500")},
+        min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("50")},
     ),
     AccountRole.PANCAKESWAP_LP: AccountConfig(
         role=AccountRole.PANCAKESWAP_LP,
@@ -101,7 +101,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
-        min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("100")},
+        min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("50")},
     ),
     AccountRole.PANCAKESWAP_TRADE: AccountConfig(
         role=AccountRole.PANCAKESWAP_TRADE,
@@ -110,7 +110,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
         min_balance_eth=Decimal("0.005"),  # BNB for gas
-        min_balance_tokens={"cNGN": Decimal("5000"), "USDT": Decimal("50")},
+        min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("10")},
     ),
 }
 
