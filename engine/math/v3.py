@@ -40,7 +40,7 @@ def align_tick(tick: int, tick_spacing: int, direction: str = "down") -> int:
     """
     if direction == "down":
         return (tick // tick_spacing) * tick_spacing
-    return ((tick // tick_spacing) + 1) * tick_spacing
+    return -(-tick // tick_spacing) * tick_spacing
 
 
 def constrain_tick_width(
