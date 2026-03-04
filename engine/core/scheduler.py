@@ -201,8 +201,8 @@ class TradingScheduler:
         import asyncio
         asyncio.create_task(self.ws_listener.start())
 
-        # Keep the old stream running every 10 seconds purely as a fallback 
-        # for chains without WebSocket support (like AssetChain).
+        # Poll AssetChain every 10s — it has no WSS endpoint so can't be event-driven.
+        # BSC and Base updates are handled entirely by the WebSocket listener.
         self.scheduler.add_job(
             self._stream_dex_arb_curve,
             IntervalTrigger(seconds=10),
@@ -211,7 +211,7 @@ class TradingScheduler:
             max_instances=2,
             misfire_grace_time=30,
         )
-        logger.info("dex_arb_curve_stream_job_registered_as_fallback")
+        logger.info("assetchain_poll_job_registered")
 
         self.scheduler.start()
         self._started = True
@@ -670,29 +670,14 @@ class TradingScheduler:
             logger.error("arbitrage_scan_failed", error=str(e))
 
     async def _stream_dex_arb_curve(self):
-        """Generates the live V3 profit curve and streams it to the frontend dashboard.
-        This runs every 10 seconds as a pure fallback for chains WITHOUT active WebSockets.
+        """Polls AssetChain (no WSS endpoint) and regenerates the profit curve.
+        BSC and Base are driven entirely by the WebSocket listener.
         """
         try:
             from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_single_pool_state
-            from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
-            from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
             from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
-            
-            # Map of chain identifiers to their RPC and Pool addresses
-            venues_to_check = [
-                ("bsc", self.config.bsc_rpc_url if hasattr(self.config, 'bsc_rpc_url') else settings.bsc_rpc_url, PANCAKESWAP_POOL_READ_CONFIG),
-                ("base", self.config.base_rpc_url if hasattr(self.config, 'base_rpc_url') else settings.base_rpc_url, AERODROME_POOL_READ_CONFIG),
-                ("assetchain", self.config.assetchain_rpc_url if hasattr(self.config, 'assetchain_rpc_url') else settings.assetchain_rpc_url, ASSETCHAIN_POOL_READ_CONFIG)
-            ]
-            
-            # Poll every chain that has no active WebSocket — this covers AssetChain
-            # always, and BSC/Base if their connection dropped. generate_v3_profit_curve
-            # is always called after: it is the single gate that blocks on missing fees
-            # and fires seed_pool_states() as a background retry if anything is absent.
-            for chain_name, rpc_url, pool_config in venues_to_check:
-                if chain_name not in self.ws_listener.active_connections:
-                    await update_single_pool_state(pool_config, rpc_url_override=rpc_url)
+
+            await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, rpc_url_override=settings.assetchain_rpc_url)
 
             curve_data = await generate_v3_profit_curve()
             if curve_data:
