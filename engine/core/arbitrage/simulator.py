@@ -205,15 +205,8 @@ async def generate_v3_profit_curve() -> dict:
         asyncio.create_task(seed_pool_states())
         return {}
 
-    # AssetChain is watch-only — a missing fee skips ITS vectors but doesn't block BSC↔Base arb.
-    if asset_fee is None:
-        logger.warning(
-            "v3_profit_curve_assetchain_fee_missing",
-            note="skipping AssetChain delta-balance vectors this cycle",
-        )
-
-    if not bsc_sqrt or not base_sqrt or not asset_sqrt:
-        # If any cache is completely empty, trigger a silent re-seed and abort this calculation run
+    if not bsc_sqrt or not base_sqrt:
+        # Execution venues missing — abort and re-seed.
         logger.warning("v3_profit_curve_cache_miss_aborting_calc")
         import asyncio
         asyncio.create_task(seed_pool_states())
@@ -224,8 +217,7 @@ async def generate_v3_profit_curve() -> dict:
     
     a_price_usd = float(((base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6)))
     
-    asset_price = ((asset_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
-    asset_price_usd = float(Decimal(1) / asset_price)
+    asset_price_usd = float(Decimal(1) / (((asset_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6)))) if asset_sqrt else None
     
     pancake_stable, pancake_cngn = bsc_b0, bsc_b1
     aero_cngn, aero_stable = base_b0, base_b1
@@ -313,55 +305,8 @@ async def generate_v3_profit_curve() -> dict:
             best_cngn = cngn_acquired_base
             usd_out_expected = usd_out_bsc
 
-    # DELTA BALANCING VECTOR 3-6: AssetChain vectors — only run if fee is available
-    if asset_fee is not None:
-        # VECTOR 3: Buy on AssetChain, Sell from Base inventory
-        for size in range(10, max_usd + step, step):
-            usd_in_asset = Decimal(size)
-            cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
-            usd_out_base = v3_swap_token0_for_token1(cngn_acquired_asset, base_sqrt, base_liq, base_fee, 6, 6)
-            if usd_out_base - usd_in_asset > best_profit:
-                best_profit = usd_out_base - usd_in_asset
-                best_size = usd_in_asset
-                best_dir = "ASSETCHAIN_TO_AERO_DELTA_BALANCE"
-                best_cngn = cngn_acquired_asset
-                usd_out_expected = usd_out_base
-
-        # VECTOR 4: Buy on Base, Sell from AssetChain inventory
-        for size in range(10, max_usd + step, step):
-            usd_in_base = Decimal(size)
-            cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, base_sqrt, base_liq, base_fee, 6, 6)
-            usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_base, asset_sqrt, asset_liq, asset_fee, 18, 6)
-            if usd_out_asset - usd_in_base > best_profit:
-                best_profit = usd_out_asset - usd_in_base
-                best_size = usd_in_base
-                best_dir = "AERO_TO_ASSETCHAIN_DELTA_BALANCE"
-                best_cngn = cngn_acquired_base
-                usd_out_expected = usd_out_asset
-
-        # VECTOR 5: Buy on AssetChain, Sell from Pancake inventory
-        for size in range(10, max_usd + step, step):
-            usd_in_asset = Decimal(size)
-            cngn_acquired_asset = v3_swap_token0_for_token1(usd_in_asset, asset_sqrt, asset_liq, asset_fee, 18, 6)
-            usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_asset, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
-            if usd_out_bsc - usd_in_asset > best_profit:
-                best_profit = usd_out_bsc - usd_in_asset
-                best_size = usd_in_asset
-                best_dir = "ASSETCHAIN_TO_PANCAKE_DELTA_BALANCE"
-                best_cngn = cngn_acquired_asset
-                usd_out_expected = usd_out_bsc
-
-        # VECTOR 6: Buy on Pancake, Sell from AssetChain inventory
-        for size in range(10, max_usd + step, step):
-            usd_in_bsc = Decimal(size)
-            cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
-            usd_out_asset = v3_swap_token1_for_token0(cngn_acquired_bsc, asset_sqrt, asset_liq, asset_fee, 18, 6)
-            if usd_out_asset - usd_in_bsc > best_profit:
-                best_profit = usd_out_asset - usd_in_bsc
-                best_size = usd_in_bsc
-                best_dir = "PANCAKE_TO_ASSETCHAIN_DELTA_BALANCE"
-                best_cngn = cngn_acquired_bsc
-                usd_out_expected = usd_out_asset
+    # AssetChain is watch-only (no router configured) — it informs the price display
+    # but does not generate executable arb vectors.
 
     if best_size > 0:
         best_spread_bps = int(((usd_out_expected - best_size) / best_size) * 10000)
