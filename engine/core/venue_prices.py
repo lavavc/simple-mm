@@ -230,20 +230,21 @@ class BybitP2PPriceSource(VenuePriceSource):
 class QuidaxConfig:
     """Configuration for Quidax price source."""
 
-    base_url: str = "https://app.quidax.io/api/v1"
-    pair: str = "CNGN_USDT"  # Direct cNGN/USDT rate
+    base_url: str = "https://openapi.quidax.io/exchange-open-api/api/v1"
+    pair: str = "usdtcngn"  # Active Quidax market: USDT=base, cNGN=quote
     cache_seconds: int = 30
 
 
 class QuidaxPriceSource(VenuePriceSource):
-    """Fetches cNGN/USDT price from Quidax public market summary.
+    """Fetches cNGN/USDT price from Quidax public v3 tickers API.
 
-    Uses the CNGN_USDT pair which gives us the direct cNGN/USD rate
-    (USDT ≈ USD). No authentication required.
+    Uses the `usdtcngn` pair which gives us the NGN per USDT rate.
+    We invert this to get USDT per NGN (i.e., USD per cNGN).
+    No authentication required.
     """
 
     name = "quidax"
-    pair = "cNGN/USDT"
+    pair = "cNGN/USDT"  # Represents USD per cNGN
 
     def __init__(self, config: QuidaxConfig | None = None):
         self.config = config or QuidaxConfig()
@@ -271,7 +272,8 @@ class QuidaxPriceSource(VenuePriceSource):
 
         try:
             client = await self._get_client()
-            response = await client.get(f"{self.config.base_url}/markets/summary/")
+            # v3 tickers endpoint — has real volume and live bid/ask
+            response = await client.get(f"{self.config.base_url}/markets/tickers")
             response.raise_for_status()
 
             data = response.json()
@@ -280,22 +282,37 @@ class QuidaxPriceSource(VenuePriceSource):
                 logger.warning("quidax_api_error", message=data.get("message"))
                 return None
 
-            pair_data = data.get("data", {}).get(self.config.pair)
-            if not pair_data:
+            # usdtcngn: USDT=base, cNGN=quote
+            # 'buy'  = best bid on USDT = cNGN per USDT (e.g. 1380.1)
+            # 'sell' = best ask on USDT = cNGN per USDT (e.g. 1383.5)
+            market_data = data.get("data", {}).get(self.config.pair)
+            if not market_data:
                 logger.warning("quidax_pair_not_found", pair=self.config.pair)
                 return None
 
-            bid = Decimal(str(pair_data.get("highest_bid", "0")))
-            ask = Decimal(str(pair_data.get("lowest_ask", "0")))
-            last = Decimal(str(pair_data.get("last_price", "0")))
+            ticker = market_data.get("ticker", {})
 
-            if bid == 0 and ask == 0:
-                if last == 0:
+            buy_cngn_per_usdt  = Decimal(str(ticker.get("buy",  "0")))  # bid on USDT side
+            sell_cngn_per_usdt = Decimal(str(ticker.get("sell", "0")))  # ask on USDT side
+            last_cngn_per_usdt = Decimal(str(ticker.get("last", "0")))
+
+            if buy_cngn_per_usdt <= 0 and sell_cngn_per_usdt <= 0:
+                if last_cngn_per_usdt <= 0:
                     return None
-                bid = last
-                ask = last
+                buy_cngn_per_usdt = last_cngn_per_usdt
+                sell_cngn_per_usdt = last_cngn_per_usdt
 
-            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+            # Invert to USD per cNGN:
+            # Selling cNGN → hitting USDT ask (sell_cngn_per_usdt) → cNGN bid = 1/sell
+            # Buying  cNGN → hitting USDT bid (buy_cngn_per_usdt)  → cNGN ask = 1/buy
+            bid = Decimal("1") / sell_cngn_per_usdt if sell_cngn_per_usdt > 0 else Decimal("0")
+            ask = Decimal("1") / buy_cngn_per_usdt  if buy_cngn_per_usdt  > 0 else Decimal("0")
+            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else (
+                Decimal("1") / last_cngn_per_usdt if last_cngn_per_usdt > 0 else Decimal("0")
+            )
+
+            if mid <= 0:
+                return None
 
             quote = PriceQuote(
                 source="quidax",
@@ -319,8 +336,6 @@ class QuidaxPriceSource(VenuePriceSource):
         except Exception as e:
             logger.error("quidax_fetch_failed", error=str(e))
             return None
-
-
 
 
 # =============================================================================

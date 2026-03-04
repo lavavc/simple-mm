@@ -63,12 +63,9 @@ TOKEN_CONTRACTS: dict[int, dict[str, str]] = {
         "USDC": settings.usdc_base_address,
         "USDT": settings.usdt_base_address,
     },
-    56: {  # BSC
+    56: {  # BSC (PancakeSwap LP/trade + Quidax arb/lp on-chain wallets)
         "cNGN": settings.cngn_bsc_address,
         "USDT": settings.usdt_bsc_address,
-    },
-    1: {  # Ethereum mainnet (Quidax self-custody)
-        "USDT": settings.usdt_eth_address,
     },
 }
 
@@ -111,13 +108,25 @@ async def init_venues(acct_manager: AccountManager | None = None):
         except ValueError as e:
             logger.warning("pancakeswap_init_skipped", reason=str(e))
 
-    # Quidax (CEX)
+    # Quidax arb adapter (used only by arb engine)
     if settings.quidax_api_key:
         venues["quidax"] = QuidaxAdapter(
             api_key=settings.quidax_api_key,
             params=CexParams(),
+            name="quidax",
+            funding_role="quidax-arb",
         )
         logger.info("venue_initialized", venue="quidax")
+
+    # Quidax LP adapter (used by order ladder; separate funds from arb)
+    if settings.quidax_lp_api_key:
+        venues["quidax-lp"] = QuidaxAdapter(
+            api_key=settings.quidax_lp_api_key,
+            params=CexParams(),
+            name="quidax-lp",
+            funding_role="quidax-lp",
+        )
+        logger.info("venue_initialized", venue="quidax-lp")
 
     # Blockradar (wallet system) — public rate endpoints need no key
     venues["blockradar"] = BlockradarAdapter(
@@ -214,6 +223,8 @@ async def lifespan(app: FastAPI):
             execution_enabled=settings.arbitrage_execution_enabled,
         )
 
+    _quidax_lp = venues.get("quidax-lp")
+
     # Scheduler
     scheduler_config = SchedulerConfig()
 
@@ -226,6 +237,7 @@ async def lifespan(app: FastAPI):
         arbitrage_engine=arbitrage_engine,
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
+        quidax_lp=_quidax_lp,
     )
 
     routes.init_routes(
@@ -238,6 +250,7 @@ async def lifespan(app: FastAPI):
         TOKEN_CONTRACTS,
         blended_calculator=blended_calculator,
         normalizer=normalizer,
+        quidax_lp=_quidax_lp,
     )
 
     # Restore trading state

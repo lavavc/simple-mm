@@ -1,5 +1,7 @@
 """Configuration management using Pydantic Settings."""
 
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings
 from pydantic import Field, model_validator
 from typing import Optional
@@ -43,7 +45,9 @@ class Settings(BaseSettings):
         return self
 
     # Venue API keys
-    quidax_api_key: str = Field(default="", description="Quidax secret key (Bearer token)")
+    quidax_api_key: str = Field(default="", description="Quidax arb account secret key (Bearer token)")
+    quidax_lp_api_key: str = Field(default="", description="Quidax LP account secret key (Bearer token)")
+    quidax_deposit_address: str = Field(default="", description="Quidax static deposit address")
     blockradar_api_key: str = Field(default="", description="Blockradar API key")
     blockradar_wallet_id: str = Field(default="", description="Blockradar wallet ID for swaps")
     blockradar_deposit_address: str = Field(default="", description="Blockradar on-chain deposit address")
@@ -72,7 +76,7 @@ class Settings(BaseSettings):
     # ----------------------------------------------------
     # Arbitrage Engine Defaults
     # Controls if detected opportunities will actually trigger transactions
-    arbitrage_execution_enabled: bool = True
+    arbitrage_execution_enabled: bool = False
     arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
@@ -88,6 +92,14 @@ class Settings(BaseSettings):
     arbitrage_cross_chain_rebalance_bps: int = 10
     arbitrage_max_delta_ratio: float = 0.60
     arbitrage_min_account_stablecoin_usd: float = 50.0
+
+    # Quidax auto-funding thresholds
+    quidax_min_cngn: Decimal = Field(default=Decimal("10000"))
+    quidax_top_up_cngn: Decimal = Field(default=Decimal("50000"))
+    quidax_min_usdt: Decimal = Field(default=Decimal("50"))
+    quidax_top_up_usdt: Decimal = Field(default=Decimal("500"))
+    quidax_onchain_min_cngn: Decimal = Field(default=Decimal("10000"))
+    quidax_onchain_min_usdt: Decimal = Field(default=Decimal("50"))
 
     # Account management
     use_test_accounts: bool = False  # Use Anvil test mnemonic (for local dev)

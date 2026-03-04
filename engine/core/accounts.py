@@ -28,7 +28,8 @@ class AccountRole(str, Enum):
     AERODROME_LP = "aerodrome-lp"
     AERODROME_TRADE = "aerodrome-trade"
     BLOCKRADAR = "blockradar"
-    QUIDAX = "quidax"  # For self-custody scenarios
+    QUIDAX_ARB = "quidax-arb"
+    QUIDAX_LP = "quidax-lp"
     PANCAKESWAP_LP = "pancakeswap-lp"
     PANCAKESWAP_TRADE = "pancakeswap-trade"
 
@@ -75,14 +76,23 @@ DEFAULT_ACCOUNT_CONFIGS = {
         min_balance_eth=Decimal("0.005"),
         min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("100"), "USDC": Decimal("100")},
     ),
-    AccountRole.QUIDAX: AccountConfig(
-        role=AccountRole.QUIDAX,
+    AccountRole.QUIDAX_ARB: AccountConfig(
+        role=AccountRole.QUIDAX_ARB,
         derivation_path="m/44'/60'/0'/3/0",
-        chain_id=1,  # Ethereum mainnet (self-custody deposit address)
-        rpc_url=settings.eth_rpc_url,
+        chain_id=56,  # BSC
+        rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
-        min_balance_eth=Decimal("0.01"),
-        min_balance_tokens={"cNGN": Decimal("100000"), "USDT": Decimal("500")},
+        min_balance_eth=Decimal("0.005"),  # BNB for gas
+        min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("500")},
+    ),
+    AccountRole.QUIDAX_LP: AccountConfig(
+        role=AccountRole.QUIDAX_LP,
+        derivation_path="m/44'/60'/0'/3/1",
+        chain_id=56,  # BSC
+        rpc_url=settings.bsc_rpc_url,
+        tokens=["cNGN", "USDT"],
+        min_balance_eth=Decimal("0.005"),  # BNB for gas
+        min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("500")},
     ),
     AccountRole.PANCAKESWAP_LP: AccountConfig(
         role=AccountRole.PANCAKESWAP_LP,
