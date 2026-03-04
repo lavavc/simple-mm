@@ -9,6 +9,7 @@ from typing import Optional
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
+from web3.middleware import geth_poa_middleware
 import structlog
 
 from engine.config import settings
@@ -190,7 +191,10 @@ class AccountManager:
     def _get_web3(self, chain_id: int, rpc_url: str) -> Web3:
         """Get or create Web3 instance for a chain."""
         if chain_id not in self._web3_instances:
-            self._web3_instances[chain_id] = Web3(Web3.HTTPProvider(rpc_url))
+            w3 = Web3(Web3.HTTPProvider(rpc_url))
+            if chain_id in (56, 97):  # BSC mainnet and testnet are POA chains
+                w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+            self._web3_instances[chain_id] = w3
         return self._web3_instances[chain_id]
 
     def get_account(self, role: AccountRole) -> LocalAccount:
