@@ -515,16 +515,6 @@ async def quidax_webhook(event: dict):
     return {"status": "ok"}
 
 
-@router.post("/webhooks/quidax")
-async def quidax_webhook(event: dict):
-    """Handle Quidax webhook events (order fills, deposit addresses, etc.)."""
-    if "quidax" in (_venues or {}):
-        await _venues["quidax"].handle_webhook(event)
-    if _quidax_lp is not None:
-        await _quidax_lp.handle_webhook(event)
-    return {"status": "ok"}
-
-
 # === Manual Action Routes ===
 
 
