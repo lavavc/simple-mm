@@ -397,7 +397,7 @@ class AccountManager:
         )
 
         signed = w3.eth.account.sign_transaction(tx, account.key)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
         logger.info(
             "erc20_transfer_sent",
             role=role.value,
