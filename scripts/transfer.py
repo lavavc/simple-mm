@@ -7,8 +7,8 @@ Usage:
 Roles: uni-base-lp, uni-base-trade, blockradar, quidax-arb, quidax-lp,
        uni-bsc-lp, uni-bsc-trade
 Tokens by chain:
-  Base (8453) : cNGN, USDC, USDT, ETH
-  BSC  (56)   : cNGN, USDT, BNB
+  Base (8453) : CNGN, USDC, USDT, ETH
+  BSC  (56)   : CNGN, USDT, BNB
 """
 
 import argparse
@@ -19,10 +19,10 @@ from engine.config import settings
 from engine.core.accounts import AccountManager, AccountRole
 
 TOKEN_ADDRESSES = {
-    ("cNGN", 8453): settings.cngn_base_address,
+    ("CNGN", 8453): settings.cngn_base_address,
     ("USDC", 8453): settings.usdc_base_address,
     ("USDT", 8453): settings.usdt_base_address,
-    ("cNGN", 56): settings.cngn_bsc_address,
+    ("CNGN", 56): settings.cngn_bsc_address,
     ("USDT", 56): settings.usdt_bsc_address,
 }
 
@@ -47,7 +47,7 @@ async def main():
     parser.add_argument(
         "--token",
         required=True,
-        help="Token symbol (cNGN, USDT, USDC, BNB, ETH)",
+        help="Token symbol (CNGN, USDT, USDC, BNB, ETH)",
     )
     parser.add_argument("--to", required=True, dest="to_address", help="Destination address")
     parser.add_argument("--amount", required=True, type=Decimal, help="Amount to transfer")
