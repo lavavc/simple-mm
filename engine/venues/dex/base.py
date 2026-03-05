@@ -75,6 +75,28 @@ class PoolReadConfig:
 
 
 @dataclass
+class V4PoolReadConfig:
+    """Minimal config for read-only V4 pool price fetching via StateView.
+
+    ``pool_address`` stores the bytes32 pool ID — keeps all downstream cache
+    lookups (``_POOL_CACHE[config.pool_address]``) working unchanged.
+    """
+
+    pool_manager: str    # PoolManager singleton address
+    state_view: str      # StateView contract address
+    pool_address: str    # bytes32 pool ID — named pool_address for cache-key compatibility
+    rpc_url: str
+    token0_address: str
+    token1_address: str
+    token0_symbol: str
+    token1_symbol: str
+    token0_decimals: int
+    token1_decimals: int
+    invert_price: bool = False
+    dexscreener_chain: str = ""  # e.g. "base" or "bsc" — enables DexScreener balance lookup
+
+
+@dataclass
 class PositionState:
     """LP position state from on-chain."""
 
@@ -690,8 +712,8 @@ class BaseDexAdapter(VenueAdapter, ABC):
         multiplier = float(self.params.sd_multiplier)
         skew = float(self.params.downside_skew)
         total = std_dev * multiplier * 2
-        lower_price = mean_price - total * skew
-        upper_price = mean_price + total * (1 - skew)
+        lower_price = mean - total * skew
+        upper_price = mean + total * (1 - skew)
 
         # Ensure positive
         lower_price = max(lower_price, 0.0001)

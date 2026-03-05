@@ -314,7 +314,7 @@ class TradingScheduler:
         if not self._trading_enabled:
             return
 
-        for name in ["aerodrome", "pancakeswap"]:
+        for name in ["uni-base", "uni-bsc"]:
             if name not in self.venues:
                 continue
 
@@ -671,7 +671,7 @@ class TradingScheduler:
 
     async def _stream_dex_arb_curve(self):
         """Polls AssetChain (no WSS endpoint) and regenerates the profit curve.
-        BSC and Base are driven entirely by the WebSocket listener.
+        uni-bsc and uni-base are driven entirely by the WebSocket listener.
         """
         try:
             from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_single_pool_state
@@ -686,7 +686,6 @@ class TradingScheduler:
                     "data": curve_data
                 })
 
-                # Save price snapshots to database so charts don't break
                 from engine.api.schemas import PriceQuote
                 from engine.db.database import get_db
                 import time
@@ -694,30 +693,16 @@ class TradingScheduler:
                 db = await get_db()
                 now_ms = int(time.time() * 1000)
 
-                if "pancakeswap" in curve_data.get("prices", {}):
-                    await db.insert_price_snapshot(PriceQuote(
-                        source="pancakeswap_pool",
-                        timestamp=now_ms,
-                        bid=curve_data["prices"]["pancakeswap"],
-                        ask=curve_data["prices"]["pancakeswap"],
-                        mid=curve_data["prices"]["pancakeswap"],
-                    ))
-                if "aerodrome" in curve_data.get("prices", {}):
-                    await db.insert_price_snapshot(PriceQuote(
-                        source="aerodrome_pool",
-                        timestamp=now_ms,
-                        bid=curve_data["prices"]["aerodrome"],
-                        ask=curve_data["prices"]["aerodrome"],
-                        mid=curve_data["prices"]["aerodrome"],
-                    ))
-                if "assetchain" in curve_data.get("prices", {}):
-                    await db.insert_price_snapshot(PriceQuote(
-                        source="assetchain_pool",
-                        timestamp=now_ms,
-                        bid=curve_data["prices"]["assetchain"],
-                        ask=curve_data["prices"]["assetchain"],
-                        mid=curve_data["prices"]["assetchain"],
-                    ))
+                for key in ("uni-bsc", "uni-base", "assetchain"):
+                    price_val = curve_data.get("prices", {}).get(key)
+                    if price_val is not None:
+                        await db.insert_price_snapshot(PriceQuote(
+                            source=f"{key}_pool",
+                            timestamp=now_ms,
+                            bid=price_val,
+                            ask=price_val,
+                            mid=price_val,
+                        ))
 
                 # Check for profitable live V3 Arb
                 optimal = curve_data.get("optimal_arb", {})
@@ -756,11 +741,11 @@ class TradingScheduler:
                             expected_usd_out=optimal["expected_usd_out"],
                             status="detected",
                             net_spread_bps=optimal.get("net_spread_bps", 0),
-                            pancake_price=curve_data.get("prices", {}).get("pancakeswap"),
-                            aerodrome_price=curve_data.get("prices", {}).get("aerodrome"),
+                            pancake_price=curve_data.get("prices", {}).get("uni-bsc"),
+                            aerodrome_price=curve_data.get("prices", {}).get("uni-base"),
                             slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
-                            pancake_fee_bps=optimal.get("pancake_fee_bps"),
-                            aerodrome_fee_bps=optimal.get("aerodrome_fee_bps"),
+                            pancake_fee_bps=optimal.get("uni_bsc_fee_bps"),
+                            aerodrome_fee_bps=optimal.get("uni_base_fee_bps"),
                             estimated_gas_usd=optimal.get("estimated_gas_usd")
                         )
                         await db.insert_dex_arbitrage_opportunity(opportunity)

@@ -395,27 +395,21 @@ class DexAdapterPriceSource(VenuePriceSource):
 
     async def fetch_price(self) -> Optional[PriceQuote]:
         from engine.core.arbitrage.simulator import get_cached_pool_state, Q96
-        
+
         sqrt_p, _, _, _, timestamp, _ = get_cached_pool_state(self.pool_address)
-        
+
         if sqrt_p is None:
             logger.warning("dex_price_cache_miss", venue=self.name)
             return None
-            
-        # Convert Uniswap V3 sqrtPriceX96 to standard human-readable format
-        if self.name == "aerodrome":
-            # Aerodrome: Token0=cNGN (6 dec), Token1=USDC (6 dec)
-            # sqrtP^2 * 10^(6-6) = USDC per cNGN directly (~0.00073)
-            # No inversion needed — already in USD per cNGN format
+
+        # token0=cNGN(6), token1=USDC(6): price = sqrtP^2, no inversion
+        if self.name in ("aerodrome", "uni-base"):
             price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (6 - 6))
-            human_price = price  # already USD/cNGN
-            logger.info("dex_price_math_aerodrome", sqrt_p=float(sqrt_p), raw_ratio=float(price), usd_per_cngn=float(human_price))
+            human_price = price
         else:
-            # PancakeSwap & AssetChain: Token0=USDT/USDC (18 dec), Token1=cNGN (6 dec)
-            # sqrtP^2 * 10^(18-6) gives raw cNGN per USDT, invert to get USD per cNGN
+            # token0=USDT(18), token1=cNGN(6): invert to get USD per cNGN
             price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (18 - 6))
             human_price = Decimal(1) / price if price > 0 else Decimal(0)
-            logger.info("dex_price_math_other", venue=self.name, sqrt_p=float(sqrt_p), raw_ratio=float(price), usd_per_cngn=float(human_price))
             
         return PriceQuote(
             source="simulator_cache",
@@ -545,22 +539,22 @@ def create_venue_aggregator(
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
         
-    from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
-    from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
     from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
     sources.append(
         DexAdapterPriceSource(
-            venue_name="aerodrome",
-            pair="cNGN/USDC",
-            pool_address=AERODROME_POOL_READ_CONFIG.pool_address,
+            venue_name="uni-bsc",
+            pair="cNGN/USDT",
+            pool_address=UNISWAP_BSC_POOL_READ_CONFIG.pool_address,
         )
     )
     sources.append(
         DexAdapterPriceSource(
-            venue_name="pancakeswap",
-            pair="cNGN/USDT",
-            pool_address=PANCAKESWAP_POOL_READ_CONFIG.pool_address,
+            venue_name="uni-base",
+            pair="cNGN/USDC",
+            pool_address=UNISWAP_BASE_POOL_READ_CONFIG.pool_address,
         )
     )
     sources.append(

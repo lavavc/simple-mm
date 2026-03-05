@@ -32,13 +32,13 @@ class TestAccountManagerInit:
         accounts = mgr.list_accounts()
 
         assert len(accounts) == 7
-        assert "aerodrome-lp" in accounts
-        assert "aerodrome-trade" in accounts
+        assert "uni-base-lp" in accounts
+        assert "uni-base-trade" in accounts
         assert "blockradar" in accounts
         assert "quidax-arb" in accounts
         assert "quidax-lp" in accounts
-        assert "pancakeswap-lp" in accounts
-        assert "pancakeswap-trade" in accounts
+        assert "uni-bsc-lp" in accounts
+        assert "uni-bsc-trade" in accounts
 
     def test_init_with_explicit_mnemonic(self):
         """Should derive accounts from provided mnemonic."""
@@ -85,23 +85,23 @@ class TestAccountAccess:
         return AccountManager(use_test_accounts=True, account_configs=_fresh_configs())
 
     def test_get_account(self, mgr):
-        account = mgr.get_account(AccountRole.AERODROME_LP)
+        account = mgr.get_account(AccountRole.UNI_BASE_LP)
         assert account.address.startswith("0x")
         assert len(account.address) == 42
 
     def test_get_private_key(self, mgr):
-        key = mgr.get_private_key(AccountRole.AERODROME_LP)
+        key = mgr.get_private_key(AccountRole.UNI_BASE_LP)
         assert isinstance(key, str)
         assert len(key) > 0
 
     def test_get_address(self, mgr):
-        addr = mgr.get_address(AccountRole.AERODROME_LP)
+        addr = mgr.get_address(AccountRole.UNI_BASE_LP)
         assert addr.startswith("0x")
         assert len(addr) == 42
 
     def test_get_config(self, mgr):
-        config = mgr.get_config(AccountRole.AERODROME_LP)
-        assert config.role == AccountRole.AERODROME_LP
+        config = mgr.get_config(AccountRole.UNI_BASE_LP)
+        assert config.role == AccountRole.UNI_BASE_LP
         assert config.chain_id == 8453
         assert "cNGN" in config.tokens
 
@@ -130,25 +130,25 @@ class TestThresholdUpdates:
         return AccountManager(use_test_accounts=True, account_configs=_fresh_configs())
 
     def test_update_eth_threshold(self, mgr):
-        mgr.update_thresholds(AccountRole.AERODROME_LP, min_balance_eth=Decimal("0.05"))
-        config = mgr.get_config(AccountRole.AERODROME_LP)
+        mgr.update_thresholds(AccountRole.UNI_BASE_LP, min_balance_eth=Decimal("0.05"))
+        config = mgr.get_config(AccountRole.UNI_BASE_LP)
         assert config.min_balance_eth == Decimal("0.05")
 
     def test_update_token_thresholds(self, mgr):
         mgr.update_thresholds(
-            AccountRole.AERODROME_LP,
+            AccountRole.UNI_BASE_LP,
             min_balance_tokens={"cNGN": Decimal("100000")},
         )
-        config = mgr.get_config(AccountRole.AERODROME_LP)
+        config = mgr.get_config(AccountRole.UNI_BASE_LP)
         assert config.min_balance_tokens["cNGN"] == Decimal("100000")
 
     def test_update_preserves_other_thresholds(self, mgr):
-        original_eth = mgr.get_config(AccountRole.AERODROME_LP).min_balance_eth
+        original_eth = mgr.get_config(AccountRole.UNI_BASE_LP).min_balance_eth
         mgr.update_thresholds(
-            AccountRole.AERODROME_LP,
+            AccountRole.UNI_BASE_LP,
             min_balance_tokens={"cNGN": Decimal("99999")},
         )
-        assert mgr.get_config(AccountRole.AERODROME_LP).min_balance_eth == original_eth
+        assert mgr.get_config(AccountRole.UNI_BASE_LP).min_balance_eth == original_eth
 
     def test_update_invalid_role_raises(self, mgr):
         saved = mgr._configs.copy()
@@ -176,8 +176,8 @@ class TestDefaultConfigs:
         paths = [c.derivation_path for c in DEFAULT_ACCOUNT_CONFIGS.values()]
         assert len(paths) == len(set(paths)), "Derivation paths must be unique"
 
-    def test_aerodrome_lp_config(self):
-        config = DEFAULT_ACCOUNT_CONFIGS[AccountRole.AERODROME_LP]
+    def test_uni_base_lp_config(self):
+        config = DEFAULT_ACCOUNT_CONFIGS[AccountRole.UNI_BASE_LP]
         assert config.chain_id == 8453
         assert "cNGN" in config.tokens
         assert "USDC" in config.tokens

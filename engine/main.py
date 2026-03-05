@@ -1,6 +1,7 @@
 """Main application entry point."""
 
 import time
+from decimal import Decimal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,9 @@ from engine.core.price_aggregation import PriceNormalizer, BlendedPriceCalculato
 from engine.core.scheduler import TradingScheduler, SchedulerConfig
 from engine.core.arbitrage import ArbitrageEngine
 from engine.core.accounts import AccountManager, AccountRole
-from engine.venues.dex.aerodrome import AerodromeAdapter, AERODROME_POOL_READ_CONFIG
-from engine.venues.dex.pancakeswap import PancakeSwapAdapter, PANCAKESWAP_POOL_READ_CONFIG
-from engine.venues.dex.assetchain import AssetChainAdapter, ASSETCHAIN_POOL_READ_CONFIG
-from engine.venues.dex.base import PoolPriceReader
+from engine.venues.dex.aerodrome import AerodromeAdapter
+from engine.venues.dex.pancakeswap import PancakeSwapAdapter
+from engine.venues.dex.assetchain import AssetChainAdapter
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes
@@ -79,34 +79,42 @@ async def init_venues(acct_manager: AccountManager | None = None):
     """Initialize venue adapters. All secrets come from env vars."""
     global venues
 
-    # Aerodrome (Base DEX) — requires HD wallet
+    # Uniswap V4 Base (uni-base) — requires HD wallet
     if acct_manager:
         try:
-            lp_key = acct_manager.get_private_key(AccountRole.AERODROME_LP)
-            trade_key = acct_manager.get_private_key(AccountRole.AERODROME_TRADE)
-            venues["aerodrome"] = AerodromeAdapter(
+            lp_key = acct_manager.get_private_key(AccountRole.UNI_BASE_LP)
+            trade_key = acct_manager.get_private_key(AccountRole.UNI_BASE_TRADE)
+            venues["uni-base"] = AerodromeAdapter(
                 lp_private_key=lp_key,
                 trade_private_key=trade_key,
                 rpc_url=settings.base_rpc_url,
-                params=DexParams(),
+                params=DexParams(
+                    sd_multiplier=Decimal("2.75"),
+                    ewma_lambda=Decimal("0.975"),
+                    downside_skew=Decimal("0.3"),
+                ),
             )
-            logger.info("venue_initialized", venue="aerodrome")
+            logger.info("venue_initialized", venue="uni-base")
         except ValueError as e:
-            logger.warning("aerodrome_init_skipped", reason=str(e))
+            logger.warning("uni_base_init_skipped", reason=str(e))
 
-    # PancakeSwap (BSC DEX) — requires HD wallet
+    # Uniswap V4 BSC (uni-bsc) — requires HD wallet
     if acct_manager:
         try:
-            lp_key = acct_manager.get_private_key(AccountRole.PANCAKESWAP_LP)
-            trade_key = acct_manager.get_private_key(AccountRole.PANCAKESWAP_TRADE)
-            venues["pancakeswap"] = PancakeSwapAdapter(
+            lp_key = acct_manager.get_private_key(AccountRole.UNI_BSC_LP)
+            trade_key = acct_manager.get_private_key(AccountRole.UNI_BSC_TRADE)
+            venues["uni-bsc"] = PancakeSwapAdapter(
                 lp_private_key=lp_key,
                 trade_private_key=trade_key,
-                params=DexParams(),
+                params=DexParams(
+                    sd_multiplier=Decimal("3.0"),
+                    ewma_lambda=Decimal("0.975"),
+                    downside_skew=Decimal("0.7"),
+                ),
             )
-            logger.info("venue_initialized", venue="pancakeswap")
+            logger.info("venue_initialized", venue="uni-bsc")
         except ValueError as e:
-            logger.warning("pancakeswap_init_skipped", reason=str(e))
+            logger.warning("uni_bsc_init_skipped", reason=str(e))
 
     # Quidax arb adapter (used only by arb engine)
     if settings.quidax_api_key:
@@ -167,23 +175,6 @@ async def lifespan(app: FastAPI):
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
     await init_venues(account_manager)
-
-    # Read-only pool price readers (always created -- no keys needed)
-    aerodrome_reader = PoolPriceReader(
-        config=AERODROME_POOL_READ_CONFIG, source_name="aerodrome"
-    )
-    pancakeswap_reader = PoolPriceReader(
-        config=PANCAKESWAP_POOL_READ_CONFIG, source_name="pancakeswap"
-    )
-    assetchain_reader = PoolPriceReader(
-        config=ASSETCHAIN_POOL_READ_CONFIG, source_name="assetchain"
-    )
-    logger.info(
-        "pool_price_readers_initialized",
-        aerodrome_rpc=AERODROME_POOL_READ_CONFIG.rpc_url,
-        pancakeswap_rpc=PANCAKESWAP_POOL_READ_CONFIG.rpc_url,
-        assetchain_rpc=ASSETCHAIN_POOL_READ_CONFIG.rpc_url,
-    )
 
     # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
     from engine.core.arbitrage.simulator import seed_pool_states

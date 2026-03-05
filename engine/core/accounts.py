@@ -26,13 +26,13 @@ ANVIL_TEST_MNEMONIC = "test test test test test test test test test test test ju
 class AccountRole(str, Enum):
     """Roles for derived accounts."""
 
-    AERODROME_LP = "aerodrome-lp"
-    AERODROME_TRADE = "aerodrome-trade"
+    UNI_BASE_LP = "uni-base-lp"
+    UNI_BASE_TRADE = "uni-base-trade"
     BLOCKRADAR = "blockradar"
     QUIDAX_ARB = "quidax-arb"
     QUIDAX_LP = "quidax-lp"
-    PANCAKESWAP_LP = "pancakeswap-lp"
-    PANCAKESWAP_TRADE = "pancakeswap-trade"
+    UNI_BSC_LP = "uni-bsc-lp"
+    UNI_BSC_TRADE = "uni-bsc-trade"
 
 
 @dataclass
@@ -50,8 +50,8 @@ class AccountConfig:
 
 # Default account configurations
 DEFAULT_ACCOUNT_CONFIGS = {
-    AccountRole.AERODROME_LP: AccountConfig(
-        role=AccountRole.AERODROME_LP,
+    AccountRole.UNI_BASE_LP: AccountConfig(
+        role=AccountRole.UNI_BASE_LP,
         derivation_path="m/44'/60'/0'/1/0",
         chain_id=8453,  # Base
         rpc_url=settings.base_rpc_url,
@@ -59,8 +59,8 @@ DEFAULT_ACCOUNT_CONFIGS = {
         min_balance_eth=Decimal("0.005"),
         min_balance_tokens={"cNGN": Decimal("50000"), "USDC": Decimal("50")},
     ),
-    AccountRole.AERODROME_TRADE: AccountConfig(
-        role=AccountRole.AERODROME_TRADE,
+    AccountRole.UNI_BASE_TRADE: AccountConfig(
+        role=AccountRole.UNI_BASE_TRADE,
         derivation_path="m/44'/60'/0'/1/1",
         chain_id=8453,  # Base
         rpc_url=settings.base_rpc_url,
@@ -95,8 +95,8 @@ DEFAULT_ACCOUNT_CONFIGS = {
         min_balance_eth=Decimal("0.005"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("50")},
     ),
-    AccountRole.PANCAKESWAP_LP: AccountConfig(
-        role=AccountRole.PANCAKESWAP_LP,
+    AccountRole.UNI_BSC_LP: AccountConfig(
+        role=AccountRole.UNI_BSC_LP,
         derivation_path="m/44'/60'/0'/4/0",
         chain_id=56,  # BSC
         rpc_url=settings.bsc_rpc_url,
@@ -104,8 +104,8 @@ DEFAULT_ACCOUNT_CONFIGS = {
         min_balance_eth=Decimal("0.005"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("50")},
     ),
-    AccountRole.PANCAKESWAP_TRADE: AccountConfig(
-        role=AccountRole.PANCAKESWAP_TRADE,
+    AccountRole.UNI_BSC_TRADE: AccountConfig(
+        role=AccountRole.UNI_BSC_TRADE,
         derivation_path="m/44'/60'/0'/4/1",
         chain_id=56,  # BSC
         rpc_url=settings.bsc_rpc_url,

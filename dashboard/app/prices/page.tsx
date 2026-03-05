@@ -247,7 +247,7 @@ export default function PricesPage() {
           {isLoading ? (
             <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest font-mono text-yellow-500/80">
               <div className="h-2 w-2 border-t-2 border-yellow-500 rounded-full animate-spin" />
-              <span>Syncing Nodes...</span>
+              <span>Syncing......</span>
             </div>
           ) : crossVenueSpreadBps !== null ? (
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest font-mono ${crossVenueSpreadBps > 150 ? 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-500/80' : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-500/80'}`}>

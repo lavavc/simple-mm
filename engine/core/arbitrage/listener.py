@@ -6,15 +6,15 @@ import structlog
 from typing import Callable, Any
 
 from engine.config import settings
-from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
-from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
-from engine.core.arbitrage.simulator import generate_v3_profit_curve
+from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_pool_state_from_event
 
 logger = structlog.get_logger()
 
-# Uniswap V3 Swap event topic
-# Keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
-SWAP_EVENT_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+# Uniswap V4 Swap event topic
+# Keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
+V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
 
 class ArbitrageWebSocketListener:
     """Listens for DEX Swaps via WebSockets to trigger curve calculations instantly."""
@@ -23,9 +23,9 @@ class ArbitrageWebSocketListener:
         self.broadcast = broadcast
         self.on_update = on_update
         self._running = False
-        
+
         self._tasks: list[asyncio.Task] = []
-        
+
         # Debounce tracking
         self._last_trigger_time = 0.0
         self._debounce_delay = 0.25 # seconds to wait before calculating curve
@@ -36,18 +36,18 @@ class ArbitrageWebSocketListener:
         """Start listening to all supported WebSocket endpoints."""
         if self._running:
             return
-            
+
         self._running = True
         logger.info("arbitrage_websocket_listener_starting")
 
         if settings.base_wss_url:
             self._tasks.append(asyncio.create_task(
-                self._listen_to_chain("base", settings.base_wss_url, AERODROME_POOL_READ_CONFIG)
+                self._listen_to_chain("base", settings.base_wss_url, UNISWAP_BASE_POOL_READ_CONFIG)
             ))
-            
+
         if settings.bsc_wss_url:
             self._tasks.append(asyncio.create_task(
-                self._listen_to_chain("bsc", settings.bsc_wss_url, PANCAKESWAP_POOL_READ_CONFIG)
+                self._listen_to_chain("bsc", settings.bsc_wss_url, UNISWAP_BSC_POOL_READ_CONFIG)
             ))
 
     async def stop(self):
@@ -62,15 +62,14 @@ class ArbitrageWebSocketListener:
     async def _listen_to_chain(self, chain_name: str, wss_url: str, pool_config):
         """Persistent wss connection loop for a specific chain."""
         backoff = 1
-        
+
         while self._running:
             try:
                 async with websockets.connect(wss_url) as ws:
-                    logger.info("wss_connected", chain=chain_name)
+                    logger.info("wss_connected", chain=chain_name, pool_manager=pool_config.pool_manager)
                     self.active_connections.add(chain_name)
                     backoff = 1 # Reset backoff
-                    
-                    # Create subscription payload
+
                     payload = {
                         "id": 1,
                         "jsonrpc": "2.0",
@@ -78,78 +77,90 @@ class ArbitrageWebSocketListener:
                         "params": [
                             "logs",
                             {
-                                "address": pool_config.pool_address,
-                                "topics": [SWAP_EVENT_TOPIC]
+                                "address": pool_config.pool_manager,
+                                "topics": [V4_SWAP_TOPIC, pool_config.pool_address]
                             }
                         ]
                     }
-                    
+
                     await ws.send(json.dumps(payload))
-                    
-                    # Wait for subscription confirmation
+
                     response = await ws.recv()
                     logger.debug("wss_subscribed", chain=chain_name, response=response)
-                    
-                    # Listen for incoming events
+
                     while self._running:
                         msg = await ws.recv()
                         data = json.loads(msg)
-                        
-                        # Verify it's actually an event notification
+
                         if data.get("method") == "eth_subscription":
-                            self._trigger_curve_calculation(chain_name, wss_url, pool_config)
-                            
+                            log = data.get("params", {}).get("result", {})
+                            self._parse_and_update_state(log, pool_config)
+                            self._trigger_curve_calculation(chain_name)
+
             except websockets.exceptions.ConnectionClosed as e:
                 self.active_connections.discard(chain_name)
                 logger.warning("wss_connection_closed", chain=chain_name, code=e.code, reason=e.reason)
             except Exception as e:
                 self.active_connections.discard(chain_name)
                 logger.error("wss_connection_error", chain=chain_name, error=str(e))
-                
+
             if self._running:
                 logger.info("wss_reconnecting", chain=chain_name, backoff_seconds=backoff)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60) # Max 60s backoff
+                backoff = min(backoff * 2, 60)
 
-    def _trigger_curve_calculation(self, source_chain: str, rpc_url: str, pool_config):
+    def _parse_and_update_state(self, log: dict, pool_config):
+        """Parse V4 Swap event data and update the pool cache — zero RPC calls."""
+        try:
+            raw_data = log.get("data", "0x")
+            data_bytes = bytes.fromhex(raw_data[2:] if raw_data.startswith("0x") else raw_data)
+
+            if len(data_bytes) < 192:
+                logger.warning("v4_swap_event_data_too_short", length=len(data_bytes))
+                return
+
+            # V4 Swap non-indexed data layout (32 bytes each):
+            # [0:32]   amount0 (int128)
+            # [32:64]  amount1 (int128)
+            # [64:96]  sqrtPriceX96 (uint160)
+            # [96:128] liquidity (uint128)
+            # [128:160] tick (int24, signed)
+            # [160:192] fee (uint24)
+            sqrt_p = int.from_bytes(data_bytes[64:96], "big")
+            liquidity = int.from_bytes(data_bytes[96:128], "big")
+            tick = int.from_bytes(data_bytes[128:160], "big", signed=True)
+            fee = int.from_bytes(data_bytes[160:192], "big")
+
+            update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
+            logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
+        except Exception as e:
+            logger.error("v4_swap_event_parse_failed", error=str(e))
+
+    def _trigger_curve_calculation(self, source_chain: str):
         """Debounced trigger for the profit curve."""
         logger.debug("swap_event_detected", chain=source_chain)
-        
-        now = time.time()
-        
-        # If there's already a pending calculation, we just let it ride 
-        # (it will catch this newest state change when it executes)
+
         if self._pending_calculation and not self._pending_calculation.done():
             return
-            
-        # Schedule a new calculation after the debounce delay
-        self._pending_calculation = asyncio.create_task(self._delayed_calculation(rpc_url, pool_config))
 
-    async def _delayed_calculation(self, rpc_url: str, pool_config):
-        """Waits for the debounce window, fetches newest trigger state, calculates, and broadcasts."""
+        self._pending_calculation = asyncio.create_task(self._delayed_calculation())
+
+    async def _delayed_calculation(self):
+        """Waits for the debounce window, then calculates and broadcasts the curve.
+
+        V4 state is already updated synchronously from the event — no RPC calls needed.
+        """
         await asyncio.sleep(self._debounce_delay)
-        
+
         try:
             logger.info("executing_event_driven_curve_calc")
-            from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_single_pool_state
-            
-            # Fetch the newest state of the chain that triggered the event.
-            # _fetch_fee_with_retry already attempts 3× with backoff internally.
-            # If it still fails, generate_v3_profit_curve is the gate that blocks
-            # execution and fires a background seed retry — no inline retry needed.
-            http_url = rpc_url.replace("wss://", "https://")
-            if not await update_single_pool_state(pool_config, rpc_url_override=http_url):
-                logger.warning("pool_state_fetch_incomplete", pool=pool_config.pool_address)
 
-            # Fire the instant callback so the dashboard receives the newly cached spot price
             if self.on_update:
                 await self.on_update()
-            
-            # Now calculate the global curve with the globally cached states
+
             curve_data = await generate_v3_profit_curve()
-            
+
             if curve_data:
-                # Save price snapshots to database so charts don't break
                 from engine.api.schemas import PriceQuote
                 from engine.db.database import get_db
                 import time
@@ -157,40 +168,26 @@ class ArbitrageWebSocketListener:
                 db = await get_db()
                 now_ms = int(time.time() * 1000)
 
-                if "pancakeswap" in curve_data.get("prices", {}):
-                    await db.insert_price_snapshot(PriceQuote(
-                        source="pancakeswap_pool",
-                        timestamp=now_ms,
-                        bid=curve_data["prices"]["pancakeswap"],
-                        ask=curve_data["prices"]["pancakeswap"],
-                        mid=curve_data["prices"]["pancakeswap"],
-                    ))
-                if "aerodrome" in curve_data.get("prices", {}):
-                    await db.insert_price_snapshot(PriceQuote(
-                        source="aerodrome_pool",
-                        timestamp=now_ms,
-                        bid=curve_data["prices"]["aerodrome"],
-                        ask=curve_data["prices"]["aerodrome"],
-                        mid=curve_data["prices"]["aerodrome"],
-                    ))
-                if "assetchain" in curve_data.get("prices", {}):
-                    await db.insert_price_snapshot(PriceQuote(
-                        source="assetchain_pool",
-                        timestamp=now_ms,
-                        bid=curve_data["prices"]["assetchain"],
-                        ask=curve_data["prices"]["assetchain"],
-                        mid=curve_data["prices"]["assetchain"],
-                    ))
+                for key in ("uni-bsc", "uni-base", "assetchain"):
+                    price_val = curve_data.get("prices", {}).get(key)
+                    if price_val is not None:
+                        await db.insert_price_snapshot(PriceQuote(
+                            source=f"{key}_pool",
+                            timestamp=now_ms,
+                            bid=price_val,
+                            ask=price_val,
+                            mid=price_val,
+                        ))
 
                 self.broadcast({
                     "type": "dex_arb_curve",
                     "data": curve_data
                 })
-                
+
                 optimal = curve_data.get("optimal_arb", {})
                 if optimal.get("expected_profit_usd", -1) > 0:
                     await self._record_and_broadcast_opportunity(curve_data, optimal)
-                    
+
         except Exception as e:
             logger.error("event_driven_curve_calc_failed", error=str(e))
 
@@ -199,10 +196,9 @@ class ArbitrageWebSocketListener:
         import uuid
         from engine.api.schemas import DexArbOpportunity
         from engine.db.database import get_db
-        
+
         db = await get_db()
-        
-        # Expire old ones
+
         cutoff_ts = int(time.time() * 1000) - 60000
         await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
 
@@ -227,11 +223,11 @@ class ArbitrageWebSocketListener:
                 expected_usd_out=optimal["expected_usd_out"],
                 status="detected",
                 net_spread_bps=optimal.get("net_spread_bps", 0),
-                pancake_price=curve_data.get("prices", {}).get("pancakeswap"),
-                aerodrome_price=curve_data.get("prices", {}).get("aerodrome"),
+                pancake_price=curve_data.get("prices", {}).get("uni-bsc"),
+                aerodrome_price=curve_data.get("prices", {}).get("uni-base"),
                 slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
-                pancake_fee_bps=optimal.get("pancake_fee_bps"),
-                aerodrome_fee_bps=optimal.get("aerodrome_fee_bps"),
+                pancake_fee_bps=optimal.get("uni_bsc_fee_bps"),
+                aerodrome_fee_bps=optimal.get("uni_base_fee_bps"),
                 estimated_gas_usd=optimal.get("estimated_gas_usd")
             )
             await db.insert_dex_arbitrage_opportunity(opportunity)
