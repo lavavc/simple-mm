@@ -338,6 +338,23 @@ async def generate_v3_profit_curve() -> dict:
     uni_base_cngn, uni_base_stable = uni_base_b0, uni_base_b1  # token0=cNGN, token1=USDC
     asset_stable, asset_cngn = asset_b0, asset_b1
 
+    # Minimum pool balance gate — block if either execution venue is critically thin.
+    MIN_POOL_STABLE_USD = Decimal("500")
+    thin_pools = [
+        name for name, bal in [("uni-bsc", uni_bsc_stable), ("uni-base", uni_base_stable)]
+        if bal is None or bal < MIN_POOL_STABLE_USD
+    ]
+    if thin_pools:
+        logger.warning("v3_profit_curve_blocked_thin_pools", pools=thin_pools, min_usd=float(MIN_POOL_STABLE_USD))
+        return {}
+
+    # Per-vector USD cap from pool balances:
+    # V1 (buy BSC cNGN, sell into Base): limited by cNGN available in BSC pool and USDC in Base pool.
+    # V2 (buy Base cNGN, sell into BSC): limited by cNGN available in Base pool and USDT in BSC pool.
+    ABSOLUTE_MAX_USD = Decimal("15000")
+    max_usd_v1 = min(uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)), uni_base_stable, ABSOLUTE_MAX_USD)
+    max_usd_v2 = min(uni_base_cngn * Decimal(str(uni_base_price_usd)), uni_bsc_stable, ABSOLUTE_MAX_USD)
+
     test_sizes = [1, 10, 50, 100, 500, 1000, 2500, 5000, 10000, 50000, 100000]
 
     curve = []
@@ -376,7 +393,6 @@ async def generate_v3_profit_curve() -> dict:
             "min_acceptable_usd": float(min_usd_acceptable)
         })
 
-    max_usd = 15000
     best_profit = Decimal("-999999")
     best_size = Decimal("0")
     best_dir = None
@@ -386,7 +402,7 @@ async def generate_v3_profit_curve() -> dict:
 
     step = 10
     # DELTA BALANCING VECTOR 1: Buy on uni-bsc, sell identical cNGN from uni-base inventory
-    for size in range(10, max_usd + step, step):
+    for size in range(10, int(max_usd_v1) + step, step):
         usd_in_bsc = Decimal(size)
         cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
         usd_out_base = v3_swap_token0_for_token1(cngn_acquired_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
@@ -398,7 +414,7 @@ async def generate_v3_profit_curve() -> dict:
             usd_out_expected = usd_out_base
 
     # DELTA BALANCING VECTOR 2: Buy on uni-base, sell identical cNGN from uni-bsc inventory
-    for size in range(10, max_usd + step, step):
+    for size in range(10, int(max_usd_v2) + step, step):
         usd_in_base = Decimal(size)
         cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
         usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_base, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
