@@ -4,10 +4,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { addNotification } from '@/lib/notifications';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ||
-  (typeof window !== 'undefined'
-    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
-    : 'ws://localhost:8000/ws');
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
@@ -44,7 +41,8 @@ export function useEventStream() {
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
 
-    const ws = new WebSocket(WS_URL);
+    const wsUrl = WS_URL || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {

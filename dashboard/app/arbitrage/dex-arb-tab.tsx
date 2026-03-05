@@ -84,7 +84,7 @@ interface DexArbOpp {
 }
 
 const fetchDexOpps = async () => {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api'}/arbitrage/dex-opportunities`, {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/arbitrage/dex-opportunities`, {
         headers: {
             'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN || ''}`
         }
