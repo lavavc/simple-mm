@@ -58,12 +58,12 @@ FEE_SELECTOR = "0xddca3f43"
 Q96 = Decimal(2 ** 96)
 
 STATE_VIEW_ABI = [
-    {"inputs": [{"name": "manager", "type": "address"}, {"name": "id", "type": "bytes32"}],
+    {"inputs": [{"name": "poolId", "type": "bytes32"}],
      "name": "getSlot0", "outputs": [
          {"name": "sqrtPriceX96", "type": "uint160"}, {"name": "tick", "type": "int24"},
          {"name": "protocolFee", "type": "uint24"}, {"name": "lpFee", "type": "uint24"}],
      "stateMutability": "view", "type": "function"},
-    {"inputs": [{"name": "manager", "type": "address"}, {"name": "id", "type": "bytes32"}],
+    {"inputs": [{"name": "poolId", "type": "bytes32"}],
      "name": "getLiquidity", "outputs": [{"name": "liquidity", "type": "uint128"}],
      "stateMutability": "view", "type": "function"},
 ]
@@ -163,7 +163,8 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             abi=STATE_VIEW_ABI,
         )
 
-        slot0 = await state_view.functions.getSlot0(pool_manager, pool_id_bytes).call()
+        # StateView stores poolManager as immutable — only poolId is passed
+        slot0 = await state_view.functions.getSlot0(pool_id_bytes).call()
         sqrt_price_x96 = Decimal(slot0[0])
         tick = slot0[1]
         fee = Decimal(slot0[3]) / Decimal(1000000)  # lpFee uint24 → fraction
@@ -174,7 +175,7 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             liquidity = cached_data["liquidity"]
             logger.debug("v4_pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
         else:
-            liquidity_raw = await state_view.functions.getLiquidity(pool_manager, pool_id_bytes).call()
+            liquidity_raw = await state_view.functions.getLiquidity(pool_id_bytes).call()
             liquidity = Decimal(liquidity_raw)
             logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
 
