@@ -408,6 +408,39 @@ class AccountManager:
         )
         return tx_hash.hex()
 
+    async def transfer_native(
+        self,
+        role: AccountRole,
+        to_address: str,
+        amount: Decimal,
+    ) -> str:
+        """Transfer native gas token (e.g., ETH/BNB) from a role account. Returns tx hash."""
+        config = self.get_config(role)
+        account = self.get_account(role)
+        w3 = self._get_web3(config.chain_id, config.rpc_url)
+
+        amount_wei = int(amount * Decimal(10**18))
+        tx = {
+            "from": account.address,
+            "to": Web3.to_checksum_address(to_address),
+            "value": amount_wei,
+            "nonce": w3.eth.get_transaction_count(account.address),
+            "chainId": config.chain_id,
+            "gas": 21000,
+            "gasPrice": w3.eth.gas_price,
+        }
+
+        signed = w3.eth.account.sign_transaction(tx, account.key)
+        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+        logger.info(
+            "native_transfer_sent",
+            role=role.value,
+            to=to_address,
+            amount=str(amount),
+            tx_hash=tx_hash.hex(),
+        )
+        return tx_hash.hex()
+
     def update_thresholds(
         self,
         role: AccountRole,
