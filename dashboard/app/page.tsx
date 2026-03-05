@@ -102,7 +102,7 @@ export default function DashboardPage() {
           {isSyncing ? (
             <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-widest font-mono text-yellow-500/90">
               <div className="h-2 w-2 border-t-2 border-yellow-500 rounded-full animate-spin" />
-              <span>Syncing Nodes...</span>
+              <span>Syncing......</span>
             </div>
           ) : (
             <div className="flex items-center gap-2 bg-white/[0.02] border border-white/5 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-widest font-mono text-white/70">
@@ -237,13 +237,14 @@ export default function DashboardPage() {
                     <TrendingUp className="h-5 w-5" />
                   </div>
                   <div>
-                    <div className="text-xl font-bold font-mono tracking-tight text-white leading-tight flex items-center gap-2">
+                    <div className="text-xl font-bold font-mono tracking-tight text-white leading-tight">
                       ${Number(blendedPrice?.vwap || 0).toFixed(6)}
-                      <span className="text-white/20 text-base font-light">/</span>
-                      <span className="text-blue-300">₦{formatNumber(blendedPrice?.vwap ? 1 / blendedPrice.vwap : 0, 2)}</span>
+                    </div>
+                    <div className="text-lg font-bold font-mono tracking-tight text-blue-300 leading-tight">
+                      ₦{formatNumber(blendedPrice?.vwap ? 1 / blendedPrice.vwap : 0, 2)}
                     </div>
                     <div className="text-[9px] text-white/40 font-mono tracking-widest uppercase mt-0.5">
-                      cNGN/USD · 1 USD = ₦{formatNumber(blendedPrice?.vwap ? 1 / blendedPrice.vwap : 0, 2)}
+                      cNGN/USD
                     </div>
                   </div>
                 </div>

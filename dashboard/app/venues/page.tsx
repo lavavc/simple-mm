@@ -93,20 +93,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             </div>
 
             <div className="h-px w-full bg-white/[0.05]"></div>
-
-            <div className="flex flex-col gap-2">
-              <Button disabled variant="outline" className={`w-full justify-start h-9 rounded-sm text-[11px] font-mono uppercase tracking-widest px-3 ${venue.paused ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/20'}`}>
-                {venue.paused ? (
-                  <><Play className="h-3.5 w-3.5 mr-2" /> Arm Protocol</>
-                ) : (
-                  <><Pause className="h-3.5 w-3.5 mr-2 text-yellow-500" /> Disarm Protocol</>
-                )}
-              </Button>
-              <Button disabled variant="outline" className="w-full justify-start h-9 bg-black/40 border-white/10 hover:bg-white/[0.05] text-white/70 hover:text-white rounded-sm text-[11px] font-mono uppercase tracking-widest px-3">
-                <RotateCcw className="h-3.5 w-3.5 mr-2" />
-                Force Sync Node
-              </Button>
-            </div>
           </CardContent>
         </Card>
 
@@ -384,7 +370,7 @@ export default function VenuesPage() {
           {isSyncing ? (
             <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-widest font-mono text-yellow-500">
               <div className="h-2 w-2 border-t-2 border-yellow-500 rounded-full animate-spin" />
-              <span>Syncing Nodes...</span>
+              <span>Syncing......</span>
             </div>
           ) : (
             <div className="flex items-center gap-2 bg-white/[0.02] border border-white/5 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-widest font-mono text-white/70">

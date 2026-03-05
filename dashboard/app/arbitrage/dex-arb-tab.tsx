@@ -162,7 +162,7 @@ export default function DexArbPage() {
                     {isSyncing ? (
                         <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-widest font-mono text-yellow-500/90">
                             <div className="h-2 w-2 border-t-2 border-yellow-500 rounded-full animate-spin" />
-                            <span>Syncing Nodes...</span>
+                            <span>Syncing......</span>
                         </div>
                     ) : (
                         <div className="flex items-center gap-2 bg-white/[0.02] border border-white/5 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-widest font-mono text-white/70">
