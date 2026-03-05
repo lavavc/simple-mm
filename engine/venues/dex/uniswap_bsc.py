@@ -16,4 +16,5 @@ UNISWAP_BSC_POOL_READ_CONFIG = V4PoolReadConfig(
     token0_decimals=18,
     token1_decimals=6,
     invert_price=True,
+    dexscreener_chain="bsc",
 )

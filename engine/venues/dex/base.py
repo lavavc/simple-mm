@@ -93,6 +93,7 @@ class V4PoolReadConfig:
     token0_decimals: int
     token1_decimals: int
     invert_price: bool = False
+    dexscreener_chain: str = ""  # e.g. "base" or "bsc" — enables DexScreener balance lookup
 
 
 @dataclass
