@@ -711,8 +711,8 @@ class BaseDexAdapter(VenueAdapter, ABC):
         multiplier = float(self.params.sd_multiplier)
         skew = float(self.params.downside_skew)
         total = std_dev * multiplier * 2
-        lower_price = mean_price - total * skew
-        upper_price = mean_price + total * (1 - skew)
+        lower_price = mean - total * skew
+        upper_price = mean + total * (1 - skew)
 
         # Ensure positive
         lower_price = max(lower_price, 0.0001)
