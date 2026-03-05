@@ -75,6 +75,27 @@ class PoolReadConfig:
 
 
 @dataclass
+class V4PoolReadConfig:
+    """Minimal config for read-only V4 pool price fetching via StateView.
+
+    ``pool_address`` stores the bytes32 pool ID — keeps all downstream cache
+    lookups (``_POOL_CACHE[config.pool_address]``) working unchanged.
+    """
+
+    pool_manager: str    # PoolManager singleton address
+    state_view: str      # StateView contract address
+    pool_address: str    # bytes32 pool ID — named pool_address for cache-key compatibility
+    rpc_url: str
+    token0_address: str
+    token1_address: str
+    token0_symbol: str
+    token1_symbol: str
+    token0_decimals: int
+    token1_decimals: int
+    invert_price: bool = False
+
+
+@dataclass
 class PositionState:
     """LP position state from on-chain."""
 

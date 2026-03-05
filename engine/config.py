@@ -116,6 +116,14 @@ class Settings(BaseSettings):
     cngn_assetchain_address: str = "0x7923C0f6FA3d1BA6EAFCAedAaD93e737Fd22FC4F"
     usdt_assetchain_address: str = "0x26E490d30e73c36800788DC6d6315946C4BbEa24"
 
+    # Uniswap V4 contract addresses
+    uni_bsc_pool_manager: str = "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df"
+    uni_base_pool_manager: str = "0x498581ff718922c3f8e6a244956af099b2652b2b"
+    uni_bsc_state_view: str = "0xd13dd3d6e93f276fafc9db9e6bb47c1180aee0c4"
+    uni_base_state_view: str = "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71"
+    uni_bsc_pool_id: str = "0x2268f03a28f37f16cd3610dc669536f8c815d9d4cb2906feeeba9150fb2d8596"
+    uni_base_pool_id: str = "0x84fa97768196067f0e5aa157709039a3897e219cba3002d9ad38bf44e300fe93"
+
     # Aerodrome contract addresses (Base)
     aerodrome_pool_address: str = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
     aerodrome_nft_manager_address: str = "0x827922686190790b37229fd06084350E74485b72"
