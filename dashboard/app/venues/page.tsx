@@ -12,12 +12,12 @@ const venueInfo: Record<
   string,
   { name: string; chain: string; chainId: number; type: string; description: string }
 > = {
-  aerodrome: {
-    name: 'Aerodrome',
+  'uni-base': {
+    name: 'Uniswap Base',
     chain: 'Base',
     chainId: 8453,
     type: 'DEX',
-    description: 'Concentrated liquidity AMM on Base. Primary DEX for cNGN/USDC pair.',
+    description: 'Uniswap V4 pool on Base. Primary DEX for cNGN/USDC pair.',
   },
   quidax: {
     name: 'Quidax',
@@ -26,12 +26,12 @@ const venueInfo: Record<
     type: 'CEX',
     description: 'Nigerian crypto exchange. Order ladder management for cNGN/USDT.',
   },
-  pancakeswap: {
-    name: 'PancakeSwap',
+  'uni-bsc': {
+    name: 'Uniswap BSC',
     chain: 'BSC',
     chainId: 56,
     type: 'DEX',
-    description: 'Concentrated liquidity AMM on BSC. Primary DEX for cNGN/USDT pair.',
+    description: 'Uniswap V4 pool on BSC. Primary DEX for cNGN/USDT pair.',
   },
   blockradar: {
     name: 'Blockradar',
@@ -282,7 +282,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-white/[0.02]">
-              {['aerodrome', 'pancakeswap'].includes(venue.name) && (
+              {['uni-base', 'uni-bsc'].includes(venue.name) && (
                 <>
                   <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
                     <div>

@@ -10,13 +10,13 @@ import { Activity, Zap, Wallet, AlertTriangle, ArrowRight, TrendingUp, Cpu } fro
 
 interface CurvePoint {
   size: number;
-  cngn_pancake: number;
-  cngn_aero: number;
+  cngn_uni_bsc: number;
+  cngn_uni_base: number;
   cngn_assetchain: number;
   profit: number;
   profit_no_fee: number;
-  cngn_pancake_no_fee: number;
-  cngn_aero_no_fee: number;
+  cngn_uni_bsc_no_fee: number;
+  cngn_uni_base_no_fee: number;
   cngn_assetchain_no_fee: number;
   min_acceptable_usd: number;
 }
@@ -24,13 +24,13 @@ interface CurvePoint {
 interface DexArbData {
   timestamp: number;
   prices: {
-    pancakeswap: number;
-    aerodrome: number;
+    'uni-bsc': number;
+    'uni-base': number;
     assetchain: number;
   };
   stats: {
-    pancake_liquidity_cngn_raw: string;
-    aerodrome_liquidity_cngn_raw: string;
+    uni_bsc_liquidity_cngn_raw: string;
+    uni_base_liquidity_cngn_raw: string;
     assetchain_liquidity_cngn_raw: string;
   };
   curve: CurvePoint[];
@@ -42,8 +42,8 @@ interface DexArbData {
     expected_usd_out: number;
     net_spread_bps: number;
     slippage_tolerance_bps?: number;
-    pancake_fee_bps?: number;
-    aerodrome_fee_bps?: number;
+    uni_bsc_fee_bps?: number;
+    uni_base_fee_bps?: number;
     assetchain_fee_bps?: number;
     estimated_gas_usd?: number;
   };
@@ -71,8 +71,8 @@ export default function DashboardPage() {
 
   const resolvedCurveData = curveData || {
     timestamp: 0,
-    prices: { pancakeswap: 0, aerodrome: 0, assetchain: 0 },
-    stats: { pancake_liquidity_cngn_raw: "0", aerodrome_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0" },
+    prices: { 'uni-bsc': 0, 'uni-base': 0, assetchain: 0 },
+    stats: { uni_bsc_liquidity_cngn_raw: "0", uni_base_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0" },
     curve: [],
     optimal_arb: {
       direction: "_____",
@@ -290,9 +290,9 @@ export default function DashboardPage() {
             ) : (
               <div className="space-y-3">
                 <div className="flex items-center justify-between bg-black/40 border border-white/10 p-2 rounded-sm">
-                  <span className="text-[9px] font-mono text-white/80">{resolvedCurveData.optimal_arb.direction.split('_')[0]}</span>
+                  <span className="text-[9px] font-mono text-white/80">{resolvedCurveData.optimal_arb.direction.split('_TO_')[0].replace('_', '-')}</span>
                   <ArrowRight className="h-3 w-3 text-emerald-500/70" />
-                  <span className="text-[9px] font-mono text-white/80">{resolvedCurveData.optimal_arb.direction.split('_')[2]}</span>
+                  <span className="text-[9px] font-mono text-white/80">{resolvedCurveData.optimal_arb.direction.split('_TO_')[1]?.replace('_DELTA_BALANCE', '').replace('_', '-') ?? ''}</span>
                 </div>
                 <div className="flex justify-between items-center text-[10px] font-mono">
                   <span className="text-white/50">Opt Size</span>

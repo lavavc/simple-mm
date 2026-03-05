@@ -21,21 +21,21 @@ import {
 import type { AccountBalance } from '@/types';
 
 const roleInfo: Record<string, { name: string; description: string }> = {
-  'aerodrome-lp': {
-    name: 'Aerodrome LP',
-    description: 'Liquidity provision account for Aerodrome DEX',
+  'uni-base-lp': {
+    name: 'Uniswap Base LP',
+    description: 'Liquidity provision account for Uniswap V4 on Base',
   },
-  'aerodrome-trade': {
-    name: 'Aerodrome Trade',
-    description: 'Arbitrage swap execution account',
+  'uni-base-trade': {
+    name: 'Uniswap Base Trade',
+    description: 'Arbitrage swap execution account on Base',
   },
-  'pancakeswap-lp': {
-    name: 'PancakeSwap LP',
-    description: 'Liquidity provision account for PancakeSwap DEX',
+  'uni-bsc-lp': {
+    name: 'Uniswap BSC LP',
+    description: 'Liquidity provision account for Uniswap V4 on BSC',
   },
-  'pancakeswap-trade': {
-    name: 'PancakeSwap Trade',
-    description: 'Arbitrage swap execution account',
+  'uni-bsc-trade': {
+    name: 'Uniswap BSC Trade',
+    description: 'Arbitrage swap execution account on BSC',
   },
   blockradar: {
     name: 'Blockradar',

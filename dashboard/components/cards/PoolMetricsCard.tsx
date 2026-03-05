@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { usePoolMetrics } from '@/lib/hooks/useQueries';
 
 const LABELS: Record<string, { name: string; chain: string }> = {
-  aerodrome: { name: 'Aerodrome', chain: 'Base' },
-  pancakeswap: { name: 'PancakeSwap', chain: 'BSC' },
+  'uni-base': { name: 'Uniswap Base', chain: 'Base' },
+  'uni-bsc': { name: 'Uniswap BSC', chain: 'BSC' },
 };
 
 function fmtUsd(v: number | null) {

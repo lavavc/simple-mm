@@ -72,8 +72,8 @@ export interface VenueLabel {
 }
 
 export const VENUE_LABELS: Record<string, VenueLabel> = {
-  aerodrome: { name: 'Aerodrome', chain: 'Base', type: 'DEX' },
-  pancakeswap: { name: 'PancakeSwap', chain: 'BSC', type: 'DEX' },
+  'uni-base': { name: 'Uniswap Base', chain: 'Base', type: 'DEX' },
+  'uni-bsc': { name: 'Uniswap BSC', chain: 'BSC', type: 'DEX' },
   assetchain: { name: 'AssetChain', chain: 'Mainnet', type: 'DEX' },
   quidax: { name: 'Quidax', chain: 'CEX', type: 'CEX' },
   bybit: { name: 'Bybit P2P', chain: 'P2P', type: 'P2P' },
@@ -82,8 +82,8 @@ export const VENUE_LABELS: Record<string, VenueLabel> = {
 export const VENUE_COLORS: Record<string, string> = {
   bybit: '#F7931A',
   quidax: '#2E7D32',
-  aerodrome: '#1976D2',
-  pancakeswap: '#7B1FA2',
+  'uni-base': '#1976D2',
+  'uni-bsc': '#7B1FA2',
   assetchain: '#10B981',
   blockradar: '#455A64',
 };
@@ -99,8 +99,8 @@ interface SourceInfo {
 const SOURCE_MAP: Record<string, SourceInfo> = {
   bybit_p2p: { venue: 'bybit', pair: 'USDT/NGN' },
   quidax: { venue: 'quidax', pair: 'cNGN/USDT' },
-  aerodrome_pool: { venue: 'aerodrome', pair: 'cNGN/USDC' },
-  pancakeswap_pool: { venue: 'pancakeswap', pair: 'cNGN/USDT' },
+  'uni-base_pool': { venue: 'uni-base', pair: 'cNGN/USDC' },
+  'uni-bsc_pool': { venue: 'uni-bsc', pair: 'cNGN/USDT' },
   assetchain_pool: { venue: 'assetchain', pair: 'cNGN/USDT' },
   blockradar: { venue: 'blockradar', pair: 'cNGN/USDC' },
 };

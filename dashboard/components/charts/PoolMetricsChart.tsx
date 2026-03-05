@@ -22,10 +22,10 @@ const TIME_WINDOWS = [
 ] as const;
 
 const SERIES = {
-  aero_tvl: { label: 'Aero TVL',      color: '#1976D2', axis: 'left'  },
-  ps_tvl:   { label: 'PS TVL',        color: '#7B1FA2', axis: 'left'  },
-  aero_vol: { label: 'Aero 24hr Vol', color: '#42A5F5', axis: 'right' },
-  ps_vol:   { label: 'PS 24hr Vol',   color: '#CE93D8', axis: 'right' },
+  uni_base_tvl: { label: 'Uni Base TVL',      color: '#1976D2', axis: 'left'  },
+  uni_bsc_tvl:  { label: 'Uni BSC TVL',       color: '#7B1FA2', axis: 'left'  },
+  uni_base_vol: { label: 'Uni Base 24hr Vol', color: '#42A5F5', axis: 'right' },
+  uni_bsc_vol:  { label: 'Uni BSC 24hr Vol',  color: '#CE93D8', axis: 'right' },
 } as const;
 
 function fmtUsd(v: number) {
@@ -48,12 +48,12 @@ function buildChartData(points: PoolMetricPoint[], minutes: number) {
     const bucket = Math.floor(p.timestamp / bucketMs) * bucketMs;
     if (!buckets.has(bucket)) buckets.set(bucket, {});
     const b = buckets.get(bucket)!;
-    if (p.venue === 'aerodrome') {
-      if (p.pool_tvl_usd   != null) b.aero_tvl = p.pool_tvl_usd;
-      if (p.volume_24h_usd != null) b.aero_vol = p.volume_24h_usd;
-    } else if (p.venue === 'pancakeswap') {
-      if (p.pool_tvl_usd   != null) b.ps_tvl = p.pool_tvl_usd;
-      if (p.volume_24h_usd != null) b.ps_vol = p.volume_24h_usd;
+    if (p.venue === 'uni-base') {
+      if (p.pool_tvl_usd   != null) b.uni_base_tvl = p.pool_tvl_usd;
+      if (p.volume_24h_usd != null) b.uni_base_vol = p.volume_24h_usd;
+    } else if (p.venue === 'uni-bsc') {
+      if (p.pool_tvl_usd   != null) b.uni_bsc_tvl = p.pool_tvl_usd;
+      if (p.volume_24h_usd != null) b.uni_bsc_vol = p.volume_24h_usd;
     }
   }
 
