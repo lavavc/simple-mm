@@ -56,7 +56,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         chain_id=8453,  # Base
         rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDC"],
-        min_balance_eth=Decimal("0.005"),
+        min_balance_eth=Decimal("0.001"),
         min_balance_tokens={"cNGN": Decimal("50000"), "USDC": Decimal("50")},
     ),
     AccountRole.UNI_BASE_TRADE: AccountConfig(
@@ -65,7 +65,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         chain_id=8453,  # Base
         rpc_url=settings.base_rpc_url,
         tokens=["cNGN", "USDC"],
-        min_balance_eth=Decimal("0.005"),
+        min_balance_eth=Decimal("0.001"),
         min_balance_tokens={"cNGN": Decimal("10000"), "USDC": Decimal("10")},
     ),
     AccountRole.BLOCKRADAR: AccountConfig(
@@ -101,7 +101,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         chain_id=56,  # BSC
         rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
-        min_balance_eth=Decimal("0.005"),  # BNB for gas
+        min_balance_eth=Decimal("0.001"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("50")},
     ),
     AccountRole.UNI_BSC_TRADE: AccountConfig(
@@ -110,7 +110,7 @@ DEFAULT_ACCOUNT_CONFIGS = {
         chain_id=56,  # BSC
         rpc_url=settings.bsc_rpc_url,
         tokens=["cNGN", "USDT"],
-        min_balance_eth=Decimal("0.005"),  # BNB for gas
+        min_balance_eth=Decimal("0.001"),  # BNB for gas
         min_balance_tokens={"cNGN": Decimal("10000"), "USDT": Decimal("10")},
     ),
 }
