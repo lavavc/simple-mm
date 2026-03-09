@@ -179,8 +179,8 @@ function SpotArbitrageTab() {
                 <span className="text-[12px] font-mono font-bold text-white/90">{status?.params.scan_interval_seconds || 30} SECONDS</span>
               </div>
               <div>
-                <span className="text-[10px] font-mono tracking-widest uppercase text-white/50 block mb-0.5">MIN SPREAD</span>
-                <span className="text-[12px] font-mono font-bold text-white/90">{status?.params.min_spread_bps} BPS</span>
+                <span className="text-[10px] font-mono tracking-widest uppercase text-white/50 block mb-0.5">MIN NET PROFIT</span>
+                <span className="text-[12px] font-mono font-bold text-white/90">{status?.params.min_net_profit_bps} BPS</span>
               </div>
               <div>
                 <span className="text-[10px] font-mono tracking-widest uppercase text-white/50 block mb-0.5">MAX TICKET</span>

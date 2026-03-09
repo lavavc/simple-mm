@@ -177,7 +177,7 @@ async def lifespan(app: FastAPI):
     await init_venues(account_manager)
 
     # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
-    from engine.core.arbitrage.simulator import seed_pool_states
+    from engine.core.arbitrage.pool_state import seed_pool_states
     await seed_pool_states()
 
     # Price aggregator: reads directly from the simulator cache for DEXs

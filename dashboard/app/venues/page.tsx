@@ -244,6 +244,27 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                       <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">{venue.price?.pair || 'cNGN/USD'}</span>
                     </div>
 
+                    {venue.name === 'quidax' && venue.price?.quote && (
+                      <div className="flex gap-6 mb-4">
+                        <div className="text-center">
+                          <div className="text-[8px] text-white/30 font-mono uppercase tracking-widest mb-1">BID</div>
+                          <div className="text-sm font-mono text-emerald-400">${Number(venue.price.quote.bid).toFixed(7)}</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-[8px] text-white/30 font-mono uppercase tracking-widest mb-1">SPREAD</div>
+                          <div className="text-sm font-mono text-white/60">
+                            {venue.price.quote.bid && venue.price.quote.ask
+                              ? `${((Number(venue.price.quote.ask) - Number(venue.price.quote.bid)) / Number(venue.price.quote.bid) * 10000).toFixed(0)} bps`
+                              : '—'}
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-[8px] text-white/30 font-mono uppercase tracking-widest mb-1">ASK</div>
+                          <div className="text-sm font-mono text-red-400">${Number(venue.price.quote.ask).toFixed(7)}</div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="h-px w-24 bg-white/10 mb-4" />
 
                     <ActivityIcon className="h-4 w-4 text-white/10 mb-2" />

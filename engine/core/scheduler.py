@@ -14,7 +14,7 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.base import BaseDexAdapter
-from engine.core.arbitrage.simulator import generate_v3_profit_curve
+from engine.core.arbitrage.detector import generate_v3_profit_curve
 from engine.core.arbitrage.listener import ArbitrageWebSocketListener
 
 if TYPE_CHECKING:
@@ -674,7 +674,8 @@ class TradingScheduler:
         uni-bsc and uni-base are driven entirely by the WebSocket listener.
         """
         try:
-            from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_single_pool_state
+            from engine.core.arbitrage.detector import generate_v3_profit_curve
+            from engine.core.arbitrage.pool_state import update_single_pool_state
             from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
 
             await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, rpc_url_override=settings.assetchain_rpc_url)

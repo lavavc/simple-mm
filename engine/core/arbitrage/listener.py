@@ -8,7 +8,8 @@ from typing import Callable, Any
 from engine.config import settings
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-from engine.core.arbitrage.simulator import generate_v3_profit_curve, update_pool_state_from_event
+from engine.core.arbitrage.detector import generate_v3_profit_curve
+from engine.core.arbitrage.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
 

@@ -26,7 +26,6 @@ def default_params():
 def relaxed_params():
     """Relaxed params for testing: 50 bps min gross, 10 bps min net."""
     return ArbitrageParams(
-        min_spread_bps=50,
         min_net_profit_bps=10,
         dex_swap_fee_bps=30,
         cex_taker_fee_bps=15,
@@ -112,12 +111,12 @@ class TestCheckOpportunity:
         assert opp.sell_venue == "quidax"
 
     def test_too_small_spread_rejected(self, default_params):
-        """Spread below min_spread_bps should return None."""
+        """Spread below min_net_profit_bps after fees should return None."""
         detector = ArbitrageDetector(
             price_aggregator=MagicMock(),
             params=default_params,
         )
-        # 0.5% spread → 50 bps, below default 150 bps
+        # 0.5% spread → 50 bps gross; fees ~50 bps → 0 net, below min_net_profit_bps=50
         opp = detector._check_opportunity(
             "uni-base", Decimal("0.000696"),
             "quidax", Decimal("0.0006995"),

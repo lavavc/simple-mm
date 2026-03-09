@@ -80,7 +80,6 @@ class Settings(BaseSettings):
     arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
-    arbitrage_min_spread_bps: int = 150          # 1.5% minimum gross spread
     arbitrage_min_net_profit_bps: int = 50       # 0.5% minimum after fees
     arbitrage_dex_swap_fee_bps: int = 30         # Fallback if on-chain fee() call fails
     arbitrage_cex_taker_fee_bps: int = 25        # CEX taker fee

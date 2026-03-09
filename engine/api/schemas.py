@@ -178,7 +178,6 @@ class ArbitrageParams(BaseModel):
     """
 
     # Detection thresholds
-    min_spread_bps: int = settings.arbitrage_min_spread_bps
     min_net_profit_bps: int = settings.arbitrage_min_net_profit_bps
 
     # Fee estimates (in basis points)

@@ -394,7 +394,7 @@ class DexAdapterPriceSource(VenuePriceSource):
         self.pool_address = pool_address
 
     async def fetch_price(self) -> Optional[PriceQuote]:
-        from engine.core.arbitrage.simulator import get_cached_pool_state, Q96
+        from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
 
         sqrt_p, _, _, _, timestamp, _ = get_cached_pool_state(self.pool_address)
 

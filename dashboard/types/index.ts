@@ -73,7 +73,6 @@ export interface Alert {
 }
 
 export interface ArbitrageParams {
-  min_spread_bps: number;
   min_net_profit_bps: number;
   dex_swap_fee_bps: number;
   dex_slippage_bps: number;
