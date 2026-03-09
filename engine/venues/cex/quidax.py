@@ -33,7 +33,7 @@ class QuidaxAdapter(VenueAdapter):
         market: str = "usdtcngn",
         base_url: str | None = None,
         name: str = "quidax",
-        funding_role: str = "quidax-arb",
+        funding_role: str = "quidax-trade-fund",
     ):
         """
         Initialize Quidax adapter.
@@ -44,7 +44,7 @@ class QuidaxAdapter(VenueAdapter):
             market: Trading pair (lowercase, no underscore, e.g., "cngnusdt")
             base_url: Override base URL (useful for testing)
             name: Adapter name (used in logs and venue registry)
-            funding_role: Account role for auto-funding ("quidax-arb" | "quidax-lp")
+            funding_role: Account role for auto-funding ("quidax-trade-fund" | "quidax-lp")
         """
         self.name = name
         self.api_key = api_key

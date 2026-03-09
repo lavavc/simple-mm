@@ -21,31 +21,50 @@ import {
 import type { AccountBalance } from '@/types';
 
 const roleInfo: Record<string, { name: string; description: string }> = {
-  'uni-base-lp': {
-    name: 'Uniswap Base LP',
-    description: 'Liquidity provision account for Uniswap V4 on Base',
-  },
   'uni-base-trade': {
     name: 'Uniswap Base Trade',
     description: 'Arbitrage swap execution account on Base',
-  },
-  'uni-bsc-lp': {
-    name: 'Uniswap BSC LP',
-    description: 'Liquidity provision account for Uniswap V4 on BSC',
   },
   'uni-bsc-trade': {
     name: 'Uniswap BSC Trade',
     description: 'Arbitrage swap execution account on BSC',
   },
+  'uni-base-lp': {
+    name: 'Uniswap Base LP',
+    description: 'Liquidity provision account for Uniswap V4 on Base',
+  },
+  'uni-bsc-lp': {
+    name: 'Uniswap BSC LP',
+    description: 'Liquidity provision account for Uniswap V4 on BSC',
+  },
+  'quidax-lp': {
+    name: 'Quidax LP',
+    description: 'Quidax LP on-chain funding account on BSC',
+  },
+  'quidax-trade-fund': {
+    name: 'Quidax Trade Fund',
+    description: 'On-chain account that funds the Quidax exchange account',
+  },
+  'quidax-exchange': {
+    name: 'Quidax Trade',
+    description: 'Live balance on the Quidax exchange (not HD-derived)',
+  },
   blockradar: {
     name: 'Blockradar',
     description: 'B2C wallet system funding account',
   },
-  quidax: {
-    name: 'Quidax',
-    description: 'CEX deposit and trading account',
-  },
 };
+
+const ROLE_ORDER = [
+  'uni-base-trade',
+  'uni-bsc-trade',
+  'uni-base-lp',
+  'uni-bsc-lp',
+  'quidax-lp',
+  'quidax-trade-fund',
+  'quidax-exchange',
+  'blockradar',
+];
 
 function AccountCard({ account }: { account: AccountBalance }) {
   const [expanded, setExpanded] = useState(account.needs_refill);
@@ -58,11 +77,12 @@ function AccountCard({ account }: { account: AccountBalance }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Get explorer URL for Base chain
   const explorerUrl =
     account.chain_id === 8453
       ? `https://basescan.org/address/${account.address}`
-      : `https://etherscan.io/address/${account.address}`;
+      : account.chain_id === 56
+      ? `https://bscscan.com/address/${account.address}`
+      : null;
 
   return (
     <Card className={`relative overflow-hidden bg-gradient-to-b from-white/[0.03] to-white/[0.01] backdrop-blur-xl transition-all duration-300 rounded-sm ${account.needs_refill ? 'border-yellow-500/40 shadow-[0_0_30px_rgba(234,179,8,0.05)]' : 'border-white/[0.05] hover:border-emerald-500/40 hover:shadow-[0_0_30px_rgba(16,185,129,0.05)]'}`}>
@@ -110,31 +130,35 @@ function AccountCard({ account }: { account: AccountBalance }) {
               <Copy className="h-3 w-3" />
             )}
           </button>
-          <a href={explorerUrl} target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-white/5 rounded-sm border border-transparent hover:border-white/10 transition-colors text-white/40">
-            <ExternalLink className="h-3 w-3" />
-          </a>
+          {explorerUrl && (
+            <a href={explorerUrl} target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-white/5 rounded-sm border border-transparent hover:border-white/10 transition-colors text-white/40">
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
           <div className="ml-auto flex items-center gap-1.5 bg-white/5 border border-white/10 px-2 py-1 rounded-sm text-[8px] font-mono uppercase tracking-widest text-white/50">
             <Network className="h-2 w-2" />
-            CHAIN ID {account.chain_id}
+            {account.chain_id === 8453 ? 'BASE' : account.chain_id === 56 ? 'BSC' : account.chain_id === 0 ? 'CEX' : `CHAIN ${account.chain_id}`}
           </div>
         </div>
 
         {/* Balances grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {/* Native balance */}
-          <div className="p-3 bg-white/[0.02] border border-white/[0.05] rounded-sm flex flex-col items-start shadow-inner">
-            <div className="text-[8px] text-white/30 font-mono uppercase tracking-widest mb-1">
-              GAS ({account.native_symbol})
+          {/* Native balance — hidden for CEX accounts */}
+          {account.chain_id !== 0 && (
+            <div className="p-3 bg-white/[0.02] border border-white/[0.05] rounded-sm flex flex-col items-start shadow-inner">
+              <div className="text-[8px] text-white/30 font-mono uppercase tracking-widest mb-1">
+                GAS ({account.native_symbol})
+              </div>
+              <div
+                className={`text-sm font-mono tracking-tight font-bold ${account.refill_reasons.some((r) => r.includes(account.native_symbol))
+                  ? 'text-yellow-500'
+                  : 'text-white/90'
+                  }`}
+              >
+                {formatNumber(account.native_balance, 4)}
+              </div>
             </div>
-            <div
-              className={`text-sm font-mono tracking-tight font-bold ${account.refill_reasons.some((r) => r.includes(account.native_symbol))
-                ? 'text-yellow-500'
-                : 'text-white/90'
-                }`}
-            >
-              {formatNumber(account.native_balance, 4)}
-            </div>
-          </div>
+          )}
 
           {/* Token balances */}
           {Object.entries(account.token_balances).map(([token, balance]) => (
@@ -217,7 +241,13 @@ function AccountCard({ account }: { account: AccountBalance }) {
 }
 
 export default function AccountsPage() {
-  const { data: accounts, isLoading } = useAccountBalances();
+  const { data: rawAccounts, isLoading } = useAccountBalances();
+
+  const accounts = rawAccounts?.slice().sort((a, b) => {
+    const ai = ROLE_ORDER.indexOf(a.role);
+    const bi = ROLE_ORDER.indexOf(b.role);
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  });
 
   const needsRefill = accounts?.filter((a) => a.needs_refill).length || 0;
 
@@ -297,7 +327,7 @@ export default function AccountsPage() {
                       </td>
                       <td className="py-3 text-center">
                         <span className="bg-white/5 border border-white/10 px-2 py-1 rounded-sm text-[8px] text-white/60 uppercase tracking-widest">
-                          {account.chain_id === 8453 ? 'BASE' : account.chain_id === 56 ? 'BSC' : account.chain_id}
+                          {account.chain_id === 8453 ? 'BASE' : account.chain_id === 56 ? 'BSC' : account.chain_id === 0 ? 'CEX' : account.chain_id}
                         </span>
                       </td>
                       <td className={`py-3 text-right ${account.refill_reasons.some(r => r.includes(account.native_symbol)) ? 'text-yellow-500 font-bold' : ''}`}>
@@ -313,7 +343,7 @@ export default function AccountsPage() {
                           </span>
                         ) : (
                           <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-sm text-[8px] uppercase tracking-wider">
-                            SECURE
+                            OPERATIONAL
                           </span>
                         )}
                       </td>

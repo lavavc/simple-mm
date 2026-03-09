@@ -35,7 +35,7 @@ class TestAccountManagerInit:
         assert "uni-base-lp" in accounts
         assert "uni-base-trade" in accounts
         assert "blockradar" in accounts
-        assert "quidax-arb" in accounts
+        assert "quidax-trade-fund" in accounts
         assert "quidax-lp" in accounts
         assert "uni-bsc-lp" in accounts
         assert "uni-bsc-trade" in accounts
@@ -109,10 +109,10 @@ class TestAccountAccess:
         """Non-existent role should raise ValueError."""
         # Copy accounts dict and remove one to avoid mutating shared state
         saved = mgr._accounts.copy()
-        del mgr._accounts[AccountRole.QUIDAX_ARB]
+        del mgr._accounts[AccountRole.QUIDAX_TRADE_FUND]
         try:
             with pytest.raises(ValueError, match="No account configured"):
-                mgr.get_account(AccountRole.QUIDAX_ARB)
+                mgr.get_account(AccountRole.QUIDAX_TRADE_FUND)
         finally:
             mgr._accounts = saved
 
@@ -152,10 +152,10 @@ class TestThresholdUpdates:
 
     def test_update_invalid_role_raises(self, mgr):
         saved = mgr._configs.copy()
-        del mgr._configs[AccountRole.QUIDAX_ARB]
+        del mgr._configs[AccountRole.QUIDAX_TRADE_FUND]
         try:
             with pytest.raises(ValueError, match="No config for role"):
-                mgr.update_thresholds(AccountRole.QUIDAX_ARB, min_balance_eth=Decimal("1"))
+                mgr.update_thresholds(AccountRole.QUIDAX_TRADE_FUND, min_balance_eth=Decimal("1"))
         finally:
             mgr._configs = saved
 

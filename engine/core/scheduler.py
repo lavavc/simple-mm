@@ -160,7 +160,7 @@ class TradingScheduler:
             if quidax_arb:
                 import functools
                 self.scheduler.add_job(
-                    functools.partial(self._auto_fund_quidax, quidax_arb, "quidax-arb"),
+                    functools.partial(self._auto_fund_quidax, quidax_arb, "quidax-trade-fund"),
                     IntervalTrigger(seconds=self.config.balance_check_interval),
                     id="auto_fund_quidax_arb",
                     replace_existing=True,

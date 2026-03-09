@@ -29,7 +29,7 @@ class AccountRole(str, Enum):
     UNI_BASE_LP = "uni-base-lp"
     UNI_BASE_TRADE = "uni-base-trade"
     BLOCKRADAR = "blockradar"
-    QUIDAX_ARB = "quidax-arb"
+    QUIDAX_TRADE_FUND = "quidax-trade-fund"
     QUIDAX_LP = "quidax-lp"
     UNI_BSC_LP = "uni-bsc-lp"
     UNI_BSC_TRADE = "uni-bsc-trade"
@@ -77,8 +77,8 @@ DEFAULT_ACCOUNT_CONFIGS = {
         min_balance_eth=Decimal("0.005"),
         min_balance_tokens={"cNGN": Decimal("50000"), "USDT": Decimal("100"), "USDC": Decimal("100")},
     ),
-    AccountRole.QUIDAX_ARB: AccountConfig(
-        role=AccountRole.QUIDAX_ARB,
+    AccountRole.QUIDAX_TRADE_FUND: AccountConfig(
+        role=AccountRole.QUIDAX_TRADE_FUND,
         derivation_path="m/44'/60'/0'/3/0",
         chain_id=56,  # BSC
         rpc_url=settings.bsc_rpc_url,

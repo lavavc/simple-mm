@@ -18,7 +18,7 @@ from engine.core.price_aggregation import (
 
 logger = structlog.get_logger()
 
-_NON_TRADEABLE_VENUES = frozenset({"bybit", "blockradar"})
+_NON_TRADEABLE_VENUES = frozenset({"bybit", "blockradar", "assetchain"})
 
 
 def _optimal_cngn_amount(

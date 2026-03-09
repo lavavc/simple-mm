@@ -190,22 +190,21 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
                 dx={-10}
               />
               <Tooltip
-                contentStyle={{
-                  backgroundColor: '#0B0E14',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: '2px',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                  fontSize: '10px',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const sorted = [...payload].sort((a, b) => (b.value as number) - (a.value as number));
+                  return (
+                    <div style={{ backgroundColor: '#0B0E14', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '2px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', padding: '8px 12px' }}>
+                      <div style={{ color: 'rgba(255,255,255,0.4)', marginBottom: '8px' }}>{label}</div>
+                      {sorted.map((entry) => (
+                        <div key={entry.dataKey as string} style={{ display: 'flex', justifyContent: 'space-between', gap: '24px', color: entry.color, marginBottom: '2px' }}>
+                          <span>{VENUE_LABELS[entry.dataKey as string]?.name || entry.dataKey}</span>
+                          <span>{formatNumber(entry.value as number, 2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
                 }}
-                itemStyle={{ color: 'rgba(255,255,255,0.8)' }}
-                labelStyle={{ color: 'rgba(255,255,255,0.4)', marginBottom: '8px' }}
-                formatter={(value: number, name: string) => [
-                  formatNumber(value, 2),
-                  VENUE_LABELS[name]?.name || name,
-                ]}
               />
               <Legend
                 formatter={(value) => <span style={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{VENUE_LABELS[value]?.name || value}</span>}

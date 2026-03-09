@@ -722,7 +722,7 @@ async def get_all_account_balances():
 
     try:
         balances = await _account_manager.check_all_balances(_token_contracts)
-        return [
+        result = [
             AccountBalanceResponse(
                 role=b.role,
                 address=b.address,
@@ -735,6 +735,26 @@ async def get_all_account_balances():
             )
             for b in balances
         ]
+        # Append Quidax exchange account balance (not HD-derived, fetched via API)
+        quidax_adapter = _venues.get("quidax") if _venues else None
+        if quidax_adapter:
+            try:
+                pos = await quidax_adapter.get_position()
+                # Normalize Quidax keys (API returns "cngn"/"usdt") to match HD accounts
+                normalized = {"cNGN": pos.balances.get("cngn", Decimal("0")), "USDT": pos.balances.get("usdt", Decimal("0"))}
+                result.append(AccountBalanceResponse(
+                    role="quidax-exchange",
+                    address=settings.quidax_deposit_address,
+                    chain_id=0,
+                    native_balance=Decimal("0"),
+                    native_symbol="",
+                    token_balances=normalized,
+                    needs_refill=False,
+                    refill_reasons=[],
+                ))
+            except Exception as e:
+                logger.warning("quidax_exchange_balance_fetch_failed", error=str(e))
+        return result
     except Exception as e:
         logger.error("balance_fetch_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

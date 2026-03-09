@@ -122,7 +122,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
             api_key=settings.quidax_api_key,
             params=CexParams(),
             name="quidax",
-            funding_role="quidax-arb",
+            funding_role="quidax-trade-fund",
         )
         logger.info("venue_initialized", venue="quidax")
 

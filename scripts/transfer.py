@@ -4,7 +4,7 @@ Usage:
     python scripts/transfer.py --role uni-bsc-trade --token USDT --to 0x... --amount 50
     python scripts/transfer.py --role uni-bsc-trade --token BNB --to 0x... --amount 0.01
 
-Roles: uni-base-lp, uni-base-trade, blockradar, quidax-arb, quidax-lp,
+Roles: uni-base-lp, uni-base-trade, blockradar, quidax-trade-fund, quidax-lp,
        uni-bsc-lp, uni-bsc-trade
 Tokens by chain:
   Base (8453) : CNGN, USDC, USDT, ETH
