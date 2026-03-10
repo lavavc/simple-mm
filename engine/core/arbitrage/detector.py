@@ -398,44 +398,10 @@ async def generate_v3_profit_curve() -> dict:
     max_usd_v1 = min(uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)), uni_base_stable, ABSOLUTE_MAX_USD)
     max_usd_v2 = min(uni_base_cngn * Decimal(str(uni_base_price_usd)), uni_bsc_stable, ABSOLUTE_MAX_USD)
 
-    test_sizes = [1, 10, 50, 100, 500, 1000, 2500, 5000, 10000, 50000, 100000]
-
-    curve = []
-    for size in test_sizes:
-        investment_usd = Decimal(str(size))
-
-        cngn_uni_bsc = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        cngn_uni_base = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        cngn_assetchain = (
-            v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, asset_fee, 18, 6)
-            if asset_fee is not None else None
-        )
-        cngn_assetchain_no_fee = (
-            v3_swap_token0_for_token1(investment_usd, asset_sqrt, asset_liq, Decimal(0), 18, 6)
-            if asset_fee is not None else None
-        )
-        usd_returned = v3_swap_token0_for_token1(cngn_uni_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-
-        cngn_uni_bsc_no_fee = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
-        cngn_uni_base_no_fee = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
-        usd_returned_no_fee = v3_swap_token0_for_token1(cngn_uni_bsc_no_fee, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
-
-        slippage_tolerance = Decimal("0.0010")
-        min_usd_acceptable = usd_returned * (Decimal("1") - slippage_tolerance)
-
-        curve.append({
-            "size": size,
-            "cngn_uni_bsc": float(cngn_uni_bsc),
-            "cngn_uni_base": float(cngn_uni_base),
-            "cngn_assetchain": float(cngn_assetchain) if cngn_assetchain is not None else None,
-            "profit": float(usd_returned - investment_usd),
-            "profit_no_fee": float(usd_returned_no_fee - investment_usd),
-            "cngn_uni_bsc_no_fee": float(cngn_uni_bsc_no_fee),
-            "cngn_uni_base_no_fee": float(cngn_uni_base_no_fee),
-            "cngn_assetchain_no_fee": float(cngn_assetchain_no_fee) if cngn_assetchain_no_fee is not None else None,
-            "min_acceptable_usd": float(min_usd_acceptable)
-        })
-
+    # --------------------------------------------------------------------------------
+    # PHASE 1: FAST EXECUTION SIGNAL DISCOVERY
+    # Find the peak profit size instantly before wasting CPU on plotting visual curves.
+    # --------------------------------------------------------------------------------
     best_profit = Decimal("-999999")
     best_size = Decimal("0")
     best_dir = None
@@ -470,6 +436,44 @@ async def generate_v3_profit_curve() -> dict:
 
     if best_size > 0:
         best_spread_bps = int(((usd_out_expected - best_size) / best_size) * 10000)
+
+    # Future Execution Hook:
+    # if best_profit > MIN_PROFIT_THRESHOLD and best_dir:
+    #     asyncio.create_task(execute_arbitrage({ ... payloads ... }))
+    
+    # --------------------------------------------------------------------------------
+    # PHASE 2: VISUAL CURVE GENERATION
+    # Generate high-resolution curve data for the dashboard UI.
+    # --------------------------------------------------------------------------------
+    # Cap at $1000 max trade size per user request, maximizing detail in the crucial area.
+    test_sizes = list(range(1, 1001))
+
+    curve = []
+    for size in test_sizes:
+        investment_usd = Decimal(str(size))
+
+        if best_dir == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE":
+            cngn_acquired = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+            cngn_acquired_no_fee = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+            usd_returned = v3_swap_token1_for_token0(cngn_acquired, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+            usd_returned_no_fee = v3_swap_token1_for_token0(cngn_acquired_no_fee, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
+        else:
+            cngn_acquired = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+            cngn_acquired_no_fee = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
+            usd_returned = v3_swap_token0_for_token1(cngn_acquired, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+            usd_returned_no_fee = v3_swap_token0_for_token1(cngn_acquired_no_fee, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+
+        slippage_tolerance = Decimal("0.0010")
+        min_usd_acceptable = usd_returned * (Decimal("1") - slippage_tolerance)
+
+        curve.append({
+            "size": size,
+            "cngn_acquired": float(cngn_acquired),
+            "profit": float(usd_returned - investment_usd),
+            "profit_no_fee": float(usd_returned_no_fee - investment_usd),
+            "profit_after_slippage": float(min_usd_acceptable - investment_usd),
+            "min_acceptable_usd": float(min_usd_acceptable)
+        })
 
     uni_bsc_fee_bps = int(uni_bsc_fee * 10000) if uni_bsc_fee else 0
     uni_base_fee_bps = int(uni_base_fee * 10000) if uni_base_fee else 0

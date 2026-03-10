@@ -8,14 +8,15 @@ import { ArrowRightLeft, Database, Zap, ArrowRight, AlertTriangle, Activity, Tre
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useAccountBalances } from '@/lib/hooks/useQueries';
+import { ProfitCurveChart } from '@/components/charts/ProfitCurveChart';
 
 interface CurvePoint {
     size: number;
-    cngn_uni_bsc: number;
-    cngn_uni_base: number;
+    cngn_acquired: number;
     cngn_assetchain: number;
     profit: number;
     profit_no_fee: number;
+    profit_after_slippage: number;
     cngn_uni_bsc_no_fee: number;
     cngn_uni_base_no_fee: number;
     cngn_assetchain_no_fee: number;
@@ -469,7 +470,7 @@ export default function DexArbPage() {
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
                                             <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">UNI BSC</div>
-                                            <Badge variant="outline" className="text-[8px] bg-white/[0.05] border-white/10 text-white/60 font-mono">DEX</Badge>
+                                            <Badge variant="outline" className="text-[8px] bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-mono">EXECUTABLE</Badge>
                                         </div>
                                         <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
                                     </CardHeader>
@@ -512,7 +513,7 @@ export default function DexArbPage() {
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
                                             <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">UNI BASE</div>
-                                            <Badge variant="outline" className="text-[8px] bg-white/[0.05] border-white/10 text-white/60 font-mono">DEX</Badge>
+                                            <Badge variant="outline" className="text-[8px] bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-mono">EXECUTABLE</Badge>
                                         </div>
                                         <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
                                     </CardHeader>
@@ -555,20 +556,20 @@ export default function DexArbPage() {
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
                                             <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">ASSETCHAIN</div>
-                                            <Badge variant="outline" className="text-[8px] bg-white/[0.05] border-white/10 text-white/60 font-mono">DEX</Badge>
+                                            <Badge variant="outline" className="text-[8px] bg-blue-500/10 border-blue-500/30 text-blue-400 font-mono">OBSERVATIONAL</Badge>
                                         </div>
-                                        <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+                                        <Circle className="h-2 w-2 fill-blue-500 text-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
                                     </CardHeader>
                                     <CardContent className="px-4 pb-4 pt-2">
                                         <div className="flex items-center gap-2 mb-2">
-                                            <TrendingUp className="h-4 w-4 text-emerald-500/50" />
+                                            <TrendingUp className="h-4 w-4 text-blue-500/50" />
                                             <span className="text-xl font-bold font-mono tracking-tight text-white">${(resolvedCurveData.prices.assetchain || 0).toFixed(7)}</span>
                                             <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">USD</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono border-t border-white/[0.05] pt-3">
                                             <div>
                                                 <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">IMPLIED RATE</div>
-                                                <div className="flex items-center gap-1.5 text-emerald-400">
+                                                <div className="flex items-center gap-1.5 text-blue-400">
                                                     <ArrowRightLeft className="h-3 w-3" />
                                                     {formatNumber(1 / (resolvedCurveData.prices.assetchain || 1), 2)} cNGN
                                                 </div>
@@ -577,14 +578,14 @@ export default function DexArbPage() {
                                                 <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
                                                 <div className="flex justify-between items-end mb-1">
                                                     <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.assetchain_stable || 0, 2)} USDT</div>
-                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.assetchain_cngn || 0, 2)} cNGN</div>
+                                                    <div className="text-blue-400 font-bold">{formatNumber(resolvedCurveData.stats.assetchain_cngn || 0, 2)} cNGN</div>
                                                 </div>
                                                 <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
                                                     <div
-                                                        className="h-full bg-[#2563eb]"
+                                                        className="h-full bg-slate-500"
                                                         style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.assetchain_stable || 0) / ((resolvedCurveData.stats.assetchain_stable || 1) + (resolvedCurveData.stats.assetchain_cngn || 1) / 1500)) * 100))}%` }}
                                                     />
-                                                    <div className="h-full flex-1 bg-emerald-400" />
+                                                    <div className="h-full flex-1 bg-blue-400" />
                                                 </div>
                                             </div>
                                         </div>
@@ -595,6 +596,16 @@ export default function DexArbPage() {
                                 </Card>
                             </>
                         )}
+                    </div>
+
+                    <div className="h-96 mt-4 mb-4">
+                        <ProfitCurveChart 
+                            data={resolvedCurveData.curve} 
+                            optimalSize={resolvedCurveData.optimal_arb.optimal_size_usd} 
+                            maxProfit={resolvedCurveData.optimal_arb.expected_profit_usd}
+                            isSyncing={isSyncing}
+                            direction={resolvedCurveData.optimal_arb.direction}
+                        />
                     </div>
 
                     <Card className="bg-white/[0.02] border-white/[0.05] rounded-sm shadow-none">
