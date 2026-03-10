@@ -147,6 +147,10 @@ class ArbitrageDetector:
         venue_names = [v for v in normalized.keys() if v not in _NON_TRADEABLE_VENUES]
         for i, buy_venue in enumerate(venue_names):
             for sell_venue in venue_names[i + 1:]:
+                # Skip DEX-to-DEX pairs already handled by high-fidelity Simulator
+                if buy_venue in self.dex_venues and sell_venue in self.dex_venues:
+                    continue
+
                 # Use ask when buying from CEX, bid when selling to CEX; mid for DEX
                 buy_is_cex = buy_venue not in self.dex_venues
                 sell_is_cex = sell_venue not in self.dex_venues
