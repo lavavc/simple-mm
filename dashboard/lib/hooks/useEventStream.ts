@@ -22,6 +22,7 @@ const EVENT_TO_KEYS: Record<string, string[][]> = {
   account_balances: [['accountBalances']],
   arbitrage_opportunity: [['opportunities'], ['arbitrageStatus']],
   arbitrage_completed: [['opportunities'], ['arbitrageStatus']],
+  quidax_orderbook_depth: [['quidaxDepth']],
   action: [], // logged only — no cache to invalidate
 };
 
@@ -62,6 +63,14 @@ export function useEventStream() {
 
         if (event.type === 'dex_arb_curve' && event.data) {
           qc.setQueryData(['dex_arb_curve'], event.data);
+        }
+
+        if (event.type === 'quidax_dex_arb_curve' && event.data) {
+          qc.setQueryData(['quidax_dex_arb_curve'], event.data);
+        }
+
+        if (event.type === 'quidax_orderbook_depth' && event.data) {
+          qc.setQueryData(['quidaxDepth'], event.data);
         }
 
         if (event.type === 'arbitrage_opportunity' && event.data) {

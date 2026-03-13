@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatNumber } from '@/lib/utils';
-import { useStatus } from '@/lib/hooks/useQueries';
+import { useStatus, useLiquidationValuation } from '@/lib/hooks/useQueries';
 import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge } from 'lucide-react';
 import type { VenueStatus } from '@/types';
 
@@ -63,6 +63,44 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
     }, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  const { data: liquidationData } = useLiquidationValuation();
+
+  // Map venue -> wallet roles that belong to it
+  const VENUE_ROLES: Record<string, string[]> = {
+    quidax: ['quidax-exchange', 'quidax-lp', 'quidax-trade-fund'],
+    'uni-bsc': ['uni-bsc-trade', 'uni-bsc-lp'],
+    'uni-base': ['uni-base-trade', 'uni-base-lp'],
+  };
+  const roles = VENUE_ROLES[venue.name] || [];
+
+  // For a given token (cNGN), sum up liquidation_usd across all relevant roles
+  const getCNGNLiqUSD = (): number => {
+    if (!liquidationData?.venues) return 0;
+    return roles.reduce((total, role) => {
+      const roleData = liquidationData.venues[role];
+      if (!roleData) return total;
+      const cngn = roleData['cNGN'] || roleData['cngn'];
+      return total + (Number(cngn?.liquidation_usd) || 0);
+    }, 0);
+  };
+
+  // No-fee version — for showing the cost of conversion
+  const getCNGNLiqUSDNoFee = (): number => {
+    if (!liquidationData?.venues) return 0;
+    return roles.reduce((total, role) => {
+      const roleData = liquidationData.venues[role];
+      if (!roleData) return total;
+      const cngn = roleData['cNGN'] || roleData['cngn'];
+      return total + (Number(cngn?.liquidation_usd_no_fee) || 0);
+    }, 0);
+  };
+
+  const cNGNLiqUSD = getCNGNLiqUSD();
+  const cNGNLiqUSDNoFee = getCNGNLiqUSDNoFee();
+  const cNGNFeeCost = (cNGNLiqUSDNoFee > 0 && cNGNLiqUSD > 0) ? cNGNLiqUSDNoFee - cNGNLiqUSD : null;
+  // Live spot from venue's own price, as fallback
+  const spotPrice = Number(venue.price?.quote?.mid) || 0.00066;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
@@ -143,18 +181,60 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                   <div className="grid grid-cols-2 gap-4">
                     {Object.entries(venue.position.balances).map(([token, amount]) => {
                       const isCngn = token.toLowerCase() === 'cngn';
+
+                      let usdValue = Number(amount) || 0;
+                      if (isCngn) {
+                        // Use exact slippage-adjusted liquidation if available, else live spot
+                        usdValue = cNGNLiqUSD > 0
+                          ? cNGNLiqUSD
+                          : (Number(amount) || 0) * spotPrice;
+                      }
+
                       return (
                         <div key={token} className="bg-black/40 border border-white/[0.02] rounded-sm p-3.5">
                           <div className="flex justify-between items-start mb-2">
                             <span className={`text-[11px] uppercase tracking-widest font-bold ${isCngn ? 'text-emerald-500' : 'text-blue-500'}`}>{token}</span>
-                            <span className="text-sm font-mono text-white">{formatNumber(amount as number, isCngn ? 0 : 2)}</span>
+                            <span className="text-sm font-mono text-white">{formatNumber(Number(amount) || 0, isCngn ? 0 : 2)}</span>
                           </div>
-                          <div className="text-[10px] text-white/50 font-mono text-right border-t border-white/[0.05] pt-2">
-                            ≈ ${formatNumber((amount as number) * (isCngn ? 0.0007 : 1), 2)}
-                          </div>
+
+                          {isCngn && cNGNLiqUSD > 0 && cNGNLiqUSDNoFee > 0 ? (
+                            /* Fee breakdown: no-fee → with-fee + cost */
+                            <div className="border-t border-white/[0.05] pt-2 space-y-1">
+                              <div className="text-[9px] text-white/30 font-mono uppercase tracking-widest">cNGN liq</div>
+                              <div className="flex items-center gap-1.5 text-[10px] font-mono">
+                                <span className="text-white/60">${formatNumber(cNGNLiqUSDNoFee, 2)}</span>
+                                <span className="text-white/20">→</span>
+                                <span className="text-amber-400/90">${formatNumber(cNGNLiqUSD, 2)}</span>
+                                {cNGNFeeCost != null && cNGNFeeCost > 0 && (
+                                  <span className="text-red-400/60 ml-auto text-[8.5px]">-${formatNumber(cNGNFeeCost, 2)} fee</span>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-white/50 font-mono text-right border-t border-white/[0.05] pt-2">
+                              ≈ ${formatNumber(usdValue, 2)}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
+                  </div>
+                  
+                  {/* Total Venue Liquid Value */}
+                  <div className="mt-4 pt-3 border-t border-white/[0.05] flex justify-between items-center">
+                    <span className="text-[10px] text-white/40 font-mono uppercase tracking-widest">Total Liquid Value</span>
+                    <span className="text-sm font-mono text-white/90 font-bold">
+                      ${formatNumber(
+                        Object.entries(venue.position.balances).reduce((acc, [t, a]) => {
+                          const isC = t.toLowerCase() === 'cngn';
+                          let v = Number(a) || 0;
+                          if (isC) {
+                            v = cNGNLiqUSD > 0 ? cNGNLiqUSD : (Number(a) || 0) * spotPrice;
+                          }
+                          return acc + v;
+                        }, 0), 2
+                      )}
+                    </span>
                   </div>
                 </div>
               ) : (

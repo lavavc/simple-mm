@@ -14,11 +14,11 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.base import BaseDexAdapter
-from engine.core.arbitrage.detector import generate_v3_profit_curve
 from engine.core.arbitrage.listener import ArbitrageWebSocketListener
+from engine.core.arbitrage.cex_dex_curve import simulate_cex_dex_arbitrage, compute_quidax_liquidation
 
 if TYPE_CHECKING:
-    from engine.core.arbitrage import ArbitrageEngine
+    from engine.core.arbitrage.engine import ArbitrageEngine
     from engine.core.accounts import AccountManager
 
 logger = structlog.get_logger()
@@ -212,6 +212,17 @@ class TradingScheduler:
             misfire_grace_time=30,
         )
         logger.info("assetchain_poll_job_registered")
+
+        # Stream Quidax Depth
+        self.scheduler.add_job(
+            self._stream_quidax_depth,
+            IntervalTrigger(seconds=2),
+            id="quidax_depth_stream",
+            replace_existing=True,
+            max_instances=2,
+            misfire_grace_time=10,
+        )
+        logger.info("quidax_depth_stream_job_registered")
 
         self.scheduler.start()
         self._started = True
@@ -762,6 +773,100 @@ class TradingScheduler:
         except Exception as e:
             logger.error("dex_arb_curve_stream_failed", error=str(e))
 
+    async def _stream_quidax_depth(self):
+        """Polls Quidax for Order Level 2 Depth and streams to WebSocket."""
+        try:
+            quidax = self.venues.get("quidax")
+            if not quidax:
+                return
+
+            depth = await quidax.get_order_book_depth(limit=20)
+            if depth:
+                self.broadcast({
+                    "type": "quidax_orderbook_depth",
+                    "data": {
+                        "venue": depth.venue,
+                        "pair": depth.pair,
+                        "timestamp": depth.timestamp,
+                        "bids": [{"price": float(b.price), "amount": float(b.amount)} for b in depth.bids],
+                        "asks": [{"price": float(a.price), "amount": float(a.amount)} for a in depth.asks]
+                    }
+                })
+
+                # Calculate CEX-DEX Arbitrage Curve against live Quidax depth.
+                # If _last_balances isn't populated yet (startup race), eagerly fetch them.
+                last_balances = getattr(self, "_last_balances", None)
+                if not last_balances and self.account_manager:
+                    try:
+                        last_balances = await self.account_manager.check_all_balances(self.token_contracts)
+                        self._last_balances = last_balances
+                        logger.info("balances_eagerly_seeded_for_liquidation_calc")
+                    except Exception as seed_err:
+                        logger.warning("eager_balance_seed_failed", error=str(seed_err))
+
+                # The Quidax exchange balance (CEX account: cNGN + USDT) is NOT in
+                # _last_balances — it comes from quidax.get_position(), not from
+                # account_manager.check_all_balances(). Fetch it directly and inject
+                # a synthetic entry so compute_quidax_liquidation gets the real amounts.
+                balances_with_quidax = list(last_balances) if last_balances else []
+                try:
+                    qx_pos = await quidax.get_position()
+                    if qx_pos and qx_pos.balances:
+                        from types import SimpleNamespace
+                        from decimal import Decimal
+                        qx_bal = SimpleNamespace(
+                            role="quidax-exchange",
+                            token_balances={
+                                "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
+                                "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
+                            }
+                        )
+                        balances_with_quidax.append(qx_bal)
+                except Exception as qx_err:
+                    logger.warning("quidax_position_fetch_for_liq_failed", error=str(qx_err))
+
+                # Always compute Quidax-only liquidation (no DEX pool state needed).
+                quidax_liq = compute_quidax_liquidation(depth, balances_with_quidax) if balances_with_quidax else None
+
+                # Attempt the full arb curve (requires DEX pool state to be seeded).
+                cex_dex_curve_data = simulate_cex_dex_arbitrage(depth, balances_with_quidax)
+
+                if cex_dex_curve_data and balances_with_quidax:
+                    # Full curve available: merge the precise Quidax liq into it
+                    if quidax_liq:
+                        cex_dex_curve_data["liquidation_valuation"].update(quidax_liq)
+                    self.broadcast({
+                        "type": "quidax_dex_arb_curve",
+                        "data": cex_dex_curve_data
+                    })
+                elif quidax_liq:
+                    # DEX pool state not ready yet — broadcast just the Quidax liq
+                    # so the UI shows real values immediately without waiting for BSC/Base.
+                    self.broadcast({
+                        "type": "quidax_dex_arb_curve",
+                        "data": {
+                            "liquidation_valuation": {
+                                "quidax_cngn_usd":        quidax_liq["quidax_cngn_usd"],
+                                "quidax_cngn_usd_no_fee": quidax_liq["quidax_cngn_usd_no_fee"],
+                                "quidax_usdt":            quidax_liq["quidax_usdt"],
+                                "uni_bsc_cngn_usd": 0.0,
+                                "uni_bsc_cngn_usd_no_fee": 0.0,
+                                "uni_bsc_usdt": 0.0,
+                                "uni_base_cngn_usd": 0.0,
+                                "uni_base_cngn_usd_no_fee": 0.0,
+                                "uni_base_usdc": 0.0,
+                            },
+                            "prices": {
+                                "quidax": quidax_liq["quidax_mid"],
+                                "uni-bsc": 0.0,
+                                "uni-base": 0.0,
+                            },
+                        }
+                    })
+
+        except Exception as e:
+            logger.error("quidax_depth_stream_failed", error=str(e))
+
     # ------------------------------------------------------------------
     # Account balance monitoring
     # ------------------------------------------------------------------
@@ -772,6 +877,7 @@ class TradingScheduler:
 
         try:
             balances = await self.account_manager.check_all_balances(self.token_contracts)
+            self._last_balances = balances
             db = await get_db()
 
             for balance in balances:

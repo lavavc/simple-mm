@@ -339,7 +339,12 @@ class ArbitrageDetector:
 
 
 async def generate_v3_profit_curve() -> dict:
-    """Generates the side-by-side exact V3 curve data over a set of investment sizes from CACHED memory."""
+    """Generates the side-by-side exact V3 curve data over a set of investment sizes from CACHED memory.
+
+    TODO: Extract this into engine/core/arbitrage/dex_dex_curve.py to mirror
+    the cex_dex_curve.py structure. detector.py should only contain ArbitrageDetector
+    (price scanning / opportunity detection), not curve generation logic.
+    """
     from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -409,30 +414,42 @@ async def generate_v3_profit_curve() -> dict:
     usd_out_expected = Decimal("0")
     best_spread_bps = 0
 
-    step = 10
+    def ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):
+        # Evaluate up front to check if it's even profitable
+        if eval_func(Decimal("5"))[0] <= Decimal("-1"):
+            return Decimal("-999999"), Decimal("0"), Decimal("0"), Decimal("0"), None
+        while high - low > tol:
+            m1 = low + (high - low) / Decimal("3")
+            m2 = high - (high - low) / Decimal("3")
+            f1_prof, f1_out, f1_cngn, _ = eval_func(m1)
+            f2_prof, f2_out, f2_cngn, _ = eval_func(m2)
+            if f1_prof < f2_prof:
+                low = m1
+            else:
+                high = m2
+        best_size = (low + high) / Decimal("2")
+        best_prof, best_out, best_cngn, best_dir = eval_func(best_size)
+        return best_prof, best_size, best_cngn, best_out, best_dir
+
     # DELTA BALANCING VECTOR 1: Buy on uni-bsc, sell identical cNGN from uni-base inventory
-    for size in range(10, int(max_usd_v1) + step, step):
-        usd_in_bsc = Decimal(size)
-        cngn_acquired_bsc = v3_swap_token0_for_token1(usd_in_bsc, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        usd_out_base = v3_swap_token0_for_token1(cngn_acquired_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        if usd_out_base - usd_in_bsc > best_profit:
-            best_profit = usd_out_base - usd_in_bsc
-            best_size = usd_in_bsc
-            best_dir = "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
-            best_cngn = cngn_acquired_bsc
-            usd_out_expected = usd_out_base
+    def eval_bsc_to_base(inv: Decimal):
+        cngn = v3_swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        out = v3_swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        return out - inv, out, cngn, "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
 
     # DELTA BALANCING VECTOR 2: Buy on uni-base, sell identical cNGN from uni-bsc inventory
-    for size in range(10, int(max_usd_v2) + step, step):
-        usd_in_base = Decimal(size)
-        cngn_acquired_base = v3_swap_token1_for_token0(usd_in_base, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        usd_out_bsc = v3_swap_token1_for_token0(cngn_acquired_base, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        if usd_out_bsc - usd_in_base > best_profit:
-            best_profit = usd_out_bsc - usd_in_base
-            best_size = usd_in_base
-            best_dir = "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"
-            best_cngn = cngn_acquired_base
-            usd_out_expected = usd_out_bsc
+    def eval_base_to_bsc(inv: Decimal):
+        cngn = v3_swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        out = v3_swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        return out - inv, out, cngn, "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"
+
+    best_profit_v1, best_size_v1, best_cngn_v1, best_out_v1, best_dir_v1 = ternary_search(eval_bsc_to_base, high=max_usd_v1)
+    best_profit_v2, best_size_v2, best_cngn_v2, best_out_v2, best_dir_v2 = ternary_search(eval_base_to_bsc, high=max_usd_v2)
+
+    if best_profit_v1 > best_profit_v2 and best_profit_v1 > best_profit:
+        best_profit, best_size, best_cngn, usd_out_expected, best_dir = best_profit_v1, best_size_v1, best_cngn_v1, best_out_v1, best_dir_v1
+    elif best_profit_v2 > best_profit_v1 and best_profit_v2 > best_profit:
+        best_profit, best_size, best_cngn, usd_out_expected, best_dir = best_profit_v2, best_size_v2, best_cngn_v2, best_out_v2, best_dir_v2
 
     if best_size > 0:
         best_spread_bps = int(((usd_out_expected - best_size) / best_size) * 10000)
@@ -449,30 +466,39 @@ async def generate_v3_profit_curve() -> dict:
     test_sizes = list(range(1, 1001))
 
     curve = []
+    slippage_multiplier = Decimal("1") - Decimal("0.0010")
     for size in test_sizes:
         investment_usd = Decimal(str(size))
 
-        if best_dir == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE":
-            cngn_acquired = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-            cngn_acquired_no_fee = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
-            usd_returned = v3_swap_token1_for_token0(cngn_acquired, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-            usd_returned_no_fee = v3_swap_token1_for_token0(cngn_acquired_no_fee, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
-        else:
-            cngn_acquired = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-            cngn_acquired_no_fee = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
-            usd_returned = v3_swap_token0_for_token1(cngn_acquired, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-            usd_returned_no_fee = v3_swap_token0_for_token1(cngn_acquired_no_fee, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+        cngn_acquired_base = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        cngn_acquired_no_fee_base = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+        usd_returned_bsc = v3_swap_token1_for_token0(cngn_acquired_base, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        usd_returned_no_fee_bsc = v3_swap_token1_for_token0(cngn_acquired_no_fee_base, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
 
-        slippage_tolerance = Decimal("0.0010")
-        min_usd_acceptable = usd_returned * (Decimal("1") - slippage_tolerance)
+        cngn_acquired_bsc = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        cngn_acquired_no_fee_bsc = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
+        usd_returned_base = v3_swap_token0_for_token1(cngn_acquired_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        usd_returned_no_fee_base = v3_swap_token0_for_token1(cngn_acquired_no_fee_bsc, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+
+        min_usd_bsc = usd_returned_bsc * slippage_multiplier
+        min_usd_base = usd_returned_base * slippage_multiplier
 
         curve.append({
             "size": size,
-            "cngn_acquired": float(cngn_acquired),
-            "profit": float(usd_returned - investment_usd),
-            "profit_no_fee": float(usd_returned_no_fee - investment_usd),
-            "profit_after_slippage": float(min_usd_acceptable - investment_usd),
-            "min_acceptable_usd": float(min_usd_acceptable)
+            "base_to_bsc": {
+                "cngn_acquired": float(cngn_acquired_base),
+                "profit": float(usd_returned_bsc - investment_usd),
+                "profit_no_fee": float(usd_returned_no_fee_bsc - investment_usd),
+                "profit_after_slippage": float(min_usd_bsc - investment_usd),
+                "min_acceptable_usd": float(min_usd_bsc)
+            },
+            "bsc_to_base": {
+                "cngn_acquired": float(cngn_acquired_bsc),
+                "profit": float(usd_returned_base - investment_usd),
+                "profit_no_fee": float(usd_returned_no_fee_base - investment_usd),
+                "profit_after_slippage": float(min_usd_base - investment_usd),
+                "min_acceptable_usd": float(min_usd_base)
+            }
         })
 
     uni_bsc_fee_bps = int(uni_bsc_fee * 10000) if uni_bsc_fee else 0

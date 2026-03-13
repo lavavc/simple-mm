@@ -40,7 +40,8 @@ class ArbitrageEngine:
         venues: dict[str, VenueAdapter],
         params: ArbitrageParams,
         broadcast: Callable[[dict], Any],
-        execution_enabled: bool = False,
+        execute_cex_dex_enabled: bool = False,
+        execute_dex_dex_enabled: bool = False,
         normalizer: PriceNormalizer | None = None,
         blended_calculator: BlendedPriceCalculator | None = None,
     ):
@@ -52,7 +53,8 @@ class ArbitrageEngine:
             venues: Dict of venue name to adapter
             params: Arbitrage parameters
             broadcast: Function to broadcast events to WebSocket clients
-            execution_enabled: If True, execute trades (Phase 2+)
+            execute_cex_dex_enabled: If True, execute CEX-DEX trades
+            execute_dex_dex_enabled: If True, execute DEX-DEX trades
             normalizer: Shared price normalizer
             blended_calculator: Blended price calculator for fair-value detection
         """
@@ -60,7 +62,8 @@ class ArbitrageEngine:
         self.venues = venues
         self.params = params
         self.broadcast = broadcast
-        self.execution_enabled = execution_enabled
+        self.execute_cex_dex_enabled = execute_cex_dex_enabled
+        self.execute_dex_dex_enabled = execute_dex_dex_enabled
 
         # Initialize components
         self.inventory = InventoryTracker(params)
@@ -74,7 +77,7 @@ class ArbitrageEngine:
             inventory_tracker=self.inventory,
             dex_venues=dex_venues,
         )
-        self.executor = ArbitrageExecutor(venues, execution_enabled)
+        self.executor = ArbitrageExecutor(venues, self.execute_cex_dex_enabled or self.execute_dex_dex_enabled)
 
         # State
         self._enabled = True
@@ -95,6 +98,26 @@ class ArbitrageEngine:
         """Disable arbitrage scanning."""
         self._enabled = False
         logger.info("arbitrage_engine_disabled")
+
+    def enable_execute_cex_dex(self):
+        self.execute_cex_dex_enabled = True
+        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
+        logger.info("execution_cex_dex_enabled")
+
+    def disable_execute_cex_dex(self):
+        self.execute_cex_dex_enabled = False
+        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
+        logger.info("execution_cex_dex_disabled")
+
+    def enable_execute_dex_dex(self):
+        self.execute_dex_dex_enabled = True
+        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
+        logger.info("execution_dex_dex_enabled")
+
+    def disable_execute_dex_dex(self):
+        self.execute_dex_dex_enabled = False
+        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
+        logger.info("execution_dex_dex_disabled")
 
     async def scan(self) -> list[ArbitrageOpportunity]:
         """
@@ -152,8 +175,18 @@ class ArbitrageEngine:
                     expected_profit=float(opp.expected_profit_usd),
                 )
 
+                # Detect which lane the arb is in
+                is_dex_dex = opp.buy_venue in self.detector.dex_venues and opp.sell_venue in self.detector.dex_venues
+                is_cex_dex = (opp.buy_venue in self.detector.dex_venues) != (opp.sell_venue in self.detector.dex_venues)
+                
+                execution_enabled_for_opp = False
+                if is_dex_dex and self.execute_dex_dex_enabled:
+                    execution_enabled_for_opp = True
+                elif is_cex_dex and self.execute_cex_dex_enabled:
+                    execution_enabled_for_opp = True
+
                 # Phase 1: Detection only - do not execute
-                if not self.execution_enabled:
+                if not execution_enabled_for_opp:
                     # Mark as expired since we're not executing
                     await db.update_arbitrage_opportunity(
                         opp.id,
@@ -166,7 +199,7 @@ class ArbitrageEngine:
                 await self._execute_opportunity(opp)
 
             # Follow-on execution loop: re-detect with fresh prices until market clears
-            if self.execution_enabled:
+            if self.execute_cex_dex_enabled or self.execute_dex_dex_enabled:
                 for _ in range(4):
                     more = await self.detector.detect_opportunities()
                     if not more:
@@ -251,7 +284,8 @@ class ArbitrageEngine:
 
         return ArbitrageStatus(
             enabled=self._enabled,
-            detection_only=not self.execution_enabled,
+            execute_cex_dex=self.execute_cex_dex_enabled,
+            execute_dex_dex=self.execute_dex_dex_enabled,
             last_scan_timestamp=self._last_scan_timestamp,
             opportunities_detected_24h=stats["opportunities_detected"],
             opportunities_executed_24h=stats["opportunities_executed"],

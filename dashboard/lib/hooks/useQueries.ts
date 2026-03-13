@@ -65,6 +65,15 @@ export function useAlerts(limit = 20) {
   });
 }
 
+export function useLiquidationValuation() {
+  return useQuery({
+    queryKey: ['liquidationValuation'],
+    queryFn: api.getLiquidationValuation,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+}
+
 export function usePoolMetrics() {
   return useQuery({
     queryKey: ['poolMetrics'],
@@ -82,18 +91,6 @@ export function usePoolMetricsHistory(minutes: number) {
 }
 
 // ── Mutations ───────────────────────────────────────────────────────────────
-
-
-export function useTriggerScan() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (token: string) => api.triggerScan(token),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['opportunities'] });
-      qc.invalidateQueries({ queryKey: ['arbitrageStatus'] });
-    },
-  });
-}
 
 export function useAcknowledgeAlert() {
   const qc = useQueryClient();

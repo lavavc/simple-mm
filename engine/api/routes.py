@@ -31,6 +31,7 @@ from engine.api.schemas import (
     NormalizedPriceResponse,
     BlendedPriceResponse,
     DexArbOpportunity,
+    OrderBookDepthResponse,
 )
 
 logger = structlog.get_logger()
@@ -541,6 +542,29 @@ async def trigger_venue_sync(venue: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/venues/quidax/depth", response_model=OrderBookDepthResponse)
+async def get_quidax_order_book_depth(limit: int = Query(50, le=200)):
+    """Get the live Level 2 Order Book Depth from Quidax."""
+    if "quidax" not in _venues:
+        raise HTTPException(status_code=404, detail="Quidax venue not configured")
+    
+    try:
+        depth = await _venues["quidax"].get_order_book_depth(limit=limit)
+        if not depth:
+            raise HTTPException(status_code=503, detail="Failed to fetch Quidax order book depth")
+            
+        return OrderBookDepthResponse(
+            venue=depth.venue,
+            pair=depth.pair,
+            timestamp=depth.timestamp,
+            bids=[{"price": b.price, "amount": b.amount} for b in depth.bids],
+            asks=[{"price": a.price, "amount": a.amount} for a in depth.asks]
+        )
+    except Exception as e:
+        logger.error("quidax_depth_route_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # === Action Log Routes ===
 
 
@@ -613,6 +637,103 @@ async def get_dex_arbitrage_opportunities(
     return await db.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
 
+@router.get("/arbitrage/liquidation")
+async def get_liquidation_valuation():
+    """
+    Returns the slippage-adjusted USD liquidation value of all cNGN holdings
+    across every venue, computed on-demand from the live Quidax order book + pool state.
+    """
+    from decimal import Decimal
+    from engine.core.arbitrage.pool_state import (
+        get_cached_pool_state,
+        v3_swap_token0_for_token1,
+        v3_swap_token1_for_token0,
+    )
+    from engine.core.arbitrage.cex_dex_curve import walk_quidax_asks
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+    import time
+
+    if not _account_manager:
+        return {"error": "account_manager_not_configured", "venues": {}}
+
+    # Fetch live Quidax order book (same data used for arb calculations)
+    quidax_venue = _venues.get("quidax") if _venues else None
+    quidax_asks = []
+    if quidax_venue:
+        try:
+            depth = await quidax_venue.get_order_book_depth(limit=50)
+            if depth and depth.asks:
+                quidax_asks = depth.asks
+        except Exception:
+            pass
+
+    bsc_sqrt, bsc_liq, _, _, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    base_sqrt, base_liq, _, _, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+
+    try:
+        balances = await _account_manager.check_all_balances(_token_contracts)
+    except Exception as e:
+        return {"error": str(e), "venues": {}}
+
+    # Append the Quidax exchange account (CEX balance — not HD-derived, fetched via API).
+    # Without this, quidax-exchange is never in the list and we'd miss the real cNGN holding.
+    if quidax_venue:
+        try:
+            qx_pos = await quidax_venue.get_position()
+            if qx_pos and qx_pos.balances:
+                from types import SimpleNamespace
+                balances = list(balances) + [SimpleNamespace(
+                    role="quidax-exchange",
+                    token_balances={
+                        "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
+                        "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
+                    }
+                )]
+        except Exception:
+            pass
+
+    result = {}
+    for bal in balances:
+        role = bal.role
+        tokens = bal.token_balances or {}
+        venue_result = {}
+
+        for token, amt in tokens.items():
+            amount = Decimal(str(amt)) if amt is not None else Decimal(0)
+            if token.lower() == "cngn" and amount > 0:
+                liq_usd = Decimal(0)
+                liq_usd_no_fee = Decimal(0)
+                try:
+                    if role in ("quidax-exchange", "quidax-lp", "quidax-trade-fund") and quidax_asks:
+                        # Real orderbook walk with fee — same as arbitrage logic
+                        liq_usd, _ = walk_quidax_asks(quidax_asks, amount)
+                        # No-fee version: same walk without the 0.1% taker deduction
+                        from engine.core.arbitrage.cex_dex_curve import QUIDAX_FEE
+                        liq_usd_no_fee = liq_usd / (Decimal("1") - QUIDAX_FEE)
+                    elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt:
+                        liq_usd = v3_swap_token1_for_token0(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
+                        liq_usd_no_fee = v3_swap_token1_for_token0(amount, bsc_sqrt, bsc_liq, Decimal(0), 18, 6)
+                    elif role in ("uni-base-trade", "uni-base-lp") and base_sqrt:
+                        liq_usd = v3_swap_token0_for_token1(amount, base_sqrt, base_liq, base_fee, 6, 6)
+                        liq_usd_no_fee = v3_swap_token0_for_token1(amount, base_sqrt, base_liq, Decimal(0), 6, 6)
+                except Exception:
+                    liq_usd = Decimal(0)
+                    liq_usd_no_fee = Decimal(0)
+                venue_result[token] = {
+                    "amount": float(amount),
+                    "liquidation_usd": float(liq_usd),
+                    "liquidation_usd_no_fee": float(liq_usd_no_fee),
+                }
+            else:
+                a = float(amount) if amt is not None else 0.0
+                venue_result[token] = {"amount": a, "liquidation_usd": a, "liquidation_usd_no_fee": a}
+
+        result[role] = venue_result
+
+    return {"timestamp": int(time.time() * 1000), "venues": result}
+
+
 @router.get("/arbitrage/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
 async def get_arbitrage_opportunity(opportunity_id: str):
     """Get a specific arbitrage opportunity."""
@@ -643,6 +764,50 @@ async def disable_arbitrage():
 
     _arbitrage_engine.disable()
     logger.info("arbitrage_disabled_via_api")
+    return {"status": "disabled"}
+
+
+@router.post("/arbitrage/execute-cex-dex/enable", dependencies=[Depends(verify_token)])
+async def enable_execute_cex_dex():
+    """Enable execution for CEX-DEX arbitrage."""
+    if not _arbitrage_engine:
+        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
+
+    _arbitrage_engine.enable_execute_cex_dex()
+    logger.info("execution_cex_dex_enabled_via_api")
+    return {"status": "enabled"}
+
+
+@router.post("/arbitrage/execute-cex-dex/disable", dependencies=[Depends(verify_token)])
+async def disable_execute_cex_dex():
+    """Disable execution for CEX-DEX arbitrage."""
+    if not _arbitrage_engine:
+        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
+
+    _arbitrage_engine.disable_execute_cex_dex()
+    logger.info("execution_cex_dex_disabled_via_api")
+    return {"status": "disabled"}
+
+
+@router.post("/arbitrage/execute-dex-dex/enable", dependencies=[Depends(verify_token)])
+async def enable_execute_dex_dex():
+    """Enable execution for DEX-DEX arbitrage."""
+    if not _arbitrage_engine:
+        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
+
+    _arbitrage_engine.enable_execute_dex_dex()
+    logger.info("execution_dex_dex_enabled_via_api")
+    return {"status": "enabled"}
+
+
+@router.post("/arbitrage/execute-dex-dex/disable", dependencies=[Depends(verify_token)])
+async def disable_execute_dex_dex():
+    """Disable execution for DEX-DEX arbitrage."""
+    if not _arbitrage_engine:
+        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
+
+    _arbitrage_engine.disable_execute_dex_dex()
+    logger.info("execution_dex_dex_disabled_via_api")
     return {"status": "disabled"}
 
 
