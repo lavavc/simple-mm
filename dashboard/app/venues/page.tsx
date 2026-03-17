@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatNumber } from '@/lib/utils';
-import { useStatus, useLiquidationValuation } from '@/lib/hooks/useQueries';
+import { useStatus, usePortfolioValuation } from '@/lib/hooks/useQueries';
 import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge } from 'lucide-react';
 import type { VenueStatus } from '@/types';
 
@@ -64,7 +64,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
     return () => clearInterval(interval);
   }, []);
 
-  const { data: liquidationData } = useLiquidationValuation();
+  const { data: valuationData } = usePortfolioValuation();
 
   // Map venue -> wallet roles that belong to it
   const VENUE_ROLES: Record<string, string[]> = {
@@ -74,31 +74,13 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
   };
   const roles = VENUE_ROLES[venue.name] || [];
 
-  // For a given token (cNGN), sum up liquidation_usd across all relevant roles
-  const getCNGNLiqUSD = (): number => {
-    if (!liquidationData?.venues) return 0;
-    return roles.reduce((total, role) => {
-      const roleData = liquidationData.venues[role];
-      if (!roleData) return total;
-      const cngn = roleData['cNGN'] || roleData['cngn'];
-      return total + (Number(cngn?.liquidation_usd) || 0);
-    }, 0);
-  };
-
-  // No-fee version — for showing the cost of conversion
-  const getCNGNLiqUSDNoFee = (): number => {
-    if (!liquidationData?.venues) return 0;
-    return roles.reduce((total, role) => {
-      const roleData = liquidationData.venues[role];
-      if (!roleData) return total;
-      const cngn = roleData['cNGN'] || roleData['cngn'];
-      return total + (Number(cngn?.liquidation_usd_no_fee) || 0);
-    }, 0);
-  };
-
-  const cNGNLiqUSD = getCNGNLiqUSD();
-  const cNGNLiqUSDNoFee = getCNGNLiqUSDNoFee();
-  const cNGNFeeCost = (cNGNLiqUSDNoFee > 0 && cNGNLiqUSD > 0) ? cNGNLiqUSDNoFee - cNGNLiqUSD : null;
+  // Sum value_usd for cNGN across all roles belonging to this venue
+  const cNGNValueUSD = valuationData?.venues
+    ? roles.reduce((total, role) => {
+        const cngn = valuationData.venues[role]?.['cNGN'] ?? valuationData.venues[role]?.['cngn'];
+        return total + (Number(cngn?.value_usd) || 0);
+      }, 0)
+    : 0;
   // Live spot from venue's own price, as fallback
   const spotPrice = Number(venue.price?.quote?.mid) || 0.00066;
 
@@ -185,8 +167,8 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                       let usdValue = Number(amount) || 0;
                       if (isCngn) {
                         // Use exact slippage-adjusted liquidation if available, else live spot
-                        usdValue = cNGNLiqUSD > 0
-                          ? cNGNLiqUSD
+                        usdValue = cNGNValueUSD > 0
+                          ? cNGNValueUSD
                           : (Number(amount) || 0) * spotPrice;
                       }
 
@@ -197,18 +179,10 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                             <span className="text-sm font-mono text-white">{formatNumber(Number(amount) || 0, isCngn ? 0 : 2)}</span>
                           </div>
 
-                          {isCngn && cNGNLiqUSD > 0 && cNGNLiqUSDNoFee > 0 ? (
-                            /* Fee breakdown: no-fee → with-fee + cost */
-                            <div className="border-t border-white/[0.05] pt-2 space-y-1">
-                              <div className="text-[9px] text-white/30 font-mono uppercase tracking-widest">cNGN liq</div>
-                              <div className="flex items-center gap-1.5 text-[10px] font-mono">
-                                <span className="text-white/60">${formatNumber(cNGNLiqUSDNoFee, 2)}</span>
-                                <span className="text-white/20">→</span>
-                                <span className="text-amber-400/90">${formatNumber(cNGNLiqUSD, 2)}</span>
-                                {cNGNFeeCost != null && cNGNFeeCost > 0 && (
-                                  <span className="text-red-400/60 ml-auto text-[8.5px]">-${formatNumber(cNGNFeeCost, 2)} fee</span>
-                                )}
-                              </div>
+                          {isCngn && cNGNValueUSD > 0 ? (
+                            <div className="border-t border-white/[0.05] pt-2">
+                              <div className="text-[9px] text-white/30 font-mono uppercase tracking-widest mb-1">cNGN val</div>
+                              <div className="text-[10px] font-mono text-amber-400/90">${formatNumber(cNGNValueUSD, 2)}</div>
                             </div>
                           ) : (
                             <div className="text-[10px] text-white/50 font-mono text-right border-t border-white/[0.05] pt-2">
@@ -229,7 +203,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                           const isC = t.toLowerCase() === 'cngn';
                           let v = Number(a) || 0;
                           if (isC) {
-                            v = cNGNLiqUSD > 0 ? cNGNLiqUSD : (Number(a) || 0) * spotPrice;
+                            v = cNGNValueUSD > 0 ? cNGNValueUSD : (Number(a) || 0) * spotPrice;
                           }
                           return acc + v;
                         }, 0), 2

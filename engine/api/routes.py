@@ -698,25 +698,19 @@ async def get_liquidation_valuation():
             amount = Decimal(str(amt)) if amt is not None else Decimal(0)
             if token.lower() == "cngn" and amount > 0:
                 value_usd = Decimal(0)
-                value_usd_no_fee = Decimal(0)
                 try:
                     if role in ("quidax-exchange", "quidax-lp", "quidax-trade-fund") and quidax_asks:
-                        value_usd, value_usd_no_fee = cex_holdings_value(quidax_asks, amount, QUIDAX_FEE)
+                        value_usd = cex_holdings_value(quidax_asks, amount, QUIDAX_FEE)
                     elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt:
-                        value_usd, value_usd_no_fee = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)
+                        value_usd = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)
                     elif role in ("uni-base-trade", "uni-base-lp") and base_sqrt:
-                        value_usd, value_usd_no_fee = dex_holdings_value(amount, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True)
+                        value_usd = dex_holdings_value(amount, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True)
                 except Exception:
                     value_usd = Decimal(0)
-                    value_usd_no_fee = Decimal(0)
-                venue_result[token] = {
-                    "amount": float(amount),
-                    "value_usd": float(value_usd),
-                    "value_usd_no_fee": float(value_usd_no_fee),
-                }
+                venue_result[token] = {"amount": float(amount), "value_usd": float(value_usd)}
             else:
                 a = float(amount) if amt is not None else 0.0
-                venue_result[token] = {"amount": a, "value_usd": a, "value_usd_no_fee": a}
+                venue_result[token] = {"amount": a, "value_usd": a}
 
         result[role] = venue_result
 

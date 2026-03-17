@@ -11,20 +11,17 @@ export interface CurvePoint {
     base_to_bsc?: {
         cngn_acquired: number;
         profit: number;
-        profit_no_fee: number;
         profit_after_slippage: number;
         min_acceptable_usd: number;
     };
     bsc_to_base?: {
         cngn_acquired: number;
         profit: number;
-        profit_no_fee: number;
         profit_after_slippage: number;
         min_acceptable_usd: number;
     };
     // Legacy fallback bindings
     profit?: number;
-    profit_no_fee?: number;
     profit_after_slippage?: number;
     min_acceptable_usd?: number;
     cngn_acquired?: number;
@@ -303,14 +300,6 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
                                         {hoverData.base_to_bsc.profit >= 0 ? '+' : ''}${hoverData.base_to_bsc.profit.toFixed(2)}
                                      </span>
                                    </div>
-                                   <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1">
-                                     <span>Gross Spread</span>
-                                     <span>{hoverData.base_to_bsc.profit_no_fee >= 0 ? '+' : ''}${hoverData.base_to_bsc.profit_no_fee.toFixed(2)}</span>
-                                   </div>
-                                   <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1 pb-1">
-                                     <span>Protocol Fees</span>
-                                     <span className="text-red-400/80">-${(hoverData.base_to_bsc.profit_no_fee - hoverData.base_to_bsc.profit).toFixed(2)}</span>
-                                   </div>
                                    <div className="flex items-center justify-between text-[10px] font-mono text-white/50 border-white/5 pl-2 ml-1 pt-1 border-t border-dashed mt-1">
                                      <span className="flex items-center gap-1.5"><span className="h-1 w-1 bg-orange-500 rounded-full" /> Guaranteed Floor</span>
                                      <span className="text-orange-400">${hoverData.base_to_bsc.min_acceptable_usd.toFixed(2)}</span>
@@ -327,14 +316,6 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
                                         {hoverData.bsc_to_base.profit >= 0 ? '+' : ''}${hoverData.bsc_to_base.profit.toFixed(2)}
                                      </span>
                                    </div>
-                                   <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1">
-                                     <span>Gross Spread</span>
-                                     <span>{hoverData.bsc_to_base.profit_no_fee >= 0 ? '+' : ''}${hoverData.bsc_to_base.profit_no_fee.toFixed(2)}</span>
-                                   </div>
-                                   <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1 pb-1">
-                                     <span>Protocol Fees</span>
-                                     <span className="text-red-400/80">-${(hoverData.bsc_to_base.profit_no_fee - hoverData.bsc_to_base.profit).toFixed(2)}</span>
-                                   </div>
                                    <div className="flex items-center justify-between text-[10px] font-mono text-white/50 border-white/5 pl-2 ml-1 pt-1 border-t border-dashed mt-1">
                                      <span className="flex items-center gap-1.5"><span className="h-1 w-1 bg-orange-500 rounded-full" /> Guaranteed Floor</span>
                                      <span className="text-orange-400">${hoverData.bsc_to_base.min_acceptable_usd.toFixed(2)}</span>
@@ -350,14 +331,6 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
                                      <span className={`text-[11px] font-mono font-bold ${(hoverData.profit || 0) >= 0 ? 'text-emerald-400' : 'text-white'}`}>
                                         {(hoverData.profit || 0) >= 0 ? '+' : ''}${(hoverData.profit || 0).toFixed(2)}
                                      </span>
-                                   </div>
-                                   <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1">
-                                     <span>Gross Spread</span>
-                                     <span>{(hoverData.profit_no_fee || 0) >= 0 ? '+' : ''}${(hoverData.profit_no_fee || 0).toFixed(2)}</span>
-                                   </div>
-                                   <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1 pb-1">
-                                     <span>Protocol Fees</span>
-                                     <span className="text-red-400/80">-${((hoverData.profit_no_fee || 0) - (hoverData.profit || 0)).toFixed(2)}</span>
                                    </div>
                                 </div>
                             )}

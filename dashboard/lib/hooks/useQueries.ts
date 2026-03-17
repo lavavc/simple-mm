@@ -65,10 +65,10 @@ export function useAlerts(limit = 20) {
   });
 }
 
-export function useLiquidationValuation() {
+export function usePortfolioValuation() {
   return useQuery({
-    queryKey: ['liquidationValuation'],
-    queryFn: api.getLiquidationValuation,
+    queryKey: ['portfolioValuation'],
+    queryFn: api.getPortfolioValuation,
     refetchInterval: 30_000,
     staleTime: 15_000,
   });

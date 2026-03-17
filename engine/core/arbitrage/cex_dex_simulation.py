@@ -219,9 +219,7 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
         # CEX -> DEX: buy cNGN on CEX, sell on DEX
         cngn_q, cx_tr_q = walk_orderbook_bids(bids, inv, cex_fee)
         out_bsc_q = swap_token1_for_token0(cngn_q, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        out_bsc_no_fee_q = swap_token1_for_token0(cngn_q, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
         out_base_q = swap_token0_for_token1(cngn_q, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        out_base_no_fee_q = swap_token0_for_token1(cngn_q, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
 
         curve_cex_to_dex.append({
             "size": float(size),
@@ -229,14 +227,12 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
             "bsc": {
                 "cngn_acquired": float(cngn_q),
                 "profit": float(out_bsc_q - inv),
-                "profit_no_fee": float(out_bsc_no_fee_q - inv),
                 "min_acceptable_usd": float(out_bsc_q * slippage_multiplier),
                 "usdt_out": float(out_bsc_q),
             },
             "base": {
                 "cngn_acquired": float(cngn_q),
                 "profit": float(out_base_q - inv),
-                "profit_no_fee": float(out_base_no_fee_q - inv),
                 "min_acceptable_usd": float(out_base_q * slippage_multiplier),
                 "usdt_out": float(out_base_q),
             },
@@ -244,14 +240,10 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
 
         # DEX -> CEX: buy cNGN on DEX, sell on CEX
         cngn_bsc_d = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        cngn_bsc_no_fee_d = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
         out_bsc_d, cx_tr_bsc_d = walk_orderbook_asks(asks, cngn_bsc_d, cex_fee)
-        out_bsc_no_fee_d, _ = walk_orderbook_asks(asks, cngn_bsc_no_fee_d, cex_fee)
 
         cngn_base_d = swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        cngn_base_no_fee_d = swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
         out_base_d, cx_tr_base_d = walk_orderbook_asks(asks, cngn_base_d, cex_fee)
-        out_base_no_fee_d, _ = walk_orderbook_asks(asks, cngn_base_no_fee_d, cex_fee)
 
         curve_dex_to_cex.append({
             "size": float(size),
@@ -259,14 +251,12 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
             "bsc": {
                 "cngn_acquired": float(cngn_bsc_d),
                 "profit": float(out_bsc_d - inv),
-                "profit_no_fee": float(out_bsc_no_fee_d - inv),
                 "min_acceptable_usd": float(out_bsc_d * slippage_multiplier),
                 "usdt_out": float(out_bsc_d),
             },
             "base": {
                 "cngn_acquired": float(cngn_base_d),
                 "profit": float(out_base_d - inv),
-                "profit_no_fee": float(out_base_no_fee_d - inv),
                 "min_acceptable_usd": float(out_base_d * slippage_multiplier),
                 "usdt_out": float(out_base_d),
             },

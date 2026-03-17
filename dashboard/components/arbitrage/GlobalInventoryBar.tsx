@@ -13,9 +13,8 @@ interface VenueCardProps {
   stableLabel: string;
   stableAmt: number;
   cNGNAmt: number;
-  cNGNUsdEstimate?: number;  // always-available best-effort USD value for the cNGN
-  cNGNUsdWithFee?: number;   // precise liquidation value (with fee)
-  cNGNUsdNoFee?: number;     // precise liquidation value (no fee)
+  cNGNUsdEstimate?: number;  // best-effort spot-price estimate
+  cNGNUsdValue?: number;     // precise order-book/AMM valuation
   loading: boolean;
   accentColor: 'emerald' | 'blue' | 'violet';
 }
@@ -47,18 +46,10 @@ const ACCENTS = {
   },
 };
 
-function VenueCard({ name, tag, tagColor, usdValue, stableLabel, stableAmt, cNGNAmt, cNGNUsdEstimate, cNGNUsdWithFee, cNGNUsdNoFee, loading, accentColor }: VenueCardProps) {
+function VenueCard({ name, tag, tagColor, usdValue, stableLabel, stableAmt, cNGNAmt, cNGNUsdEstimate, cNGNUsdValue, loading, accentColor }: VenueCardProps) {
   const a = ACCENTS[accentColor];
   const isOk = usdValue > 10;
-
-  // If backend has both values, use them. If no_fee is missing (old WS cache),
-  // derive it from the with-fee value using the known 0.1% Quidax taker fee.
-  const resolvedWithFee = (cNGNUsdWithFee && cNGNUsdWithFee > 0) ? cNGNUsdWithFee : null;
-  const resolvedNoFee  = resolvedWithFee
-    ? ((cNGNUsdNoFee && cNGNUsdNoFee > 0) ? cNGNUsdNoFee : resolvedWithFee / 0.999)
-    : null;
-  const feeCost = (resolvedNoFee && resolvedWithFee) ? resolvedNoFee - resolvedWithFee : null;
-  const cNGNDisplay = resolvedWithFee;
+  const cNGNDisplay = (cNGNUsdValue && cNGNUsdValue > 0) ? cNGNUsdValue : null;
 
   return (
     <div className="flex-1 flex flex-col gap-3 px-6 py-4 relative min-w-[200px]">
@@ -101,16 +92,11 @@ function VenueCard({ name, tag, tagColor, usdValue, stableLabel, stableAmt, cNGN
             )}
           </div>
 
-          {/* cNGN fee/no-fee breakdown — only show when we have real orderbook-walk values */}
-          {resolvedWithFee != null && resolvedNoFee != null && resolvedNoFee > 0 && resolvedWithFee > 0 && cNGNAmt > 0 && (
+          {/* cNGN valuation — only show when we have real orderbook-walk / AMM values */}
+          {cNGNDisplay != null && cNGNAmt > 0 && (
             <div className="flex items-center gap-2 text-[8.5px] font-mono tracking-wider border-t border-white/[0.05] pt-1.5">
-              <span className="text-white/30">cNGN liq:</span>
-              <span className="text-white/70">${formatNumber(resolvedNoFee, 2)}</span>
-              <span className="text-white/20">→</span>
-              <span className="text-amber-400/90">${formatNumber(resolvedWithFee, 2)}</span>
-              {feeCost != null && feeCost > 0 && (
-                <span className="text-red-400/60 ml-auto">-${formatNumber(feeCost, 2)} fee</span>
-              )}
+              <span className="text-white/30">cNGN val:</span>
+              <span className="text-amber-400/90">${formatNumber(cNGNDisplay, 2)}</span>
             </div>
           )}
         </>
@@ -124,7 +110,7 @@ export function GlobalInventoryBar() {
   const { data: status } = useArbitrageStatus();
 
   const { data: cexDexData } = useQuery<any>({
-    queryKey: ['quidax_dex_arb_curve'],
+    queryKey: ['quidax_dex_optimal_arb'],
     queryFn: () => null,
     staleTime: Infinity,
   });
@@ -135,25 +121,25 @@ export function GlobalInventoryBar() {
 
   const isArmed = !!(status?.enabled || status?.execute_cex_dex || status?.execute_dex_dex);
 
-  const liq = cexDexData?.liquidation_valuation;
+  const val = cexDexData?.portfolio_value;
 
-  // Only use liq values when they are genuinely non-zero.
-  // If the backend sends zeros (e.g. before first balance check), fall back to spot price.
-  const quidaxLiqValid = liq && (liq.quidax_usdt + liq.quidax_cngn_usd) > 0;
-  const bscLiqValid    = liq && (liq.uni_bsc_usdt + liq.uni_bsc_cngn_usd) > 0;
-  const baseLiqValid   = liq && (liq.uni_base_usdc + liq.uni_base_cngn_usd) > 0;
+  // Only use valuation data when genuinely non-zero.
+  // Falls back to spot price if portfolio_value hasn't arrived yet.
+  const quidaxValValid = val && (val.quidax_usdt + val.quidax_cngn_usd) > 0;
+  const bscValValid    = val && (val.uni_bsc_usdt + val.uni_bsc_cngn_usd) > 0;
+  const baseValValid   = val && (val.uni_base_usdc + val.uni_base_cngn_usd) > 0;
 
-  const quidaxUsd = quidaxLiqValid
-    ? (liq.quidax_usdt + liq.quidax_cngn_usd)
+  const quidaxUsd = quidaxValValid
+    ? (val.quidax_usdt + val.quidax_cngn_usd)
     : ((Number(quidaxTrade?.token_balances?.USDT) || 0) + (Number(quidaxTrade?.token_balances?.cNGN) || 0) * (cexDexData?.prices?.quidax || 0.00066));
-  const uniBscUsd = bscLiqValid
-    ? (liq.uni_bsc_usdt + liq.uni_bsc_cngn_usd)
+  const uniBscUsd = bscValValid
+    ? (val.uni_bsc_usdt + val.uni_bsc_cngn_usd)
     : ((Number(uniBscTrade?.token_balances?.USDT) || 0) + (Number(uniBscTrade?.token_balances?.cNGN) || 0) * (cexDexData?.prices?.['uni-bsc'] || 0.00066));
-  const uniBaseUsd = baseLiqValid
-    ? (liq.uni_base_usdc + liq.uni_base_cngn_usd)
+  const uniBaseUsd = baseValValid
+    ? (val.uni_base_usdc + val.uni_base_cngn_usd)
     : ((Number(uniBaseTrade?.token_balances?.USDC) || 0) + (Number(uniBaseTrade?.token_balances?.cNGN) || 0) * (cexDexData?.prices?.['uni-base'] || 0.00066));
 
-  // Best-effort cNGN → USD estimates from spot price (always available even before liq data)
+  // Best-effort cNGN → USD estimates from spot price (always available even before val data)
   const quidaxCNGNEstimate = (Number(quidaxTrade?.token_balances?.cNGN) || 0) * (cexDexData?.prices?.quidax || 0.00066);
   const bscCNGNEstimate    = (Number(uniBscTrade?.token_balances?.cNGN) || 0) * (cexDexData?.prices?.['uni-bsc'] || 0.00066);
   const baseCNGNEstimate   = (Number(uniBaseTrade?.token_balances?.cNGN) || 0) * (cexDexData?.prices?.['uni-base'] || 0.00066);
@@ -202,8 +188,7 @@ export function GlobalInventoryBar() {
           stableAmt={Number(quidaxTrade?.token_balances?.USDT) || 0}
           cNGNAmt={Number(quidaxTrade?.token_balances?.cNGN) || 0}
           cNGNUsdEstimate={quidaxCNGNEstimate}
-          cNGNUsdWithFee={liq?.quidax_cngn_usd}
-          cNGNUsdNoFee={liq?.quidax_cngn_usd_no_fee}
+          cNGNUsdValue={val?.quidax_cngn_usd}
           loading={isLoading || !quidaxTrade}
         />
 
@@ -217,8 +202,7 @@ export function GlobalInventoryBar() {
           stableAmt={Number(uniBscTrade?.token_balances?.USDT) || 0}
           cNGNAmt={Number(uniBscTrade?.token_balances?.cNGN) || 0}
           cNGNUsdEstimate={bscCNGNEstimate}
-          cNGNUsdWithFee={liq?.uni_bsc_cngn_usd}
-          cNGNUsdNoFee={liq?.uni_bsc_cngn_usd_no_fee}
+          cNGNUsdValue={val?.uni_bsc_cngn_usd}
           loading={isLoading || !uniBscTrade}
         />
 
@@ -232,8 +216,7 @@ export function GlobalInventoryBar() {
           stableAmt={Number(uniBaseTrade?.token_balances?.USDC) || 0}
           cNGNAmt={Number(uniBaseTrade?.token_balances?.cNGN) || 0}
           cNGNUsdEstimate={baseCNGNEstimate}
-          cNGNUsdWithFee={liq?.uni_base_cngn_usd}
-          cNGNUsdNoFee={liq?.uni_base_cngn_usd_no_fee}
+          cNGNUsdValue={val?.uni_base_cngn_usd}
           loading={isLoading || !uniBaseTrade}
         />
       </div>

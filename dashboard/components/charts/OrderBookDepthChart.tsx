@@ -8,14 +8,12 @@ export interface CurvePointV2 {
   bsc: {
     cngn_acquired: number;
     profit: number;
-    profit_no_fee: number;
     min_acceptable_usd: number;
     usdt_out: number;
   };
   base: {
     cngn_acquired: number;
     profit: number;
-    profit_no_fee: number;
     min_acceptable_usd: number;
     usdt_out: number;
   };
@@ -260,14 +258,6 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
                     {hoverData.bsc.profit >= 0 ? '+' : ''}${hoverData.bsc.profit.toFixed(2)}
                  </span>
                </div>
-               <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1">
-                 <span>Gross Spread</span>
-                 <span>{hoverData.bsc.profit_no_fee >= 0 ? '+' : ''}${hoverData.bsc.profit_no_fee.toFixed(2)}</span>
-               </div>
-               <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1 pb-1">
-                 <span>Protocol Fees</span>
-                 <span className="text-red-400/80">-${(hoverData.bsc.profit_no_fee - hoverData.bsc.profit).toFixed(2)}</span>
-               </div>
                <div className="flex items-center justify-between text-[10px] font-mono text-white/50 border-white/5 pl-2 ml-1 pt-1 border-t border-dashed mt-1">
                  <span className="flex items-center gap-1.5"><span className="h-1 w-1 bg-orange-500 rounded-full" /> Guaranteed Floor</span>
                  <span className="text-orange-400">${hoverData.bsc.min_acceptable_usd.toFixed(2)}</span>
@@ -281,14 +271,6 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
                  <span className={`text-[11px] font-mono font-bold ${hoverData.base.profit >= 0 ? 'text-emerald-400' : 'text-white'}`}>
                     {hoverData.base.profit >= 0 ? '+' : ''}${hoverData.base.profit.toFixed(2)}
                  </span>
-               </div>
-               <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1">
-                 <span>Gross Spread</span>
-                 <span>{hoverData.base.profit_no_fee >= 0 ? '+' : ''}${hoverData.base.profit_no_fee.toFixed(2)}</span>
-               </div>
-               <div className="flex items-center justify-between text-[10px] font-mono text-white/40 border-l-[2px] border-white/5 pl-3 ml-1 pb-1">
-                 <span>Protocol Fees</span>
-                 <span className="text-red-400/80">-${(hoverData.base.profit_no_fee - hoverData.base.profit).toFixed(2)}</span>
                </div>
                <div className="flex items-center justify-between text-[10px] font-mono text-white/50 border-white/5 pl-2 ml-1 pt-1 border-t border-dashed mt-1">
                  <span className="flex items-center gap-1.5"><span className="h-1 w-1 bg-orange-500 rounded-full" /> Guaranteed Floor</span>

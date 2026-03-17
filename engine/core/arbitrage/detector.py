@@ -463,33 +463,24 @@ async def generate_dex_profit_curve() -> dict:
         investment_usd = Decimal(str(size))
 
         cngn_acquired_base = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        cngn_acquired_no_fee_base = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
         usd_returned_bsc = swap_token1_for_token0(cngn_acquired_base, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        usd_returned_no_fee_bsc = swap_token1_for_token0(cngn_acquired_no_fee_base, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
 
         cngn_acquired_bsc = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        cngn_acquired_no_fee_bsc = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
         usd_returned_base = swap_token0_for_token1(cngn_acquired_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        usd_returned_no_fee_base = swap_token0_for_token1(cngn_acquired_no_fee_bsc, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
-
-        min_usd_bsc = usd_returned_bsc * slippage_multiplier
-        min_usd_base = usd_returned_base * slippage_multiplier
 
         curve.append({
             "size": size,
             "base_to_bsc": {
                 "cngn_acquired": float(cngn_acquired_base),
                 "profit": float(usd_returned_bsc - investment_usd),
-                "profit_no_fee": float(usd_returned_no_fee_bsc - investment_usd),
-                "profit_after_slippage": float(min_usd_bsc - investment_usd),
-                "min_acceptable_usd": float(min_usd_bsc)
+                "profit_after_slippage": float(usd_returned_bsc * slippage_multiplier - investment_usd),
+                "min_acceptable_usd": float(usd_returned_bsc * slippage_multiplier),
             },
             "bsc_to_base": {
                 "cngn_acquired": float(cngn_acquired_bsc),
                 "profit": float(usd_returned_base - investment_usd),
-                "profit_no_fee": float(usd_returned_no_fee_base - investment_usd),
-                "profit_after_slippage": float(min_usd_base - investment_usd),
-                "min_acceptable_usd": float(min_usd_base)
+                "profit_after_slippage": float(usd_returned_base * slippage_multiplier - investment_usd),
+                "min_acceptable_usd": float(usd_returned_base * slippage_multiplier),
             }
         })
 

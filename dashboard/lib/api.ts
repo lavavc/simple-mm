@@ -117,7 +117,7 @@ export const api = {
     return fetchJson(`${API_BASE}/arbitrage/opportunities${query ? `?${query}` : ''}`);
   },
 
-  getLiquidationValuation: (): Promise<any> =>
+  getPortfolioValuation: (): Promise<any> =>
     fetchJson(`${API_BASE}/arbitrage/liquidation`),
 
   enableArbitrage: (token: string): Promise<{ status: string }> =>

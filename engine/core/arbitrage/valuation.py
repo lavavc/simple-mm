@@ -12,14 +12,10 @@ from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token0_
 from engine.core.arbitrage.cex_dex_simulation import walk_orderbook_asks, QUIDAX_FEE
 
 
-def cex_holdings_value(order_book_asks: list, cngn_amount: Decimal, fee: Decimal) -> tuple[Decimal, Decimal]:
-    """
-    USD value of cNGN holdings if sold into a CEX order book.
-    Returns (value_with_fee, value_without_fee).
-    """
-    with_fee, _ = walk_orderbook_asks(order_book_asks, cngn_amount, fee)
-    no_fee = with_fee / (Decimal("1") - fee) if fee < Decimal("1") else Decimal("0")
-    return with_fee, no_fee
+def cex_holdings_value(order_book_asks: list, cngn_amount: Decimal, fee: Decimal) -> Decimal:
+    """USD value of cNGN holdings if sold into a CEX order book."""
+    value, _ = walk_orderbook_asks(order_book_asks, cngn_amount, fee)
+    return value
 
 
 def dex_holdings_value(
@@ -30,15 +26,10 @@ def dex_holdings_value(
     token0_decimals: int,
     token1_decimals: int,
     cngn_is_token0: bool,
-) -> tuple[Decimal, Decimal]:
-    """
-    USD value of cNGN holdings if swapped on an AMM pool.
-    Returns (value_with_fee, value_without_fee).
-    """
+) -> Decimal:
+    """USD value of cNGN holdings if swapped on an AMM pool."""
     swap_fn = swap_token0_for_token1 if cngn_is_token0 else swap_token1_for_token0
-    with_fee = swap_fn(cngn_amount, sqrt_p, liquidity, fee, token0_decimals, token1_decimals)
-    no_fee = swap_fn(cngn_amount, sqrt_p, liquidity, Decimal("0"), token0_decimals, token1_decimals)
-    return with_fee, no_fee
+    return swap_fn(cngn_amount, sqrt_p, liquidity, fee, token0_decimals, token1_decimals)
 
 
 def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE) -> dict:
@@ -51,13 +42,10 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
 
     result = {
         "quidax_cngn_usd": 0.0,
-        "quidax_cngn_usd_no_fee": 0.0,
         "quidax_usdt": 0.0,
         "uni_bsc_cngn_usd": 0.0,
-        "uni_bsc_cngn_usd_no_fee": 0.0,
         "uni_bsc_usdt": 0.0,
         "uni_base_cngn_usd": 0.0,
-        "uni_base_cngn_usd_no_fee": 0.0,
         "uni_base_usdc": 0.0,
     }
 
@@ -74,9 +62,7 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
             q_usdt = quidax_bal.token_balances.get("USDT", Decimal(0))
             result["quidax_usdt"] = float(q_usdt)
             if q_cngn > 0:
-                with_fee, no_fee = cex_holdings_value(asks, q_cngn, cex_fee)
-                result["quidax_cngn_usd"] = float(with_fee)
-                result["quidax_cngn_usd_no_fee"] = float(no_fee)
+                result["quidax_cngn_usd"] = float(cex_holdings_value(asks, q_cngn, cex_fee))
             if bids and asks:
                 result["quidax_mid"] = float(Decimal("1") / ((bids[0].price + asks[0].price) / 2))
 
@@ -87,9 +73,7 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
         bsc_cngn = bsc_bal.token_balances.get("cNGN", Decimal(0))
         result["uni_bsc_usdt"] = float(bsc_bal.token_balances.get("USDT", Decimal(0)))
         if bsc_cngn > 0:
-            with_fee, no_fee = dex_holdings_value(bsc_cngn, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)
-            result["uni_bsc_cngn_usd"] = float(with_fee)
-            result["uni_bsc_cngn_usd_no_fee"] = float(no_fee)
+            result["uni_bsc_cngn_usd"] = float(dex_holdings_value(bsc_cngn, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False))
 
     # Uniswap Base: token0=cNGN, token1=USDC → selling cNGN uses swap_token0_for_token1
     base_sqrt, base_liq, _, _, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
@@ -98,8 +82,6 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
         base_cngn = base_bal.token_balances.get("cNGN", Decimal(0))
         result["uni_base_usdc"] = float(base_bal.token_balances.get("USDC", Decimal(0)))
         if base_cngn > 0:
-            with_fee, no_fee = dex_holdings_value(base_cngn, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True)
-            result["uni_base_cngn_usd"] = float(with_fee)
-            result["uni_base_cngn_usd_no_fee"] = float(no_fee)
+            result["uni_base_cngn_usd"] = float(dex_holdings_value(base_cngn, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True))
 
     return result
