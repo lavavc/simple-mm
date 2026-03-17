@@ -8,7 +8,6 @@ from typing import Callable, Any
 from engine.config import settings
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-from engine.core.arbitrage.detector import generate_dex_profit_curve
 from engine.core.arbitrage.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
@@ -20,9 +19,10 @@ V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad71
 class ArbitrageWebSocketListener:
     """Listens for DEX Swaps via WebSockets to trigger curve calculations instantly."""
 
-    def __init__(self, broadcast: Callable[[dict], Any], on_update: Callable[[], Any] | None = None):
+    def __init__(self, broadcast: Callable[[dict], Any], on_update: Callable[[], Any] | None = None, on_dex_event: Callable[[], Any] | None = None):
         self.broadcast = broadcast
         self.on_update = on_update
+        self.on_dex_event = on_dex_event
         self._running = False
 
         self._tasks: list[asyncio.Task] = []
@@ -147,96 +147,13 @@ class ArbitrageWebSocketListener:
         self._pending_calculation = asyncio.create_task(self._delayed_calculation())
 
     async def _delayed_calculation(self):
-        """Waits for the debounce window, then calculates and broadcasts the curve.
-
-        V4 state is already updated synchronously from the event — no RPC calls needed.
-        """
+        """Waits for the debounce window, then triggers price update and DEX arb recalculation."""
         await asyncio.sleep(self._debounce_delay)
-
         try:
-            logger.info("executing_event_driven_curve_calc")
-
+            logger.info("executing_event_driven_arb_calc")
             if self.on_update:
                 await self.on_update()
-
-            curve_data = await generate_dex_profit_curve()
-
-            if curve_data:
-                from engine.api.schemas import PriceQuote
-                from engine.db.database import get_db
-                import time
-
-                db = await get_db()
-                now_ms = int(time.time() * 1000)
-
-                for key in ("uni-bsc", "uni-base", "assetchain"):
-                    price_val = curve_data.get("prices", {}).get(key)
-                    if price_val is not None:
-                        await db.insert_price_snapshot(PriceQuote(
-                            source=f"{key}_pool",
-                            timestamp=now_ms,
-                            bid=price_val,
-                            ask=price_val,
-                            mid=price_val,
-                        ))
-
-                self.broadcast({
-                    "type": "dex_arb_curve",
-                    "data": curve_data
-                })
-
-                optimal = curve_data.get("optimal_arb", {})
-                if optimal.get("expected_profit_usd", -1) > 0:
-                    await self._record_and_broadcast_opportunity(curve_data, optimal)
-
+            if self.on_dex_event:
+                await self.on_dex_event()
         except Exception as e:
-            logger.error("event_driven_curve_calc_failed", error=str(e))
-
-    async def _record_and_broadcast_opportunity(self, curve_data: dict, optimal: dict):
-        """Records a profitable opp to DB and broadcasts it."""
-        import uuid
-        from engine.api.schemas import DexArbOpportunity
-        from engine.db.database import get_db
-
-        db = await get_db()
-
-        cutoff_ts = int(time.time() * 1000) - 60000
-        await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
-
-        direction = optimal["direction"]
-        existing_active = await db._conn.execute(
-            "SELECT id FROM dex_arbitrage_opportunities WHERE status IN ('detected', 'executing') AND direction = ? ORDER BY timestamp DESC LIMIT 1",
-            (direction,)
-        )
-        existing_row = await existing_active.fetchone()
-
-        if existing_row:
-            opp_id = existing_row['id']
-        else:
-            opp_id = f"dex-arb-{uuid.uuid4()}"
-            opportunity = DexArbOpportunity(
-                id=opp_id,
-                timestamp=int(time.time() * 1000),
-                direction=direction,
-                optimal_size_usd=optimal["optimal_size_usd"],
-                expected_profit_usd=optimal["expected_profit_usd"],
-                cngn_transferred=optimal["cngn_transferred"],
-                expected_usd_out=optimal["expected_usd_out"],
-                status="detected",
-                net_spread_bps=optimal.get("net_spread_bps", 0),
-                pancake_price=curve_data.get("prices", {}).get("uni-bsc"),
-                aerodrome_price=curve_data.get("prices", {}).get("uni-base"),
-                slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
-                pancake_fee_bps=optimal.get("uni_bsc_fee_bps"),
-                aerodrome_fee_bps=optimal.get("uni_base_fee_bps"),
-                estimated_gas_usd=optimal.get("estimated_gas_usd")
-            )
-            await db.insert_dex_arbitrage_opportunity(opportunity)
-
-        broadcast_data = optimal.copy()
-        broadcast_data["id"] = opp_id
-
-        self.broadcast({
-            "type": "dex_arb_opportunity",
-            "data": broadcast_data
-        })
+            logger.error("event_driven_arb_calc_failed", error=str(e))

@@ -243,7 +243,7 @@ class ArbitrageOpportunity(BaseModel):
 
 
 class DexArbOpportunity(BaseModel):
-    """Detected DEX V3 arbitrage opportunity."""
+    """Detected DEX V4 arbitrage opportunity."""
 
     id: str
     timestamp: int
@@ -256,13 +256,13 @@ class DexArbOpportunity(BaseModel):
     net_spread_bps: int
     actual_profit_usd: Optional[Decimal] = None
     reason: Optional[str] = None
-    pancake_price: Optional[Decimal] = None
-    aerodrome_price: Optional[Decimal] = None
+    uni_bsc_price: Optional[Decimal] = None
+    uni_base_price: Optional[Decimal] = None
     buy_tx_hash: Optional[str] = None
     sell_tx_hash: Optional[str] = None
     slippage_tolerance_bps: Optional[int] = None
-    pancake_fee_bps: Optional[int] = None
-    aerodrome_fee_bps: Optional[int] = None
+    uni_bsc_fee_bps: Optional[int] = None
+    uni_base_fee_bps: Optional[int] = None
     estimated_gas_usd: Optional[Decimal] = None
 
 class ArbitrageTrade(BaseModel):

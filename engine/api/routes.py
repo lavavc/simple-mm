@@ -647,7 +647,7 @@ async def get_liquidation_valuation():
     import time
     from engine.core.arbitrage.pool_state import get_cached_pool_state
     from engine.core.arbitrage.valuation import cex_holdings_value, dex_holdings_value
-    from engine.core.arbitrage.cex_dex_simulation import QUIDAX_FEE
+    from engine.core.arbitrage.cex_dex import QUIDAX_FEE
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 

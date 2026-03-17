@@ -9,7 +9,7 @@ Adding a new DEX venue: call dex_holdings_value with the pool's cached state.
 """
 from decimal import Decimal
 from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0
-from engine.core.arbitrage.cex_dex_simulation import walk_orderbook_asks, QUIDAX_FEE
+from engine.core.arbitrage.cex_dex import walk_orderbook_asks, QUIDAX_FEE
 
 
 def cex_holdings_value(order_book_asks: list, cngn_amount: Decimal, fee: Decimal) -> Decimal:

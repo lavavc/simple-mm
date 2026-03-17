@@ -201,14 +201,11 @@ async def lifespan(app: FastAPI):
         arb_params = ArbitrageParams()
 
         arbitrage_engine = ArbitrageEngine(
-            price_aggregator=price_aggregator,
             venues=venues,
             params=arb_params,
             broadcast=broadcast_event,
             execute_cex_dex_enabled=settings.arbitrage_execute_cex_dex_enabled,
             execute_dex_dex_enabled=settings.arbitrage_execute_dex_dex_enabled,
-            normalizer=normalizer,
-            blended_calculator=blended_calculator,
         )
         logger.info(
             "arbitrage_engine_initialized",
