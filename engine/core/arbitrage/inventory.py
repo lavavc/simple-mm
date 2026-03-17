@@ -299,6 +299,19 @@ class InventoryTracker:
         self._state.initial_account_stable = dict(venue_balances)
         logger.info("account_stable_initialized", venues=list(venue_balances.keys()))
 
+    def reconcile_stables(self, venue_balances: dict[str, Decimal]):
+        """Refresh per-account stablecoin from a periodic balance fetch.
+
+        Unlike initialize_account_stable, does not touch initial_account_stable
+        so get_rebalance_cost_bps() retains its startup baseline.
+        """
+        for venue, amount in venue_balances.items():
+            self._state.per_account_stable[venue] = amount
+            if amount < self.params.min_account_stablecoin_usd:
+                self._state.low_inventory_venues.add(venue)
+            else:
+                self._state.low_inventory_venues.discard(venue)
+
     def update_account_inventory(self, venue: str, delta_usd: Decimal, is_buy: bool):
         """Adjust estimated stablecoin balance after a trade leg. Flags low inventory."""
         current = self._state.per_account_stable.get(venue, Decimal("0"))

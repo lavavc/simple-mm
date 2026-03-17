@@ -11,6 +11,7 @@ import structlog
 from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportunity
 from engine.core.arbitrage.executor import ArbitrageExecutor
 from engine.core.arbitrage.inventory import InventoryTracker
+from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 
@@ -60,8 +61,7 @@ class ArbitrageEngine:
         self.executor = ArbitrageExecutor(venues, execute_cex_dex_enabled or execute_dex_dex_enabled)
 
         self._enabled = True
-        self._cex_arb_executing = False
-        self._dex_arb_executing = False
+        self._arb_executing = False
         self._inventory_seeded = False
         self._cex_curve_task: Optional[asyncio.Task] = None
         self._dex_curve_task: Optional[asyncio.Task] = None
@@ -110,19 +110,36 @@ class ArbitrageEngine:
         from engine.core.arbitrage.cex_dex import find_optimal_arb
         from engine.core.arbitrage.valuation import portfolio_value
 
-        signal = find_optimal_arb(depth)
-        val = portfolio_value(depth, balances) if balances else {}
+        self._reconcile_stables(balances)
+        loop = asyncio.get_running_loop()
+        signal = await loop.run_in_executor(None, find_optimal_arb, depth)
+        val = await loop.run_in_executor(None, portfolio_value, depth, balances) if balances else {}
 
         broadcast_data = signal or {}
         broadcast_data["portfolio_value"] = val
         self.broadcast({"type": "quidax_dex_optimal_arb", "data": broadcast_data})
 
-        if (signal and self._enabled and self.execute_cex_dex_enabled
-                and not self._cex_arb_executing):
-            optimal = signal.get("optimal_arb", {})
-            if optimal.get("expected_profit_usd", 0) > 0 and optimal.get("direction", "NONE") != "NONE":
+        if signal and self._enabled and self.execute_cex_dex_enabled and not self._arb_executing:
+            candidates = []
+            for arb in signal.get("all_arbs", []):
+                direction = arb.get("direction")
+                if direction not in _CEX_DEX_DIRECTIONS:
+                    continue
+                buy_venue, _, sell_venue, _ = _CEX_DEX_DIRECTIONS[direction]
+                candidates.append(RouteCandidate(
+                    direction=direction,
+                    pipeline="cex_dex",
+                    buy_venue=buy_venue,
+                    sell_venue=sell_venue,
+                    optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
+                    expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
+                    estimated_gas_usd=Decimal("0.07"),
+                    signal={"prices": signal["prices"], "optimal_arb": arb},
+                ))
+            route = select_route(candidates, self.inventory)
+            if route:
                 opp_id = f"cex-dex-{uuid.uuid4()}"
-                asyncio.create_task(self._execute_cex_dex(signal, opp_id))
+                asyncio.create_task(self._execute_cex_dex(route, opp_id))
 
         if not self._cex_curve_task or self._cex_curve_task.done():
             self._cex_curve_task = asyncio.create_task(self._broadcast_cex_curve(depth))
@@ -138,28 +155,17 @@ class ArbitrageEngine:
         except Exception as e:
             logger.error("cex_dex_curve_compute_failed", error=str(e))
 
-    async def _execute_cex_dex(self, signal: dict, opp_id: str) -> None:
-        """Execute a CEX-DEX arbitrage. Direction-agnostic via _CEX_DEX_DIRECTIONS map."""
-        self._cex_arb_executing = True
+    async def _execute_cex_dex(self, route: SelectedRoute, opp_id: str) -> None:
+        """Execute a CEX-DEX arbitrage."""
+        self._arb_executing = True
         try:
-            optimal = signal["optimal_arb"]
-            direction = optimal["direction"]
-            if direction not in _CEX_DEX_DIRECTIONS:
-                logger.error("unknown_cex_dex_direction", direction=direction)
-                return
-
+            c = route.candidate
+            direction = c.direction
             buy_venue_name, buy_is_cex, sell_venue_name, sell_is_cex = _CEX_DEX_DIRECTIONS[direction]
-            size_usd = Decimal(str(optimal["optimal_size_usd"]))
-            slippage_bps = optimal.get("slippage_tolerance_bps", 10)
-            min_out_usd = Decimal(str(optimal["expected_usd_out"])) * (
-                1 - Decimal(str(slippage_bps)) / 10000
-            )
-            quidax_price = Decimal(str(signal["prices"]["quidax"]))
-
-            can_trade, reason = self.inventory.can_trade(size_usd, buy_venue_name, sell_venue_name)
-            if not can_trade:
-                logger.info("cex_dex_arb_blocked", reason=reason)
-                return
+            size_usd = route.adjusted_size_usd
+            slippage_bps = c.signal["optimal_arb"].get("slippage_tolerance_bps", 10)
+            min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
+            quidax_price = Decimal(str(c.signal["prices"]["quidax"]))
 
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
@@ -205,7 +211,7 @@ class ArbitrageEngine:
             logger.error("cex_dex_execution_error", opp_id=opp_id, error=str(e))
             self.inventory.record_trade_failure(opp_id, str(e))
         finally:
-            self._cex_arb_executing = False
+            self._arb_executing = False
 
     # ------------------------------------------------------------------
     # DEX-DEX pipeline
@@ -223,19 +229,32 @@ class ArbitrageEngine:
         if not self._inventory_seeded:
             await self._seed_account_inventory()
 
-        fast = find_optimal_dex_arb()
+        loop = asyncio.get_running_loop()
+        fast = await loop.run_in_executor(None, find_optimal_dex_arb)
         if fast is None:
             asyncio.create_task(seed_pool_states())
             return
 
         opp_id = await self._record_dex_opportunity(fast)
 
-        if (self._enabled and self.execute_dex_dex_enabled
-                and not self._dex_arb_executing):
+        if self._enabled and self.execute_dex_dex_enabled and not self._arb_executing:
             optimal = fast.get("optimal_arb", {})
-            if (optimal.get("expected_profit_usd", 0) > 0
-                    and optimal.get("direction") in _DEX_DEX_DIRECTIONS):
-                asyncio.create_task(self._execute_dex_dex(fast, opp_id))
+            direction = optimal.get("direction")
+            if direction in _DEX_DEX_DIRECTIONS and optimal.get("expected_profit_usd", 0) > 0:
+                buy_venue, sell_venue = _DEX_DEX_DIRECTIONS[direction]
+                candidate = RouteCandidate(
+                    direction=direction,
+                    pipeline="dex_dex",
+                    buy_venue=buy_venue,
+                    sell_venue=sell_venue,
+                    optimal_size_usd=Decimal(str(optimal["optimal_size_usd"])),
+                    expected_profit_usd=Decimal(str(optimal["expected_profit_usd"])),
+                    estimated_gas_usd=Decimal("0.14"),
+                    signal=fast,
+                )
+                route = select_route([candidate], self.inventory)
+                if route:
+                    asyncio.create_task(self._execute_dex_dex(route, opp_id))
 
         if not self._dex_curve_task or self._dex_curve_task.done():
             self._dex_curve_task = asyncio.create_task(self._broadcast_dex_curve())
@@ -311,27 +330,17 @@ class ArbitrageEngine:
         except Exception as e:
             logger.error("dex_curve_compute_failed", error=str(e))
 
-    async def _execute_dex_dex(self, signal: dict, opp_id: str) -> None:
+    async def _execute_dex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a DEX-DEX delta-balance arbitrage."""
-        self._dex_arb_executing = True
+        self._arb_executing = True
         try:
-            optimal = signal["optimal_arb"]
-            direction = optimal["direction"]
-            if direction not in _DEX_DEX_DIRECTIONS:
-                logger.error("unknown_dex_dex_direction", direction=direction)
-                return
-
+            c = route.candidate
+            optimal = c.signal["optimal_arb"]
+            direction = c.direction
             buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
-            size_usd = Decimal(str(optimal["optimal_size_usd"]))
+            size_usd = route.adjusted_size_usd
             slippage_bps = optimal.get("slippage_tolerance_bps", 10)
-            min_out_usd = Decimal(str(optimal["expected_usd_out"])) * (
-                1 - Decimal(str(slippage_bps)) / 10000
-            )
-
-            can_trade, reason = self.inventory.can_trade(size_usd, buy_venue_name, sell_venue_name)
-            if not can_trade:
-                logger.info("dex_dex_arb_blocked", reason=reason)
-                return
+            min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
 
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
@@ -376,7 +385,7 @@ class ArbitrageEngine:
             logger.error("dex_dex_execution_error", opp_id=opp_id, error=str(e))
             self.inventory.record_trade_failure(opp_id, str(e))
         finally:
-            self._dex_arb_executing = False
+            self._arb_executing = False
 
     # ------------------------------------------------------------------
     # Status, params, risk
@@ -414,6 +423,21 @@ class ArbitrageEngine:
 
     def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal):
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd)
+
+    def _reconcile_stables(self, balances: list) -> None:
+        """Refresh per-account stablecoin from the scheduler's periodic balance fetch."""
+        venue_stables: dict[str, Decimal] = {}
+        for b in balances:
+            role = getattr(b, "role", "")
+            tb = getattr(b, "token_balances", {})
+            if role in ("uni-bsc-trade", "trade_uni_bsc"):
+                venue_stables["uni-bsc"] = Decimal(str(tb.get("USDT", 0)))
+            elif role in ("uni-base-trade", "trade_uni_base"):
+                venue_stables["uni-base"] = Decimal(str(tb.get("USDC", 0)))
+            elif role == "quidax-exchange":
+                venue_stables["quidax"] = Decimal(str(tb.get("USDT", 0)))
+        if venue_stables:
+            self.inventory.reconcile_stables(venue_stables)
 
     async def _seed_account_inventory(self):
         """Read trade-account stablecoin balances and pre-approve routers at first run."""

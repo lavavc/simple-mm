@@ -19,6 +19,13 @@ logger = structlog.get_logger()
 
 QUIDAX_FEE = Decimal("0.001")  # 0.1% taker fee
 
+# Short-circuit: evaluate at $5 before running the full ternary search.
+# At $5 slippage on both legs is negligible, so profit ≈ raw spread.
+# If the spread is already ≤ 0 at $5 it can only worsen with size (slippage is monotonic),
+# so skipping the ~114-eval ternary search keeps the event loop unblocked on dead routes.
+_SPREAD_CHECK_SIZE = Decimal("5")
+_SPREAD_CHECK_MIN_PROFIT = Decimal("0")
+
 
 def walk_orderbook_asks(asks: list, cngn_amount: Decimal, fee: Decimal) -> tuple[Decimal, list[dict]]:
     """
@@ -143,6 +150,8 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     all_arbs = []
 
     for dir_name, eval_func in directions:
+        if eval_func(_SPREAD_CHECK_SIZE)[0] <= _SPREAD_CHECK_MIN_PROFIT:
+            continue
         b_prof, b_size, b_cngn, b_out = _ternary_search(eval_func)
         if b_size > 0:
             if b_prof > best_profit:
