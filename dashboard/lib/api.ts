@@ -117,6 +117,9 @@ export const api = {
     return fetchJson(`${API_BASE}/arbitrage/opportunities${query ? `?${query}` : ''}`);
   },
 
+  getPortfolioValuation: (): Promise<any> =>
+    fetchJson(`${API_BASE}/arbitrage/liquidation`),
+
   enableArbitrage: (token: string): Promise<{ status: string }> =>
     fetchJson(`${API_BASE}/arbitrage/enable`, {
       method: 'POST',
@@ -125,6 +128,30 @@ export const api = {
 
   disableArbitrage: (token: string): Promise<{ status: string }> =>
     fetchJson(`${API_BASE}/arbitrage/disable`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    }),
+
+  enableExecuteCexDex: (token: string): Promise<{ status: string }> =>
+    fetchJson(`${API_BASE}/arbitrage/execute-cex-dex/enable`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    }),
+
+  disableExecuteCexDex: (token: string): Promise<{ status: string }> =>
+    fetchJson(`${API_BASE}/arbitrage/execute-cex-dex/disable`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    }),
+
+  enableExecuteDexDex: (token: string): Promise<{ status: string }> =>
+    fetchJson(`${API_BASE}/arbitrage/execute-dex-dex/enable`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    }),
+
+  disableExecuteDexDex: (token: string): Promise<{ status: string }> =>
+    fetchJson(`${API_BASE}/arbitrage/execute-dex-dex/disable`, {
       method: 'POST',
       headers: authHeaders(token),
     }),

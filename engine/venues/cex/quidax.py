@@ -8,9 +8,10 @@ from typing import Optional
 import httpx
 import structlog
 
-from engine.api.schemas import Position, PriceQuote, CexParams
+from engine.api.schemas import Position, PriceQuote, CexParams, OrderBookDepth, OrderBookLevel
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
+from dataclasses import dataclass
 
 logger = structlog.get_logger()
 
@@ -92,6 +93,45 @@ class QuidaxAdapter(VenueAdapter):
             timestamp=int(time.time() * 1000),
             balances=balances,
         )
+
+    async def get_order_book_depth(self, limit: int = 50) -> Optional[OrderBookDepth]:
+        """Fetch Level 2 Order Book depth (Bids and Asks with volume)."""
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    f"{self.base_url}/markets/{self.market}/depth",
+                    params={"limit": limit},
+                    headers={"accept": "application/json"},
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            if data.get("status") != "success":
+                return None
+
+            depth_data = data.get("data", {})
+            
+            bids = [
+                OrderBookLevel(price=Decimal(str(p)), amount=Decimal(str(v)))
+                for p, v in depth_data.get("bids", [])
+                if Decimal(str(p)) > 0
+            ]
+            asks = [
+                OrderBookLevel(price=Decimal(str(p)), amount=Decimal(str(v)))
+                for p, v in depth_data.get("asks", [])
+                if Decimal(str(p)) > 0
+            ]
+
+            return OrderBookDepth(
+                venue=self.name,
+                pair="CNGN/USDT",
+                timestamp=depth_data.get("timestamp", int(time.time() * 1000)),
+                bids=bids,
+                asks=asks,
+            )
+        except Exception as e:
+            logger.error("quidax_depth_fetch_failed", error=str(e))
+            return None
 
     async def get_current_price(self) -> Optional[PriceQuote]:
         """Fetch current cNGN/USDT price from the Quidax public market summary.

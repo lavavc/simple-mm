@@ -14,10 +14,6 @@ interface CurvePoint {
   cngn_uni_base: number;
   cngn_assetchain: number;
   profit: number;
-  profit_no_fee: number;
-  cngn_uni_bsc_no_fee: number;
-  cngn_uni_base_no_fee: number;
-  cngn_assetchain_no_fee: number;
   min_acceptable_usd: number;
 }
 

@@ -103,7 +103,8 @@ export interface ArbitrageOpportunity {
 
 export interface ArbitrageStatus {
   enabled: boolean;
-  detection_only: boolean;
+  execute_cex_dex: boolean;
+  execute_dex_dex: boolean;
   last_scan_timestamp?: number;
   opportunities_detected_24h: number;
   opportunities_executed_24h: number;
@@ -113,6 +114,21 @@ export interface ArbitrageStatus {
   circuit_breaker_active: boolean;
   consecutive_failures: number;
   params: ArbitrageParams;
+  low_inventory_venues: string[];
+}
+
+// Order Book Types
+export interface OrderBookLevel {
+  price: string;
+  amount: string;
+}
+
+export interface OrderBookDepth {
+  venue: string;
+  pair: string;
+  timestamp: number;
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
 }
 
 export interface AccountInfo {

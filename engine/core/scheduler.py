@@ -14,11 +14,10 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.base import BaseDexAdapter
-from engine.core.arbitrage.detector import generate_v3_profit_curve
 from engine.core.arbitrage.listener import ArbitrageWebSocketListener
 
 if TYPE_CHECKING:
-    from engine.core.arbitrage import ArbitrageEngine
+    from engine.core.arbitrage.engine import ArbitrageEngine
     from engine.core.accounts import AccountManager
 
 logger = structlog.get_logger()
@@ -85,7 +84,8 @@ class TradingScheduler:
         self._started = False
         self.ws_listener = ArbitrageWebSocketListener(
             broadcast=self.broadcast,
-            on_update=self._update_price
+            on_update=self._update_price,
+            on_dex_event=self.arbitrage_engine.on_dex_dex_update if self.arbitrage_engine else None,
         )
 
     @property
@@ -132,17 +132,6 @@ class TradingScheduler:
             misfire_grace_time=10,
         )
 
-
-        if self.arbitrage_engine:
-            self.scheduler.add_job(
-                self._check_arbitrage,
-                IntervalTrigger(seconds=self.config.arbitrage_scan_interval),
-                id="arbitrage_scan",
-                replace_existing=True,
-                max_instances=3,
-                misfire_grace_time=10,
-            )
-            logger.info("arbitrage_scan_job_registered")
 
         if self.account_manager:
             from datetime import datetime, timezone
@@ -212,6 +201,17 @@ class TradingScheduler:
             misfire_grace_time=30,
         )
         logger.info("assetchain_poll_job_registered")
+
+        # Stream Quidax Depth
+        self.scheduler.add_job(
+            self._stream_quidax_depth,
+            IntervalTrigger(seconds=2),
+            id="quidax_depth_stream",
+            replace_existing=True,
+            max_instances=2,
+            misfire_grace_time=10,
+        )
+        logger.info("quidax_depth_stream_job_registered")
 
         self.scheduler.start()
         self._started = True
@@ -651,116 +651,80 @@ class TradingScheduler:
             )
             return False
 
-    # ------------------------------------------------------------------
-    # Arbitrage scanning
-    # ------------------------------------------------------------------
-
-    async def _check_arbitrage(self):
-        if not self.arbitrage_engine or not self.arbitrage_engine.enabled:
-            return
-
-        try:
-            opportunities = await self.arbitrage_engine.scan()
-            if opportunities:
-                logger.info(
-                    "arbitrage_scan_complete",
-                    opportunities_found=len(opportunities),
-                )
-        except Exception as e:
-            logger.error("arbitrage_scan_failed", error=str(e))
-
     async def _stream_dex_arb_curve(self):
-        """Polls AssetChain (no WSS endpoint) and regenerates the profit curve.
-        uni-bsc and uni-base are driven entirely by the WebSocket listener.
+        """Polls AssetChain (no WSS endpoint) and triggers DEX-DEX arb update.
+        BSC and Base pool state is updated event-driven via the WebSocket listener.
         """
         try:
-            from engine.core.arbitrage.detector import generate_v3_profit_curve
             from engine.core.arbitrage.pool_state import update_single_pool_state
             from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
 
             await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, rpc_url_override=settings.assetchain_rpc_url)
 
-            curve_data = await generate_v3_profit_curve()
-            if curve_data:
-                self.broadcast({
-                    "type": "dex_arb_curve",
-                    "data": curve_data
-                })
-
-                from engine.api.schemas import PriceQuote
-                from engine.db.database import get_db
-                import time
-
-                db = await get_db()
-                now_ms = int(time.time() * 1000)
-
-                for key in ("uni-bsc", "uni-base", "assetchain"):
-                    price_val = curve_data.get("prices", {}).get(key)
-                    if price_val is not None:
-                        await db.insert_price_snapshot(PriceQuote(
-                            source=f"{key}_pool",
-                            timestamp=now_ms,
-                            bid=price_val,
-                            ask=price_val,
-                            mid=price_val,
-                        ))
-
-                # Check for profitable live V3 Arb
-                optimal = curve_data.get("optimal_arb", {})
-                if optimal.get("expected_profit_usd", -1) > 0:
-                    import uuid
-                    import time
-                    from engine.api.schemas import DexArbOpportunity
-                    from engine.db.database import get_db
-
-                    db = await get_db()
-                    
-                    # Expire old ones
-                    cutoff_ts = int(time.time() * 1000) - 60000
-                    await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
-
-                    # Deduplication Strategy: don't slam the DB with 10 records a second 
-                    # if we are already 'Targeting' or 'Routing' the exact same vector.
-                    direction = optimal["direction"]
-                    existing_active = await db._conn.execute(
-                        "SELECT id FROM dex_arbitrage_opportunities WHERE status IN ('detected', 'executing') AND direction = ? ORDER BY timestamp DESC LIMIT 1",
-                        (direction,)
-                    )
-                    existing_row = await existing_active.fetchone()
-
-                    if existing_row:
-                        opp_id = existing_row['id']
-                    else:
-                        opp_id = f"dex-arb-{uuid.uuid4()}"
-                        opportunity = DexArbOpportunity(
-                            id=opp_id,
-                            timestamp=int(time.time() * 1000),
-                            direction=direction,
-                            optimal_size_usd=optimal["optimal_size_usd"],
-                            expected_profit_usd=optimal["expected_profit_usd"],
-                            cngn_transferred=optimal["cngn_transferred"],
-                            expected_usd_out=optimal["expected_usd_out"],
-                            status="detected",
-                            net_spread_bps=optimal.get("net_spread_bps", 0),
-                            pancake_price=curve_data.get("prices", {}).get("uni-bsc"),
-                            aerodrome_price=curve_data.get("prices", {}).get("uni-base"),
-                            slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
-                            pancake_fee_bps=optimal.get("uni_bsc_fee_bps"),
-                            aerodrome_fee_bps=optimal.get("uni_base_fee_bps"),
-                            estimated_gas_usd=optimal.get("estimated_gas_usd")
-                        )
-                        await db.insert_dex_arbitrage_opportunity(opportunity)
-
-                    # Augment broadcast data with the ID so frontend can track it
-                    broadcast_data = optimal.copy()
-                    broadcast_data["id"] = opp_id
-
-                    self.broadcast({
-                        "type": "dex_arb_opportunity",
-                        "data": broadcast_data
-                    })
+            if self.arbitrage_engine:
+                await self.arbitrage_engine.on_dex_dex_update()
         except Exception as e:
             logger.error("dex_arb_curve_stream_failed", error=str(e))
+
+    async def _stream_quidax_depth(self):
+        """Polls Quidax order book and hands off to the arb engine for CEX-DEX processing."""
+        try:
+            quidax = self.venues.get("quidax")
+            if not quidax:
+                return
+
+            depth = await quidax.get_order_book_depth(limit=20)
+            if not depth:
+                return
+
+            self.broadcast({
+                "type": "quidax_orderbook_depth",
+                "data": {
+                    "venue": depth.venue,
+                    "pair": depth.pair,
+                    "timestamp": depth.timestamp,
+                    "bids": [{"price": float(b.price), "amount": float(b.amount)} for b in depth.bids],
+                    "asks": [{"price": float(a.price), "amount": float(a.amount)} for a in depth.asks],
+                },
+            })
+
+            if self.arbitrage_engine:
+                balances = await self._get_balances_for_valuation(quidax)
+                await self.arbitrage_engine.on_cex_dex_depth(depth, balances)
+
+        except Exception as e:
+            logger.error("quidax_depth_stream_failed", error=str(e))
+
+    async def _get_balances_for_valuation(self, quidax) -> list:
+        """Assemble on-chain + CEX balances for portfolio valuation."""
+        from decimal import Decimal
+        from types import SimpleNamespace
+
+        last_balances = getattr(self, "_last_balances", None)
+        if not last_balances and self.account_manager:
+            try:
+                last_balances = await self.account_manager.check_all_balances(self.token_contracts)
+                self._last_balances = last_balances
+                logger.info("balances_eagerly_seeded_for_valuation_calc")
+            except Exception as seed_err:
+                logger.warning("balance_seed_failed_for_valuation", error=str(seed_err))
+
+        balances = list(last_balances) if last_balances else []
+        try:
+            qx_pos = await quidax.get_position()
+            if qx_pos and qx_pos.balances:
+                qx_bal = SimpleNamespace(
+                    role="quidax-exchange",
+                    token_balances={
+                        "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
+                        "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
+                    },
+                )
+                balances.append(qx_bal)
+        except Exception as qx_err:
+            logger.warning("quidax_position_fetch_failed", error=str(qx_err))
+
+        return balances
 
     # ------------------------------------------------------------------
     # Account balance monitoring
@@ -772,6 +736,7 @@ class TradingScheduler:
 
         try:
             balances = await self.account_manager.check_all_balances(self.token_contracts)
+            self._last_balances = balances
             db = await get_db()
 
             for balance in balances:

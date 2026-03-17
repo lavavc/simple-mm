@@ -52,6 +52,28 @@ class VenuePriceResponse(BaseModel):
     age_seconds: float = 0
 
 
+class OrderBookLevel(BaseModel):
+    """A single price level in an order book."""
+    price: Decimal
+    amount: Decimal
+
+class OrderBookDepth(BaseModel):
+    """Level 2 Order Book Depth snapshot."""
+    venue: str
+    pair: str
+    timestamp: int
+    bids: list[OrderBookLevel]
+    asks: list[OrderBookLevel]
+
+class OrderBookDepthResponse(BaseModel):
+    """Level 2 Order Book Depth snapshot logic for API endpoints."""
+    venue: str
+    pair: str
+    timestamp: int
+    bids: list[OrderBookLevel]
+    asks: list[OrderBookLevel]
+
+
 class VenueStatus(BaseModel):
     """Status of a trading venue."""
 
@@ -221,7 +243,7 @@ class ArbitrageOpportunity(BaseModel):
 
 
 class DexArbOpportunity(BaseModel):
-    """Detected DEX V3 arbitrage opportunity."""
+    """Detected DEX V4 arbitrage opportunity."""
 
     id: str
     timestamp: int
@@ -234,13 +256,13 @@ class DexArbOpportunity(BaseModel):
     net_spread_bps: int
     actual_profit_usd: Optional[Decimal] = None
     reason: Optional[str] = None
-    pancake_price: Optional[Decimal] = None
-    aerodrome_price: Optional[Decimal] = None
+    uni_bsc_price: Optional[Decimal] = None
+    uni_base_price: Optional[Decimal] = None
     buy_tx_hash: Optional[str] = None
     sell_tx_hash: Optional[str] = None
     slippage_tolerance_bps: Optional[int] = None
-    pancake_fee_bps: Optional[int] = None
-    aerodrome_fee_bps: Optional[int] = None
+    uni_bsc_fee_bps: Optional[int] = None
+    uni_base_fee_bps: Optional[int] = None
     estimated_gas_usd: Optional[Decimal] = None
 
 class ArbitrageTrade(BaseModel):
@@ -262,7 +284,8 @@ class ArbitrageStatus(BaseModel):
     """Current status of the arbitrage engine."""
 
     enabled: bool
-    detection_only: bool  # True = no execution, just logging
+    execute_cex_dex: bool
+    execute_dex_dex: bool
     last_scan_timestamp: Optional[int] = None
     opportunities_detected_24h: int
     opportunities_executed_24h: int

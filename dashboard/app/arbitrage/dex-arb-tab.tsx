@@ -7,18 +7,16 @@ import { formatNumber } from '@/lib/utils';
 import { ArrowRightLeft, Database, Zap, ArrowRight, AlertTriangle, Activity, TrendingUp, Circle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+
 import { useAccountBalances } from '@/lib/hooks/useQueries';
+import { ProfitCurveChart } from '@/components/charts/ProfitCurveChart';
 
 interface CurvePoint {
     size: number;
-    cngn_uni_bsc: number;
-    cngn_uni_base: number;
+    cngn_acquired: number;
     cngn_assetchain: number;
     profit: number;
-    profit_no_fee: number;
-    cngn_uni_bsc_no_fee: number;
-    cngn_uni_base_no_fee: number;
-    cngn_assetchain_no_fee: number;
+    profit_after_slippage: number;
     min_acceptable_usd: number;
 }
 
@@ -107,12 +105,6 @@ export default function DexArbPage() {
     });
     const dexOpps: DexArbOpp[] = data || [];
 
-    const { data: accounts } = useAccountBalances();
-    const getTradeAccount = (v: string) => accounts?.find((a) => a.role === `${v}-trade`);
-    const uniBscTrade = getTradeAccount('uni-bsc');
-    const uniBaseTrade = getTradeAccount('uni-base');
-    const assetTrade = getTradeAccount('assetchain');
-
     const [now, setNow] = React.useState(Date.now());
 
     React.useEffect(() => {
@@ -179,56 +171,6 @@ export default function DexArbPage() {
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                 {/* LEFT COLUMN: Controls & Statuss */}
                 <div className="lg:col-span-1 space-y-4">
-                    <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
-                        <CardHeader className="p-3 border-b border-white/[0.02]">
-                            <div className="flex items-center justify-between">
-                                <div className="text-[11px] text-white/60 uppercase tracking-widest font-bold">INVENTORY</div>
-                                <div className={`font-mono text-[10px] uppercase tracking-widest rounded-sm px-2 py-0.5 border ${isSyncing ? 'text-white/40 border-white/10' : 'text-emerald-500 border-emerald-500/30 bg-emerald-500/10'}`}>
-                                    {isSyncing ? 'AWAIT' : 'ARMED'}
-                                </div>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="p-4 space-y-4">
-                            <div>
-                                <div className="flex justify-between items-end mb-1">
-                                    <span className="text-xs text-white/80">Uniswap BSC <span className="text-white/50 text-[10px]">(BSC)</span></span>
-                                    {uniBscTrade ? (
-                                        <span className="font-mono text-sm text-white">${formatNumber(uniBscTrade.token_balances?.USDT || 0, 2)}</span>
-                                    ) : (
-                                        <div className="h-4 w-16 bg-white/10 rounded-sm animate-pulse" />
-                                    )}
-                                </div>
-                                <div className="flex justify-between items-center text-[10px] font-mono text-white/50">
-                                    <span>USDT</span>
-                                    {uniBscTrade ? (
-                                        <span>{formatNumber(uniBscTrade.token_balances?.cNGN || 0, 0)} cNGN</span>
-                                    ) : (
-                                        <div className="h-3 w-20 bg-white/5 rounded-sm animate-pulse mt-0.5" />
-                                    )}
-                                </div>
-                            </div>
-                            <div className="h-px w-full bg-white/[0.05]"></div>
-                            <div>
-                                <div className="flex justify-between items-end mb-1">
-                                    <span className="text-xs text-white/80">Uniswap Base <span className="text-white/50 text-[10px]">(Base)</span></span>
-                                    {uniBaseTrade ? (
-                                        <span className="font-mono text-sm text-white">${formatNumber(uniBaseTrade.token_balances?.USDC || 0, 2)}</span>
-                                    ) : (
-                                        <div className="h-4 w-16 bg-white/10 rounded-sm animate-pulse" />
-                                    )}
-                                </div>
-                                <div className="flex justify-between items-center text-[10px] font-mono text-white/50">
-                                    <span>USDC</span>
-                                    {uniBaseTrade ? (
-                                        <span>{formatNumber(uniBaseTrade.token_balances?.cNGN || 0, 0)} cNGN</span>
-                                    ) : (
-                                        <div className="h-3 w-20 bg-white/5 rounded-sm animate-pulse mt-0.5" />
-                                    )}
-                                </div>
-                            </div>
-                        </CardContent>
-                    </Card>
-
                     <Card className={`bg-[#12161C] border rounded-sm shadow-none transition-colors duration-500 ${resolvedCurveData.optimal_arb.expected_profit_usd > 0 ? 'border-emerald-500/30' : 'border-white/[0.05]'}`}>
                         <CardHeader className={`p-3 border-b ${resolvedCurveData.optimal_arb.expected_profit_usd > 0 ? 'border-emerald-500/10 bg-emerald-500/[0.02]' : 'border-white/[0.02]'}`}>
                             <div className="text-[11px] text-white/60 uppercase tracking-widest font-bold flex items-center gap-2">
@@ -306,46 +248,48 @@ export default function DexArbPage() {
 
                                         return (
                                             <>
-                                                <div className="space-y-3 border-t border-white/5 pt-3">
-                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
-                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Execution Path</span>
-                                                        <span className="text-white/80 text-right break-words max-w-[60%]">{execPath}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
-                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Initial Spread</span>
-                                                        <div className="text-right break-words max-w-[65%]">
-                                                            <div className="text-emerald-400/90 text-[11px]">+{initialSpreadBps} BPS</div>
-                                                            <div className="text-white/40 text-[9px] mt-0.5">{shortFrom}: ${priceFrom.toFixed(6)} | {shortTo}: ${priceTo.toFixed(6)}</div>
+                                                <div className="grid grid-cols-1 gap-2 text-xs font-mono border-t border-white/5 pt-3">
+                                                    <div className="flex flex-col gap-1 p-2 bg-white/5 rounded-sm border border-emerald-500/10">
+                                                        <div className="flex justify-between items-center text-white/80">
+                                                            <span className="text-emerald-400">1. Buy {fromVenue.replace('UNI_', 'UNI ')}</span>
+                                                            <span>${formatNumber(resolvedCurveData.optimal_arb.optimal_size_usd, 2)} 
+                                                                <ArrowRight className="inline h-3 w-3 mx-2 text-white/20" /> 
+                                                                <span className="text-white">{formatNumber(resolvedCurveData.optimal_arb.cngn_transferred, 2)} cNGN</span>
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex justify-between text-[9px] text-white/40 items-center">
+                                                            <span>LP Swap Fee ({(
+                                                                (fromVenue === 'UNI_BSC' ? resolvedCurveData.optimal_arb.uni_bsc_fee_bps : fromVenue === 'UNI_BASE' ? resolvedCurveData.optimal_arb.uni_base_fee_bps : resolvedCurveData.optimal_arb.assetchain_fee_bps) || 0) / 100
+                                                            }%)</span>
+                                                            <span className="text-rose-400/80">Factored in AMM</span>
                                                         </div>
                                                     </div>
-                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
-                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Net Spread</span>
+                                                    <div className="flex flex-col gap-1 p-2 bg-white/5 rounded-sm border border-emerald-500/10">
+                                                        <div className="flex justify-between items-center text-white/80">
+                                                            <span className="text-emerald-400">2. Sell {toVenue.replace('UNI_', 'UNI ')}</span>
+                                                            <span>{formatNumber(resolvedCurveData.optimal_arb.cngn_transferred, 2)} cNGN 
+                                                                <ArrowRight className="inline h-3 w-3 mx-2 text-white/20" /> 
+                                                                <span className="text-white">${formatNumber(resolvedCurveData.optimal_arb.expected_usd_out, 2)}</span>
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex justify-between text-[9px] text-white/40 items-center">
+                                                            <span>LP Swap Fee ({(
+                                                                (toVenue === 'UNI_BSC' ? resolvedCurveData.optimal_arb.uni_bsc_fee_bps : toVenue === 'UNI_BASE' ? resolvedCurveData.optimal_arb.uni_base_fee_bps : resolvedCurveData.optimal_arb.assetchain_fee_bps) || 0) / 100
+                                                            }%)</span>
+                                                            <span className="text-rose-400/80">Factored in AMM</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex justify-between items-center text-white/80 pt-2 border-t border-white/10 mt-1">
+                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5 text-[10px]">Net Spread</span>
                                                         <div className="text-right break-words max-w-[65%]">
                                                             <div className="text-emerald-400/90 text-[11px]">+{resolvedCurveData.optimal_arb.net_spread_bps} BPS</div>
                                                             <div className="text-white/40 text-[9px] mt-0.5">Formula: ((Out - In) / In) * 10000</div>
                                                         </div>
                                                     </div>
-                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
-                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Exp. Slippage</span>
-                                                        <span className="text-yellow-500/90 text-right break-words max-w-[60%] mt-0.5">{resolvedCurveData.optimal_arb.slippage_tolerance_bps ? `${(resolvedCurveData.optimal_arb.slippage_tolerance_bps / 100).toFixed(2)}% (${resolvedCurveData.optimal_arb.slippage_tolerance_bps} BPS)` : '0.10% (10 BPS)'} allow</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight">
-                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">L2 Gas</span>
-                                                        <div className="text-right break-words max-w-[60%]">
-                                                            <div className="text-white/80 text-[11px]">~${resolvedCurveData.optimal_arb.estimated_gas_usd?.toFixed(2) || '0.07'} total</div>
-                                                            <div className="text-white/40 text-[9px] mt-0.5">Dynamic RPC</div>
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex justify-between items-start text-[10px] font-mono leading-tight pt-2 border-t border-white/[0.02]">
-                                                        <span className="text-white/50 whitespace-nowrap mr-3 mt-0.5">Pool Fees</span>
-                                                        <div className="text-right text-white/80 break-words max-w-[65%] mt-0.5 leading-relaxed">
-                                                            {resolvedCurveData.optimal_arb.uni_bsc_fee_bps ? `${(resolvedCurveData.optimal_arb.uni_bsc_fee_bps / 100).toFixed(2)}%` : '0.01%'} (UBSC) | {resolvedCurveData.optimal_arb.uni_base_fee_bps ? `${(resolvedCurveData.optimal_arb.uni_base_fee_bps / 100).toFixed(2)}%` : '0.05%'} (UBAS) | {resolvedCurveData.optimal_arb.assetchain_fee_bps ? `${(resolvedCurveData.optimal_arb.assetchain_fee_bps / 100).toFixed(2)}%` : '0.30%'} (ASST)
-                                                        </div>
-                                                    </div>
                                                 </div>
 
                                                 <div className="space-y-3 border-t border-white/10 pt-4 mb-4">
-                                                    <div className="text-[11px] text-white/60 uppercase tracking-widest mb-1.5 font-bold">Post-Trade Inventory</div>
+                                                    <div className="text-[11px] text-white/60 uppercase tracking-widest mb-1.5 font-bold">Post-Trade Execution Inventory</div>
 
                                                     <div className="bg-black/20 p-2.5 rounded-sm border border-white/[0.05] flex justify-between items-center text-[11px] font-mono">
                                                         <span className="text-white/70">{fromNetwork}</span>
@@ -469,7 +413,7 @@ export default function DexArbPage() {
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
                                             <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">UNI BSC</div>
-                                            <Badge variant="outline" className="text-[8px] bg-white/[0.05] border-white/10 text-white/60 font-mono">DEX</Badge>
+                                            <Badge variant="outline" className="text-[8px] bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-mono">EXECUTABLE</Badge>
                                         </div>
                                         <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
                                     </CardHeader>
@@ -512,7 +456,7 @@ export default function DexArbPage() {
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
                                             <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">UNI BASE</div>
-                                            <Badge variant="outline" className="text-[8px] bg-white/[0.05] border-white/10 text-white/60 font-mono">DEX</Badge>
+                                            <Badge variant="outline" className="text-[8px] bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-mono">EXECUTABLE</Badge>
                                         </div>
                                         <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
                                     </CardHeader>
@@ -555,20 +499,20 @@ export default function DexArbPage() {
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
                                             <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">ASSETCHAIN</div>
-                                            <Badge variant="outline" className="text-[8px] bg-white/[0.05] border-white/10 text-white/60 font-mono">DEX</Badge>
+                                            <Badge variant="outline" className="text-[8px] bg-blue-500/10 border-blue-500/30 text-blue-400 font-mono">OBSERVATIONAL</Badge>
                                         </div>
-                                        <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+                                        <Circle className="h-2 w-2 fill-blue-500 text-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
                                     </CardHeader>
                                     <CardContent className="px-4 pb-4 pt-2">
                                         <div className="flex items-center gap-2 mb-2">
-                                            <TrendingUp className="h-4 w-4 text-emerald-500/50" />
+                                            <TrendingUp className="h-4 w-4 text-blue-500/50" />
                                             <span className="text-xl font-bold font-mono tracking-tight text-white">${(resolvedCurveData.prices.assetchain || 0).toFixed(7)}</span>
                                             <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">USD</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono border-t border-white/[0.05] pt-3">
                                             <div>
                                                 <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">IMPLIED RATE</div>
-                                                <div className="flex items-center gap-1.5 text-emerald-400">
+                                                <div className="flex items-center gap-1.5 text-blue-400">
                                                     <ArrowRightLeft className="h-3 w-3" />
                                                     {formatNumber(1 / (resolvedCurveData.prices.assetchain || 1), 2)} cNGN
                                                 </div>
@@ -577,14 +521,14 @@ export default function DexArbPage() {
                                                 <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
                                                 <div className="flex justify-between items-end mb-1">
                                                     <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.assetchain_stable || 0, 2)} USDT</div>
-                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.assetchain_cngn || 0, 2)} cNGN</div>
+                                                    <div className="text-blue-400 font-bold">{formatNumber(resolvedCurveData.stats.assetchain_cngn || 0, 2)} cNGN</div>
                                                 </div>
                                                 <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
                                                     <div
-                                                        className="h-full bg-[#2563eb]"
+                                                        className="h-full bg-slate-500"
                                                         style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.assetchain_stable || 0) / ((resolvedCurveData.stats.assetchain_stable || 1) + (resolvedCurveData.stats.assetchain_cngn || 1) / 1500)) * 100))}%` }}
                                                     />
-                                                    <div className="h-full flex-1 bg-emerald-400" />
+                                                    <div className="h-full flex-1 bg-blue-400" />
                                                 </div>
                                             </div>
                                         </div>
@@ -597,8 +541,19 @@ export default function DexArbPage() {
                         )}
                     </div>
 
-                    <Card className="bg-white/[0.02] border-white/[0.05] rounded-sm shadow-none">
-                        <CardHeader className="p-4 border-b border-white/[0.05]">
+                    <div className="h-[600px] mt-4 mb-4">
+                        <ProfitCurveChart 
+                            data={resolvedCurveData.curve} 
+                            optimalSize={resolvedCurveData.optimal_arb.optimal_size_usd} 
+                            maxProfit={resolvedCurveData.optimal_arb.expected_profit_usd}
+                            isSyncing={isSyncing}
+                            direction={resolvedCurveData.optimal_arb.direction}
+                        />
+                    </div>
+
+                    <div className="mt-6 hidden">
+                        <Card className="bg-white/[0.02] border-white/[0.05] rounded-sm shadow-none">
+                            <CardHeader className="p-4 border-b border-white/[0.05]">
                             <div className="text-[11px] text-white/60 font-bold uppercase tracking-widest font-mono flex items-center gap-2">
                                 <Database className="h-3.5 w-3.5" />
                                 Execution Ledger
@@ -747,6 +702,7 @@ export default function DexArbPage() {
                             </div>
                         </CardContent>
                     </Card>
+                    </div>
                 </div>
             </div>
         </div>
