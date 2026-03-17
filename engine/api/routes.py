@@ -640,24 +640,20 @@ async def get_dex_arbitrage_opportunities(
 @router.get("/arbitrage/liquidation")
 async def get_liquidation_valuation():
     """
-    Returns the slippage-adjusted USD liquidation value of all cNGN holdings
-    across every venue, computed on-demand from the live Quidax order book + pool state.
+    Returns the mark-to-market USD value of all cNGN holdings across every venue,
+    computed on-demand from the live Quidax order book and cached pool state.
     """
     from decimal import Decimal
-    from engine.core.arbitrage.pool_state import (
-        get_cached_pool_state,
-        v3_swap_token0_for_token1,
-        v3_swap_token1_for_token0,
-    )
-    from engine.core.arbitrage.cex_dex_curve import walk_quidax_asks
+    import time
+    from engine.core.arbitrage.pool_state import get_cached_pool_state
+    from engine.core.arbitrage.valuation import cex_holdings_value, dex_holdings_value
+    from engine.core.arbitrage.cex_dex_simulation import QUIDAX_FEE
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-    import time
 
     if not _account_manager:
         return {"error": "account_manager_not_configured", "venues": {}}
 
-    # Fetch live Quidax order book (same data used for arb calculations)
     quidax_venue = _venues.get("quidax") if _venues else None
     quidax_asks = []
     if quidax_venue:
@@ -677,7 +673,6 @@ async def get_liquidation_valuation():
         return {"error": str(e), "venues": {}}
 
     # Append the Quidax exchange account (CEX balance — not HD-derived, fetched via API).
-    # Without this, quidax-exchange is never in the list and we'd miss the real cNGN holding.
     if quidax_venue:
         try:
             qx_pos = await quidax_venue.get_position()
@@ -702,32 +697,26 @@ async def get_liquidation_valuation():
         for token, amt in tokens.items():
             amount = Decimal(str(amt)) if amt is not None else Decimal(0)
             if token.lower() == "cngn" and amount > 0:
-                liq_usd = Decimal(0)
-                liq_usd_no_fee = Decimal(0)
+                value_usd = Decimal(0)
+                value_usd_no_fee = Decimal(0)
                 try:
                     if role in ("quidax-exchange", "quidax-lp", "quidax-trade-fund") and quidax_asks:
-                        # Real orderbook walk with fee — same as arbitrage logic
-                        liq_usd, _ = walk_quidax_asks(quidax_asks, amount)
-                        # No-fee version: same walk without the 0.1% taker deduction
-                        from engine.core.arbitrage.cex_dex_curve import QUIDAX_FEE
-                        liq_usd_no_fee = liq_usd / (Decimal("1") - QUIDAX_FEE)
+                        value_usd, value_usd_no_fee = cex_holdings_value(quidax_asks, amount, QUIDAX_FEE)
                     elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt:
-                        liq_usd = v3_swap_token1_for_token0(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6)
-                        liq_usd_no_fee = v3_swap_token1_for_token0(amount, bsc_sqrt, bsc_liq, Decimal(0), 18, 6)
+                        value_usd, value_usd_no_fee = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)
                     elif role in ("uni-base-trade", "uni-base-lp") and base_sqrt:
-                        liq_usd = v3_swap_token0_for_token1(amount, base_sqrt, base_liq, base_fee, 6, 6)
-                        liq_usd_no_fee = v3_swap_token0_for_token1(amount, base_sqrt, base_liq, Decimal(0), 6, 6)
+                        value_usd, value_usd_no_fee = dex_holdings_value(amount, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True)
                 except Exception:
-                    liq_usd = Decimal(0)
-                    liq_usd_no_fee = Decimal(0)
+                    value_usd = Decimal(0)
+                    value_usd_no_fee = Decimal(0)
                 venue_result[token] = {
                     "amount": float(amount),
-                    "liquidation_usd": float(liq_usd),
-                    "liquidation_usd_no_fee": float(liq_usd_no_fee),
+                    "value_usd": float(value_usd),
+                    "value_usd_no_fee": float(value_usd_no_fee),
                 }
             else:
                 a = float(amount) if amt is not None else 0.0
-                venue_result[token] = {"amount": a, "liquidation_usd": a, "liquidation_usd_no_fee": a}
+                venue_result[token] = {"amount": a, "value_usd": a, "value_usd_no_fee": a}
 
         result[role] = venue_result
 

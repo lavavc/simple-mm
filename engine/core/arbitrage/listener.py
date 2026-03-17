@@ -8,7 +8,7 @@ from typing import Callable, Any
 from engine.config import settings
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-from engine.core.arbitrage.detector import generate_v3_profit_curve
+from engine.core.arbitrage.detector import generate_dex_profit_curve
 from engine.core.arbitrage.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
@@ -159,7 +159,7 @@ class ArbitrageWebSocketListener:
             if self.on_update:
                 await self.on_update()
 
-            curve_data = await generate_v3_profit_curve()
+            curve_data = await generate_dex_profit_curve()
 
             if curve_data:
                 from engine.api.schemas import PriceQuote

@@ -19,8 +19,8 @@ from engine.core.price_aggregation import (
 from engine.core.arbitrage.pool_state import (
     get_cached_pool_state,
     seed_pool_states,
-    v3_swap_token0_for_token1,
-    v3_swap_token1_for_token0,
+    swap_token0_for_token1,
+    swap_token1_for_token0,
     Q96,
 )
 
@@ -338,13 +338,8 @@ class ArbitrageDetector:
         return self.params.max_single_trade_usd
 
 
-async def generate_v3_profit_curve() -> dict:
-    """Generates the side-by-side exact V3 curve data over a set of investment sizes from CACHED memory.
-
-    TODO: Extract this into engine/core/arbitrage/dex_dex_curve.py to mirror
-    the cex_dex_curve.py structure. detector.py should only contain ArbitrageDetector
-    (price scanning / opportunity detection), not curve generation logic.
-    """
+async def generate_dex_profit_curve() -> dict:
+    """Generates DEX-DEX profit curve data over a range of investment sizes from cached pool state."""
     from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -360,7 +355,7 @@ async def generate_v3_profit_curve() -> dict:
     ]
     if missing_execution_fees:
         logger.error(
-            "v3_profit_curve_blocked_missing_fees",
+            "dex_profit_curve_blocked_missing_fees",
             pools=missing_execution_fees,
             note="arb curve generation aborted — re-seed will be attempted",
         )
@@ -369,7 +364,7 @@ async def generate_v3_profit_curve() -> dict:
         return {}
 
     if not uni_bsc_sqrt or not uni_base_sqrt:
-        logger.warning("v3_profit_curve_cache_miss_aborting_calc")
+        logger.warning("dex_profit_curve_cache_miss")
         import asyncio
         asyncio.create_task(seed_pool_states())
         return {}
@@ -393,7 +388,7 @@ async def generate_v3_profit_curve() -> dict:
         if bal is None or bal < MIN_POOL_STABLE_USD
     ]
     if thin_pools:
-        logger.warning("v3_profit_curve_blocked_thin_pools", pools=thin_pools, min_usd=float(MIN_POOL_STABLE_USD))
+        logger.warning("dex_profit_curve_blocked_thin_pools", pools=thin_pools, min_usd=float(MIN_POOL_STABLE_USD))
         return {}
 
     # Per-vector USD cap from pool balances:
@@ -415,9 +410,6 @@ async def generate_v3_profit_curve() -> dict:
     best_spread_bps = 0
 
     def ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):
-        # Evaluate up front to check if it's even profitable
-        if eval_func(Decimal("5"))[0] <= Decimal("-1"):
-            return Decimal("-999999"), Decimal("0"), Decimal("0"), Decimal("0"), None
         while high - low > tol:
             m1 = low + (high - low) / Decimal("3")
             m2 = high - (high - low) / Decimal("3")
@@ -433,14 +425,14 @@ async def generate_v3_profit_curve() -> dict:
 
     # DELTA BALANCING VECTOR 1: Buy on uni-bsc, sell identical cNGN from uni-base inventory
     def eval_bsc_to_base(inv: Decimal):
-        cngn = v3_swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        out = v3_swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
         return out - inv, out, cngn, "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
 
     # DELTA BALANCING VECTOR 2: Buy on uni-base, sell identical cNGN from uni-bsc inventory
     def eval_base_to_bsc(inv: Decimal):
-        cngn = v3_swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        out = v3_swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        cngn = swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
         return out - inv, out, cngn, "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"
 
     best_profit_v1, best_size_v1, best_cngn_v1, best_out_v1, best_dir_v1 = ternary_search(eval_bsc_to_base, high=max_usd_v1)
@@ -470,15 +462,15 @@ async def generate_v3_profit_curve() -> dict:
     for size in test_sizes:
         investment_usd = Decimal(str(size))
 
-        cngn_acquired_base = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        cngn_acquired_no_fee_base = v3_swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
-        usd_returned_bsc = v3_swap_token1_for_token0(cngn_acquired_base, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        usd_returned_no_fee_bsc = v3_swap_token1_for_token0(cngn_acquired_no_fee_base, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
+        cngn_acquired_base = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        cngn_acquired_no_fee_base = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+        usd_returned_bsc = swap_token1_for_token0(cngn_acquired_base, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        usd_returned_no_fee_bsc = swap_token1_for_token0(cngn_acquired_no_fee_base, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
 
-        cngn_acquired_bsc = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        cngn_acquired_no_fee_bsc = v3_swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
-        usd_returned_base = v3_swap_token0_for_token1(cngn_acquired_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        usd_returned_no_fee_base = v3_swap_token0_for_token1(cngn_acquired_no_fee_bsc, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
+        cngn_acquired_bsc = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        cngn_acquired_no_fee_bsc = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, Decimal(0), 18, 6)
+        usd_returned_base = swap_token0_for_token1(cngn_acquired_bsc, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        usd_returned_no_fee_base = swap_token0_for_token1(cngn_acquired_no_fee_bsc, uni_base_sqrt, uni_base_liq, Decimal(0), 6, 6)
 
         min_usd_bsc = usd_returned_bsc * slippage_multiplier
         min_usd_base = usd_returned_base * slippage_multiplier

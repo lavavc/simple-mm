@@ -15,7 +15,8 @@ from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.base import BaseDexAdapter
 from engine.core.arbitrage.listener import ArbitrageWebSocketListener
-from engine.core.arbitrage.cex_dex_curve import simulate_cex_dex_arbitrage, compute_quidax_liquidation
+from engine.core.arbitrage.cex_dex_simulation import find_optimal_arb, compute_arb_curve
+from engine.core.arbitrage.valuation import portfolio_value
 
 if TYPE_CHECKING:
     from engine.core.arbitrage.engine import ArbitrageEngine
@@ -685,13 +686,13 @@ class TradingScheduler:
         uni-bsc and uni-base are driven entirely by the WebSocket listener.
         """
         try:
-            from engine.core.arbitrage.detector import generate_v3_profit_curve
+            from engine.core.arbitrage.detector import generate_dex_profit_curve
             from engine.core.arbitrage.pool_state import update_single_pool_state
             from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
 
             await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, rpc_url_override=settings.assetchain_rpc_url)
 
-            curve_data = await generate_v3_profit_curve()
+            curve_data = await generate_dex_profit_curve()
             if curve_data:
                 self.broadcast({
                     "type": "dex_arb_curve",
@@ -807,7 +808,7 @@ class TradingScheduler:
                 # The Quidax exchange balance (CEX account: cNGN + USDT) is NOT in
                 # _last_balances — it comes from quidax.get_position(), not from
                 # account_manager.check_all_balances(). Fetch it directly and inject
-                # a synthetic entry so compute_quidax_liquidation gets the real amounts.
+                # a synthetic entry so portfolio_value gets the real amounts.
                 balances_with_quidax = list(last_balances) if last_balances else []
                 try:
                     qx_pos = await quidax.get_position()
@@ -823,49 +824,36 @@ class TradingScheduler:
                         )
                         balances_with_quidax.append(qx_bal)
                 except Exception as qx_err:
-                    logger.warning("quidax_position_fetch_for_liq_failed", error=str(qx_err))
+                    logger.warning("quidax_position_fetch_failed", error=str(qx_err))
 
-                # Always compute Quidax-only liquidation (no DEX pool state needed).
-                quidax_liq = compute_quidax_liquidation(depth, balances_with_quidax) if balances_with_quidax else None
+                # Fast path: optimal arb signal + portfolio valuation.
+                # Broadcast immediately; does not require the full curve to be ready.
+                arb_data = find_optimal_arb(depth)
+                val = portfolio_value(depth, balances_with_quidax) if balances_with_quidax else {}
+                if arb_data:
+                    arb_data["portfolio_value"] = val
+                    self.broadcast({"type": "quidax_dex_optimal_arb", "data": arb_data})
+                elif val:
+                    self.broadcast({"type": "quidax_dex_optimal_arb", "data": {"portfolio_value": val}})
 
-                # Attempt the full arb curve (requires DEX pool state to be seeded).
-                cex_dex_curve_data = simulate_cex_dex_arbitrage(depth, balances_with_quidax)
-
-                if cex_dex_curve_data and balances_with_quidax:
-                    # Full curve available: merge the precise Quidax liq into it
-                    if quidax_liq:
-                        cex_dex_curve_data["liquidation_valuation"].update(quidax_liq)
-                    self.broadcast({
-                        "type": "quidax_dex_arb_curve",
-                        "data": cex_dex_curve_data
-                    })
-                elif quidax_liq:
-                    # DEX pool state not ready yet — broadcast just the Quidax liq
-                    # so the UI shows real values immediately without waiting for BSC/Base.
-                    self.broadcast({
-                        "type": "quidax_dex_arb_curve",
-                        "data": {
-                            "liquidation_valuation": {
-                                "quidax_cngn_usd":        quidax_liq["quidax_cngn_usd"],
-                                "quidax_cngn_usd_no_fee": quidax_liq["quidax_cngn_usd_no_fee"],
-                                "quidax_usdt":            quidax_liq["quidax_usdt"],
-                                "uni_bsc_cngn_usd": 0.0,
-                                "uni_bsc_cngn_usd_no_fee": 0.0,
-                                "uni_bsc_usdt": 0.0,
-                                "uni_base_cngn_usd": 0.0,
-                                "uni_base_cngn_usd_no_fee": 0.0,
-                                "uni_base_usdc": 0.0,
-                            },
-                            "prices": {
-                                "quidax": quidax_liq["quidax_mid"],
-                                "uni-bsc": 0.0,
-                                "uni-base": 0.0,
-                            },
-                        }
-                    })
+                # Slow path: full curve for UI. Run as a background task so it does
+                # not delay the fast-path broadcast above.
+                import asyncio
+                if not getattr(self, "_curve_task", None) or self._curve_task.done():
+                    self._curve_task = asyncio.create_task(self._broadcast_cex_dex_curve(depth))
 
         except Exception as e:
             logger.error("quidax_depth_stream_failed", error=str(e))
+
+    async def _broadcast_cex_dex_curve(self, depth):
+        """Background task: compute the full CEX-DEX profit curve and broadcast to UI."""
+        try:
+            loop = __import__("asyncio").get_running_loop()
+            curve = await loop.run_in_executor(None, compute_arb_curve, depth)
+            if curve:
+                self.broadcast({"type": "quidax_dex_arb_curve", "data": curve})
+        except Exception as e:
+            logger.error("cex_dex_curve_compute_failed", error=str(e))
 
     # ------------------------------------------------------------------
     # Account balance monitoring

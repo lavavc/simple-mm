@@ -1,5 +1,6 @@
 """
-Pool state cache: fetch and store V3/V4 on-chain state for the arb engine.
+Pool state cache: fetch and store on-chain state for the arb engine.
+Supports V3-compatible pools (AssetChain) and V4 pools (Uniswap Base/BSC).
 """
 
 from decimal import Decimal, getcontext
@@ -35,7 +36,7 @@ async def _fetch_fee_with_retry(w3: AsyncWeb3, pool: str, pool_address: str) -> 
             if attempt < _FEE_MAX_ATTEMPTS - 1:
                 wait = _FEE_BACKOFF_BASE * (2 ** attempt)  # 1s, 2s
                 logger.warning(
-                    "v3_pool_fee_fetch_retry",
+                    "pool_fee_fetch_retry",
                     pool=pool_address,
                     attempt=attempt + 1,
                     retry_in_seconds=wait,
@@ -44,7 +45,7 @@ async def _fetch_fee_with_retry(w3: AsyncWeb3, pool: str, pool_address: str) -> 
                 await asyncio.sleep(wait)
 
     logger.error(
-        "v3_pool_fee_fetch_failed",
+        "pool_fee_fetch_failed",
         pool=pool_address,
         attempts=_FEE_MAX_ATTEMPTS,
         error=str(last_err),
@@ -80,7 +81,7 @@ def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | 
     return None, None, None, None, None, None
 
 async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str = None) -> bool:
-    """Fetches the state for a single V3 pool and updates the cache. Returns True if successful."""
+    """Fetches the state for a single V3-compatible pool and updates the cache. Returns True if successful."""
     rpc_url = rpc_url_override or config.rpc_url
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
     pool = w3.to_checksum_address(config.pool_address)
@@ -110,13 +111,13 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
             if cached_fee is not None:
                 # Tick unchanged and fee is known — use the cache as-is.
                 fee = cached_fee
-                logger.debug("v3_pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
+                logger.debug("pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
             else:
                 # Fee was None from a previous failed fetch. Retry now so a
                 # transient RPC error doesn't leave us blocked indefinitely
                 # just because the tick hasn't changed.
                 logger.info(
-                    "v3_pool_fee_cache_null_retrying",
+                    "pool_fee_cache_null_retrying",
                     pool=config.pool_address,
                     tick=tick,
                 )
@@ -125,7 +126,7 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
             liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
             liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
             fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
-            logger.debug("v3_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
+            logger.debug("pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,
@@ -139,7 +140,7 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
 
         if fee is None:
             logger.warning(
-                "v3_pool_state_incomplete",
+                "pool_state_incomplete",
                 pool=config.pool_address,
                 reason="fee fetch failed — state cached but marked incomplete",
             )
@@ -147,7 +148,7 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
 
         return True
     except Exception as e:
-        logger.error("v3_pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=config.pool_address)
+        logger.error("pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=config.pool_address)
         return False
 
 
@@ -176,7 +177,7 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
         else:
             liquidity_raw = await state_view.functions.getLiquidity(pool_id_bytes).call()
             liquidity = Decimal(liquidity_raw)
-            logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
+            logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)  # noqa: keep v4_ prefix for V4-specific path
 
         # Try DexScreener for accurate per-pool token amounts.
         # Falls back to balanceOf(poolManager) — accurate for cNGN (unique token),
@@ -261,11 +262,13 @@ async def seed_pool_states():
     await update_single_v4_pool_state(UNISWAP_BASE_POOL_READ_CONFIG)
     await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
 
-# ========== V3 EXACT MATH FUNCTIONS ==========
+# ========== CONCENTRATED LIQUIDITY SWAP MATH ==========
+# Identical formula for both V3 and V4 pools (same CFMM invariant).
+# Single-tick approximation: uses cached sqrtPrice and liquidity as constants.
 
-def v3_swap_token0_for_token1(amount_token0_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, fee: Decimal, t0_decimals: int, t1_decimals: int) -> Decimal:
+def swap_token0_for_token1(amount_token0_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, fee: Decimal, t0_decimals: int, t1_decimals: int) -> Decimal:
     """
-    Exact V3 single-tick swap math for Token0 -> Token1.
+    Single-tick swap: Token0 -> Token1.
     Formula: sqrtP_new = (L * sqrtP) / (L + amount_in * sqrtP)
     """
     if liquidity == 0 or sqrt_p == 0: return Decimal(0)
@@ -280,11 +283,10 @@ def v3_swap_token0_for_token1(amount_token0_in: Decimal, sqrt_p: Decimal, liquid
 
     return amount_out_raw / Decimal(10**t1_decimals)
 
-def v3_swap_token1_for_token0(amount_token1_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, fee: Decimal, t0_decimals: int, t1_decimals: int) -> Decimal:
+def swap_token1_for_token0(amount_token1_in: Decimal, sqrt_p: Decimal, liquidity: Decimal, fee: Decimal, t0_decimals: int, t1_decimals: int) -> Decimal:
     """
-    Exact V3 single-tick swap math for Token1 -> Token0.
+    Single-tick swap: Token1 -> Token0.
     Formula: sqrtP_new = sqrtP + (amount_in * Q96) / L
-    amount_out = L * (sqrtP_new - sqrtP) / (sqrtP * sqrtP_new)
     """
     if liquidity == 0 or sqrt_p == 0: return Decimal(0)
 
