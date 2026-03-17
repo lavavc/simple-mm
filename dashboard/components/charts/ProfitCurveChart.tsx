@@ -1,10 +1,9 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, ISeriesApi, LineData, AreaData, Time } from 'lightweight-charts';
+import { createChart, ColorType, Time } from 'lightweight-charts';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Activity } from 'lucide-react';
-import { formatNumber } from '@/lib/utils';
 
 export interface CurvePoint {
     size: number;
