@@ -17,6 +17,8 @@ logger = structlog.get_logger()
 _MIN_POOL_STABLE_USD = Decimal("500")
 _ABSOLUTE_MAX_USD = Decimal("15000")
 
+from engine.core import gas_oracle as _gas_oracle  # noqa: E402
+
 
 def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):
     """Find the profit-maximising size for a unimodal profit function."""
@@ -128,7 +130,7 @@ def find_optimal_dex_arb() -> dict | None:
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000),
             "uni_base_fee_bps": int(uni_base_fee * 10000),
             "assetchain_fee_bps": 30,
-            "estimated_gas_usd": 0.07,
+            "estimated_gas_usd": float(_gas_oracle.gas_usd_base() + _gas_oracle.gas_usd_bsc()),
         },
     }
 

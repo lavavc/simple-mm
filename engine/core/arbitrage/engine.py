@@ -133,7 +133,7 @@ class ArbitrageEngine:
                     sell_venue=sell_venue,
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
-                    estimated_gas_usd=Decimal("0.07"),
+                    estimated_gas_usd=Decimal(str(arb.get("estimated_gas_usd", 0.005))),
                     signal={"prices": signal["prices"], "optimal_arb": arb},
                 ))
             route = select_route(candidates, self.inventory)
@@ -249,7 +249,7 @@ class ArbitrageEngine:
                     sell_venue=sell_venue,
                     optimal_size_usd=Decimal(str(optimal["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(optimal["expected_profit_usd"])),
-                    estimated_gas_usd=Decimal("0.14"),
+                    estimated_gas_usd=Decimal(str(optimal.get("estimated_gas_usd", 0.008))),
                     signal=fast,
                 )
                 route = select_route([candidate], self.inventory)

@@ -97,6 +97,18 @@ class TradingScheduler:
         if self._started:
             return
 
+        from engine.core import gas_oracle
+        from datetime import datetime, timezone as _tz
+        self.scheduler.add_job(
+            gas_oracle.update,
+            IntervalTrigger(seconds=30),
+            id="gas_oracle_update",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=15,
+            next_run_time=datetime.now(_tz.utc),
+        )
+
         self.scheduler.add_job(
             self._update_price,
             IntervalTrigger(seconds=self.config.price_update_interval),
