@@ -294,6 +294,16 @@ ERC20_ABI = [
         "outputs": [{"name": "", "type": "bool"}],
         "type": "function",
     },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "recipient", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+        ],
+        "name": "transfer",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function",
+    },
 ]
 
 
@@ -665,6 +675,25 @@ class BaseDexAdapter(VenueAdapter, ABC):
             int(amount1 * Decimal(10**self.config.token1_decimals)),
         )
 
+    def get_trade_token_balances(self) -> tuple[Decimal, Decimal]:
+        """Return (token0, token1) balances of the trade account in decimal units."""
+        raw0 = self.token0.functions.balanceOf(self.trade_account.address).call()
+        raw1 = self.token1.functions.balanceOf(self.trade_account.address).call()
+        return (
+            Decimal(raw0) / Decimal(10**self.config.token0_decimals),
+            Decimal(raw1) / Decimal(10**self.config.token1_decimals),
+        )
+
+    async def transfer_from_trade_to_lp(self, token_index: int, amount: Decimal) -> "TxResult":
+        """Transfer token0 (index 0) or token1 (index 1) from trade account to LP account."""
+        token = self.token0 if token_index == 0 else self.token1
+        decimals = self.config.token0_decimals if token_index == 0 else self.config.token1_decimals
+        amount_raw = int(amount * Decimal(10**decimals))
+        tx = token.functions.transfer(
+            self.lp_account.address, amount_raw
+        ).build_transaction(self._get_tx_params(self.trade_account))
+        return await self._send_transaction(tx, self.trade_account)
+
     def get_deployable_balances(self) -> dict[str, Decimal]:
         """
         Get balances available for deployment (after reserves).
@@ -680,12 +709,29 @@ class BaseDexAdapter(VenueAdapter, ABC):
 
     # === Strategy logic ===
 
-    def calculate_tick_range(self, prices: list[Decimal]) -> tuple[int, int]:
+    def compute_ewma_stats(self, prices: list[Decimal]) -> tuple[float, float]:
+        """Return (ewma_mean, std_dev) from price history using configured lambda."""
+        if self.params.lookback_points:
+            prices = prices[-self.params.lookback_points:]
+        float_prices = [float(p) for p in prices]
+        lam = float(self.params.ewma_lambda)
+        mean = float_prices[0]
+        var = 0.0
+        for x in float_prices[1:]:
+            delta = x - mean
+            mean = lam * mean + (1 - lam) * x
+            var = lam * var + (1 - lam) * delta * delta
+        return mean, math.sqrt(var)
+
+    def calculate_tick_range(self, prices: list[Decimal], recovery_price: float | None = None) -> tuple[int, int]:
         """
         Calculate optimal tick range using SD-based strategy.
 
         Args:
             prices: Historical prices for volatility calculation
+            recovery_price: If set, adjust downside_skew toward 0.5 based on how far
+                            current price deviates from the EWMA mean (used after a
+                            recovery remint so the range reflects mean-reversion probability).
 
         Returns:
             (tick_lower, tick_upper) tuple
@@ -696,21 +742,16 @@ class BaseDexAdapter(VenueAdapter, ABC):
         if len(prices) < 2:
             raise ValueError("Insufficient price history for SD calculation")
 
-        float_prices = [float(p) for p in prices]
+        mean, std_dev = self.compute_ewma_stats(prices)
 
-        # EWMA mean and variance on raw prices — online, no pre-seed (matches backtester)
-        lam = float(self.params.ewma_lambda)
-        mean = float_prices[0]
-        var = 0.0
-        for x in float_prices[1:]:
-            delta = x - mean
-            mean = lam * mean + (1 - lam) * x
-            var = lam * var + (1 - lam) * delta * delta
-        std_dev = math.sqrt(var)
-
-        # Asymmetric range: skew controls fraction of total width allocated below mean
+        # Asymmetric range: skew controls fraction of total width allocated below mean.
+        # For recovery remints, adjust skew toward 0.5 proportional to price deviation
+        # so that the new range reflects mean-reversion probability.
         multiplier = float(self.params.sd_multiplier)
         skew = float(self.params.downside_skew)
+        if recovery_price is not None and std_dev > 0:
+            deviation = (recovery_price - mean) / (std_dev * multiplier)
+            skew = max(0.2, min(0.8, skew + deviation * 0.15))
         total = std_dev * multiplier * 2
         lower_price = mean - total * skew
         upper_price = mean + total * (1 - skew)
