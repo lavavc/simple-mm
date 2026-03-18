@@ -82,7 +82,7 @@ def init_routes(
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify API token for protected routes."""
     if not settings.dashboard_api_token:
-        return True
+        raise HTTPException(status_code=500, detail="DASHBOARD_API_TOKEN is not configured")
     if credentials.credentials != settings.dashboard_api_token:
         raise HTTPException(status_code=401, detail="Invalid token")
     return True
@@ -396,6 +396,74 @@ async def get_venue_position(venue: str):
 
 
 # === Venue Control Routes ===
+
+
+@router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])
+async def withdraw_venue_position(venue: str):
+    """Remove all active LP positions for a DEX venue immediately."""
+    if venue not in _venues:
+        raise HTTPException(status_code=404, detail="Venue not found")
+
+    adapter = _venues[venue]
+    if not isinstance(adapter, BaseDexAdapter):
+        raise HTTPException(status_code=400, detail=f"{venue} is not a DEX venue")
+
+    token_ids = adapter.get_owned_positions()
+    if not token_ids:
+        return {"venue": venue, "removed": [], "message": "No active positions"}
+
+    results = []
+    for token_id in token_ids:
+        result = await adapter.remove_position(token_id)
+        results.append({"token_id": token_id, "status": result.status, "hash": result.hash})
+        if result.status != "confirmed":
+            logger.error("withdraw_position_failed", venue=venue, token_id=token_id, error=result.error)
+
+    _scheduler.broadcast({
+        "type": "alert",
+        "severity": "warning",
+        "message": f"LP positions withdrawn on {venue}: {[r['token_id'] for r in results]}",
+    })
+    logger.info("venue_positions_withdrawn", venue=venue, results=results)
+    return {"venue": venue, "removed": results}
+
+
+@router.post("/shutdown", dependencies=[Depends(verify_token)])
+async def shutdown(unwind: bool = False):
+    """Stop the engine. If unwind=true, removes all LP positions first."""
+    import asyncio, os, signal
+
+    if unwind:
+        dex_venues = {k: v for k, v in _venues.items() if isinstance(v, BaseDexAdapter)}
+        unwind_results = {}
+        for venue_name, adapter in dex_venues.items():
+            token_ids = adapter.get_owned_positions()
+            removed = []
+            for token_id in token_ids:
+                result = await adapter.remove_position(token_id)
+                removed.append({"token_id": token_id, "status": result.status, "hash": result.hash})
+                logger.info("shutdown_unwind_position", venue=venue_name, token_id=token_id, status=result.status)
+            unwind_results[venue_name] = removed
+
+        _scheduler.broadcast({
+            "type": "alert",
+            "severity": "warning",
+            "message": "Engine shutting down — all LP positions unwound.",
+        })
+        logger.info("shutdown_unwind_complete", results=unwind_results)
+    else:
+        _scheduler.broadcast({
+            "type": "alert",
+            "severity": "warning",
+            "message": "Engine shutting down — LP positions left in place.",
+        })
+
+    logger.info("shutdown_requested", unwind=unwind)
+
+    # Trigger graceful shutdown after response is sent
+    asyncio.get_event_loop().call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
+
+    return {"status": "shutting_down", "unwind": unwind}
 
 
 @router.post("/venues/{venue}/pause", dependencies=[Depends(verify_token)])
