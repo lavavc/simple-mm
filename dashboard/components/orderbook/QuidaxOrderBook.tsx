@@ -21,11 +21,7 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
   const { data: depth, isLoading: loading, error: queryError } = useQuery<OrderBookDepth | null>({
     queryKey: ['quidaxDepth'],
     queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/venues/quidax/depth?limit=20`, {
-        headers: {
-          'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN || ''}`
-        }
-      });
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/venues/quidax/depth?limit=20`);
       const data = await response.json();
       if (!response.ok) {
          throw new Error(data.detail || 'Failed to fetch order book depth');

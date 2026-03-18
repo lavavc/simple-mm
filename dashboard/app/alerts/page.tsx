@@ -112,16 +112,14 @@ export default function AlertsPage() {
   const { data: alerts, isLoading } = useAlerts(100);
   const acknowledgeAlert = useAcknowledgeAlert();
 
-  const token = process.env.NEXT_PUBLIC_API_TOKEN || '';
-
   const handleAcknowledge = (id: number) => {
-    acknowledgeAlert.mutate({ id, token });
+    acknowledgeAlert.mutate(id);
   };
 
   const handleAcknowledgeAll = () => {
     const unacknowledged = alerts?.filter((a) => !a.acknowledged) || [];
     unacknowledged.forEach((alert) => {
-      acknowledgeAlert.mutate({ id: alert.id, token });
+      acknowledgeAlert.mutate(alert.id);
     });
   };
 

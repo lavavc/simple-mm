@@ -27,29 +27,55 @@ PUT /api/accounts/{role}/thresholds
 
 Default thresholds by role are set in `engine/venues/account_manager.py`. Keep hot wallet balances minimal — only enough for daily operations. Bulk funds stay in the treasury multisig and are transferred manually when alerts fire.
 
-## Deploying and withdrawing liquidity
+## Deploying liquidity
 
 Set deploy amounts via API (auth required):
 
 ```
-PATCH /api/venues/uni-base/params
+PUT /api/venues/uni-base/params
 {"deploy_token0": "500000", "deploy_token1": "600"}
 ```
 
-Setting both to `"0"` prevents any new LP minting. The engine will not remove an existing position when deploy amounts are zeroed — it will simply not re-mint after the next rerange. To fully exit, trigger a rerange (e.g. by setting a tight range that the current price is outside of) and then set deploy amounts to `0` before the re-mint executes.
+Setting both to `"0"` prevents any new LP minting after the next rerange without touching the current position.
 
-## Emergency stop
+## Withdrawing liquidity
 
-To halt all trading immediately:
+To remove the active position on a venue immediately:
 
-```bash
-ssh root@<server-ip> "docker compose -f /opt/repo/docker-compose.yml stop"
+```
+POST /api/venues/uni-base/withdraw
 ```
 
-The engine and all scheduled jobs stop. On-chain positions are unaffected — LP positions remain deployed. Resume with:
+This calls `remove_position` on the adapter and returns the transaction result. The position is removed on-chain; no re-mint will occur until deploy amounts are set and a rebalance triggers. To withdraw both venues at once, call both endpoints in sequence.
 
-```bash
-ssh root@<server-ip> "docker compose -f /opt/repo/docker-compose.yml start"
+To withdraw and prevent any future minting, zero the deploy amounts afterward:
+
+```
+POST /api/venues/uni-base/withdraw
+PUT /api/venues/uni-base/params
+{"deploy_token0": "0", "deploy_token1": "0"}
 ```
 
-The engine resumes from its last persisted state on restart.
+## Stopping the engine
+
+**Stop without unwinding** — positions remain deployed on-chain, engine stops:
+
+```
+POST /api/shutdown
+```
+
+**Stop and unwind** — removes all LP positions before stopping:
+
+```
+POST /api/shutdown?unwind=true
+```
+
+The unwind option calls `withdraw` on each active DEX venue sequentially, waits for confirmation, then shuts down. Use this when you need a clean exit. Use plain stop when you want to restart quickly and leave positions in place.
+
+Resume after either stop with:
+
+```bash
+docker compose -f /opt/repo/docker-compose.yml start
+```
+
+The engine resumes from its last persisted state.
