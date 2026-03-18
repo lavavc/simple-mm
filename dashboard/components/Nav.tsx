@@ -12,6 +12,7 @@ import {
   ArrowRightLeft,
   Wallet,
   Bell,
+  BookOpen,
 } from 'lucide-react';
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
   { href: '/arbitrage', label: 'Arbitrage', icon: ArrowRightLeft },
   { href: '/accounts', label: 'Accounts', icon: Wallet },
   { href: '/alerts', label: 'Alerts', icon: Bell },
+  { href: '/docs', label: 'Docs', icon: BookOpen },
 ];
 
 interface NavProps {
@@ -41,7 +43,7 @@ export function Nav({ unacknowledgedAlerts = 0 }: NavProps) {
             <div className="hidden md:flex items-center gap-1">
               {navItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = pathname === item.href;
+                const isActive = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
                 return (
                   <Link key={item.href} href={item.href}>
                     <Button

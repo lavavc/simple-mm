@@ -105,6 +105,7 @@ export interface ArbitrageStatus {
   enabled: boolean;
   execute_cex_dex: boolean;
   execute_dex_dex: boolean;
+  detection_only?: boolean;
   last_scan_timestamp?: number;
   opportunities_detected_24h: number;
   opportunities_executed_24h: number;
