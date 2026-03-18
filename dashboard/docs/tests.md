@@ -3,70 +3,54 @@ title: Testing Architecture
 order: 3
 ---
 
-### Quick Start
+## Three-Tier Architecture
 
-Run all unit tests (no network required):
+| Tier | When | Pattern |
+|------|------|---------|
+| **Pure unit** | No external deps | Call the function directly |
+| **Seeded cache** | Needs `_POOL_CACHE` state | `monkeypatch` the global dict via `seeded_pool_cache` fixture |
+| **Fake adapter** | Scheduler/executor needs a venue | `FakeDexAdapter` / `FakeCexAdapter` in-process doubles |
+| **Anvil fork** | Real contracts, real EVM math | Spawned Anvil process (`anvil_base`, `anvil_bsc` fixtures) |
+
+Mocks (`AsyncMock`) are reserved for the DB layer in scheduler tests only.
+
+## Running the Suite
+
 ```bash
-pytest tests/ --ignore=tests/test_dex_fork.py -v
+source .venv/bin/activate && python -m pytest -x -q --ignore=tests/test_dex_fork.py
 ```
 
-Run with coverage report:
-```bash
-pytest tests/ --ignore=tests/test_dex_fork.py --cov=engine --cov-report=term-missing
-```
-
-Run fork tests (requires Anvil):
+Fork tests (requires `anvil` CLI from Foundry):
 
 ```bash
 pytest tests/test_dex_fork.py -v
 ```
 
-### Layer 1: Unit Tests
+## Per-File Coverage
 
-Fast tests that run without network access or external dependencies.
+| File | Module | Tests |
+|------|--------|-------|
+| `test_params_validation.py` | `api/schemas.py` | DexParams/CexParams/WalletParams defaults, custom values |
+| `test_schemas.py` | `api/schemas.py` | All Pydantic models |
+| `test_config.py` | `config.py` | Settings defaults |
+| `test_price_math.py` | `venues/dex/base.py` | Tick/price math, `compute_ewma_stats`, `calculate_tick_range` recovery skew |
+| `test_capital_allocation.py` | `venues/dex/base.py` | `calculate_mint_amounts` caps |
+| `test_price_aggregation.py` | `core/price_aggregation.py` | VWAP, confidence, blended price |
+| `test_accounts.py` | `core/accounts.py` | HD derivation, role access |
+| `test_inventory.py` | `core/arbitrage/inventory.py` | Limits, circuit breakers, `reconcile_stables` |
+| `test_database.py` | `db/database.py` | SQLite CRUD |
+| `test_orderbook.py` | `core/arbitrage/cex_dex.py` | `walk_orderbook_*`, `_ternary_search` |
+| `test_pool_state.py` | `core/arbitrage/pool_state.py` | Swap math, `update_pool_state_from_event`, cache reads |
+| `test_cex_dex.py` | `core/arbitrage/cex_dex.py` | `find_optimal_arb`, `compute_arb_curve` |
+| `test_dex_dex.py` | `core/arbitrage/dex_dex.py` | `find_optimal_dex_arb` null cases and result structure |
+| `test_router.py` | `core/arbitrage/router.py` | `select_route` sizing, filtering, tiebreak |
+| `test_valuation.py` | `core/arbitrage/valuation.py` | `portfolio_value`, CEX/DEX holdings valuation |
+| `test_scheduler.py` | `core/scheduler.py` | `_check_dex_rebalance`, `_rebalance_dex_position`, `_create_dex_position` |
+| `test_executor.py` | `core/arbitrage/executor.py` | Detection mode, CEX-CEX, half-open, unknown venue |
+| `test_dex_fork.py` | V4 pool state + lifecycle | Section A: reads; Section B: funded wallet; Section C: rebalance |
 
-| Test file | Module under test | What's tested |
-|-----------|-------------------|---------------|
-| `test_params_validation.py` | `api/schemas.py` | `DexParams`, `CexParams`, `WalletParams` defaults, custom values, serialization |
-| `test_schemas.py` | `api/schemas.py` | All Pydantic models: `PriceQuote`, `ArbitrageOpportunity`, `BlendedPriceResponse`, `Alert`, etc. |
-| `test_config.py` | `config.py` | `Settings` defaults, removed legacy fields (`keys_file`, `quidax_api_secret`) |
-| `test_price_math.py` | DEX math | Tick/price conversions, sqrtPriceX96, tick alignment, decimal adjustments |
-| `test_capital_allocation.py` | DEX allocation | Max utilization, reserves, USD caps, edge cases |
-| `test_price_aggregation.py` | `core/price_aggregation.py` | `PriceNormalizer` (all venue types, cross-rates), VWAP, confidence scores, `BlendedPrice` |
-| `test_accounts.py` | `core/accounts.py` | HD derivation, deterministic addresses, role access, threshold updates |
-| `test_arbitrage.py` | `core/arbitrage/detector.py` | Fee estimation, opportunity detection, spread filtering, async detection flow |
-| `test_inventory.py` | `core/arbitrage/inventory.py` | Daily limits, circuit breakers, trade recording, status dict |
-| `test_executor.py` | `core/arbitrage/executor.py` | Detection-only mode, Phase 2/3 stubs |
-| `test_database.py` | `db/database.py` | SQLite CRUD: system state, price snapshots, alerts, actions |
+## Adding Tests for a New Venue
 
-### Layer 2: Fork Tests with Anvil
-
-Tests against real contract state by forking mainnet using [Anvil](https://book.getfoundry.sh/reference/anvil/).
-
-**What's tested:**
-- Reading pool state (slot0, liquidity, tick spacing)
-- Reading position data from NFT manager
-- Token balance queries
-- Price math against real pool prices
-- Transaction building (approvals, mints)
-
-**Prerequisites:**
-```bash
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-```
-
-| Fixture | Chain | Port | RPC |
-|---------|-------|------|-----|
-| `anvil_base` | Base | 8545 | https://mainnet.base.org |
-| `anvil_bsc` | BSC | 8546 | https://bsc-dataseed.binance.org |
-
-Fork tests use Anvil's default test account (index 0) which has 10,000 ETH but no tokens. Tests requiring funded wallets use impersonation or skip gracefully.
-
-### Coverage Summary
-
-Modules with **100%** coverage: `schemas.py`, `config.py`, `executor.py`, `pancakeswap.py`, `abis.py`.
-
-Modules at **67–94%**: `accounts.py`, `detector.py`, `inventory.py`, `price_aggregation.py`, `database.py`.
-
-Modules at **0%** (require live infrastructure): `routes.py`, `main.py`, `scheduler.py`, `ws.py`, `quidax.py`, `blockradar.py`, `base.py` (DEX adapter). These depend on network, WebSockets, or full app lifecycle and are covered by fork tests and manual integration testing.
+1. **DEX venue** — add a `FakeDexAdapter` with the venue's token decimals configured, seed `_POOL_CACHE` with realistic sqrtPriceX96 values, add to `seeded_pool_cache` fixture in `conftest.py`.
+2. **CEX venue** — add a `FakeCexAdapter` variant; test `place_market_order` success/failure paths.
+3. **Fork tests** — add a new `anvil_<chain>` fixture in `conftest.py`, write Section A reads using `update_single_v4_pool_state` or `update_single_pool_state`.

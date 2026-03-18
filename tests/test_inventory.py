@@ -338,3 +338,47 @@ class TestCanTradeWithVenueFlags:
     def test_no_flag_is_allowed(self, tracker):
         allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="aerodrome")
         assert allowed is True
+
+
+# =============================================================================
+# reconcile_stables
+# =============================================================================
+
+
+class TestReconcileStables:
+
+    def test_updates_per_account_stable(self, tracker):
+        """reconcile_stables refreshes current balances."""
+        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
+        tracker.reconcile_stables({"uni-base": Decimal("3000")})
+        assert tracker._state.per_account_stable["uni-base"] == Decimal("3000")
+
+    def test_does_not_change_initial_stable(self, tracker):
+        """reconcile_stables must NOT touch initial_account_stable (baseline for cost calc)."""
+        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
+        tracker.reconcile_stables({"uni-base": Decimal("2000")})
+        assert tracker._state.initial_account_stable["uni-base"] == Decimal("5000")
+
+    def test_flags_low_when_below_threshold(self, tracker):
+        """reconcile_stables flags venue when balance drops below min threshold."""
+        from engine.config import settings
+        threshold = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
+        tracker.initialize_account_stable({"uni-bsc": threshold * 2})
+        tracker.reconcile_stables({"uni-bsc": threshold / 2})
+        assert "uni-bsc" in tracker._state.low_inventory_venues
+
+    def test_clears_flag_when_replenished(self, tracker):
+        """reconcile_stables clears low-inventory flag when balance recovers."""
+        from engine.config import settings
+        threshold = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
+        tracker.initialize_account_stable({"uni-bsc": threshold * 2})
+        tracker.reconcile_stables({"uni-bsc": threshold / 2})
+        assert "uni-bsc" in tracker._state.low_inventory_venues
+        tracker.reconcile_stables({"uni-bsc": threshold * 3})
+        assert "uni-bsc" not in tracker._state.low_inventory_venues
+
+    def test_adds_new_venue_not_in_initial(self, tracker):
+        """reconcile_stables can introduce venues that were not in initial seeding."""
+        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
+        tracker.reconcile_stables({"uni-base": Decimal("4000"), "uni-bsc": Decimal("3000")})
+        assert tracker._state.per_account_stable["uni-bsc"] == Decimal("3000")
