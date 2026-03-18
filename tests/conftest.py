@@ -276,6 +276,12 @@ def seeded_pool_cache(monkeypatch):
         },
     }
     monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
+
+    # Seed gas oracle so arb functions don't block on missing prices.
+    from engine.core import gas_oracle as _go
+    monkeypatch.setitem(_go._state, "gas_usd_base", Decimal("0.003"))
+    monkeypatch.setitem(_go._state, "gas_usd_bsc", Decimal("0.005"))
+
     return {"uni-base": base_key, "uni-bsc": bsc_key, "cache": fake_cache}
 
 

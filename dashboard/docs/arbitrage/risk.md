@@ -11,6 +11,19 @@ When the fast path returns multiple profitable candidates (up to 4 CEX-DEX direc
 net_profit = expected_profit - estimated_gas - rebalance_cost_penalty
 ```
 
+`estimated_gas` is provided by `engine/core/gas_oracle.py`, which refreshes every 30 s. Gas units are fixed constants measured from real on-chain swaps; the USD cost is computed dynamically:
+
+```
+gas_usd = gas_units × gas_price_gwei × 10⁻⁹ × native_token_usd
+```
+
+| Chain | Gas units | Source |
+|-------|-----------|--------|
+| Base (Uniswap V4) | 173,000 | `GAS_UNITS_BASE` |
+| BSC (PancakeSwap V3) | 158,000 | `GAS_UNITS_BSC` |
+
+Gas price (gwei) is fetched from each chain via `eth_gasPrice`. Native token prices (ETH/USD, BNB/USD) are fetched from the Alchemy Prices API (`tokens/by-symbol`). Both fall back to hardcoded defaults if a fetch fails. CEX-DEX routes use the per-chain cost; DEX-DEX round trips use the sum of both.
+
 The rebalance cost penalty is computed per buy-side venue by `inventory.get_rebalance_cost_bps()`. It scales linearly from **0 bps** (venue fully stocked with stablecoin) to `cross_chain_rebalance_bps` (default 10 bps, configurable) as the stablecoin balance drains toward zero. This encodes the forward-looking cost of eventually needing to bridge or rebalance that venue.
 
 When two routes have similar net profit, **inventory alignment** is used as a tiebreak: if we are net long cNGN (imbalance > $10), routes that sell cNGN to a CEX score higher; if net short, routes that buy cNGN from a CEX score higher. This nudges the system back toward balance without requiring explicit rebalancing trades.

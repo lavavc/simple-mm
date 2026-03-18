@@ -19,6 +19,14 @@ logger = structlog.get_logger()
 
 QUIDAX_FEE = Decimal("0.001")  # 0.1% taker fee
 
+from engine.core import gas_oracle as _gas_oracle  # noqa: E402
+_CEX_DEX_GAS_FN = {
+    "QUIDAX_TO_UNI_BASE": _gas_oracle.gas_usd_base,
+    "UNI_BASE_TO_QUIDAX": _gas_oracle.gas_usd_base,
+    "QUIDAX_TO_UNI_BSC":  _gas_oracle.gas_usd_bsc,
+    "UNI_BSC_TO_QUIDAX":  _gas_oracle.gas_usd_bsc,
+}
+
 # Short-circuit: evaluate at $5 before running the full ternary search.
 # At $5 slippage on both legs is negligible, so profit ≈ raw spread.
 # If the spread is already ≤ 0 at $5 it can only worsen with size (slippage is monotonic),
@@ -91,6 +99,9 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     No curve generation. Returns optimal_arb, all_arbs, and prices.
     """
     if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids:
+        return None
+
+    if _gas_oracle.gas_usd_base() is None or _gas_oracle.gas_usd_bsc() is None:
         return None
 
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
@@ -193,7 +204,7 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000) if uni_bsc_fee else 0,
             "uni_base_fee_bps": int(uni_base_fee * 10000) if uni_base_fee else 0,
             "assetchain_fee_bps": 30,
-            "estimated_gas_usd": 0.07,
+            "estimated_gas_usd": float(_CEX_DEX_GAS_FN.get(best_dir, _gas_oracle.gas_usd_bsc)()),
         },
     }
 
