@@ -109,7 +109,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
                 params=DexParams(
                     sd_multiplier=Decimal("3.0"),
                     ewma_lambda=Decimal("0.975"),
-                    downside_skew=Decimal("0.7"),
+                    downside_skew=Decimal("0.5"),
                 ),
             )
             logger.info("venue_initialized", venue="uni-bsc")

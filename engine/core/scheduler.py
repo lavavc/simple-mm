@@ -365,12 +365,7 @@ class TradingScheduler:
                         )
 
                 if needs_rebalance:
-                    self.broadcast({
-                        "type": "alert",
-                        "severity": "warning",
-                        "message": f"{name} needs rebalancing: {rebalance_reason}",
-                    })
-                    await self._rebalance_dex_position(venue, position.token_id)
+                    await self._rebalance_dex_position(venue, position.token_id, position)
 
             except Exception as e:
                 logger.error("dex_rebalance_check_failed", venue=name, error=str(e))
@@ -525,8 +520,13 @@ class TradingScheduler:
     # DEX position management
     # ------------------------------------------------------------------
 
-    async def _create_dex_position(self, venue: BaseDexAdapter) -> bool:
-        """Create a new DEX LP position using capital allocation settings."""
+    async def _create_dex_position(self, venue: BaseDexAdapter, recovery_price: float | None = None) -> bool:
+        """Create a new DEX LP position using capital allocation settings.
+
+        recovery_price: if set, adjusts downside_skew toward 0.5 based on deviation
+                        from EWMA mean, reflecting mean-reversion probability after a
+                        range exit (see BaseDexAdapter.calculate_tick_range).
+        """
         db = await get_db()
 
         try:
@@ -539,7 +539,7 @@ class TradingScheduler:
                 )
                 return False
 
-            tick_lower, tick_upper = venue.calculate_tick_range(prices)
+            tick_lower, tick_upper = venue.calculate_tick_range(prices, recovery_price=recovery_price)
 
             amount0, amount1 = venue.calculate_mint_amounts()
 
@@ -600,55 +600,75 @@ class TradingScheduler:
             logger.error("create_dex_position_failed", venue=venue.name, error=str(e))
             return False
 
-    async def _rebalance_dex_position(self, venue: BaseDexAdapter, token_id: int) -> bool:
-        """Rebalance a DEX position by removing old and creating new."""
+    async def _rebalance_dex_position(self, venue: BaseDexAdapter, token_id: int, position) -> bool:
+        """Remove an out-of-range LP position, top up from the trade account if needed, then remint."""
         db = await get_db()
 
         try:
             logger.info("removing_old_position", venue=venue.name, token_id=token_id)
-
             result = await venue.remove_position(token_id)
 
             if result.status != "confirmed":
-                logger.error(
-                    "failed_to_remove_position",
-                    venue=venue.name,
-                    token_id=token_id,
-                    error=result.error,
-                )
+                logger.error("failed_to_remove_position", venue=venue.name, token_id=token_id, error=result.error)
                 await db.insert_action(
-                    venue=venue.name,
-                    action_type="remove_position",
-                    status="failed",
-                    error=result.error,
-                    triggered_by="auto:rebalance",
+                    venue=venue.name, action_type="remove_position",
+                    status="failed", error=result.error, triggered_by="auto:rebalance",
                 )
+                self.broadcast({"type": "alert", "severity": "error",
+                                "message": f"{venue.name} position removal failed: {result.error}"})
                 return False
 
             await db.insert_action(
-                venue=venue.name,
-                action_type="remove_position",
-                status="confirmed",
-                tx_hash=result.hash,
-                triggered_by="auto:rebalance",
+                venue=venue.name, action_type="remove_position",
+                status="confirmed", tx_hash=result.hash, triggered_by="auto:rebalance",
             )
+            logger.info("old_position_removed", venue=venue.name, token_id=token_id, tx_hash=result.hash)
 
-            logger.info(
-                "old_position_removed",
-                venue=venue.name,
-                token_id=token_id,
-                tx_hash=result.hash,
-            )
+            # --- Determine how much each token is needed and whether trade account can cover it ---
+            lp0, lp1 = venue.calculate_mint_amounts()  # what LP wallet can cover after removal
+            need0 = max(Decimal(0), venue.params.deploy_token0 - Decimal(lp0) / Decimal(10**venue.config.token0_decimals))
+            need1 = max(Decimal(0), venue.params.deploy_token1 - Decimal(lp1) / Decimal(10**venue.config.token1_decimals))
 
-            return await self._create_dex_position(venue)
+            trade0, trade1 = venue.get_trade_token_balances()
+            transfer0 = min(need0, trade0)
+            transfer1 = min(need1, trade1)
+
+            for token_index, transfer_amount, symbol in [
+                (0, transfer0, venue.config.token0_symbol),
+                (1, transfer1, venue.config.token1_symbol),
+            ]:
+                if transfer_amount > 0:
+                    tr = await venue.transfer_from_trade_to_lp(token_index, transfer_amount)
+                    if tr.status == "confirmed":
+                        logger.info("trade_to_lp_transfer", venue=venue.name,
+                                    token=symbol, amount=float(transfer_amount), tx=tr.hash)
+                    else:
+                        logger.warning("trade_to_lp_transfer_failed", venue=venue.name,
+                                       token=symbol, error=tr.error)
+
+            still_short0 = max(Decimal(0), need0 - transfer0)
+            still_short1 = max(Decimal(0), need1 - transfer1)
+            if still_short0 > 0 or still_short1 > 0:
+                self.broadcast({
+                    "type": "alert", "severity": "warning",
+                    "message": (
+                        f"{venue.name} LP removed — awaiting treasury refill: "
+                        f"need {float(still_short0):.2f} {venue.config.token0_symbol}, "
+                        f"{float(still_short1):.2f} {venue.config.token1_symbol}"
+                    ),
+                })
+            else:
+                self.broadcast({
+                    "type": "alert", "severity": "info",
+                    "message": f"{venue.name} LP removed and topped up from trade account — reminting",
+                })
+
+            # --- Remint with skew adjusted for mean-reversion probability ---
+            recovery_price = float(position.current_price)
+            return await self._create_dex_position(venue, recovery_price=recovery_price)
 
         except Exception as e:
-            logger.error(
-                "rebalance_dex_position_failed",
-                venue=venue.name,
-                token_id=token_id,
-                error=str(e),
-            )
+            logger.error("rebalance_dex_position_failed", venue=venue.name, token_id=token_id, error=str(e))
             return False
 
     async def _stream_dex_arb_curve(self):
