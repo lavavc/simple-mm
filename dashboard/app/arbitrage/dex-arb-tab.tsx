@@ -82,11 +82,7 @@ interface DexArbOpp {
 }
 
 const fetchDexOpps = async () => {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/arbitrage/dex-opportunities`, {
-        headers: {
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN || ''}`
-        }
-    });
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/arbitrage/dex-opportunities`);
     if (!res.ok) throw new Error('Failed to fetch DEX opps');
     return res.json() as Promise<DexArbOpp[]>;
 };

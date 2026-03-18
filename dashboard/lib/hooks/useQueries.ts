@@ -95,8 +95,8 @@ export function usePoolMetricsHistory(minutes: number) {
 export function useAcknowledgeAlert() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, token }: { id: number; token: string }) =>
-      api.acknowledgeAlert(id, token),
+    mutationFn: (id: number) =>
+      api.acknowledgeAlert(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['alerts'] });
     },

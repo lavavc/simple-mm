@@ -657,7 +657,7 @@ async def get_alerts(limit: int = Query(20, le=100)):
     return await db.get_alerts(limit)
 
 
-@router.post("/alerts/{alert_id}/acknowledge", dependencies=[Depends(verify_token)])
+@router.post("/alerts/{alert_id}/acknowledge")
 async def acknowledge_alert(alert_id: int):
     """Acknowledge an alert."""
     db = await get_db()
@@ -1090,52 +1090,6 @@ async def get_pool_metrics():
                 logger.warning("pool_metrics_fetch_failed", venue=name, error=str(e))
         results.append(entry)
     return results
-
-
-# === Alerts ===
-
-_alerts_db: list[dict[str, int | str | bool]] = [
-    {
-        "id": 1,
-        "severity": "critical",
-        "category": "ARBITRAGE",
-        "message": "Circuit breaker triggered. Flash loan profit margin fell below 50 BPS during TX execution.",
-        "timestamp": int(time.time() * 1000) - 15000,
-        "acknowledged": False,
-    },
-    {
-        "id": 2,
-        "severity": "warning",
-        "category": "NETWORK",
-        "message": "Base network RPC node latency spiked above 400ms. Routing WebSocket to secondary node.",
-        "timestamp": int(time.time() * 1000) - 300000,
-        "acknowledged": False,
-    },
-    {
-        "id": 3,
-        "severity": "info",
-        "category": "EXECUTION",
-        "message": "Successfully synchronized bridging routes across 3 EVM chains.",
-        "timestamp": int(time.time() * 1000) - 86400000,
-        "acknowledged": True,
-    },
-]
-
-
-@router.get("/alerts")
-async def get_alerts(limit: int = Query(20, le=100)):
-    """Fetch system alerts for the dashboard event log."""
-    return sorted(_alerts_db, key=lambda x: x["timestamp"], reverse=True)[:limit]
-
-
-@router.post("/alerts/{alert_id}/acknowledge", dependencies=[Depends(verify_token)])
-async def acknowledge_alert(alert_id: int):
-    """Mark a specific alert as acknowledged."""
-    for alert in _alerts_db:
-        if alert["id"] == alert_id:
-            alert["acknowledged"] = True
-            return {"status": "success", "alert_id": alert_id}
-    raise HTTPException(status_code=404, detail="Alert not found")
 
 
 # === Health Check ===
