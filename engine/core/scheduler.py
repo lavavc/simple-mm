@@ -100,7 +100,7 @@ class TradingScheduler:
         from engine.core import gas_oracle
         from datetime import datetime, timezone as _tz
         self.scheduler.add_job(
-            gas_oracle.update,
+            self._update_gas_oracle,
             IntervalTrigger(seconds=30),
             id="gas_oracle_update",
             replace_existing=True,
@@ -252,6 +252,21 @@ class TradingScheduler:
         logger.info("trading_resumed")
 
     # ------------------------------------------------------------------
+    # Gas oracle
+    # ------------------------------------------------------------------
+
+    async def _update_gas_oracle(self):
+        from engine.core import gas_oracle
+        try:
+            await gas_oracle.update()
+        except RuntimeError as e:
+            logger.error("gas_oracle_update_failed", error=str(e))
+            self.broadcast({
+                "type": "alert",
+                "severity": "critical",
+                "message": f"Gas oracle fetch failed — trading blocked until prices recover. ({e})",
+            })
+
     # Price updates
     # ------------------------------------------------------------------
 

@@ -19,8 +19,6 @@ logger = structlog.get_logger()
 
 QUIDAX_FEE = Decimal("0.001")  # 0.1% taker fee
 
-# Gas units are fixed; USD cost is computed dynamically by gas_oracle.
-# These fallback values are used only when gas_oracle hasn't run yet.
 from engine.core import gas_oracle as _gas_oracle  # noqa: E402
 _CEX_DEX_GAS_FN = {
     "QUIDAX_TO_UNI_BASE": _gas_oracle.gas_usd_base,
@@ -101,6 +99,9 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     No curve generation. Returns optimal_arb, all_arbs, and prices.
     """
     if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids:
+        return None
+
+    if _gas_oracle.gas_usd_base() is None or _gas_oracle.gas_usd_bsc() is None:
         return None
 
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG

@@ -42,6 +42,9 @@ def find_optimal_dex_arb() -> dict | None:
     Returns the optimal arb signal dict, or None if pool state is unavailable.
     Callers should schedule seed_pool_states() on None return.
     """
+    if _gas_oracle.gas_usd_base() is None or _gas_oracle.gas_usd_bsc() is None:
+        return None
+
     from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
