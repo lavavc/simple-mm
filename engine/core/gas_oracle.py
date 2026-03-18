@@ -19,8 +19,8 @@ from web3 import AsyncWeb3
 logger = structlog.get_logger()
 
 # Fixed gas units from real on-chain measurements.
-GAS_UNITS_BASE: int = 173_000   # Uniswap V4 on Base
-GAS_UNITS_BSC: int = 158_000    # PancakeSwap V3 on BSC
+GAS_UNITS_BASE: int = 200_000   # Uniswap V4 on Base
+GAS_UNITS_BSC: int = 200_000    # Uniswap V4 on BSC
 
 # State is empty until first successful fetch. None means "not yet fetched".
 _state: dict[str, Decimal] = {}
