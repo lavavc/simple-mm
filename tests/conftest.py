@@ -160,17 +160,8 @@ def is_port_in_use(port: int) -> bool:
         return s.connect_ex(("localhost", port)) == 0
 
 
-@pytest.fixture(scope="session")
-def anvil_base() -> Generator[str, None, None]:
-    """
-    Start Anvil fork of Base mainnet.
-
-    Scoped to session to avoid restarting for every test.
-    Requires Foundry to be installed.
-    """
-    port = 8545
-
-    # Check if Anvil is available
+def _spawn_anvil(fork_url: str, port: int) -> Generator[str, None, None]:
+    """Shared helper: spawn an Anvil fork on the given port, yield the RPC URL, teardown."""
     try:
         result = subprocess.run(["anvil", "--version"], capture_output=True)
         if result.returncode != 0:
@@ -178,90 +169,42 @@ def anvil_base() -> Generator[str, None, None]:
     except FileNotFoundError:
         pytest.skip("Anvil not installed")
 
-    # Check if port is already in use (maybe Anvil already running)
     if is_port_in_use(port):
         yield f"http://localhost:{port}"
         return
 
-    # Start Anvil with Base fork
-    # Note: Not pinning block number to ensure pool contract exists
-    # For deterministic tests, pin to a block AFTER pool deployment
     proc = subprocess.Popen(
-        [
-            "anvil",
-            "--fork-url", "https://mainnet.base.org",
-            "--port", str(port),
-            "--silent",
-        ],
+        ["anvil", "--fork-url", fork_url, "--port", str(port), "--silent"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
-    # Wait for Anvil to start
     for _ in range(30):
         if is_port_in_use(port):
             break
         time.sleep(0.5)
     else:
         proc.terminate()
-        pytest.fail("Anvil failed to start")
+        pytest.fail(f"Anvil failed to start on port {port} (fork: {fork_url})")
 
     yield f"http://localhost:{port}"
 
-    # Cleanup
     proc.terminate()
     proc.wait(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def anvil_base() -> Generator[str, None, None]:
+    """Anvil fork of Base mainnet. RPC URL read from settings (uses Alchemy if key set)."""
+    from engine.config import settings
+    yield from _spawn_anvil(settings.base_rpc_url, port=8545)
 
 
 @pytest.fixture(scope="session")
 def anvil_bsc() -> Generator[str, None, None]:
-    """
-    Start Anvil fork of BSC mainnet.
-
-    Uses a different port than Base fork.
-    """
-    port = 8546
-
-    # Check if Anvil is available
-    try:
-        result = subprocess.run(["anvil", "--version"], capture_output=True)
-        if result.returncode != 0:
-            pytest.skip("Anvil not installed")
-    except FileNotFoundError:
-        pytest.skip("Anvil not installed")
-
-    # Check if port is already in use
-    if is_port_in_use(port):
-        yield f"http://localhost:{port}"
-        return
-
-    # Start Anvil with BSC fork
-    proc = subprocess.Popen(
-        [
-            "anvil",
-            "--fork-url", "https://bsc-dataseed.binance.org",
-            "--fork-block-number", "45000000",  # Pinned block
-            "--port", str(port),
-            "--silent",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    # Wait for Anvil to start
-    for _ in range(30):
-        if is_port_in_use(port):
-            break
-        time.sleep(0.5)
-    else:
-        proc.terminate()
-        pytest.fail("Anvil failed to start")
-
-    yield f"http://localhost:{port}"
-
-    # Cleanup
-    proc.terminate()
-    proc.wait(timeout=5)
+    """Anvil fork of BSC mainnet. RPC URL read from settings (uses Alchemy if key set)."""
+    from engine.config import settings
+    yield from _spawn_anvil(settings.bsc_rpc_url, port=8546)
 
 
 # =============================================================================
@@ -269,17 +212,85 @@ def anvil_bsc() -> Generator[str, None, None]:
 # =============================================================================
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_private_key() -> str:
-    """
-    Test private key for Anvil.
-
-    This is Anvil's default account 0 - DO NOT USE ON MAINNET.
-    """
+    """Test private key for Anvil (account 0). DO NOT USE ON MAINNET."""
     return "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_wallet_address() -> str:
     """Test wallet address corresponding to test_private_key."""
     return "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+
+
+# =============================================================================
+# POOL CACHE FIXTURE
+# =============================================================================
+
+import math as _math
+
+_Q96 = 2 ** 96
+
+# Realistic sqrtPriceX96 for Base pool (cNGN/USDC, 6/6 dec) at price ≈ 0.000606
+_BASE_SQRT_X96 = Decimal(int(_math.sqrt(0.000606) * _Q96))
+# Realistic sqrtPriceX96 for BSC pool (USDT 18dec / cNGN 6dec) at cNGN price ≈ 0.000606
+# Formula: 1/((sqrt/Q96)^2 * 10^12) = 0.000606  →  sqrt/Q96 = sqrt(1/(0.000606*1e12))
+_BSC_SQRT_X96 = Decimal(int(_math.sqrt(1 / (0.000606 * 1e12)) * _Q96))
+_POOL_LIQUIDITY = Decimal(10 ** 18)
+_POOL_FEE = Decimal("0.0005")  # 0.05%
+
+
+@pytest.fixture
+def seeded_pool_cache(monkeypatch):
+    """Inject known pool state into _POOL_CACHE for unit tests.
+
+    Provides realistic sqrtPriceX96, liquidity, and fee for BSC and Base pools.
+    Returns a dict mapping venue name to pool_address for convenience.
+    """
+    from engine.core.arbitrage import pool_state as _ps
+    from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+
+    base_key = UNISWAP_BASE_POOL_READ_CONFIG.pool_address
+    bsc_key = UNISWAP_BSC_POOL_READ_CONFIG.pool_address
+
+    fake_cache = {
+        base_key: {
+            "tick": -276324,
+            "liquidity": _POOL_LIQUIDITY,
+            "fee": _POOL_FEE,
+            "sqrt_p": _BASE_SQRT_X96,
+            "balance0": Decimal("500000"),  # cNGN
+            "balance1": Decimal("600"),     # USDC
+            "timestamp": time.time(),
+        },
+        bsc_key: {
+            "tick": -276324,
+            "liquidity": _POOL_LIQUIDITY,
+            "fee": _POOL_FEE,
+            "sqrt_p": _BSC_SQRT_X96,
+            "balance0": Decimal("9200"),      # USDT
+            "balance1": Decimal("26090000"),  # cNGN
+            "timestamp": time.time(),
+        },
+    }
+    monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
+    return {"uni-base": base_key, "uni-bsc": bsc_key, "cache": fake_cache}
+
+
+# =============================================================================
+# FAKE ADAPTERS (in-process doubles for scheduler/executor tests)
+# =============================================================================
+
+from tests.fakes import FakeDexAdapter, FakeCexAdapter  # noqa: E402
+
+
+@pytest.fixture
+def fake_dex_adapter():
+    return FakeDexAdapter()
+
+
+@pytest.fixture
+def fake_cex_adapter():
+    return FakeCexAdapter()
