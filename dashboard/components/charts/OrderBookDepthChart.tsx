@@ -133,6 +133,16 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
       }
     }
 
+    // Add a horizontal line at y=0 to clearly mark the breakeven threshold
+    bscSeries.createPriceLine({
+      price: 0,
+      color: 'rgba(255, 255, 255, 0.25)',
+      lineWidth: 1,
+      lineStyle: 2, // Dashed
+      axisLabelVisible: true,
+      title: 'Breakeven',
+    });
+
     chart.timeScale().fitContent();
 
     const handleCrosshairMove = (param: any) => {
