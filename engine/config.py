@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     # Database
     db_path: str = "./data/cngn.db"
 
-    # Dashboard auth
-    dashboard_api_token: str = Field(default="", description="Token for dashboard auth")
+    # Direct API access token (protects mutating endpoints; TG bot uses engine internals directly)
+    engine_api_token: str = Field(default="", description="Bearer token for direct API access")
 
     # RPC endpoints — set ALCHEMY_KEY to use Alchemy for all chains,
     # or override individual URLs directly.
@@ -70,14 +70,9 @@ class Settings(BaseSettings):
     venue_divergence_rebalance_bps: int = 200  # Rebalance DEX if venue drifts >2% from fair value
 
     # Arbitrage settings
-    # Global arbitrage toggle (must be True for both detection and execution)
-    arbitrage_enabled: bool = True
-    
-    # ----------------------------------------------------
-    # Arbitrage Engine Defaults
-    # Controls if detected opportunities will actually trigger transactions
-    arbitrage_execute_cex_dex_enabled: bool = False
-    arbitrage_execute_dex_dex_enabled: bool = False
+    arb_detection_enabled: bool = True       # master toggle for detection
+    arb_execute_cex_dex_enabled: bool = False
+    arb_execute_dex_dex_enabled: bool = False
     arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else

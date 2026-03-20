@@ -65,7 +65,6 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
     const price = parseFloat(level.price);
     const amount = parseFloat(level.amount);
     const cumulative = level.cumulative;
-    const value = price * amount;
     
     // Width of the background depth bar based on cumulative volume
     const depthWidth = maxCumulative > 0 ? `${Math.min(100, (cumulative / maxCumulative) * 100)}%` : '0%';
@@ -108,10 +107,9 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
           style={{ width: depthWidth }} 
         />
         
-        <span className={`${colorClass} w-[22%] text-left font-semibold`}>{formatNumber(price, 1)}</span>
-        <span className="text-white/90 w-[26%] text-right">{amount >= 1000 ? formatNumber(amount / 1000, 2) + 'k' : formatNumber(amount, 2)}</span>
-        <span className="text-white/60 w-[26%] text-right">{value >= 1000000 ? formatNumber(value / 1000000, 2) + 'm' : formatNumber(value, 0)}</span>
-        <span className="text-white/40 w-[26%] text-right">{cumulative >= 1000 ? formatNumber(cumulative / 1000, 2) + 'k' : formatNumber(cumulative, 2)}</span>
+        <span className={`${colorClass} w-[30%] text-left font-semibold`}>{formatNumber(price, 1)}</span>
+        <span className="text-white/90 w-[35%] text-right">{amount >= 1000 ? formatNumber(amount / 1000, 2) + 'k' : formatNumber(amount, 2)}</span>
+        <span className="text-white/40 w-[35%] text-right">{cumulative >= 1000 ? formatNumber(cumulative / 1000, 2) + 'k' : formatNumber(cumulative, 2)}</span>
       </div>
     );
   };
@@ -146,7 +144,6 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
             <div className="flex justify-between text-[9px] font-medium text-white/40 uppercase tracking-widest py-1.5 px-3 border-b border-white/[0.02] bg-white/[0.01]">
               <span className="w-[22%] text-left">Price</span>
               <span className="w-[26%] text-right">Size</span>
-              <span className="w-[26%] text-right">Value</span>
               <span className="w-[26%] text-right">Sum</span>
             </div>
 

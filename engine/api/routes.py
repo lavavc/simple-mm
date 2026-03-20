@@ -81,9 +81,9 @@ def init_routes(
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify API token for protected routes."""
-    if not settings.dashboard_api_token:
+    if not settings.engine_api_token:
         raise HTTPException(status_code=500, detail="DASHBOARD_API_TOKEN is not configured")
-    if credentials.credentials != settings.dashboard_api_token:
+    if credentials.credentials != settings.engine_api_token:
         raise HTTPException(status_code=401, detail="Invalid token")
     return True
 
@@ -393,6 +393,27 @@ async def get_venue_position(venue: str):
     except Exception as e:
         logger.error("position_fetch_failed", venue=venue, error=str(e))
         raise HTTPException(status_code=503, detail=str(e))
+
+
+# === Trading Control Routes ===
+
+
+@router.post("/trading/pause", dependencies=[Depends(verify_token)])
+async def pause_trading():
+    """Pause all trading globally."""
+    if not _scheduler:
+        raise HTTPException(status_code=503, detail="Scheduler not configured")
+    await _scheduler.pause()
+    return {"status": "paused"}
+
+
+@router.post("/trading/resume", dependencies=[Depends(verify_token)])
+async def resume_trading():
+    """Resume all trading globally."""
+    if not _scheduler:
+        raise HTTPException(status_code=503, detail="Scheduler not configured")
+    await _scheduler.resume()
+    return {"status": "running"}
 
 
 # === Venue Control Routes ===

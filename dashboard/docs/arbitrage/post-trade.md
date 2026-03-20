@@ -55,23 +55,7 @@ Every signal, opportunity, execution, and alert is broadcast to connected dashbo
 
 ## Monitoring
 
-The `/api/arbitrage/status` endpoint returns the current state of all risk parameters and circuit breakers:
-
-```json
-{
-  "enabled": true,
-  "execute_cex_dex": false,
-  "execute_dex_dex": false,
-  "daily_volume_usd": 1240.50,
-  "inventory_imbalance_usd": 80.00,
-  "circuit_breaker_active": false,
-  "consecutive_failures": 0,
-  "low_inventory_venues": [],
-  "opportunities_detected_24h": 47,
-  "opportunities_executed_24h": 0,
-  "total_profit_24h_usd": 0.0
-}
-```
+Use `/arb` in the Telegram bot for a live summary of arb state: detection mode, execution flags, consecutive failures, circuit breaker, and 24h P&L. The dashboard arbitrage tab shows the same data in real time via WebSocket.
 
 ## Configuration reference
 
@@ -79,8 +63,8 @@ All thresholds are set in `engine/config.py` and can be overridden in `.env`:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ARBITRAGE_EXECUTE_CEX_DEX_ENABLED` | `false` | Enable live CEX-DEX execution |
-| `ARBITRAGE_EXECUTE_DEX_DEX_ENABLED` | `false` | Enable live DEX-DEX execution |
+| `ARB_EXECUTE_CEX_DEX_ENABLED` | `false` | Enable live CEX-DEX execution |
+| `ARB_EXECUTE_DEX_DEX_ENABLED` | `false` | Enable live DEX-DEX execution |
 | `ARBITRAGE_MAX_DAILY_VOLUME_USD` | 10,000 | Rolling 24h volume cap |
 | `ARBITRAGE_MAX_INVENTORY_IMBALANCE_USD` | 5,000 | Max net directional exposure |
 | `ARBITRAGE_MAX_DAILY_LOSS_USD` | 500 | Circuit breaker loss threshold |

@@ -47,8 +47,4 @@ LP deployment is controlled by two explicit fields on `DexParams`:
 
 Defaults to `0` — nothing is deployed until explicitly configured. The engine caps each value to the actual wallet balance, so setting a large number is safe.
 
-Set via the API (auth required):
-```
-PATCH /api/venues/uni-base/params
-{"deploy_token0": "500000", "deploy_token1": "600"}
-```
+Configure in `engine/config.py` and restart the engine. See [Operations](operations) for runtime controls.

@@ -47,24 +47,9 @@ Fund **`uni-bsc-lp`** and **`uni-bsc-trade`** on BSC:
 
 ### External venues — depositing via the engine
 
-**Blockradar**: Send USDC or cNGN on Base from any HD wallet account:
+**Blockradar**: Transfer USDC or cNGN from an HD wallet account to the Blockradar master wallet via `POST /api/venues/blockradar/deposit` (requires `ENGINE_API_TOKEN`). Blockradar's price quote API requires non-zero liquidity — price will show as unavailable until funded.
 
-```
-POST /api/venues/blockradar/deposit
-Authorization: Bearer <DASHBOARD_API_TOKEN>
-{"role": "uni-base-lp", "token": "USDC", "amount": "500"}
-```
-
-Funds go to a Blockradar master wallet. Blockradar's price quote API requires non-zero liquidity — price will show as unavailable until funded.
-
-**Quidax**: Fetch a deposit address for a currency, then send on-chain:
-
-```
-GET /api/venues/quidax/deposit-address/cngn
-GET /api/venues/quidax/deposit-address/usdt
-```
-
-Quidax detects on-chain deposits asynchronously (webhook-based). Send from the `quidax-trade-fund` or `quidax-lp` HD wallet role or any external wallet.
+**Quidax**: The static deposit address is configured in `QUIDAX_DEPOSIT_ADDRESS`. Send cNGN or USDT on-chain from the `quidax-trade-fund` or `quidax-lp` HD wallet role or any external wallet. Quidax detects on-chain deposits asynchronously via webhook.
 
 ## Environment variables checklist
 
@@ -76,13 +61,15 @@ BLOCKRADAR_API_KEY=          # from Blockradar dashboard
 BLOCKRADAR_WALLET_ID=        # master wallet ID
 BLOCKRADAR_DEPOSIT_ADDRESS=  # on-chain address to fund the master wallet (from Blockradar dashboard)
 QUIDAX_API_KEY=              # from Quidax arb account settings
-DASHBOARD_API_TOKEN=         # any secret string, used for protected API calls
+ENGINE_API_TOKEN=            # any secret string, protects direct API access
 ALCHEMY_KEY=                 # recommended; otherwise public RPC nodes are used
+TELEGRAM_BOT_TOKEN=          # from @BotFather
+TELEGRAM_CHAT_ID=            # operator group chat ID (negative integer)
 ```
 
-When enabling live trading, also set:
-```
-ARBITRAGE_EXECUTION_ENABLED=true
+When enabling live trading, set in `engine/config.py`:
+```python
+arb_execute_cex_dex_enabled: bool = True   # or dex_dex
 ```
 
 All other tunable parameters (arbitrage thresholds, scheduler intervals, fee estimates) have code defaults in `engine/config.py`. Override in `.env` only when the default needs changing for a specific deployment. See `.env.example` for a full list of overridable variables.
@@ -128,25 +115,11 @@ Each DEX venue has two explicit fields controlling how much to deploy as liquidi
 
 Defaults to `0` — nothing is deployed until you explicitly configure amounts. The engine caps each value to the actual wallet balance, so you can safely set large numbers without risk of overdraft.
 
-Set via the API (auth required):
-```
-PATCH /api/venues/uni-base/params
-{"deploy_token0": "500000", "deploy_token1": "600"}
-```
+Configure in `engine/config.py` under `DexParams` defaults and restart the engine.
 
 ## Stopping and starting trading
 
-Trading can be paused or resumed by someone with SSH access to the server.
-
-```bash
-# Stop all trading immediately
-ssh root@<server-ip> "docker compose -f /opt/repo/docker-compose.yml stop"
-
-# Resume trading
-ssh root@<server-ip> "docker compose -f /opt/repo/docker-compose.yml start"
-```
-
-The engine and all scheduled jobs halt when the container stops. On `start`, the engine resumes from its last persisted state.
+All operational controls go through the Telegram operator bot. See [LP Operations](lp/operations) for the full command reference (`/pause`, `/resume`, `/withdraw`, `/shutdown`).
 
 ## Starting the engine (local dev)
 

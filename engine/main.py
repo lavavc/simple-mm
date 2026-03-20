@@ -1,5 +1,6 @@
 """Main application entry point."""
 
+import asyncio
 import time
 from decimal import Decimal
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes
 from engine.api.schemas import DexParams, CexParams, ArbitrageParams
+from engine.bot import telegram as bot
 
 # Configure structured logging
 structlog.configure(
@@ -73,6 +75,7 @@ TOKEN_CONTRACTS: dict[int, dict[str, str]] = {
 def broadcast_event(event: dict):
     """Broadcast event to all connected WebSocket clients."""
     ws_manager.broadcast(event)
+    asyncio.create_task(bot.forward_alert(event))
 
 
 async def init_venues(acct_manager: AccountManager | None = None):
@@ -197,20 +200,20 @@ async def lifespan(app: FastAPI):
     logger.info("blended_price_calculator_initialized")
 
     # Arbitrage engine
-    if settings.arbitrage_enabled:
+    if settings.arb_detection_enabled:
         arb_params = ArbitrageParams()
 
         arbitrage_engine = ArbitrageEngine(
             venues=venues,
             params=arb_params,
             broadcast=broadcast_event,
-            execute_cex_dex_enabled=settings.arbitrage_execute_cex_dex_enabled,
-            execute_dex_dex_enabled=settings.arbitrage_execute_dex_dex_enabled,
+            execute_cex_dex_enabled=settings.arb_execute_cex_dex_enabled,
+            execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
         )
         logger.info(
             "arbitrage_engine_initialized",
-            execute_cex_dex_enabled=settings.arbitrage_execute_cex_dex_enabled,
-            execute_dex_dex_enabled=settings.arbitrage_execute_dex_dex_enabled,
+            execute_cex_dex_enabled=settings.arb_execute_cex_dex_enabled,
+            execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
         )
 
     _quidax_lp = venues.get("quidax-lp")
@@ -250,12 +253,21 @@ async def lifespan(app: FastAPI):
         logger.info("trading_restored_paused")
 
     scheduler.start()
+
+    if settings.telegram_bot_token:
+        try:
+            await bot.start(settings, scheduler, venues, arbitrage_engine, account_manager, TOKEN_CONTRACTS)
+        except Exception as e:
+            logger.error("telegram_bot_start_failed", error=str(e))
+
     logger.info("application_started", startup_time=time.time() - start_time)
 
     yield
 
     # Shutdown
     logger.info("application_stopping")
+
+    await bot.stop()
 
     if scheduler:
         scheduler.stop()
