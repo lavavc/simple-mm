@@ -14,7 +14,7 @@ from engine.venues.cex.quidax import QuidaxAdapter
 logger = structlog.get_logger()
 
 # Slippage tolerance applied to arb swaps (separate from LP slippage)
-_ARB_SLIPPAGE_BPS = 50  # 0.5%
+_ARB_SLIPPAGE_BPS = 10  # 0.1% — matches optimizer assumption in cex_dex.py / dex_dex.py
 
 
 def _now_ms() -> int:
