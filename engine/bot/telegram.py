@@ -43,15 +43,26 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = await get_db()
     trading_state = await db.get_system_state("trading_enabled")
     trading = trading_state != "false"
-    arb_enabled = _arbitrage_engine.enabled if _arbitrage_engine else False
     cb = False
+    arb_line = "❌ Not configured"
     if _arbitrage_engine:
-        status = await _arbitrage_engine.get_status()
-        cb = status.circuit_breaker_active
+        s = await _arbitrage_engine.get_status()
+        cb = s.circuit_breaker_active
+        if not s.enabled:
+            arb_line = "⏸ Detection paused"
+        elif not s.execute_cex_dex and not s.execute_dex_dex:
+            arb_line = "👁 Detection only (execution off)"
+        else:
+            parts = []
+            if s.execute_cex_dex:
+                parts.append("cex-dex")
+            if s.execute_dex_dex:
+                parts.append("dex-dex")
+            arb_line = f"✅ Executing ({', '.join(parts)})"
     text = (
         f"*Engine Status*\n"
         f"Trading: {'✅ Running' if trading else '⏸ Paused'}\n"
-        f"Arb: {'✅ Enabled' if arb_enabled else '❌ Disabled'}\n"
+        f"Arb: {arb_line}\n"
         f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
