@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     # Database
     db_path: str = "./data/cngn.db"
 
-    # Dashboard auth
-    dashboard_api_token: str = Field(default="", description="Token for dashboard auth")
+    # Direct API access token (protects mutating endpoints; TG bot uses engine internals directly)
+    engine_api_token: str = Field(default="", description="Bearer token for direct API access")
 
     # RPC endpoints — set ALCHEMY_KEY to use Alchemy for all chains,
     # or override individual URLs directly.
