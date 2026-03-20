@@ -34,4 +34,4 @@ The alert message includes the buy tx hash so the position can be manually close
 
 ## Circuit breaker
 
-`consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading until it is manually reset via `POST /api/arbitrage/reset-circuit-breaker` or until UTC midnight.
+`consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading until it is manually reset via `/reset_breaker` in the Telegram bot, or until UTC midnight.

@@ -5,72 +5,49 @@ order: 4
 
 ## Monitoring
 
-Position state for each DEX venue is available at:
+The dashboard LP tab shows position state for each venue in real time via WebSocket. Use the Telegram bot for quick operational checks:
 
-```
-GET /api/venues/uni-base/position
-GET /api/venues/uni-bsc/position
-```
+- `/positions` — tick range, token amounts, and in-range status per venue
+- `/balances` — account balances across all HD wallet roles
+- `/status` — engine state, arb mode, circuit breaker
 
-Returns current tick range, token amounts, liquidity, and whether the position is in-range. The dashboard LP tab shows this in real time via WebSocket.
-
-Portfolio delta across all venues is at `/api/arbitrage/status` (`delta_ratio` field) and broadcast as `portfolio_value` WebSocket events every 2 minutes.
+Portfolio delta is broadcast as `portfolio_value` WebSocket events every 2 minutes.
 
 ## Balance alerts
 
-Each LP and trade account has configurable minimum balance thresholds. When any balance falls below threshold, a `refill` alert is created, broadcast to the dashboard, and logged. Thresholds are set via:
+When any account balance falls below its minimum threshold, a `refill` alert fires: it appears on the dashboard, is pushed to the Telegram operator group, and is logged. Default thresholds by role are set in `engine/core/accounts.py`.
 
-```
-PUT /api/accounts/{role}/thresholds
-{"min_balance_eth": "0.001", "min_balance_tokens": {"cNGN": "50000", "USDC": "500"}}
-```
+Keep hot wallet balances minimal — only enough for daily operations. Bulk funds stay in the treasury multisig and are transferred manually when alerts fire.
 
-Default thresholds by role are set in `engine/venues/account_manager.py`. Keep hot wallet balances minimal — only enough for daily operations. Bulk funds stay in the treasury multisig and are transferred manually when alerts fire.
+Use `/alerts` in the bot to see the last 5 alerts without opening the dashboard.
 
 ## Deploying liquidity
 
-Set deploy amounts via API (auth required):
+LP deployment is controlled by `deploy_token0` and `deploy_token1` on `DexParams` — see [Overview](overview). These are set in `engine/config.py`. Setting both to `0` prevents new LP minting after the next rerange without touching the current position.
 
-```
-PUT /api/venues/uni-base/params
-{"deploy_token0": "500000", "deploy_token1": "600"}
-```
+## Pausing and resuming trading
 
-Setting both to `"0"` prevents any new LP minting after the next rerange without touching the current position.
+Via the Telegram bot:
+
+- `/pause` → confirm → trading halted globally (persisted across restarts)
+- `/resume` → confirm → trading resumes
 
 ## Withdrawing liquidity
 
-To remove the active position on a venue immediately:
+Via the Telegram bot:
 
-```
-POST /api/venues/uni-base/withdraw
-```
+- `/withdraw uni-base` — removes the active LP position on Base
+- `/withdraw uni-bsc` — removes the active LP position on BSC
+- `/withdraw all` — removes both
 
-This calls `remove_position` on the adapter and returns the transaction result. The position is removed on-chain; no re-mint will occur until deploy amounts are set and a rebalance triggers. To withdraw both venues at once, call both endpoints in sequence.
-
-To withdraw and prevent any future minting, zero the deploy amounts afterward:
-
-```
-POST /api/venues/uni-base/withdraw
-PUT /api/venues/uni-base/params
-{"deploy_token0": "0", "deploy_token1": "0"}
-```
+After withdrawal, no re-mint occurs until deploy amounts are set and a rebalance triggers.
 
 ## Stopping the engine
 
-**Stop without unwinding** — positions remain deployed on-chain, engine stops:
+Via the Telegram bot `/shutdown`:
 
-```
-POST /api/shutdown
-```
-
-**Stop and unwind** — removes all LP positions before stopping:
-
-```
-POST /api/shutdown?unwind=true
-```
-
-The unwind option calls `withdraw` on each active DEX venue sequentially, waits for confirmation, then shuts down. Use this when you need a clean exit. Use plain stop when you want to restart quickly and leave positions in place.
+- **Unwind + Stop** — removes all LP positions on-chain, then stops the engine
+- **Stop only** — stops immediately, positions remain deployed
 
 Resume after either stop with:
 
