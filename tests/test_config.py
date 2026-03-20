@@ -15,9 +15,9 @@ class TestSettings:
         assert s.log_level == "info"
         assert s.db_path == "./data/cngn.db"
         assert s.price_update_interval == 10
-        assert s.arbitrage_enabled is True
-        assert s.arbitrage_execute_cex_dex_enabled is False
-        assert s.arbitrage_execute_dex_dex_enabled is False
+        assert s.arb_detection_enabled is True
+        assert s.arb_execute_cex_dex_enabled is False
+        assert s.arb_execute_dex_dex_enabled is False
 
     def test_rpc_urls_default(self):
         s = Settings()
