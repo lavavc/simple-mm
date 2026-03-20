@@ -69,6 +69,10 @@ export function useEventStream() {
           qc.setQueryData(['quidax_dex_arb_curve'], event.data);
         }
 
+        if (event.type === 'quidax_dex_optimal_arb' && event.data) {
+          qc.setQueryData(['quidax_dex_optimal_arb'], event.data);
+        }
+
         if (event.type === 'quidax_orderbook_depth' && event.data) {
           qc.setQueryData(['quidaxDepth'], event.data);
         }
