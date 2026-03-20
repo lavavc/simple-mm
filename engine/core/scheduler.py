@@ -498,17 +498,19 @@ class TradingScheduler:
                 logger.warning("portfolio_delta_alert", message=msg)
 
                 db = await get_db()
-                await db.insert_alert(
+                alert_id = await db.insert_alert(
                     severity="warning",
                     category="delta",
                     message=msg,
+                    dedup=True,
                 )
 
-                self.broadcast({
-                    "type": "alert",
-                    "severity": "warning",
-                    "message": msg,
-                })
+                if alert_id:
+                    self.broadcast({
+                        "type": "alert",
+                        "severity": "warning",
+                        "message": msg,
+                    })
 
         except Exception as e:
             logger.error("portfolio_delta_check_failed", error=str(e))
