@@ -7,7 +7,7 @@ order: 3
 
 The portfolio targets a **50/50 split** between USD-denominated assets (USDC, USDT) and NGN-denominated assets (cNGN).
 
-`portfolio_value()` computes the USD value of all positions across all venues — LP token amounts (from tick math), trade account balances, and CEX balances — and returns the aggregate delta ratio. This runs on a timer (`portfolio_delta_interval`, default every 2 minutes) and on each CEX-DEX signal.
+`portfolio_value()` computes the USD value of all positions across all venues — LP token amounts (from tick math), trade account balances, and CEX balances — and returns the aggregate delta ratio. This runs on a timer (default every 2 minutes) and on each CEX-DEX signal.
 
 If delta deviates by more than `delta_alert_threshold_percent` (default 10%) from target, an alert is broadcast. If it exceeds `max_delta_ratio` (default 60% cNGN), `can_trade()` blocks new arb trades entirely.
 
@@ -25,7 +25,7 @@ LP positions may move outside the range, in which case we need to close them and
 
 1. Close the position and alert (always). 
 2. Then check if there are sufficient funds of whichever token needs refilling in the trade account.   
-3. If so, move those token, and automatically remint a new position, issuing a new alert. 
+3. If so, move those tokens, and automatically remint a new position, issuing a new alert. 
 4. If there are not sufficient funds, then wait for manual refill and also automatically remint a     
 position.
 

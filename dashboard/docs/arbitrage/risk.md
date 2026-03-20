@@ -5,28 +5,16 @@ order: 4
 
 ## Route selection
 
-When the fast path returns multiple profitable candidates (up to 4 CEX-DEX directions), the router (`engine/core/arbitrage/router.py`) selects the single best one. Scoring:
+When we find multiple profitable candidates, the router (`engine/core/arbitrage/router.py`) selects the single best one.
 
-```
-net_profit = expected_profit - estimated_gas - rebalance_cost_penalty
-```
+We do this via the following 3 steps:
 
-`estimated_gas` is provided by `engine/core/gas_oracle.py`, which refreshes every 30 s. Gas units are fixed constants measured from real on-chain swaps; the USD cost is computed dynamically:
-
-```
-gas_usd = gas_units × gas_price_gwei × 10⁻⁹ × native_token_usd
-```
-
-| Chain | Gas units | Source |
-|-------|-----------|--------|
-| Base (Uniswap V4) | 173,000 | `GAS_UNITS_BASE` |
-| BSC (PancakeSwap V3) | 158,000 | `GAS_UNITS_BSC` |
-
-Gas price (gwei) is fetched from each chain via `eth_gasPrice`. Native token prices (ETH/USD, BNB/USD) are fetched from the Alchemy Prices API (`tokens/by-symbol`). Both fall back to hardcoded defaults if a fetch fails. CEX-DEX routes use the per-chain cost; DEX-DEX round trips use the sum of both.
-
-The rebalance cost penalty is computed per buy-side venue by `inventory.get_rebalance_cost_bps()`. It scales linearly from **0 bps** (venue fully stocked with stablecoin) to `cross_chain_rebalance_bps` (default 10 bps, configurable) as the stablecoin balance drains toward zero. This encodes the forward-looking cost of eventually needing to bridge or rebalance that venue.
-
-When two routes have similar net profit, **inventory alignment** is used as a tiebreak: if we are net long cNGN (imbalance > $10), routes that sell cNGN to a CEX score higher; if net short, routes that buy cNGN from a CEX score higher. This nudges the system back toward balance without requiring explicit rebalancing trades.
+1. We **filter** trades: is the trade proditable, does it stay within the bounds of inventory paramaters?
+2. Then we **score** trades: `net_profit = expected_profit - gas - rebalance_cost_penalty`. The highest net profit is prioritised.
+    1. `gas` is provided by `engine/core/gas_oracle.py`, which refreshes every 30s. Gas units are conservative constants measured from real on-chain swaps, currrently set to 200k gas per DEX swap. The USD cost is computed dynamically:`gas_usd = gas_units × gas_price_gwei × 10⁻⁹ × native_token_usd`.   
+    Gas price (gwei) is fetched from each chain via `eth_gasPrice`. Native token prices (ETH/USD, BNB/USD) are fetched from the Alchemy Prices API (`tokens/by-symbol`). CEX-DEX routes use the per-chain cost; DEX-DEX round trips use the sum of both.  
+    2. The `rebalance_cost_penalty` is a special term we add that dynamically adjusts to inventory levels. That is, as one of our accounts on a given chain/platform moves into an imbalanced state, this penalty scales, because the need to rebalance is closer and so the cost of trading from that account is subsequently higher.
+3. When two routes have similar net profit, **inventory alignment** is used as a tiebreak: if we are net long cNGN (imbalance > $10), routes that sell cNGN to a CEX score higher; if net short, routes that buy cNGN from a CEX score higher. This nudges the system back toward balance without requiring explicit rebalancing trades.
 
 ## Pre-trade risk gates
 
@@ -45,7 +33,7 @@ The 24h volume uses a **rolling window** (not a midnight reset) to prevent expos
 
 ## Size adjustment
 
-The router also caps `optimal_size_usd` to the available stablecoin balance on the buy-side venue (`per_account_stable`, refreshed every scheduler cycle from the balance fetch). This ensures we never attempt a trade we can't fund. The min_out for the sell leg is then derived from the adjusted size:
+The router also caps `optimal_size_usd` to the available stablecoin balance on the buy-side venue. This ensures we never attempt a trade we can't fund. The min_out for the sell leg is then derived from the adjusted size:
 
 ```
 min_out_usd = adjusted_size * (1 - slippage_tolerance_bps / 10_000)
