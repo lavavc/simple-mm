@@ -53,35 +53,36 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
         return result
 
     # Quidax CEX valuation
-    if quidax_depth and quidax_depth.asks:
-        asks = sorted(quidax_depth.asks, key=lambda x: x.price)
-        bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True) if quidax_depth.bids else []
-        quidax_bal = next((b for b in balances if b.role == "quidax-exchange"), None)
-        if quidax_bal:
+    quidax_bal = next((b for b in balances if b.role == "quidax-exchange"), None)
+    if quidax_bal:
+        result["quidax_usdt"] = float(quidax_bal.token_balances.get("USDT", Decimal(0)))
+        if quidax_depth and quidax_depth.asks:
+            asks = sorted(quidax_depth.asks, key=lambda x: x.price)
+            bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True) if quidax_depth.bids else []
             q_cngn = quidax_bal.token_balances.get("cNGN", Decimal(0))
-            q_usdt = quidax_bal.token_balances.get("USDT", Decimal(0))
-            result["quidax_usdt"] = float(q_usdt)
             if q_cngn > 0:
                 result["quidax_cngn_usd"] = float(cex_holdings_value(asks, q_cngn, cex_fee))
             if bids and asks:
                 result["quidax_mid"] = float(Decimal("1") / ((bids[0].price + asks[0].price) / 2))
 
     # Uniswap BSC: token0=USDT, token1=cNGN → selling cNGN uses swap_token1_for_token0
-    bsc_sqrt, bsc_liq, _, _, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     bsc_bal = next((b for b in balances if b.role in ("uni-bsc-trade", "trade_uni_bsc")), None)
-    if bsc_bal and bsc_sqrt:
-        bsc_cngn = bsc_bal.token_balances.get("cNGN", Decimal(0))
+    if bsc_bal:
         result["uni_bsc_usdt"] = float(bsc_bal.token_balances.get("USDT", Decimal(0)))
-        if bsc_cngn > 0:
-            result["uni_bsc_cngn_usd"] = float(dex_holdings_value(bsc_cngn, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False))
+        bsc_sqrt, bsc_liq, _, _, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+        if bsc_sqrt:
+            bsc_cngn = bsc_bal.token_balances.get("cNGN", Decimal(0))
+            if bsc_cngn > 0:
+                result["uni_bsc_cngn_usd"] = float(dex_holdings_value(bsc_cngn, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False))
 
     # Uniswap Base: token0=cNGN, token1=USDC → selling cNGN uses swap_token0_for_token1
-    base_sqrt, base_liq, _, _, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
     base_bal = next((b for b in balances if b.role in ("uni-base-trade", "trade_uni_base")), None)
-    if base_bal and base_sqrt:
-        base_cngn = base_bal.token_balances.get("cNGN", Decimal(0))
+    if base_bal:
         result["uni_base_usdc"] = float(base_bal.token_balances.get("USDC", Decimal(0)))
-        if base_cngn > 0:
-            result["uni_base_cngn_usd"] = float(dex_holdings_value(base_cngn, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True))
+        base_sqrt, base_liq, _, _, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+        if base_sqrt:
+            base_cngn = base_bal.token_balances.get("cNGN", Decimal(0))
+            if base_cngn > 0:
+                result["uni_base_cngn_usd"] = float(dex_holdings_value(base_cngn, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True))
 
     return result

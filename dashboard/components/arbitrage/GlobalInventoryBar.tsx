@@ -123,11 +123,14 @@ export function GlobalInventoryBar() {
 
   const val = cexDexData?.portfolio_value;
 
-  // Only use valuation data when genuinely non-zero.
-  // Falls back to spot price if portfolio_value hasn't arrived yet.
-  const quidaxValValid = val && (val.quidax_usdt + val.quidax_cngn_usd) > 0;
-  const bscValValid    = val && (val.uni_bsc_usdt + val.uni_bsc_cngn_usd) > 0;
-  const baseValValid   = val && (val.uni_base_usdc + val.uni_base_cngn_usd) > 0;
+  const qCngnAmt = Number(quidaxTrade?.token_balances?.cNGN) || 0;
+  const bCngnAmt = Number(uniBscTrade?.token_balances?.cNGN) || 0;
+  const bsCngnAmt = Number(uniBaseTrade?.token_balances?.cNGN) || 0;
+
+  // Only use precise valuation data when we successfully priced the cNGN (or if there is no cNGN to price)
+  const quidaxValValid = val && val.quidax_usdt !== undefined && (qCngnAmt === 0 || val.quidax_cngn_usd > 0);
+  const bscValValid    = val && val.uni_bsc_usdt !== undefined && (bCngnAmt === 0 || val.uni_bsc_cngn_usd > 0);
+  const baseValValid   = val && val.uni_base_usdc !== undefined && (bsCngnAmt === 0 || val.uni_base_cngn_usd > 0);
 
   const quidaxUsd = quidaxValValid
     ? (val.quidax_usdt + val.quidax_cngn_usd)
