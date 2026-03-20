@@ -297,15 +297,6 @@ class ArbitrageStatus(BaseModel):
     params: ArbitrageParams
     low_inventory_venues: list[str] = []
 
-
-class DexRecoveryRequest(BaseModel):
-    """Manual recovery request for a half-open DEX-DEX position."""
-
-    direction: Literal["UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"]
-    amount_cngn: Decimal
-    opportunity_id: Optional[str] = None
-
-
 # === Account Schemas ===
 
 

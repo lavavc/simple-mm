@@ -31,7 +31,6 @@ from engine.api.schemas import (
     NormalizedPriceResponse,
     BlendedPriceResponse,
     DexArbOpportunity,
-    DexRecoveryRequest,
     OrderBookDepthResponse,
 )
 
@@ -904,41 +903,6 @@ async def reset_arbitrage_circuit_breaker():
     _arbitrage_engine.reset_circuit_breaker()
     logger.info("arbitrage_circuit_breaker_reset_via_api")
     return {"status": "reset"}
-
-
-@router.post("/arbitrage/dex-opportunities/{opp_id}/recover", dependencies=[Depends(verify_token)])
-async def recover_dex_half_open_opportunity(opp_id: str):
-    """Attempt to complete only the missing sell leg for a half-open DEX arbitrage."""
-    if not _arbitrage_engine:
-        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
-
-    try:
-        result = await _arbitrage_engine.recover_dex_half_open(opp_id)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error("dex_dex_recovery_failed", opp_id=opp_id, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/arbitrage/dex-recovery/manual", dependencies=[Depends(verify_token)])
-async def recover_dex_sell_leg_manual(req: DexRecoveryRequest):
-    """Manually execute only the sell leg for a DEX-DEX direction."""
-    if not _arbitrage_engine:
-        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
-
-    try:
-        return await _arbitrage_engine.recover_dex_sell_leg(
-            direction=req.direction,
-            amount_cngn=req.amount_cngn,
-            opportunity_id=req.opportunity_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error("dex_dex_manual_recovery_failed", direction=req.direction, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/arbitrage/scan", dependencies=[Depends(verify_token)])
