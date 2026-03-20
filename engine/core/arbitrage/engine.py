@@ -349,10 +349,11 @@ class ArbitrageEngine:
     async def _execute_dex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a DEX-DEX delta-balance arbitrage."""
         self._arb_executing = True
+        buy_trade = None
+        direction = route.candidate.direction
         try:
             c = route.candidate
             optimal = c.signal["optimal_arb"]
-            direction = c.direction
             buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
             size_usd = route.adjusted_size_usd
             slippage_bps = optimal.get("slippage_tolerance_bps", 10)
@@ -376,6 +377,12 @@ class ArbitrageEngine:
                 await db.expire_old_dex_arbitrage_opportunities(0)  # mark abandoned via expiry
                 return
 
+            await db.update_dex_arbitrage_execution_state(
+                opp_id,
+                status="buy_filled",
+                buy_tx_hash=buy_trade.tx_hash,
+            )
+
             sell_trade = await self.executor.execute_dex_sell(
                 sell_venue_name, buy_trade.amount, min_out_usd, opp_id
             )
@@ -384,12 +391,26 @@ class ArbitrageEngine:
                 err = (sell_trade.error if sell_trade else None) or "sell failed"
                 buy_tx = buy_trade.tx_hash or ""
                 logger.error("dex_dex_half_open", direction=direction, buy_tx=buy_tx, sell_error=err)
+                await db.update_dex_arbitrage_execution_state(
+                    opp_id,
+                    status="half_open",
+                    buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                    reason=err,
+                )
+                self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
                 self.broadcast({"type": "alert", "severity": "critical",
                                "message": f"Half-open DEX-DEX arb {opp_id}: buy {buy_tx} ok, sell failed: {err}"})
                 return
 
             actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0.0006")) - size_usd
+            await db.update_dex_arbitrage_execution_state(
+                opp_id,
+                status="completed",
+                buy_tx_hash=buy_trade.tx_hash,
+                sell_tx_hash=sell_trade.tx_hash,
+            )
             self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
             self.broadcast({"type": "dex_arb_executed", "data": {
                 "id": opp_id, "direction": direction, "profit_usd": float(actual_profit),
@@ -398,8 +419,24 @@ class ArbitrageEngine:
                         profit_usd=float(actual_profit))
 
         except Exception as e:
-            logger.error("dex_dex_execution_error", opp_id=opp_id, error=str(e))
-            self.inventory.record_trade_failure(opp_id, str(e))
+            err = str(e)
+            if buy_trade and buy_trade.status != "failed":
+                buy_tx = buy_trade.tx_hash or ""
+                logger.error("dex_dex_half_open", direction=direction, buy_tx=buy_tx, sell_error=err)
+                db = await get_db()
+                await db.update_dex_arbitrage_execution_state(
+                    opp_id,
+                    status="half_open",
+                    buy_tx_hash=buy_tx or None,
+                    reason=err,
+                )
+                self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
+                self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
+                self.broadcast({"type": "alert", "severity": "critical",
+                               "message": f"Half-open DEX-DEX arb {opp_id}: buy {buy_tx} ok, sell failed: {err}"})
+            else:
+                logger.error("dex_dex_execution_error", opp_id=opp_id, error=err)
+                self.inventory.record_trade_failure(opp_id, err)
         finally:
             self._arb_executing = False
 
@@ -440,6 +477,140 @@ class ArbitrageEngine:
     def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal):
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd)
 
+    async def recover_dex_half_open(self, opp_id: str) -> dict:
+        """Attempt to complete only the missing sell leg for a half-open DEX-DEX arb."""
+        db = await get_db()
+        opp = await db.get_dex_arbitrage_opportunity(opp_id)
+        if opp is None:
+            raise ValueError(f"Unknown DEX arbitrage opportunity: {opp_id}")
+        if opp.status not in ("buy_filled", "half_open"):
+            raise ValueError(f"Opportunity {opp_id} is not recoverable from status {opp.status}")
+
+        direction = opp.direction
+        _, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
+        amount_cngn = opp.cngn_transferred
+
+        logger.warning(
+            "dex_dex_recovery_started",
+            opp_id=opp_id,
+            direction=direction,
+            sell_venue=sell_venue_name,
+            amount_cngn=float(amount_cngn),
+        )
+
+        sell_trade = await self.executor.execute_dex_sell(
+            sell_venue_name,
+            amount_cngn,
+            Decimal("0"),
+            opp_id,
+        )
+
+        if not sell_trade or sell_trade.status == "failed":
+            err = (sell_trade.error if sell_trade else None) or "sell failed"
+            await db.update_dex_arbitrage_execution_state(
+                opp_id,
+                status="half_open",
+                sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                reason=err,
+            )
+            self.inventory.trip_circuit_breaker(f"DEX-DEX recovery failed: {opp_id}")
+            self.inventory.record_trade_failure(opp_id, f"RECOVERY:{err}")
+            raise ValueError(err)
+
+        actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0.0006")) - opp.optimal_size_usd
+        await db.update_dex_arbitrage_execution_state(
+            opp_id,
+            status="completed",
+            sell_tx_hash=sell_trade.tx_hash,
+            reason="Recovered half-open sell leg",
+        )
+        await db.update_dex_arbitrage_opportunity(
+            opp_id,
+            status="completed",
+            actual_profit_usd=float(actual_profit),
+            reason="Recovered half-open sell leg",
+        )
+        self.inventory.record_trade_complete(opp_id, opp.optimal_size_usd, actual_profit, Decimal("0"))
+        logger.info(
+            "dex_dex_recovery_completed",
+            opp_id=opp_id,
+            sell_venue=sell_venue_name,
+            sell_tx_hash=sell_trade.tx_hash,
+            profit_usd=float(actual_profit),
+        )
+        return {
+            "status": "completed",
+            "opp_id": opp_id,
+            "sell_tx_hash": sell_trade.tx_hash,
+            "profit_usd": float(actual_profit),
+        }
+
+    async def recover_dex_sell_leg(
+        self,
+        direction: str,
+        amount_cngn: Decimal,
+        opportunity_id: Optional[str] = None,
+    ) -> dict:
+        """Manually execute only the sell leg for a DEX-DEX direction."""
+        if direction not in _DEX_DEX_DIRECTIONS:
+            raise ValueError(f"Unsupported DEX-DEX direction: {direction}")
+
+        _, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
+        logger.warning(
+            "dex_dex_manual_recovery_started",
+            direction=direction,
+            sell_venue=sell_venue_name,
+            amount_cngn=float(amount_cngn),
+            opp_id=opportunity_id,
+        )
+
+        sell_trade = await self.executor.execute_dex_sell(
+            sell_venue_name,
+            amount_cngn,
+            Decimal("0"),
+            opportunity_id or "",
+        )
+
+        if not sell_trade or sell_trade.status == "failed":
+            err = (sell_trade.error if sell_trade else None) or "sell failed"
+            if opportunity_id:
+                db = await get_db()
+                await db.update_dex_arbitrage_execution_state(
+                    opportunity_id,
+                    status="half_open",
+                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                    reason=err,
+                )
+            self.inventory.trip_circuit_breaker(f"DEX-DEX manual recovery failed: {opportunity_id or direction}")
+            self.inventory.record_trade_failure(opportunity_id or direction, f"MANUAL_RECOVERY:{err}")
+            raise ValueError(err)
+
+        if opportunity_id:
+            db = await get_db()
+            await db.update_dex_arbitrage_execution_state(
+                opportunity_id,
+                status="completed",
+                sell_tx_hash=sell_trade.tx_hash,
+                reason="Recovered via manual sell leg",
+            )
+
+        logger.info(
+            "dex_dex_manual_recovery_completed",
+            direction=direction,
+            sell_venue=sell_venue_name,
+            amount_cngn=float(amount_cngn),
+            sell_tx_hash=sell_trade.tx_hash,
+            opp_id=opportunity_id,
+        )
+        return {
+            "status": "completed",
+            "direction": direction,
+            "sell_venue": sell_venue_name,
+            "amount_cngn": float(amount_cngn),
+            "sell_tx_hash": sell_trade.tx_hash,
+            "opportunity_id": opportunity_id,
+        }
+
     def _reconcile_stables(self, balances: list) -> None:
         """Refresh per-account stablecoin from the scheduler's periodic balance fetch."""
         venue_stables: dict[str, Decimal] = {}
@@ -457,10 +628,9 @@ class ArbitrageEngine:
 
     async def _seed_account_inventory(self):
         """Read trade-account stablecoin balances and pre-approve routers at first run."""
-        from engine.venues.dex.base import BaseDexAdapter
         balances: dict[str, Decimal] = {}
         for name, venue in self.venues.items():
-            if isinstance(venue, BaseDexAdapter):
+            if all(hasattr(venue, attr) for attr in ("stable_token", "trade_account", "stable_decimals", "ensure_trade_approvals")):
                 try:
                     raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
                     balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)

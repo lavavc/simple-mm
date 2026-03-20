@@ -293,6 +293,10 @@ class InventoryTracker:
         self._state.consecutive_failures = 0
         logger.info("circuit_breaker_manually_reset")
 
+    def trip_circuit_breaker(self, reason: str):
+        """Manually trip the circuit breaker for operator safety conditions."""
+        self._trigger_circuit_breaker(reason)
+
     def initialize_account_stable(self, venue_balances: dict[str, Decimal]):
         """Seed per-account stablecoin from on-chain balances (called once at startup)."""
         self._state.per_account_stable = dict(venue_balances)

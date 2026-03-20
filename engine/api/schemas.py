@@ -252,7 +252,7 @@ class DexArbOpportunity(BaseModel):
     expected_profit_usd: Decimal
     cngn_transferred: Decimal
     expected_usd_out: Decimal
-    status: Literal["detected", "executing", "completed", "abandoned", "expired"]
+    status: Literal["detected", "executing", "buy_filled", "half_open", "completed", "abandoned", "expired"]
     net_spread_bps: int
     actual_profit_usd: Optional[Decimal] = None
     reason: Optional[str] = None
@@ -296,6 +296,14 @@ class ArbitrageStatus(BaseModel):
     consecutive_failures: int
     params: ArbitrageParams
     low_inventory_venues: list[str] = []
+
+
+class DexRecoveryRequest(BaseModel):
+    """Manual recovery request for a half-open DEX-DEX position."""
+
+    direction: Literal["UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"]
+    amount_cngn: Decimal
+    opportunity_id: Optional[str] = None
 
 
 # === Account Schemas ===

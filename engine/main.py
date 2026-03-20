@@ -21,8 +21,8 @@ from engine.core.price_aggregation import PriceNormalizer, BlendedPriceCalculato
 from engine.core.scheduler import TradingScheduler, SchedulerConfig
 from engine.core.arbitrage import ArbitrageEngine
 from engine.core.accounts import AccountManager, AccountRole
-from engine.venues.dex.aerodrome import AerodromeAdapter
-from engine.venues.dex.pancakeswap import PancakeSwapAdapter
+from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
+from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 from engine.venues.dex.assetchain import AssetChainAdapter
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
@@ -87,7 +87,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
         try:
             lp_key = acct_manager.get_private_key(AccountRole.UNI_BASE_LP)
             trade_key = acct_manager.get_private_key(AccountRole.UNI_BASE_TRADE)
-            venues["uni-base"] = AerodromeAdapter(
+            venues["uni-base"] = UniswapBaseV4Adapter(
                 lp_private_key=lp_key,
                 trade_private_key=trade_key,
                 rpc_url=settings.base_rpc_url,
@@ -106,7 +106,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
         try:
             lp_key = acct_manager.get_private_key(AccountRole.UNI_BSC_LP)
             trade_key = acct_manager.get_private_key(AccountRole.UNI_BSC_TRADE)
-            venues["uni-bsc"] = PancakeSwapAdapter(
+            venues["uni-bsc"] = UniswapBscV4Adapter(
                 lp_private_key=lp_key,
                 trade_private_key=trade_key,
                 params=DexParams(

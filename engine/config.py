@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # Arbitrage settings
     arb_detection_enabled: bool = True       # master toggle for detection
     arb_execute_cex_dex_enabled: bool = False
-    arb_execute_dex_dex_enabled: bool = False
+    arb_execute_dex_dex_enabled: bool = True
     arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
@@ -118,16 +118,10 @@ class Settings(BaseSettings):
     uni_base_state_view: str = "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71"
     uni_bsc_pool_id: str = "0x2268f03a28f37f16cd3610dc669536f8c815d9d4cb2906feeeba9150fb2d8596"
     uni_base_pool_id: str = "0x84fa97768196067f0e5aa157709039a3897e219cba3002d9ad38bf44e300fe93"
-
-    # Aerodrome contract addresses (Base)
-    aerodrome_pool_address: str = "0x0206B696a410277eF692024C2B64CcF4EaC78589"
-    aerodrome_nft_manager_address: str = "0x827922686190790b37229fd06084350E74485b72"
-    aerodrome_router_address: str = "0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5"
-
-    # PancakeSwap contract addresses (BSC)
-    pancakeswap_pool_address: str = "0xb84e7c912a1034ad674bba8859fca84f1f614a29"
-    pancakeswap_nft_manager_address: str = "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364"
-    pancakeswap_router_address: str = "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4"
+    # Official UniversalRouter V2 deployment addresses
+    uni_bsc_universal_router: str = "0x1906c1d672b88cd1b9ac7593301ca990f94eae07"
+    uni_base_universal_router: str = "0x6ff5693b99212da76ad316178a184ab56d299b43"
+    permit2_address: str = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
     # AssetChain contract addresses
     assetchain_pool_address: str = "0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1"

@@ -20,6 +20,14 @@ from web3.types import TxReceipt
 
 from engine.api.schemas import Position, PriceQuote, LPPosition, TxResult, DexParams
 from engine.venues.base import VenueAdapter
+from .shared import (
+    ERC20_ABI,
+    MULTICALL3_ABI,
+    MULTICALL3_ADDRESS,
+    _decode_uint256,
+    _encode_balance_of,
+    sqrt_price_x96_to_decimal,
+)
 
 logger = structlog.get_logger()
 
@@ -75,28 +83,6 @@ class PoolReadConfig:
 
 
 @dataclass
-class V4PoolReadConfig:
-    """Minimal config for read-only V4 pool price fetching via StateView.
-
-    ``pool_address`` stores the bytes32 pool ID — keeps all downstream cache
-    lookups (``_POOL_CACHE[config.pool_address]``) working unchanged.
-    """
-
-    pool_manager: str    # PoolManager singleton address
-    state_view: str      # StateView contract address
-    pool_address: str    # bytes32 pool ID — named pool_address for cache-key compatibility
-    rpc_url: str
-    token0_address: str
-    token1_address: str
-    token0_symbol: str
-    token1_symbol: str
-    token0_decimals: int
-    token1_decimals: int
-    invert_price: bool = False
-    dexscreener_chain: str = ""  # e.g. "base" or "bsc" — enables DexScreener balance lookup
-
-
-@dataclass
 class PositionState:
     """LP position state from on-chain."""
 
@@ -111,36 +97,11 @@ class PositionState:
     current_price: Decimal
     in_range: bool
 
-
-# =============================================================================
-# Shared price math
-# =============================================================================
-
-
-def sqrt_price_x96_to_decimal(
-    sqrt_price_x96: int,
-    token0_decimals: int,
-    token1_decimals: int,
-) -> Decimal:
-    """Convert a UniswapV3/CL sqrtPriceX96 value to a human-readable price.
-
-    Returns the price of token0 denominated in token1, adjusted for
-    the decimal difference between the two tokens.
-    """
-    price = (Decimal(sqrt_price_x96) / Decimal(2**96)) ** 2
-    decimal_diff = token0_decimals - token1_decimals
-    price *= Decimal(10**decimal_diff)
-    return price
-
-
 # Function selector for slot0(): keccak256("slot0()")[:4] = 0x3850c7bd
 SLOT0_SELECTOR = bytes.fromhex("3850c7bd")
 
 # Function selector for liquidity(): keccak256("liquidity()")[:4] = 0x1a686502
 LIQUIDITY_SELECTOR = bytes.fromhex("1a686502")
-
-# Function selector for balanceOf(address): keccak256("balanceOf(address)")[:4] = 0x70a08231
-_BALANCE_OF_SIG = bytes.fromhex("70a08231")
 
 # Uniswap V3 Swap event topic: keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
 _SWAP_EVENT_TOPIC = bytes.fromhex("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67")
@@ -151,35 +112,6 @@ FEE_SELECTOR = bytes.fromhex("ddca3f43")
 
 # DexScreener chain identifiers
 DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
-
-# Multicall3 — deployed at the same address on Ethereum, Base, and BSC
-MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11"
-MULTICALL3_ABI = [
-    {
-        "inputs": [{"components": [
-            {"internalType": "address", "name": "target", "type": "address"},
-            {"internalType": "bool", "name": "allowFailure", "type": "bool"},
-            {"internalType": "bytes", "name": "callData", "type": "bytes"},
-        ], "name": "calls", "type": "tuple[]"}],
-        "name": "aggregate3",
-        "outputs": [{"components": [
-            {"internalType": "bool", "name": "success", "type": "bool"},
-            {"internalType": "bytes", "name": "returnData", "type": "bytes"},
-        ], "name": "returnData", "type": "tuple[]"}],
-        "stateMutability": "view",
-        "type": "function",
-    }
-]
-
-
-def _encode_balance_of(address: str) -> bytes:
-    """Encode a balanceOf(address) call for use in Multicall3."""
-    return _BALANCE_OF_SIG + bytes(12) + bytes.fromhex(address[2:])
-
-
-def _decode_uint256(data: bytes) -> int:
-    return int.from_bytes(data, "big") if len(data) == 32 else 0
-
 
 # =============================================================================
 # PoolPriceReader -- read-only, no private keys
@@ -258,53 +190,6 @@ class PoolPriceReader:
                 error=str(e),
             )
             return None
-
-
-# =============================================================================
-# ERC20 ABI
-# =============================================================================
-
-
-# Minimal ERC20 ABI for approvals and balance checks
-ERC20_ABI = [
-    {
-        "constant": True,
-        "inputs": [{"name": "owner", "type": "address"}],
-        "name": "balanceOf",
-        "outputs": [{"name": "", "type": "uint256"}],
-        "type": "function",
-    },
-    {
-        "constant": True,
-        "inputs": [
-            {"name": "owner", "type": "address"},
-            {"name": "spender", "type": "address"},
-        ],
-        "name": "allowance",
-        "outputs": [{"name": "", "type": "uint256"}],
-        "type": "function",
-    },
-    {
-        "constant": False,
-        "inputs": [
-            {"name": "spender", "type": "address"},
-            {"name": "amount", "type": "uint256"},
-        ],
-        "name": "approve",
-        "outputs": [{"name": "", "type": "bool"}],
-        "type": "function",
-    },
-    {
-        "constant": False,
-        "inputs": [
-            {"name": "recipient", "type": "address"},
-            {"name": "amount", "type": "uint256"},
-        ],
-        "name": "transfer",
-        "outputs": [{"name": "", "type": "bool"}],
-        "type": "function",
-    },
-]
 
 
 class BaseDexAdapter(VenueAdapter, ABC):
