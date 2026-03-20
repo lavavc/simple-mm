@@ -65,6 +65,7 @@ class ArbitrageEngine:
         self._inventory_seeded = False
         self._cex_curve_task: Optional[asyncio.Task] = None
         self._dex_curve_task: Optional[asyncio.Task] = None
+        self._pool_seed_task: Optional[asyncio.Task] = None
 
     @property
     def enabled(self) -> bool:
@@ -109,11 +110,18 @@ class ArbitrageEngine:
         """
         from engine.core.arbitrage.cex_dex import find_optimal_arb
         from engine.core.arbitrage.valuation import portfolio_value
+        from engine.core.arbitrage.pool_state import seed_pool_states
 
         self._reconcile_stables(balances)
         loop = asyncio.get_running_loop()
         signal = await loop.run_in_executor(None, find_optimal_arb, depth)
         val = await loop.run_in_executor(None, portfolio_value, depth, balances) if balances else {}
+
+        if signal is None:
+            # Pool cache is cold — kick off a one-shot seed so the next depth
+            # tick (2 s later) has pool state to work with.
+            if not self._pool_seed_task or self._pool_seed_task.done():
+                self._pool_seed_task = asyncio.create_task(seed_pool_states())
 
         broadcast_data = signal or {}
         broadcast_data["portfolio_value"] = val
@@ -142,16 +150,24 @@ class ArbitrageEngine:
                 asyncio.create_task(self._execute_cex_dex(route, opp_id))
 
         if not self._cex_curve_task or self._cex_curve_task.done():
-            self._cex_curve_task = asyncio.create_task(self._broadcast_cex_curve(depth))
+            self._cex_curve_task = asyncio.create_task(self._broadcast_cex_curve(depth, signal))
 
-    async def _broadcast_cex_curve(self, depth) -> None:
+    async def _broadcast_cex_curve(self, depth, signal) -> None:
         """Background: compute full CEX-DEX curve and broadcast."""
         from engine.core.arbitrage.cex_dex import compute_arb_curve
+        from engine.core.arbitrage.pool_state import seed_pool_states
         try:
             loop = asyncio.get_running_loop()
             curve = await loop.run_in_executor(None, compute_arb_curve, depth)
             if curve:
+                curve["optimal_arb"] = signal.get("optimal_arb") if signal else None
+                curve["all_arbs"] = signal.get("all_arbs", []) if signal else []
                 self.broadcast({"type": "quidax_dex_arb_curve", "data": curve})
+            else:
+                # Pool cache miss — seed so the next curve attempt succeeds.
+                if not self._pool_seed_task or self._pool_seed_task.done():
+                    self._pool_seed_task = asyncio.create_task(seed_pool_states())
+                logger.warning("cex_dex_curve_pool_cache_cold_seeding")
         except Exception as e:
             logger.error("cex_dex_curve_compute_failed", error=str(e))
 

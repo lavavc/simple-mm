@@ -149,11 +149,11 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
 
         bscSeries.createPriceLine({
             price: 0,
-            color: 'rgba(255, 255, 255, 0.3)',
+            color: 'rgba(255, 255, 255, 0.25)',
             lineWidth: 1,
-            lineStyle: 1,
+            lineStyle: 2,
             axisLabelVisible: true,
-            title: '',
+            title: 'Breakeven',
         });
 
         if (maxProfit > 0) {
