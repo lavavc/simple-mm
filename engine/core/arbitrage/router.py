@@ -52,6 +52,13 @@ def select_route(
         stable_bal = inventory.state.per_account_stable.get(c.buy_venue, Decimal("0"))
         adjusted_size = min(c.optimal_size_usd, stable_bal) if stable_bal > 0 else c.optimal_size_usd
 
+        # Cap size to available cNGN on the sell-side venue
+        cngn_price = inventory.state.cngn_price_usd
+        if cngn_price > 0:
+            cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue, Decimal("0"))
+            if cngn_bal > 0:
+                adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
+
         if adjusted_size <= 0:
             continue
 

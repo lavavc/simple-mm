@@ -37,6 +37,15 @@ LP accounts hold liquidity positions and are not used for arb swaps. Trade accou
 - LP positions are never accidentally swept during arb execution
 - Balances can be monitored independently; refill alerts fire per role
 
+## Execution model: pre-funded inventory
+
+Both legs of every arb trade run against pre-existing balances in trade accounts — the cNGN acquired in the buy leg is **not** the cNGN sold in the sell leg (they are on different chains or venues). The router therefore caps trade size against both:
+
+- **Buy-side stablecoin** (`per_account_stable[buy_venue]`) — how much the buy leg can spend
+- **Sell-side cNGN** (`per_account_cngn[sell_venue]`) — how much the sell leg can deliver
+
+Both caps are seeded from on-chain balances at startup and refreshed every balance-check cycle. A trade will not be routed if either side lacks sufficient inventory to cover the adjusted size.
+
 The `uni-bsc-trade` account is the buy-side for BSC arb legs and the sell-side's inventory source for DEX-DEX BSC→Base trades. Its stablecoin balance is what the router reads via `per_account_stable["uni-bsc"]`.
 
 ## WebSocket broadcast

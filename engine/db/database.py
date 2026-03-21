@@ -645,6 +645,36 @@ class Database:
             )
         await self._conn.commit()
 
+    async def update_dex_arbitrage_execution_state(
+        self,
+        opp_id: str,
+        *,
+        status: str,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+        reason: Optional[str] = None,
+    ):
+        """Update DEX arbitrage execution status and tx hashes."""
+        updates = ["status = ?"]
+        params: list[Any] = [status]
+
+        if buy_tx_hash is not None:
+            updates.append("buy_tx_hash = ?")
+            params.append(buy_tx_hash)
+        if sell_tx_hash is not None:
+            updates.append("sell_tx_hash = ?")
+            params.append(sell_tx_hash)
+        if reason is not None:
+            updates.append("reason = ?")
+            params.append(reason)
+
+        params.append(opp_id)
+        await self._conn.execute(
+            f"UPDATE dex_arbitrage_opportunities SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        await self._conn.commit()
+
     async def expire_old_dex_arbitrage_opportunities(self, cutoff_ts: int):
         """Mark opportunities older than cutoff and still detected/executing as expired."""
         await self._conn.execute(
@@ -708,6 +738,38 @@ class Database:
             )
             for row in rows
         ]
+
+    async def get_dex_arbitrage_opportunity(self, opp_id: str) -> Optional[DexArbOpportunity]:
+        """Get a single DEX arbitrage opportunity by id."""
+        cursor = await self._conn.execute(
+            "SELECT * FROM dex_arbitrage_opportunities WHERE id = ?",
+            (opp_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+
+        return DexArbOpportunity(
+            id=row["id"],
+            timestamp=row["timestamp"],
+            direction=row["direction"],
+            optimal_size_usd=Decimal(str(row["optimal_size_usd"])),
+            expected_profit_usd=Decimal(str(row["expected_profit_usd"])),
+            cngn_transferred=Decimal(str(row["cngn_transferred"])),
+            expected_usd_out=Decimal(str(row["expected_usd_out"])),
+            status=row["status"],
+            net_spread_bps=row["net_spread_bps"],
+            actual_profit_usd=Decimal(str(row["actual_profit_usd"])) if row["actual_profit_usd"] else None,
+            reason=row["reason"],
+            uni_bsc_price=Decimal(str(row["pancake_price"])) if row["pancake_price"] is not None else None,
+            uni_base_price=Decimal(str(row["aerodrome_price"])) if row["aerodrome_price"] is not None else None,
+            buy_tx_hash=row["buy_tx_hash"],
+            sell_tx_hash=row["sell_tx_hash"],
+            slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
+            uni_bsc_fee_bps=dict(row).get("pancake_fee_bps"),
+            uni_base_fee_bps=dict(row).get("aerodrome_fee_bps"),
+            estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
+        )
 
     async def get_arbitrage_stats(
         self,

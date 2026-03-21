@@ -477,7 +477,7 @@ class TradingScheduler:
             })
 
             if self.arbitrage_engine and total_usd_value > 0:
-                self.arbitrage_engine.update_portfolio_snapshot(cngn_usd_value, total_usd_value)
+                self.arbitrage_engine.update_portfolio_snapshot(cngn_usd_value, total_usd_value, blended.vwap)
 
             logger.info(
                 "portfolio_delta_checked",

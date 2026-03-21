@@ -1079,10 +1079,10 @@ async def update_account_thresholds(role: str, thresholds: AccountThresholds):
 
 # === Pool Metrics ===
 
-# Static config: chain and pool address for each DEX we track
+# Static config: chain and pool id for each DEX we track
 _DEX_POOLS = [
-    {"venue": "aerodrome", "chain": "base", "pool_address": settings.aerodrome_pool_address},
-    {"venue": "pancakeswap", "chain": "bsc", "pool_address": settings.pancakeswap_pool_address},
+    {"venue": "uni-base", "chain": "base", "pool_address": settings.uni_base_pool_id},
+    {"venue": "uni-bsc", "chain": "bsc", "pool_address": settings.uni_bsc_pool_id},
 ]
 
 
@@ -1091,7 +1091,7 @@ async def get_pool_metrics_history(minutes: int = Query(1440, ge=1440, le=43200)
     """Return historical pool TVL and volume from stored position snapshots."""
     db = await get_db()
     from_ts = int((time.time() - minutes * 60) * 1000)
-    return await db.get_pool_metrics_history(["aerodrome", "pancakeswap"], from_ts)
+    return await db.get_pool_metrics_history(["uni-base", "uni-bsc"], from_ts)
 
 
 @router.get("/pool-metrics")

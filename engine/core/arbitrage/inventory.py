@@ -40,6 +40,10 @@ class InventoryState:
     initial_account_stable: dict[str, Decimal] = field(default_factory=dict)
     low_inventory_venues: set[str] = field(default_factory=set)
 
+    # Per-account cNGN tracking (sell-side inventory cap)
+    per_account_cngn: dict[str, Decimal] = field(default_factory=dict)
+    cngn_price_usd: Decimal = Decimal("0")
+
     # Portfolio snapshot (fed from scheduler every 120s)
     cngn_value_usd: Decimal = Decimal("0")
     total_portfolio_usd: Decimal = Decimal("0")
@@ -293,11 +297,25 @@ class InventoryTracker:
         self._state.consecutive_failures = 0
         logger.info("circuit_breaker_manually_reset")
 
+    def trip_circuit_breaker(self, reason: str):
+        """Manually trip the circuit breaker for operator safety conditions."""
+        self._trigger_circuit_breaker(reason)
+
     def initialize_account_stable(self, venue_balances: dict[str, Decimal]):
         """Seed per-account stablecoin from on-chain balances (called once at startup)."""
         self._state.per_account_stable = dict(venue_balances)
         self._state.initial_account_stable = dict(venue_balances)
         logger.info("account_stable_initialized", venues=list(venue_balances.keys()))
+
+    def initialize_account_cngn(self, venue_balances: dict[str, Decimal]):
+        """Seed per-account cNGN from on-chain balances (called once at startup)."""
+        self._state.per_account_cngn = dict(venue_balances)
+        logger.info("account_cngn_initialized", venues=list(venue_balances.keys()))
+
+    def reconcile_cngn(self, venue_balances: dict[str, Decimal]):
+        """Refresh per-account cNGN from a periodic balance fetch."""
+        for venue, amount in venue_balances.items():
+            self._state.per_account_cngn[venue] = amount
 
     def reconcile_stables(self, venue_balances: dict[str, Decimal]):
         """Refresh per-account stablecoin from a periodic balance fetch.
@@ -337,10 +355,12 @@ class InventoryTracker:
         cost = self.params.cross_chain_rebalance_bps * (1 - float(fraction))
         return round(cost)
 
-    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal):
+    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal, cngn_price_usd: Decimal = Decimal("0")):
         """Called by scheduler every 120s to keep delta ratio check current."""
         self._state.cngn_value_usd = cngn_value_usd
         self._state.total_portfolio_usd = total_usd
+        if cngn_price_usd > 0:
+            self._state.cngn_price_usd = cngn_price_usd
 
     def get_status_dict(self) -> dict:
         """Get current status as a dict for API responses."""
