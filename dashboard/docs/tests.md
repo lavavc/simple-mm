@@ -33,8 +33,8 @@ pytest tests/test_dex_fork.py -v
 | `test_params_validation.py` | `api/schemas.py` | DexParams/CexParams/WalletParams defaults, custom values |
 | `test_schemas.py` | `api/schemas.py` | All Pydantic models |
 | `test_config.py` | `config.py` | Settings defaults |
-| `test_price_math.py` | `venues/dex/base.py` | Tick/price math, `compute_ewma_stats`, `calculate_tick_range` recovery skew |
-| `test_capital_allocation.py` | `venues/dex/base.py` | `calculate_mint_amounts` caps |
+| `test_price_math.py` | `venues/dex/lp_v4.py` | Tick/price math, `compute_ewma_stats`, `calculate_tick_range` recovery skew |
+| `test_capital_allocation.py` | `venues/dex/lp_v4.py` | `calculate_mint_amounts` caps |
 | `test_price_aggregation.py` | `core/price_aggregation.py` | VWAP, confidence, blended price |
 | `test_accounts.py` | `core/accounts.py` | HD derivation, role access |
 | `test_inventory.py` | `core/arbitrage/inventory.py` | Limits, circuit breakers, `reconcile_stables` |
