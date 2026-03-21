@@ -60,5 +60,4 @@ Create `dashboard/.env.local`:
 ```bash
 NEXT_PUBLIC_API_URL=http://localhost:8000/api
 NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-NEXT_PUBLIC_API_TOKEN=your-dashboard-token
 ```

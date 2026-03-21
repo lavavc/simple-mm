@@ -3,5 +3,5 @@
 - Add the least code possible to address a request. 
 - Avoid code complexity and bloat at every opportunity. 
 - Detection and execution must use the same adapter. Before adding a new venue or renaming one, verify that the venue key used in the arb signal (`cex_dex.py`/`dex_dex.py`) exactly matches the key registered in `engine/main.py` and the executor's venue map. Mismatches silently route execution through the wrong adapter.
-- Trade size must be capped against *both* buy-side stablecoin and sell-side cNGN before execution. The router (`engine/core/arbitrage/router.py`) is responsible for this. Any change to execution flow must preserve both caps.
+- Trade size must be capped against *both* buy-side stablecoin and sell-side cNGN before execution. The router (`engine/core/arbitrage/router.py`) is responsible for this. Any change to execution flow must preserve both caps. This assumes all arb directions follow the buy-cNGN/sell-cNGN pattern — if a new direction is added where the sell leg consumes stablecoin instead of cNGN, the inventory model in `router.py` and `inventory.py` must be extended to handle it.
 - DB migrations: never use `try/except` around `execute()`. Use `PRAGMA table_info(table)` to check for existing columns before ALTER TABLE. Caught execute() exceptions leave aiosqlite in a dirty state that hangs pytest.

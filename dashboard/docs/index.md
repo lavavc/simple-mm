@@ -7,7 +7,7 @@ order: 1
 
 ## Overview
 
-CNGN manages market-making positions across four venues to provide liquidity for the Nigerian Naira stablecoin. The goal is delta-neutral operation (~50/50 USD/NGN exposure) across a ~$800k portfolio while capturing 10-30 bps per transaction through cross-venue arbitrage.
+CNGN manages market-making positions across multiple venues to provide liquidity for the Nigerian Naira stablecoin. The goal is delta-neutral operation (~50/50 USD/NGN exposure) across the portfolio while capturing 10-30 bps per transaction through cross-venue arbitrage.
 
 ---
 
@@ -26,7 +26,7 @@ CNGN manages market-making positions across four venues to provide liquidity for
 
 ## Venue-Specific Operations
 
-### DEXs (Aerodrome & PancakeSwap) — *Biggest Operational Headache*
+### DEXs — *Biggest Operational Headache*
 
 **Current Process:**
 - Provide two-sided liquidity in concentrated LP positions
