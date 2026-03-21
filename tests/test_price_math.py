@@ -255,7 +255,7 @@ class TestComputeEwmaStats:
 
     def _make_adapter_simple(self, params=None):
         """Make a lightweight object with just the method we need."""
-        from engine.venues.dex.base import BaseDexAdapter
+        from engine.venues.dex.lp_v4 import V4LPAdapter
         p = params or DexParams(ewma_lambda=Decimal("0.99"))
 
         class FakeAdapter:
@@ -264,7 +264,7 @@ class TestComputeEwmaStats:
         obj = FakeAdapter()
         obj.params = p
         # Bind the method
-        obj.compute_ewma_stats = BaseDexAdapter.compute_ewma_stats.__get__(obj, FakeAdapter)
+        obj.compute_ewma_stats = V4LPAdapter.compute_ewma_stats.__get__(obj, FakeAdapter)
         return obj
 
     def test_stable_prices_low_std_dev(self):
@@ -297,7 +297,7 @@ class TestCalculateTickRangeRecoverySkew:
     """Tests for the recovery_price skew adjustment in calculate_tick_range."""
 
     def _make_adapter_for_range(self, downside_skew="0.4"):
-        from engine.venues.dex.base import BaseDexAdapter, PoolConfig
+        from engine.venues.dex.lp_v4 import V4LPAdapter
 
         class Fake:
             name = "uni-base"
@@ -318,9 +318,9 @@ class TestCalculateTickRangeRecoverySkew:
 
         obj.config = _Cfg()
         # Bind the two methods
-        obj.compute_ewma_stats = BaseDexAdapter.compute_ewma_stats.__get__(obj, Fake)
-        obj._price_to_tick = BaseDexAdapter._price_to_tick.__get__(obj, Fake)
-        obj.calculate_tick_range = BaseDexAdapter.calculate_tick_range.__get__(obj, Fake)
+        obj.compute_ewma_stats = V4LPAdapter.compute_ewma_stats.__get__(obj, Fake)
+        obj._price_to_tick = V4LPAdapter._price_to_tick.__get__(obj, Fake)
+        obj.calculate_tick_range = V4LPAdapter.calculate_tick_range.__get__(obj, Fake)
         return obj
 
     def _prices(self, mean=0.000606, n=50, std=0.00002):

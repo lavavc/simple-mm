@@ -13,7 +13,7 @@ from engine.core.venue_prices import VenuePriceAggregator
 from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
-from engine.venues.dex.base import BaseDexAdapter
+from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.core.arbitrage.listener import ArbitrageWebSocketListener
 
 if TYPE_CHECKING:
@@ -346,7 +346,7 @@ class TradingScheduler:
                 continue
 
             venue = self.venues[name]
-            if not isinstance(venue, BaseDexAdapter):
+            if not isinstance(venue, V4LPAdapter):
                 continue
 
             if venue.paused:
@@ -549,12 +549,12 @@ class TradingScheduler:
     # DEX position management
     # ------------------------------------------------------------------
 
-    async def _create_dex_position(self, venue: BaseDexAdapter, recovery_price: float | None = None) -> bool:
+    async def _create_dex_position(self, venue: V4LPAdapter, recovery_price: float | None = None) -> bool:
         """Create a new DEX LP position using capital allocation settings.
 
         recovery_price: if set, adjusts downside_skew toward 0.5 based on deviation
                         from EWMA mean, reflecting mean-reversion probability after a
-                        range exit (see BaseDexAdapter.calculate_tick_range).
+                        range exit (see V4LPAdapter.calculate_tick_range).
         """
         db = await get_db()
 
@@ -629,7 +629,7 @@ class TradingScheduler:
             logger.error("create_dex_position_failed", venue=venue.name, error=str(e))
             return False
 
-    async def _rebalance_dex_position(self, venue: BaseDexAdapter, token_id: int, position) -> bool:
+    async def _rebalance_dex_position(self, venue: V4LPAdapter, token_id: int, position) -> bool:
         """Remove an out-of-range LP position, top up from the trade account if needed, then remint."""
         db = await get_db()
 

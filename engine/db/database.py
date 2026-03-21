@@ -161,19 +161,42 @@ class Database:
                 net_spread_bps INTEGER NOT NULL,
             actual_profit_usd REAL,
                 reason TEXT,
-                pancake_price REAL,
-                aerodrome_price REAL,
+                uni_bsc_price REAL,
+                uni_base_price REAL,
                 buy_tx_hash TEXT,
                 sell_tx_hash TEXT,
                 slippage_tolerance_bps INTEGER,
-                pancake_fee_bps INTEGER,
-                aerodrome_fee_bps INTEGER,
+                uni_bsc_fee_bps INTEGER,
+                uni_base_fee_bps INTEGER,
                 estimated_gas_usd REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_time ON dex_arbitrage_opportunities(timestamp);
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_status ON dex_arbitrage_opportunities(status);
             """
         )
+        await self._conn.commit()
+        await self._migrate_schema()
+
+    async def _migrate_schema(self):
+        """Run incremental schema migrations."""
+        cursor = await self._conn.execute("PRAGMA table_info(dex_arbitrage_opportunities)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "pancake_price" in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN pancake_price TO uni_bsc_price"
+            )
+        if "aerodrome_price" in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN aerodrome_price TO uni_base_price"
+            )
+        if "pancake_fee_bps" in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN pancake_fee_bps TO uni_bsc_fee_bps"
+            )
+        if "aerodrome_fee_bps" in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN aerodrome_fee_bps TO uni_base_fee_bps"
+            )
         await self._conn.commit()
 
     # === System State ===
@@ -588,9 +611,9 @@ class Database:
             INSERT INTO dex_arbitrage_opportunities (
                 id, timestamp, direction, optimal_size_usd, expected_profit_usd,
                 cngn_transferred, expected_usd_out, status, net_spread_bps,
-                actual_profit_usd, reason, pancake_price, aerodrome_price,
-                buy_tx_hash, sell_tx_hash, slippage_tolerance_bps, pancake_fee_bps,
-                aerodrome_fee_bps, estimated_gas_usd
+                actual_profit_usd, reason, uni_bsc_price, uni_base_price,
+                buy_tx_hash, sell_tx_hash, slippage_tolerance_bps, uni_bsc_fee_bps,
+                uni_base_fee_bps, estimated_gas_usd
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -727,13 +750,13 @@ class Database:
                 net_spread_bps=row["net_spread_bps"],
                 actual_profit_usd=Decimal(str(row["actual_profit_usd"])) if row["actual_profit_usd"] else None,
                 reason=row["reason"],
-                uni_bsc_price=Decimal(str(row["pancake_price"])) if row["pancake_price"] is not None else None,
-                uni_base_price=Decimal(str(row["aerodrome_price"])) if row["aerodrome_price"] is not None else None,
+                uni_bsc_price=Decimal(str(row["uni_bsc_price"])) if row["uni_bsc_price"] is not None else None,
+                uni_base_price=Decimal(str(row["uni_base_price"])) if row["uni_base_price"] is not None else None,
                 buy_tx_hash=row["buy_tx_hash"],
                 sell_tx_hash=row["sell_tx_hash"],
                 slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
-                uni_bsc_fee_bps=dict(row).get("pancake_fee_bps"),
-                uni_base_fee_bps=dict(row).get("aerodrome_fee_bps"),
+                uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
+                uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
                 estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
             )
             for row in rows

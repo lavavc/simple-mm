@@ -1,9 +1,12 @@
-"""Uniswap V4 Base configs and execution adapter."""
+"""Uniswap V4 Base configs and LP/execution adapter."""
 
 from .shared import V4PoolReadConfig
-from .v4 import BaseV4DexAdapter, V4ExecutionConfig
+from .v4 import V4ExecutionConfig
+from .lp_v4 import V4LPAdapter
 from engine.api.schemas import DexParams
 from engine.config import settings
+
+_BASE_POSITION_MANAGER = "0x7c5f5a4bbd8fd63184577525326123b519429bdc"
 
 # Base: token0=cNGN(6 dec), token1=USDC(6 dec), invert_price=False
 UNISWAP_BASE_POOL_READ_CONFIG = V4PoolReadConfig(
@@ -40,10 +43,11 @@ UNISWAP_BASE_EXECUTION_CONFIG = V4ExecutionConfig(
     tick_spacing=30,
     hooks="0x0000000000000000000000000000000000000000",
     invert_price=False,
+    position_manager=_BASE_POSITION_MANAGER,
 )
 
 
-class UniswapBaseV4Adapter(BaseV4DexAdapter):
+class UniswapBaseV4Adapter(V4LPAdapter):
     name = "uni-base"
 
     def __init__(
@@ -79,6 +83,7 @@ class UniswapBaseV4Adapter(BaseV4DexAdapter):
                 tick_spacing=config.tick_spacing,
                 hooks=config.hooks,
                 invert_price=config.invert_price,
+                position_manager=config.position_manager,
             )
 
         super().__init__(

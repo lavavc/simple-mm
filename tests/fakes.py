@@ -6,7 +6,8 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 
 from engine.api.schemas import DexParams, TxResult
-from engine.venues.dex.base import BaseDexAdapter, PositionState
+from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.venues.dex.shared import PositionState
 
 
 class FakeDexAdapter:
@@ -138,6 +139,6 @@ class FakeCexAdapter:
         return False, Decimal("0"), self._sell_price, "simulated sell failure"
 
 
-# Register FakeDexAdapter as a virtual subclass of BaseDexAdapter so that
-# isinstance(fake, BaseDexAdapter) returns True in scheduler tests.
-BaseDexAdapter.register(FakeDexAdapter)
+# Register FakeDexAdapter as a virtual subclass of V4LPAdapter so that
+# isinstance(fake, V4LPAdapter) returns True in scheduler tests.
+V4LPAdapter.register(FakeDexAdapter)

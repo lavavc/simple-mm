@@ -23,7 +23,6 @@ from engine.core.arbitrage import ArbitrageEngine
 from engine.core.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
-from engine.venues.dex.assetchain import AssetChainAdapter
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes

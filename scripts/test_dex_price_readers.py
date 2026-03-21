@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engine.venues.dex.base import PoolPriceReader
+from engine.venues.dex.pool_reader import PoolPriceReader
 from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
 from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
 

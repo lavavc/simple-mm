@@ -8,7 +8,7 @@ import asyncio
 import time
 from engine.config import settings
 from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
-from engine.venues.dex.base import PoolReadConfig
+from engine.venues.dex.pool_reader import PoolReadConfig
 from engine.venues.dex.shared import V4PoolReadConfig
 from web3 import AsyncWeb3
 import structlog

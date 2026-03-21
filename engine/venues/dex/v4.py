@@ -41,7 +41,20 @@ STATE_VIEW_ABI = [
         ],
         "stateMutability": "view",
         "type": "function",
-    }
+    },
+    {
+        "inputs": [
+            {"name": "poolId", "type": "bytes32"},
+            {"name": "owner", "type": "address"},
+            {"name": "tickLower", "type": "int24"},
+            {"name": "tickUpper", "type": "int24"},
+            {"name": "salt", "type": "bytes32"},
+        ],
+        "name": "getPositionLiquidity",
+        "outputs": [{"name": "liquidity", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]
 
 UNIVERSAL_ROUTER_ABI = [
@@ -127,6 +140,7 @@ class V4ExecutionConfig:
     tick_spacing: Optional[int] = None
     hooks: str = "0x0000000000000000000000000000000000000000"
     invert_price: bool = False
+    position_manager: str = ""
 
 
 class BaseV4DexAdapter(VenueAdapter):
