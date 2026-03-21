@@ -12,7 +12,7 @@ from web3 import Web3
 from web3.middleware import geth_poa_middleware
 from web3.types import TxReceipt
 
-from engine.api.schemas import DexParams, LPPosition, Position, PriceQuote, TxResult
+from engine.api.schemas import DexParams, Position, PriceQuote, TxResult
 from engine.venues.base import VenueAdapter
 from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 
@@ -179,6 +179,7 @@ class BaseV4DexAdapter(VenueAdapter):
 
         self._nonce_locks: dict[str, asyncio.Lock] = {}
         self._pool_key: Optional[tuple[str, str, int, int, str]] = None
+        self._approvals_done: set[str] = set()
 
     @property
     def cngn_decimals(self) -> int:
@@ -283,9 +284,10 @@ class BaseV4DexAdapter(VenueAdapter):
         )
         currency0, currency1, fee, tick_spacing, hooks = self._resolve_pool_key()
         zero_for_one = token_in.lower() == currency0.lower()
-        deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
+        block = self.w3.eth.get_block("latest")
+        deadline = block["timestamp"] + 300
 
-        logger.warning(
+        logger.info(
             "v4_swap_build_started",
             venue=self.name,
             account=self.trade_account.address,
@@ -300,10 +302,11 @@ class BaseV4DexAdapter(VenueAdapter):
             deadline=deadline,
         )
 
+        # Canonical V4 action order: swap → settle input → take output
         actions = bytes([
             _V4_ACTION_SWAP_EXACT_IN_SINGLE,
-            _V4_ACTION_TAKE_ALL,
             _V4_ACTION_SETTLE_ALL,
+            _V4_ACTION_TAKE_ALL,
         ])
         params = [
             encode(
@@ -318,12 +321,12 @@ class BaseV4DexAdapter(VenueAdapter):
                     ),
                 ],
             ),
-            encode(["address", "uint256"], [token_out, min_amount_out]),
             encode(["address", "uint256"], [token_in, amount_in]),
+            encode(["address", "uint256"], [token_out, min_amount_out]),
         ]
         v4_input = encode(["bytes", "bytes[]"], [actions, params])
 
-        tx_params = self._get_tx_params(self.trade_account)
+        tx_params = self._get_tx_params(self.trade_account, block=block)
         tx_params["value"] = 0
         tx_params["gas"] = _DEFAULT_SWAP_GAS
         tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
@@ -345,6 +348,7 @@ class BaseV4DexAdapter(VenueAdapter):
                 account=self.trade_account.address,
                 error=str(e),
             )
+            return TxResult(hash="", status="failed", error=f"preflight: {str(e)}")
 
         return await self._send_transaction(tx, self.trade_account)
 
@@ -401,13 +405,14 @@ class BaseV4DexAdapter(VenueAdapter):
         )
         return self._pool_key
 
-    def _get_tx_params(self, account) -> dict:
-        latest = self.w3.eth.get_block("latest")
-        base_fee = latest.get("baseFeePerGas", self.w3.eth.gas_price)
+    def _get_tx_params(self, account, block=None) -> dict:
+        if block is None:
+            block = self.w3.eth.get_block("latest")
+        base_fee = block.get("baseFeePerGas", self.w3.eth.gas_price)
         priority_fee = self.w3.to_wei(0.1, "gwei")
         max_fee_per_gas = (2 * int(base_fee)) + priority_fee
 
-        logger.warning(
+        logger.info(
             "tx_fee_params",
             venue=self.name,
             account=account.address,
@@ -419,7 +424,6 @@ class BaseV4DexAdapter(VenueAdapter):
 
         return {
             "from": account.address,
-            "nonce": self.w3.eth.get_transaction_count(account.address),
             "maxFeePerGas": max_fee_per_gas,
             "maxPriorityFeePerGas": priority_fee,
             "chainId": self.config.chain_id,
@@ -456,12 +460,16 @@ class BaseV4DexAdapter(VenueAdapter):
             return TxResult(hash="", status="failed", error=str(e))
 
     async def _approve_token_to_permit2_if_needed(self, token: str):
+        cache_key = f"erc20_permit2_{token.lower()}"
+        if cache_key in self._approvals_done:
+            return
+
         token_contract = self.w3.eth.contract(address=Web3.to_checksum_address(token), abi=ERC20_ABI)
         current = token_contract.functions.allowance(
             self.trade_account.address,
             Web3.to_checksum_address(self.config.permit2),
         ).call()
-        logger.warning(
+        logger.info(
             "token_to_permit2_allowance_state",
             venue=self.name,
             token=token,
@@ -470,12 +478,15 @@ class BaseV4DexAdapter(VenueAdapter):
             allowance=current,
         )
         if current >= 1:
+            self._approvals_done.add(cache_key)
             return
 
         logger.info("approving_token_to_permit2", venue=self.name, token=token)
         tx_params = self._get_tx_params(self.trade_account)
         tx_params["value"] = 0
         tx_params["gas"] = _DEFAULT_APPROVAL_GAS
+        # Unlimited approval to Permit2 — Permit2 then enforces per-spender allowances.
+        # See runbook.md "Known issues" for the infinite approval risk note.
         tx = token_contract.functions.approve(
             Web3.to_checksum_address(self.config.permit2),
             2**256 - 1,
@@ -483,14 +494,20 @@ class BaseV4DexAdapter(VenueAdapter):
         result = await self._send_transaction(tx, self.trade_account)
         if result.status != "confirmed":
             logger.error("token_to_permit2_approval_failed", venue=self.name, token=token, error=result.error)
+        else:
+            self._approvals_done.add(cache_key)
 
     async def _approve_permit2_to_router_if_needed(self, token: str):
+        cache_key = f"permit2_router_{token.lower()}"
+        if cache_key in self._approvals_done:
+            return
+
         amount, expiration, _ = self.permit2.functions.allowance(
             self.trade_account.address,
             Web3.to_checksum_address(token),
             Web3.to_checksum_address(self.config.universal_router),
         ).call()
-        logger.warning(
+        logger.info(
             "permit2_router_allowance_state",
             venue=self.name,
             token=token,
@@ -500,6 +517,7 @@ class BaseV4DexAdapter(VenueAdapter):
             expiration=expiration,
         )
         if amount >= 1 and expiration > int(_time.time()) + 3600:
+            self._approvals_done.add(cache_key)
             return
 
         logger.info("approving_permit2_to_router", venue=self.name, token=token, router=self.config.universal_router)
@@ -515,3 +533,5 @@ class BaseV4DexAdapter(VenueAdapter):
         result = await self._send_transaction(tx, self.trade_account)
         if result.status != "confirmed":
             logger.error("permit2_router_approval_failed", venue=self.name, token=token, error=result.error)
+        else:
+            self._approvals_done.add(cache_key)
