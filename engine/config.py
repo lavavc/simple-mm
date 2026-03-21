@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     uni_base_state_view: str = "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71"
     uni_bsc_pool_id: str = "0x2268f03a28f37f16cd3610dc669536f8c815d9d4cb2906feeeba9150fb2d8596"
     uni_base_pool_id: str = "0x84fa97768196067f0e5aa157709039a3897e219cba3002d9ad38bf44e300fe93"
-    # Official UniversalRouter V2 deployment addresses
+    # UniversalRouter V2 — required for Uniswap V4 pool execution
     uni_bsc_universal_router: str = "0x1906c1d672b88cd1b9ac7593301ca990f94eae07"
     uni_base_universal_router: str = "0x6ff5693b99212da76ad316178a184ab56d299b43"
     permit2_address: str = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
