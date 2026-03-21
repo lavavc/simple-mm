@@ -112,7 +112,7 @@ class ArbitrageEngine:
         from engine.core.arbitrage.valuation import portfolio_value
         from engine.core.arbitrage.pool_state import seed_pool_states
 
-        self._reconcile_stables(balances)
+        self._reconcile_balances(balances)
         loop = asyncio.get_running_loop()
         signal = await loop.run_in_executor(None, find_optimal_arb, depth)
         val = await loop.run_in_executor(None, portfolio_value, depth, balances) if balances else {}
@@ -474,8 +474,8 @@ class ArbitrageEngine:
     def reset_circuit_breaker(self):
         self.inventory.reset_circuit_breaker()
 
-    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal):
-        self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd)
+    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal, cngn_price_usd: Decimal = Decimal("0")):
+        self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
 
     async def recover_dex_half_open(self, opp_id: str) -> dict:
         """Attempt to complete only the missing sell leg for a half-open DEX-DEX arb."""
@@ -611,35 +611,49 @@ class ArbitrageEngine:
             "opportunity_id": opportunity_id,
         }
 
-    def _reconcile_stables(self, balances: list) -> None:
-        """Refresh per-account stablecoin from the scheduler's periodic balance fetch."""
+    def _reconcile_balances(self, balances: list) -> None:
+        """Refresh per-account stablecoin and cNGN from the scheduler's periodic balance fetch."""
         venue_stables: dict[str, Decimal] = {}
+        venue_cngn: dict[str, Decimal] = {}
         for b in balances:
             role = getattr(b, "role", "")
             tb = getattr(b, "token_balances", {})
             if role in ("uni-bsc-trade", "trade_uni_bsc"):
                 venue_stables["uni-bsc"] = Decimal(str(tb.get("USDT", 0)))
+                venue_cngn["uni-bsc"] = Decimal(str(tb.get("cNGN", 0)))
             elif role in ("uni-base-trade", "trade_uni_base"):
                 venue_stables["uni-base"] = Decimal(str(tb.get("USDC", 0)))
+                venue_cngn["uni-base"] = Decimal(str(tb.get("cNGN", 0)))
             elif role == "quidax-exchange":
                 venue_stables["quidax"] = Decimal(str(tb.get("USDT", 0)))
+                venue_cngn["quidax"] = Decimal(str(tb.get("cNGN", 0)))
         if venue_stables:
             self.inventory.reconcile_stables(venue_stables)
+        if venue_cngn:
+            self.inventory.reconcile_cngn(venue_cngn)
 
     async def _seed_account_inventory(self):
-        """Read trade-account stablecoin balances and pre-approve routers at first run."""
-        balances: dict[str, Decimal] = {}
+        """Read trade-account stablecoin and cNGN balances and pre-approve routers at first run."""
+        stable_balances: dict[str, Decimal] = {}
+        cngn_balances: dict[str, Decimal] = {}
         for name, venue in self.venues.items():
-            if all(hasattr(venue, attr) for attr in ("stable_token", "trade_account", "stable_decimals", "ensure_trade_approvals")):
+            if all(hasattr(venue, attr) for attr in ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals", "ensure_trade_approvals")):
                 try:
                     raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
-                    balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)
+                    stable_balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)
                 except Exception as e:
                     logger.warning("account_stable_seed_failed", venue=name, error=str(e))
+                try:
+                    raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
+                    cngn_balances[name] = Decimal(raw) / Decimal(10 ** venue.cngn_decimals)
+                except Exception as e:
+                    logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
                 try:
                     await venue.ensure_trade_approvals()
                 except Exception as e:
                     logger.warning("trade_approval_failed", venue=name, error=str(e))
-        if balances:
-            self.inventory.initialize_account_stable(balances)
+        if stable_balances:
+            self.inventory.initialize_account_stable(stable_balances)
+        if cngn_balances:
+            self.inventory.initialize_account_cngn(cngn_balances)
         self._inventory_seeded = True

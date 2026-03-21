@@ -200,6 +200,10 @@ class BaseV4DexAdapter(VenueAdapter):
     def stable_token(self):
         return self.token0 if self.config.invert_price else self.token1
 
+    @property
+    def cngn_token(self):
+        return self.token1 if self.config.invert_price else self.token0
+
     async def get_position(self) -> Position:
         multicall = self.w3.eth.contract(
             address=Web3.to_checksum_address(MULTICALL3_ADDRESS),
