@@ -53,7 +53,7 @@ interface DexArbData {
         uni_bsc_fee_bps?: number;
         uni_base_fee_bps?: number;
         assetchain_fee_bps?: number;
-        estimated_gas_usd?: number;
+        gas_usd?: number;
     };
 }
 
@@ -78,7 +78,7 @@ interface DexArbOpp {
     uni_bsc_fee_bps?: number;
     uni_base_fee_bps?: number;
     assetchain_fee_bps?: number;
-    estimated_gas_usd?: number;
+    gas_usd?: number;
 }
 
 const fetchDexOpps = async () => {
@@ -656,7 +656,7 @@ export default function DexArbPage() {
                                                                 </div>
                                                                 <div>
                                                                     <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">Slippage / Gas</div>
-                                                                    <div className="text-white">{opp.slippage_tolerance_bps ? `${opp.slippage_tolerance_bps / 100}%` : 'N/A'} <span className="text-white/40">|</span> {opp.estimated_gas_usd ? `~$${opp.estimated_gas_usd}` : 'N/A'}</div>
+                                                                    <div className="text-white">{opp.slippage_tolerance_bps ? `${opp.slippage_tolerance_bps / 100}%` : 'N/A'} <span className="text-white/40">|</span> {opp.gas_usd ? `~$${opp.gas_usd}` : 'N/A'}</div>
                                                                 </div>
                                                                 <div>
                                                                     <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">Protocol Fees</div>
