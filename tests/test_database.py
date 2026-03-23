@@ -37,7 +37,7 @@ def sample_quote():
 @pytest.fixture
 def sample_position():
     return Position(
-        venue="aerodrome",
+        venue="uni-base",
         pair="cNGN/USDC",
         timestamp=int(time.time() * 1000),
         balances={"cngn": Decimal("10000"), "usdc": Decimal("50")},
@@ -199,14 +199,14 @@ class TestAlerts:
         alert_id = await db.insert_alert(
             severity="warning",
             category="refill",
-            message="Low ETH balance on aerodrome-lp",
+            message="Low ETH balance on uni-base-lp",
         )
         assert alert_id > 0
 
         alerts = await db.get_alerts(limit=10)
         assert len(alerts) == 1
         assert alerts[0].severity == "warning"
-        assert alerts[0].message == "Low ETH balance on aerodrome-lp"
+        assert alerts[0].message == "Low ETH balance on uni-base-lp"
 
     @pytest.mark.asyncio
     async def test_acknowledge_alert(self, db):

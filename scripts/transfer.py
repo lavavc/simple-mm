@@ -26,12 +26,6 @@ TOKEN_ADDRESSES = {
     ("USDT", 56): settings.usdt_bsc_address,
 }
 
-ROLE_ALIASES = {
-    "aerodrome-lp": AccountRole.UNI_BASE_LP.value,
-    "aerodrome-trade": AccountRole.UNI_BASE_TRADE.value,
-    "pancakeswap-lp": AccountRole.UNI_BSC_LP.value,
-    "pancakeswap-trade": AccountRole.UNI_BSC_TRADE.value,
-}
 
 NATIVE_SYMBOLS = {
     8453: "ETH",
@@ -53,8 +47,7 @@ async def main():
     parser.add_argument("--amount", required=True, type=Decimal, help="Amount to transfer")
     args = parser.parse_args()
 
-    role_arg = ROLE_ALIASES.get(args.role, args.role)
-    role = AccountRole(role_arg)
+    role = AccountRole(args.role)
     mgr = AccountManager()
 
     chain_id = mgr.get_config(role).chain_id

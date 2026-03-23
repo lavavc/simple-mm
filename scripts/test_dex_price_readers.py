@@ -1,7 +1,6 @@
 """Test live on-chain DEX price reads using PoolPriceReader.
 
-Reads slot0() from Aerodrome (Base) and PancakeSwap (BSC) mainnet pools.
-No private keys required -- just public RPC calls.
+Reads slot0() from the AssetChain V3 pool. No private keys required.
 """
 
 import sys
@@ -9,9 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engine.venues.dex.pool_reader import PoolPriceReader
-from engine.venues.dex.aerodrome import AERODROME_POOL_READ_CONFIG
-from engine.venues.dex.pancakeswap import PANCAKESWAP_POOL_READ_CONFIG
+from engine.venues.dex.pool_reader_v3 import PoolPriceReader
+from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
 
 
 def test_reader(name: str, reader: PoolPriceReader) -> None:
@@ -45,11 +43,8 @@ def test_reader(name: str, reader: PoolPriceReader) -> None:
 def main():
     print("Live DEX price reads (no private keys needed)")
 
-    aerodrome = PoolPriceReader(config=AERODROME_POOL_READ_CONFIG, source_name="aerodrome")
-    test_reader("Aerodrome (Base) — cNGN/USDC", aerodrome)
-
-    pancakeswap = PoolPriceReader(config=PANCAKESWAP_POOL_READ_CONFIG, source_name="pancakeswap")
-    test_reader("PancakeSwap V3 (BSC) — cNGN/USDT", pancakeswap)
+    assetchain = PoolPriceReader(config=ASSETCHAIN_POOL_READ_CONFIG, source_name="assetchain")
+    test_reader("AssetChain V3 — cNGN/USDT", assetchain)
 
     print(f"\n{'=' * 60}")
     print("  Done!")

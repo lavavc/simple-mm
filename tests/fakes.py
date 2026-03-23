@@ -11,7 +11,7 @@ from engine.venues.dex.shared import PositionState
 
 
 class FakeDexAdapter:
-    """In-process double for BaseDexAdapter. No Web3, no RPC.
+    """In-process double for V4LPAdapter. No Web3, no RPC.
 
     Configurable to succeed or fail on any operation.
     Tracks minted positions and transfers for assertions.

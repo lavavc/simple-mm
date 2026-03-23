@@ -185,7 +185,7 @@ class TestTradeRecording:
         assert tracker.state.daily_profit_usd == Decimal("25")
 
     def test_record_trade_start(self, tracker):
-        tracker.record_trade_start("opp-1", Decimal("500"), "aerodrome", "quidax")
+        tracker.record_trade_start("opp-1", Decimal("500"), "uni-base", "quidax")
         assert tracker.state.last_trade_timestamp > 0
 
 
@@ -226,37 +226,37 @@ class TestPerAccountStable:
 
     def test_initialize_seeds_correctly(self, tracker):
         tracker.initialize_account_stable({
-            "aerodrome": Decimal("5000"),
-            "pancakeswap": Decimal("3000"),
+            "uni-base": Decimal("5000"),
+            "uni-bsc": Decimal("3000"),
         })
-        assert tracker._state.per_account_stable["aerodrome"] == Decimal("5000")
-        assert tracker._state.initial_account_stable["aerodrome"] == Decimal("5000")
+        assert tracker._state.per_account_stable["uni-base"] == Decimal("5000")
+        assert tracker._state.initial_account_stable["uni-base"] == Decimal("5000")
 
     def test_buy_reduces_balance(self, tracker):
-        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
-        tracker.update_account_inventory("aerodrome", Decimal("500"), is_buy=True)
-        assert tracker._state.per_account_stable["aerodrome"] == Decimal("4500")
+        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
+        tracker.update_account_inventory("uni-base", Decimal("500"), is_buy=True)
+        assert tracker._state.per_account_stable["uni-base"] == Decimal("4500")
 
     def test_sell_increases_balance(self, tracker):
-        tracker.initialize_account_stable({"pancakeswap": Decimal("2000")})
-        tracker.update_account_inventory("pancakeswap", Decimal("300"), is_buy=False)
-        assert tracker._state.per_account_stable["pancakeswap"] == Decimal("2300")
+        tracker.initialize_account_stable({"uni-bsc": Decimal("2000")})
+        tracker.update_account_inventory("uni-bsc", Decimal("300"), is_buy=False)
+        assert tracker._state.per_account_stable["uni-bsc"] == Decimal("2300")
 
     def test_flags_low_when_below_threshold(self, tracker):
         threshold = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
-        tracker.initialize_account_stable({"aerodrome": threshold * 2})
+        tracker.initialize_account_stable({"uni-base": threshold * 2})
         # Drain to half the threshold
-        tracker.update_account_inventory("aerodrome", threshold * Decimal("1.5"), is_buy=True)
-        assert "aerodrome" in tracker._state.low_inventory_venues
+        tracker.update_account_inventory("uni-base", threshold * Decimal("1.5"), is_buy=True)
+        assert "uni-base" in tracker._state.low_inventory_venues
 
     def test_clears_flag_when_above_threshold(self, tracker):
         threshold = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
-        tracker.initialize_account_stable({"aerodrome": threshold * 2})
-        tracker.update_account_inventory("aerodrome", threshold * Decimal("1.5"), is_buy=True)
-        assert "aerodrome" in tracker._state.low_inventory_venues
+        tracker.initialize_account_stable({"uni-base": threshold * 2})
+        tracker.update_account_inventory("uni-base", threshold * Decimal("1.5"), is_buy=True)
+        assert "uni-base" in tracker._state.low_inventory_venues
         # Receive stablecoin — back above threshold
-        tracker.update_account_inventory("aerodrome", threshold * Decimal("1.5"), is_buy=False)
-        assert "aerodrome" not in tracker._state.low_inventory_venues
+        tracker.update_account_inventory("uni-base", threshold * Decimal("1.5"), is_buy=False)
+        assert "uni-base" not in tracker._state.low_inventory_venues
 
 
 # =============================================================================
@@ -267,24 +267,24 @@ class TestPerAccountStable:
 class TestGetRebalanceCost:
 
     def test_full_stock_returns_zero(self, tracker):
-        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
-        assert tracker.get_rebalance_cost_bps("aerodrome") == 0
+        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
+        assert tracker.get_rebalance_cost_bps("uni-base") == 0
 
     def test_half_drained_returns_half_cost(self, tracker):
-        tracker.initialize_account_stable({"aerodrome": Decimal("5000")})
-        tracker.update_account_inventory("aerodrome", Decimal("2500"), is_buy=True)
-        cost = tracker.get_rebalance_cost_bps("aerodrome")
+        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
+        tracker.update_account_inventory("uni-base", Decimal("2500"), is_buy=True)
+        cost = tracker.get_rebalance_cost_bps("uni-base")
         assert cost == 5  # 50% drained → 5 of 10 bps
 
     def test_empty_returns_full_cost(self, tracker):
-        tracker.initialize_account_stable({"aerodrome": Decimal("1000")})
-        tracker.update_account_inventory("aerodrome", Decimal("1000"), is_buy=True)
-        cost = tracker.get_rebalance_cost_bps("aerodrome")
+        tracker.initialize_account_stable({"uni-base": Decimal("1000")})
+        tracker.update_account_inventory("uni-base", Decimal("1000"), is_buy=True)
+        cost = tracker.get_rebalance_cost_bps("uni-base")
         assert cost == 10
 
     def test_no_initial_data_returns_fallback(self, tracker):
         # No seeding — should return cross_chain_rebalance_bps
-        cost = tracker.get_rebalance_cost_bps("aerodrome")
+        cost = tracker.get_rebalance_cost_bps("uni-base")
         assert cost == tracker.params.cross_chain_rebalance_bps
 
 
@@ -325,18 +325,18 @@ class TestDeltaRatioCheck:
 class TestCanTradeWithVenueFlags:
 
     def test_buy_venue_flagged_is_blocked(self, tracker):
-        tracker._state.low_inventory_venues.add("aerodrome")
-        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="aerodrome")
+        tracker._state.low_inventory_venues.add("uni-base")
+        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="uni-base")
         assert allowed is False
-        assert "aerodrome" in reason.lower()
+        assert "uni-base" in reason.lower()
 
     def test_sell_venue_flagged_is_allowed(self, tracker):
-        tracker._state.low_inventory_venues.add("pancakeswap")
-        allowed, reason = tracker.can_trade(Decimal("100"), sell_venue="pancakeswap")
+        tracker._state.low_inventory_venues.add("uni-bsc")
+        allowed, reason = tracker.can_trade(Decimal("100"), sell_venue="uni-bsc")
         assert allowed is True  # sell-side flag doesn't block
 
     def test_no_flag_is_allowed(self, tracker):
-        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="aerodrome")
+        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="uni-base")
         assert allowed is True
 
 

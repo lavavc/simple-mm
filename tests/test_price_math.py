@@ -245,13 +245,13 @@ class TestDecimalAdjustments:
 
 
 # =============================================================================
-# EWMA stats (BaseDexAdapter.compute_ewma_stats)
+# EWMA stats (V4LPAdapter.compute_ewma_stats)
 # =============================================================================
 
 
 
 class TestComputeEwmaStats:
-    """Tests for BaseDexAdapter.compute_ewma_stats."""
+    """Tests for V4LPAdapter.compute_ewma_stats."""
 
     def _make_adapter_simple(self, params=None):
         """Make a lightweight object with just the method we need."""
