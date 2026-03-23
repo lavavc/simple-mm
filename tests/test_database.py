@@ -5,7 +5,7 @@ import time
 from decimal import Decimal
 
 from engine.db.database import Database
-from engine.api.schemas import PriceQuote, Position, Alert
+from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity
 
 
 # =============================================================================
@@ -224,6 +224,100 @@ class TestAlerts:
 # =============================================================================
 # Actions
 # =============================================================================
+
+
+class TestDexArbOpportunities:
+    """Test DEX arbitrage opportunity persistence and stats aggregation."""
+
+    def _sample_opp(self, opp_id="dex-arb-1", status="detected"):
+        return DexArbOpportunity(
+            id=opp_id,
+            timestamp=int(time.time() * 1000),
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            optimal_size_usd=Decimal("500"),
+            expected_profit_usd=Decimal("1.20"),
+            cngn_transferred=Decimal("800000"),
+            expected_usd_out=Decimal("501.20"),
+            status=status,
+            net_spread_bps=24,
+            gas_usd=Decimal("0.08"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_insert_and_read_back(self, db):
+        opp = self._sample_opp()
+        await db.insert_dex_arbitrage_opportunity(opp)
+        result = await db.get_dex_arbitrage_opportunity(opp.id)
+        assert result is not None
+        assert result.direction == opp.direction
+        assert result.optimal_size_usd == opp.optimal_size_usd
+        assert result.cngn_transferred == opp.cngn_transferred
+        assert result.gas_usd == opp.gas_usd
+        assert result.buy_amount_cngn is None  # not set until buy fills
+
+    @pytest.mark.asyncio
+    async def test_execution_state_update_writes_profit_and_buy_amount(self, db):
+        opp = self._sample_opp()
+        await db.insert_dex_arbitrage_opportunity(opp)
+
+        await db.update_dex_arbitrage_execution_state(
+            opp.id,
+            status="buy_filled",
+            buy_tx_hash="0xabc",
+            buy_amount_cngn=Decimal("798000"),
+        )
+        mid = await db.get_dex_arbitrage_opportunity(opp.id)
+        assert mid.status == "buy_filled"
+        assert mid.buy_tx_hash == "0xabc"
+        assert mid.buy_amount_cngn == Decimal("798000")
+        assert mid.actual_profit_usd is None  # not yet completed
+
+        await db.update_dex_arbitrage_execution_state(
+            opp.id,
+            status="completed",
+            sell_tx_hash="0xdef",
+            actual_profit_usd=1.15,
+        )
+        done = await db.get_dex_arbitrage_opportunity(opp.id)
+        assert done.status == "completed"
+        assert done.sell_tx_hash == "0xdef"
+        assert done.actual_profit_usd == Decimal("1.15")
+        assert done.buy_amount_cngn == Decimal("798000")  # preserved across updates
+
+    @pytest.mark.asyncio
+    async def test_daily_stats_aggregate_profit_across_both_pipelines(self, db):
+        """get_arbitrage_stats drives the dashboard's daily P&L view.
+
+        The engine runs two independent arb pipelines — CEX-DEX and DEX-DEX —
+        each writing to a separate table. Both must contribute to the profit total.
+        A detected-but-not-executed opportunity should count toward total detected
+        but must not inflate the execution count or profit.
+        """
+        # CEX-DEX trade: detected and completed, $1.50 profit
+        cex_dex_opp = ArbitrageOpportunity(
+            id="cex-1", timestamp=int(time.time() * 1000),
+            buy_venue="quidax", sell_venue="uni-base",
+            buy_price=Decimal("0.000605"), sell_price=Decimal("0.000615"),
+            gross_spread_bps=17, net_spread_bps=7,
+            recommended_size_usd=Decimal("500"), expected_profit_usd=Decimal("1.50"),
+            status="completed", actual_profit_usd=Decimal("1.50"),
+        )
+        await db.insert_arbitrage_opportunity(cex_dex_opp)
+
+        # DEX-DEX trade: detected and completed, $2.00 profit
+        dex_dex_opp = self._sample_opp("dex-1")
+        await db.insert_dex_arbitrage_opportunity(dex_dex_opp)
+        await db.update_dex_arbitrage_execution_state("dex-1", status="completed", actual_profit_usd=2.00)
+
+        # DEX-DEX opportunity that was detected but never executed — should not add to profit
+        dex_dex_stale = self._sample_opp("dex-2")
+        await db.insert_dex_arbitrage_opportunity(dex_dex_stale)
+
+        stats = await db.get_arbitrage_stats(0)
+
+        assert stats["opportunities_detected"] == 3
+        assert stats["opportunities_executed"] == 2
+        assert stats["total_profit_usd"] == Decimal("3.50")
 
 
 class TestActions:
