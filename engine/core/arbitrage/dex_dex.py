@@ -156,7 +156,7 @@ def generate_dex_profit_curve() -> dict:
     uni_base_sqrt, uni_base_liq, _, _, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
     optimal_size = fast["optimal_arb"]["optimal_size_usd"]
-    curve_max = max(1000, int(optimal_size * 1.5))
+    curve_max = max(5000, int(optimal_size * 1.5))
 
     slippage_multiplier = Decimal("1") - Decimal("0.0010")
     curve = []

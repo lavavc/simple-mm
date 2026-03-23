@@ -39,4 +39,4 @@ For DEX legs, `swap_token0_for_token1` and `swap_token1_for_token0` in `pool_sta
 
 ## Slow path: full profit curve
 
-Separately from the fast path (which returns only the optimal point), a slow path runs in the background via `run_in_executor`. This generates a 1,000-point profit curve over the full trade size range, which is broadcast to the dashboard as `quidax_dex_arb_curve` / `dex_arb_curve` and rendered in the Arbitrage tab chart. The slow path does not block execution.
+Separately from the fast path (which returns only the optimal point), a slow path runs in the background via `run_in_executor`. This generates a profit curve over the full trade size range, with a minimum range of `$1` to `$5,000`, which is broadcast to the dashboard as `quidax_dex_arb_curve` / `dex_arb_curve` and rendered in the Arbitrage tab chart. The slow path does not block execution.
