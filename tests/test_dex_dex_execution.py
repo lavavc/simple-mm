@@ -166,6 +166,10 @@ class TestPreflightGate:
             await engine._execute_dex_dex(_route(), "opp-preflight-3")
 
         assert len(buy_venue.swap_calls) == 1
+        opp = await test_db.get_dex_arbitrage_opportunity("opp-preflight-3")
+        assert opp.status == "completed"
+        assert opp.actual_profit_usd is not None
+        assert opp.sell_tx_hash is not None
 
 
 # =============================================================================

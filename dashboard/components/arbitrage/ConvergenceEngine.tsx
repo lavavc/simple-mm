@@ -56,7 +56,7 @@ interface DexArbData {
         uni_bsc_fee_bps?: number;
         uni_base_fee_bps?: number;
         assetchain_fee_bps?: number;
-        estimated_gas_usd?: number;
+        gas_usd?: number;
     };
 }
 
@@ -303,7 +303,7 @@ function RealExecutionCrossfire({ data, isSyncing, onHoverPoint }: { data: DexAr
             <div className="w-full grid grid-cols-2 gap-3 mb-4">
                 <div className="bg-black/20 border border-white/5 rounded-sm p-2 flex justify-between items-center">
                      <span className="text-[9px] font-mono tracking-widest uppercase text-white/40">Gas Est.</span>
-                     <span className="text-[10px] font-mono text-white/80">${formatNumber(data?.optimal_arb?.estimated_gas_usd || 0, 2)}</span>
+                     <span className="text-[10px] font-mono text-white/80">${formatNumber(data?.optimal_arb?.gas_usd || 0, 2)}</span>
                 </div>
                 <div className="bg-black/20 border border-white/5 rounded-sm p-2 flex justify-between items-center">
                      <span className="text-[9px] font-mono tracking-widest uppercase text-white/40">Slippage</span>

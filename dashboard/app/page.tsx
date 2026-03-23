@@ -41,7 +41,7 @@ interface DexArbData {
     uni_bsc_fee_bps?: number;
     uni_base_fee_bps?: number;
     assetchain_fee_bps?: number;
-    estimated_gas_usd?: number;
+    gas_usd?: number;
   };
 }
 

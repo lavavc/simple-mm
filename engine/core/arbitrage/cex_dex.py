@@ -206,7 +206,7 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
             "slippage_tolerance_bps": 10,
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000) if uni_bsc_fee else 0,
             "uni_base_fee_bps": int(uni_base_fee * 10000) if uni_base_fee else 0,
-            "estimated_gas_usd": float(_CEX_DEX_GAS_FN.get(best_dir, _gas_oracle.gas_usd_bsc)()),
+            "gas_usd": float(_CEX_DEX_GAS_FN.get(best_dir, _gas_oracle.gas_usd_bsc)()),
         },
     }
 
