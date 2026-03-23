@@ -347,14 +347,6 @@ class BaseV4DexAdapter(VenueAdapter):
         )
 
         tx, deadline = self._build_swap_tx(token_in, amount_in, min_amount_out)
-
-        try:
-            self.w3.eth.call({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
-            logger.info("v4_swap_preflight_ok", venue=self.name, account=self.trade_account.address)
-        except Exception as e:
-            logger.error("v4_swap_preflight_failed", venue=self.name, account=self.trade_account.address, error=str(e))
-            return TxResult(hash="", status="failed", error=f"preflight: {str(e)}")
-
         return await self._send_transaction(tx, self.trade_account)
 
     def _resolve_pool_key(self) -> tuple[str, str, int, int, str]:

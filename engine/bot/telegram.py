@@ -264,6 +264,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Arbitrage engine not configured.")
     elif data.startswith("confirm:recover:"):
         opp_id = data.split(":", 2)[2]
+        if not _arbitrage_engine:
+            await query.edit_message_text("❌ Arbitrage engine not configured.")
+            return
         await query.edit_message_text(f"⏳ Retrying sell leg for {opp_id}...")
         try:
             result = await _arbitrage_engine.recover_dex_half_open(opp_id)
