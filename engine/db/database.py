@@ -168,7 +168,8 @@ class Database:
                 slippage_tolerance_bps INTEGER,
                 uni_bsc_fee_bps INTEGER,
                 uni_base_fee_bps INTEGER,
-                estimated_gas_usd REAL
+                gas_usd REAL,
+                buy_amount_cngn REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_time ON dex_arbitrage_opportunities(timestamp);
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_status ON dex_arbitrage_opportunities(status);
@@ -196,6 +197,14 @@ class Database:
         if "aerodrome_fee_bps" in cols:
             await self._conn.execute(
                 "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN aerodrome_fee_bps TO uni_base_fee_bps"
+            )
+        if "estimated_gas_usd" in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN estimated_gas_usd TO gas_usd"
+            )
+        if "buy_amount_cngn" not in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities ADD COLUMN buy_amount_cngn REAL"
             )
         await self._conn.commit()
 
@@ -613,7 +622,7 @@ class Database:
                 cngn_transferred, expected_usd_out, status, net_spread_bps,
                 actual_profit_usd, reason, uni_bsc_price, uni_base_price,
                 buy_tx_hash, sell_tx_hash, slippage_tolerance_bps, uni_bsc_fee_bps,
-                uni_base_fee_bps, estimated_gas_usd
+                uni_base_fee_bps, gas_usd
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -635,7 +644,7 @@ class Database:
                 opp.slippage_tolerance_bps,
                 opp.uni_bsc_fee_bps,
                 opp.uni_base_fee_bps,
-                float(opp.estimated_gas_usd) if opp.estimated_gas_usd is not None else None,
+                float(opp.gas_usd) if opp.gas_usd is not None else None,
             ),
         )
         await self._conn.commit()
@@ -676,6 +685,8 @@ class Database:
         buy_tx_hash: Optional[str] = None,
         sell_tx_hash: Optional[str] = None,
         reason: Optional[str] = None,
+        buy_amount_cngn: Optional[Decimal] = None,
+        actual_profit_usd: Optional[float] = None,
     ):
         """Update DEX arbitrage execution status and tx hashes."""
         updates = ["status = ?"]
@@ -690,6 +701,12 @@ class Database:
         if reason is not None:
             updates.append("reason = ?")
             params.append(reason)
+        if buy_amount_cngn is not None:
+            updates.append("buy_amount_cngn = ?")
+            params.append(float(buy_amount_cngn))
+        if actual_profit_usd is not None:
+            updates.append("actual_profit_usd = ?")
+            params.append(actual_profit_usd)
 
         params.append(opp_id)
         await self._conn.execute(
@@ -757,7 +774,8 @@ class Database:
                 slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
                 uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
                 uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
-                estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
+                gas_usd=Decimal(str(dict(row).get("gas_usd"))) if dict(row).get("gas_usd") is not None else None,
+                buy_amount_cngn=Decimal(str(dict(row).get("buy_amount_cngn"))) if dict(row).get("buy_amount_cngn") is not None else None,
             )
             for row in rows
         ]
@@ -791,7 +809,8 @@ class Database:
             slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
             uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
             uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
-            estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
+            gas_usd=Decimal(str(dict(row).get("gas_usd"))) if dict(row).get("gas_usd") is not None else None,
+            buy_amount_cngn=Decimal(str(dict(row).get("buy_amount_cngn"))) if dict(row).get("buy_amount_cngn") is not None else None,
         )
 
     async def get_arbitrage_stats(
@@ -805,11 +824,16 @@ class Database:
                 COUNT(*) as total_detected,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as total_executed,
                 SUM(CASE WHEN status = 'completed' THEN actual_profit_usd ELSE 0 END) as total_profit,
-                SUM(recommended_size_usd) as total_volume
-            FROM arbitrage_opportunities
-            WHERE timestamp >= ?
+                SUM(size_usd) as total_volume
+            FROM (
+                SELECT status, actual_profit_usd, recommended_size_usd as size_usd
+                FROM arbitrage_opportunities WHERE timestamp >= ?
+                UNION ALL
+                SELECT status, actual_profit_usd, optimal_size_usd as size_usd
+                FROM dex_arbitrage_opportunities WHERE timestamp >= ?
+            )
             """,
-            (from_ts,),
+            (from_ts, from_ts),
         )
         row = await cursor.fetchone()
 

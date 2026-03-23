@@ -1,16 +1,37 @@
 """Arbitrage execution across DEX and CEX venues."""
 
+import re
 import time
 from decimal import Decimal
 from typing import Optional
 
 import structlog
 
-from engine.api.schemas import ArbitrageOpportunity, ArbitrageTrade
+from engine.api.schemas import ArbitrageTrade
 from engine.venues.base import VenueAdapter
 from engine.venues.cex.quidax import QuidaxAdapter
 
 logger = structlog.get_logger()
+
+
+def _clean_revert(err: str | None) -> str | None:
+    """Decode or strip Solidity revert data from web3 error strings.
+
+    web3 often formats reverts as: "execution reverted: MESSAGE: 0xDATA"
+    Strips the trailing hex — the text is already decoded by web3.
+    Falls back to ABI-decoding Error(string) if the error is raw hex only.
+    """
+    if not err:
+        return err
+    cleaned = re.sub(r":\s*0x[0-9a-fA-F]{8,}$", "", err).strip()
+    if re.fullmatch(r"0x08c379a0[0-9a-fA-F]*", cleaned):
+        try:
+            from eth_abi import decode
+            msg = decode(["string"], bytes.fromhex(cleaned[10:]))[0]
+            return f"execution reverted: {msg}"
+        except Exception:
+            pass
+    return cleaned
 
 # Slippage tolerance applied to arb swaps (separate from LP slippage)
 _ARB_SLIPPAGE_BPS = 10  # 0.1% — matches optimizer assumption in cex_dex.py / dex_dex.py
@@ -36,80 +57,10 @@ def _is_dex_execution_venue(venue: VenueAdapter) -> bool:
 
 
 class ArbitrageExecutor:
-    """Executes arbitrage trades across DEX and CEX venues."""
+    """Executes individual DEX and CEX trade legs for the arbitrage engine."""
 
-    def __init__(self, venues: dict[str, VenueAdapter], execution_enabled: bool = False):
+    def __init__(self, venues: dict[str, VenueAdapter]):
         self.venues = venues
-        self.execution_enabled = execution_enabled
-
-    async def execute(
-        self, opportunity: ArbitrageOpportunity
-    ) -> tuple[bool, Optional[Decimal], Optional[str]]:
-        """Returns (success, actual_profit_usd, error_message)."""
-        if not self.execution_enabled:
-            logger.info(
-                "arbitrage_execution_skipped",
-                opportunity_id=opportunity.id,
-                expected_profit=float(opportunity.expected_profit_usd),
-            )
-            return False, None, "Execution disabled (detection-only mode)"
-
-        buy_venue = self.venues.get(opportunity.buy_venue)
-        sell_venue = self.venues.get(opportunity.sell_venue)
-
-        if buy_venue is None or sell_venue is None:
-            missing = opportunity.buy_venue if buy_venue is None else opportunity.sell_venue
-            return False, None, f"Unknown venue: {missing}"
-
-        size_usd = opportunity.recommended_size_usd
-        opp_id = opportunity.id
-
-        try:
-            # --- Buy leg ---
-            if _is_dex_execution_venue(buy_venue):
-                buy_trade = await self.execute_dex_buy(opportunity.buy_venue, size_usd, opp_id)
-            else:
-                buy_trade = await self.execute_cex_buy(opportunity.buy_venue, size_usd, opportunity.buy_price, opp_id)
-
-            if buy_trade is None or buy_trade.status == "failed":
-                err = (buy_trade.error if buy_trade else None) or "unknown"
-                return False, None, f"Buy leg failed: {err}"
-
-            # --- Sell leg ---
-            amount_cngn = buy_trade.amount
-            slippage = _dex_execution_slippage(sell_venue)
-            min_out_usd = size_usd * (1 - slippage)
-
-            if _is_dex_execution_venue(sell_venue):
-                sell_trade = await self.execute_dex_sell(opportunity.sell_venue, amount_cngn, min_out_usd, opp_id)
-            else:
-                sell_trade = await self.execute_cex_sell(opportunity.sell_venue, amount_cngn, opportunity.sell_price, opp_id)
-
-            if sell_trade is None or sell_trade.status == "failed":
-                err = (sell_trade.error if sell_trade else None) or "unknown"
-                buy_tx = buy_trade.tx_hash or ""
-                return False, None, f"HALF_OPEN:{buy_tx}:{err}"
-
-            # Use actual fill prices when available (CEX legs populate trade.price from response)
-            buy_price_usd = buy_trade.price or opportunity.buy_price
-            sell_price_usd = sell_trade.price or opportunity.sell_price
-            actual_profit = (sell_trade.amount * sell_price_usd) - (buy_trade.amount * buy_price_usd)
-
-            logger.info(
-                "arbitrage_executed",
-                opportunity_id=opp_id,
-                buy_venue=opportunity.buy_venue,
-                sell_venue=opportunity.sell_venue,
-                size_usd=float(size_usd),
-                amount_cngn=float(amount_cngn),
-                actual_profit=float(actual_profit),
-            )
-
-            return True, actual_profit, None
-
-        except Exception as e:
-            logger.error("arbitrage_execution_failed", opportunity_id=opp_id, error=str(e))
-            return False, None, str(e)
 
     async def execute_dex_buy(
         self,
@@ -153,7 +104,7 @@ class ArbitrageExecutor:
             tx_hash=result.hash or None,
             status="confirmed" if result.status == "confirmed" else "failed",
             timestamp=_now_ms(),
-            error=result.error,
+            error=_clean_revert(result.error),
         )
 
     async def execute_dex_sell(
@@ -184,7 +135,7 @@ class ArbitrageExecutor:
             tx_hash=result.hash or None,
             status="confirmed" if result.status == "confirmed" else "failed",
             timestamp=_now_ms(),
-            error=result.error,
+            error=_clean_revert(result.error),
         )
 
     async def execute_cex_buy(

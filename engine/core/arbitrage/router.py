@@ -22,7 +22,7 @@ class RouteCandidate:
     sell_venue: str
     optimal_size_usd: Decimal
     expected_profit_usd: Decimal
-    estimated_gas_usd: Decimal
+    gas_usd: Decimal
     signal: dict             # passed through to execution methods
 
 
@@ -52,12 +52,14 @@ def select_route(
         stable_bal = inventory.state.per_account_stable.get(c.buy_venue, Decimal("0"))
         adjusted_size = min(c.optimal_size_usd, stable_bal) if stable_bal > 0 else c.optimal_size_usd
 
-        # Cap size to available cNGN on the sell-side venue
+        # Block if sell-side cNGN balance is unknown (not yet seeded) or explicitly zero.
+        # Only proceed when we have a confirmed positive balance to sell.
+        cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue)
+        if not cngn_bal:
+            continue
         cngn_price = inventory.state.cngn_price_usd
         if cngn_price > 0:
-            cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue, Decimal("0"))
-            if cngn_bal > 0:
-                adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
+            adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
 
         if adjusted_size <= 0:
             continue
@@ -65,7 +67,7 @@ def select_route(
         # Net profit after gas and rebalance friction
         rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)
         rebalance_cost = adjusted_size * Decimal(rebalance_bps) / Decimal(10000)
-        net_profit = c.expected_profit_usd - c.estimated_gas_usd - rebalance_cost
+        net_profit = c.expected_profit_usd - c.gas_usd - rebalance_cost
 
         if net_profit <= 0:
             continue

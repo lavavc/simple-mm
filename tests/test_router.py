@@ -25,7 +25,7 @@ def _make_candidate(
         sell_venue=sell_venue,
         optimal_size_usd=Decimal(str(size_usd)),
         expected_profit_usd=Decimal(str(profit_usd)),
-        estimated_gas_usd=Decimal(str(gas_usd)),
+        gas_usd=Decimal(str(gas_usd)),
         signal={},
     )
 
@@ -33,6 +33,7 @@ def _make_candidate(
 def _make_inventory(
     per_account: dict | None = None,
     initial: dict | None = None,
+    cngn_per_account: dict | None = None,
     imbalance: float = 0.0,
     circuit_breaker: bool = False,
 ) -> InventoryTracker:
@@ -51,6 +52,8 @@ def _make_inventory(
         tracker._state.per_account_stable = {k: Decimal(str(v)) for k, v in per_account.items()}
     if initial:
         tracker._state.initial_account_stable = {k: Decimal(str(v)) for k, v in initial.items()}
+    if cngn_per_account:
+        tracker._state.per_account_cngn = {k: Decimal(str(v)) for k, v in cngn_per_account.items()}
     return tracker
 
 
@@ -68,15 +71,27 @@ class TestSelectRouteEdgeCases:
 
     def test_zero_stable_balance_still_tries(self):
         """With no stable balance seeded, optimal_size_usd is used as-is."""
-        inv = _make_inventory()  # no per_account_stable seeded
+        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(profit_usd=10.0, gas_usd=0.07)
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("500")
 
+    def test_unknown_cngn_balance_blocks_route(self):
+        """A sell venue with no cNGN balance seeded must be blocked — don't trade blind."""
+        inv = _make_inventory()  # per_account_cngn not seeded
+        c = _make_candidate(sell_venue="uni-base", profit_usd=10.0, gas_usd=0.07)
+        assert select_route([c], inv) is None
+
+    def test_zero_cngn_balance_blocks_route(self):
+        """An explicitly-zero cNGN balance must block the route, not just leave size uncapped."""
+        inv = _make_inventory(cngn_per_account={"uni-base": 0})
+        c = _make_candidate(sell_venue="uni-base", profit_usd=10.0, gas_usd=0.07)
+        assert select_route([c], inv) is None
+
     def test_size_capped_to_available_stable(self):
         """adjusted_size is capped to per_account_stable on the buy venue."""
-        inv = _make_inventory(per_account={"quidax": 100})
+        inv = _make_inventory(per_account={"quidax": 100}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(size_usd=500.0, profit_usd=10.0)
         result = select_route([c], inv)
         assert result is not None
@@ -88,7 +103,7 @@ class TestSelectRouteEdgeCases:
         assert select_route([c], inv) is None
 
     def test_profitable_route_selected(self):
-        inv = _make_inventory()
+        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(profit_usd=5.0, gas_usd=0.07)
         result = select_route([c], inv)
         assert result is not None
@@ -98,7 +113,7 @@ class TestSelectRouteEdgeCases:
 
 class TestSelectRouteNetProfit:
     def test_net_profit_subtracts_gas(self):
-        inv = _make_inventory()
+        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(profit_usd=5.0, gas_usd=0.5)
         result = select_route([c], inv)
         # rebalance_cost = 0 when no initial seeded (fallback returns cross_chain_rebalance_bps)
@@ -126,24 +141,29 @@ class TestSelectRouteNetProfit:
 class TestSelectRouteTiebreak:
     def test_highest_net_profit_wins(self):
         """When multiple routes are profitable, the highest net profit is chosen."""
-        inv = _make_inventory()
+        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000, "uni-bsc": 5_000_000})
         c1 = _make_candidate(direction="QUIDAX_TO_UNI_BASE", profit_usd=10.0, gas_usd=0.07)
-        c2 = _make_candidate(direction="QUIDAX_TO_UNI_BSC", profit_usd=5.0, gas_usd=0.07)
+        c2 = _make_candidate(direction="QUIDAX_TO_UNI_BSC", sell_venue="uni-bsc", profit_usd=5.0, gas_usd=0.07)
         result = select_route([c1, c2], inv)
         assert result is not None
         assert result.candidate.direction == "QUIDAX_TO_UNI_BASE"
 
     def test_inventory_alignment_tiebreak_long_cngn(self):
         """When long cNGN (imbalance > threshold), prefer selling cNGN to CEX."""
-        inv = _make_inventory(imbalance=50.0)  # above $10 threshold
-        # sell-to-CEX direction (aligned)
+        inv = _make_inventory(
+            imbalance=50.0,  # above $10 threshold
+            cngn_per_account={"uni-base": 5_000_000, "quidax": 5_000_000},
+        )
+        # sell-to-CEX direction (aligned): buy on uni-base, sell on quidax
         c_sell = _make_candidate(
             direction="UNI_BASE_TO_QUIDAX",  # in _SELLS_CNGN_TO_CEX
+            buy_venue="uni-base", sell_venue="quidax",
             profit_usd=5.0, gas_usd=0.07,
         )
-        # buy-from-CEX direction (misaligned)
+        # buy-from-CEX direction (misaligned): buy on quidax, sell on uni-base
         c_buy = _make_candidate(
             direction="QUIDAX_TO_UNI_BASE",  # in _BUYS_CNGN_FROM_CEX
+            buy_venue="quidax", sell_venue="uni-base",
             profit_usd=5.0, gas_usd=0.07,
         )
         result = select_route([c_sell, c_buy], inv)

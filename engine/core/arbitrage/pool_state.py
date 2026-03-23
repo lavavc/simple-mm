@@ -221,7 +221,11 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
                 logger.warning("v4_dexscreener_balance_fetch_failed", pool=config.pool_address, error=str(e))
 
         if balance0 is None or balance1 is None:
-            # BSC pool not yet indexed by DexScreener — hardcode until it is.
+            # BSC V4 pool not yet indexed by DexScreener (as of 2026-03-23).
+            # Base pool IS indexed (dexId "uniswap", labels ["v4"]) and takes the DexScreener path above.
+            # When BSC is indexed, the DexScreener fetch will succeed and this fallback will stop firing.
+            # Until then: use approximate values so the dashboard shows non-zero TVL.
+            # Update these periodically until DexScreener indexes the BSC pool.
             balance0 = Decimal("9200") if config.dexscreener_chain == "bsc" else Decimal(0)
             balance1 = Decimal("26090000") if config.dexscreener_chain == "bsc" else Decimal(0)
 
