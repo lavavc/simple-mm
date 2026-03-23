@@ -533,7 +533,7 @@ async def update_venue_params(venue: str, params: dict):
 
 
 class DepositRequest(BaseModel):
-    role: str  # Account role to send from (e.g. "aerodrome-lp")
+    role: str  # Account role to send from (e.g. "uni-base-lp")
     token: str  # Token symbol: "USDC" or "cNGN"
     amount: Decimal
 

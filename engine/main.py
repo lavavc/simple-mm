@@ -64,7 +64,7 @@ TOKEN_CONTRACTS: dict[int, dict[str, str]] = {
         "USDC": settings.usdc_base_address,
         "USDT": settings.usdt_base_address,
     },
-    56: {  # BSC (PancakeSwap LP/trade + Quidax arb/lp on-chain wallets)
+    56: {  # BSC (Uniswap V4 LP/trade + Quidax arb/lp on-chain wallets)
         "cNGN": settings.cngn_bsc_address,
         "USDT": settings.usdt_bsc_address,
     },

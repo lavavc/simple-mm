@@ -274,7 +274,7 @@ class BlendedPriceCalculator:
                 continue
 
             # Determine the venue from the source string
-            # Source may be "quidax", "bybit_p2p", "aerodrome_pool", etc.
+            # Source may be "quidax", "bybit_p2p", "uni_base_pool", etc.
             venue_name = self._source_to_venue(source)
             if venue_name in BLOCKRADAR_VENUES:
                 continue

@@ -399,7 +399,7 @@ class V4LPAdapter(BaseV4DexAdapter):
 
         return self._metrics_tvl, self._metrics_vol, our_share_pct
 
-    # === Capital allocation (ported from BaseDexAdapter) ===
+    # === Capital allocation ===
 
     def calculate_mint_amounts(self) -> tuple[int, int]:
         """Return raw token amounts to deploy, capped by LP wallet balance."""
@@ -448,7 +448,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         tx["gas"] = 100_000
         return await self._send_transaction(tx, self.trade_account)
 
-    # === Strategy math (ported from BaseDexAdapter) ===
+    # === Strategy math ===
 
     def compute_ewma_stats(self, prices: list[Decimal]) -> tuple[float, float]:
         """Return (ewma_mean, std_dev) from price history using configured lambda."""
