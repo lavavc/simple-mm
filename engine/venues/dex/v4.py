@@ -288,9 +288,8 @@ class BaseV4DexAdapter(VenueAdapter):
             await self._approve_token_to_permit2_if_needed(token)
             await self._approve_permit2_to_router_if_needed(token)
 
-    async def swap(self, token_in: str, amount_in: int, min_amount_out: int) -> TxResult:
-        await self.ensure_trade_approvals()
-
+    def _build_swap_tx(self, token_in: str, amount_in: int, min_amount_out: int) -> tuple[dict, int]:
+        """Build the Universal Router swap transaction. Returns (tx, deadline). Pure — no network side-effects."""
         token_out = (
             self.config.token1_address
             if token_in.lower() == self.config.token0_address.lower()
@@ -300,7 +299,39 @@ class BaseV4DexAdapter(VenueAdapter):
         zero_for_one = token_in.lower() == currency0.lower()
         block = self.w3.eth.get_block("latest")
         deadline = block["timestamp"] + 300
+        actions = bytes([_V4_ACTION_SWAP_EXACT_IN_SINGLE, _V4_ACTION_SETTLE_ALL, _V4_ACTION_TAKE_ALL])
+        params = [
+            encode(
+                ["((address,address,uint24,int24,address),bool,uint128,uint128,bytes)"],
+                [((currency0, currency1, fee, tick_spacing, hooks), zero_for_one, amount_in, min_amount_out, b"")],
+            ),
+            encode(["address", "uint256"], [token_in, amount_in]),
+            encode(["address", "uint256"], [token_out, min_amount_out]),
+        ]
+        v4_input = encode(["bytes", "bytes[]"], [actions, params])
+        tx_params = self._get_tx_params(self.trade_account, block=block)
+        tx_params["value"] = 0
+        tx_params["gas"] = _DEFAULT_SWAP_GAS
+        tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
+        return tx, deadline
 
+    def simulate_swap(self, token_in: str, amount_in: int, min_amount_out: int) -> str | None:
+        """Run the swap preflight (eth_call) without sending. Returns error string or None if ok."""
+        tx, _ = self._build_swap_tx(token_in, amount_in, min_amount_out)
+        try:
+            self.w3.eth.call({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
+            return None
+        except Exception as e:
+            return str(e)
+
+    async def swap(self, token_in: str, amount_in: int, min_amount_out: int) -> TxResult:
+        await self.ensure_trade_approvals()
+
+        token_out = (
+            self.config.token1_address
+            if token_in.lower() == self.config.token0_address.lower()
+            else self.config.token0_address
+        )
         logger.info(
             "v4_swap_build_started",
             venue=self.name,
@@ -309,59 +340,15 @@ class BaseV4DexAdapter(VenueAdapter):
             token_out=Web3.to_checksum_address(token_out),
             amount_in=amount_in,
             min_amount_out=min_amount_out,
-            zero_for_one=zero_for_one,
-            fee=fee,
-            tick_spacing=tick_spacing,
-            hooks=hooks,
-            deadline=deadline,
         )
 
-        # Canonical V4 action order: swap → settle input → take output
-        actions = bytes([
-            _V4_ACTION_SWAP_EXACT_IN_SINGLE,
-            _V4_ACTION_SETTLE_ALL,
-            _V4_ACTION_TAKE_ALL,
-        ])
-        params = [
-            encode(
-                ["((address,address,uint24,int24,address),bool,uint128,uint128,bytes)"],
-                [
-                    (
-                        (currency0, currency1, fee, tick_spacing, hooks),
-                        zero_for_one,
-                        amount_in,
-                        min_amount_out,
-                        b"",
-                    ),
-                ],
-            ),
-            encode(["address", "uint256"], [token_in, amount_in]),
-            encode(["address", "uint256"], [token_out, min_amount_out]),
-        ]
-        v4_input = encode(["bytes", "bytes[]"], [actions, params])
-
-        tx_params = self._get_tx_params(self.trade_account, block=block)
-        tx_params["value"] = 0
-        tx_params["gas"] = _DEFAULT_SWAP_GAS
-        tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
+        tx, deadline = self._build_swap_tx(token_in, amount_in, min_amount_out)
 
         try:
-            self.w3.eth.call(
-                {
-                    "from": tx["from"],
-                    "to": tx["to"],
-                    "data": tx["data"],
-                    "value": tx.get("value", 0),
-                }
-            )
+            self.w3.eth.call({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
             logger.info("v4_swap_preflight_ok", venue=self.name, account=self.trade_account.address)
         except Exception as e:
-            logger.error(
-                "v4_swap_preflight_failed",
-                venue=self.name,
-                account=self.trade_account.address,
-                error=str(e),
-            )
+            logger.error("v4_swap_preflight_failed", venue=self.name, account=self.trade_account.address, error=str(e))
             return TxResult(hash="", status="failed", error=f"preflight: {str(e)}")
 
         return await self._send_transaction(tx, self.trade_account)

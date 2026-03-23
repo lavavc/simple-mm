@@ -1,5 +1,6 @@
 """Arbitrage execution across DEX and CEX venues."""
 
+import re
 import time
 from decimal import Decimal
 from typing import Optional
@@ -11,6 +12,26 @@ from engine.venues.base import VenueAdapter
 from engine.venues.cex.quidax import QuidaxAdapter
 
 logger = structlog.get_logger()
+
+
+def _clean_revert(err: str | None) -> str | None:
+    """Decode or strip Solidity revert data from web3 error strings.
+
+    web3 often formats reverts as: "execution reverted: MESSAGE: 0xDATA"
+    Strips the trailing hex — the text is already decoded by web3.
+    Falls back to ABI-decoding Error(string) if the error is raw hex only.
+    """
+    if not err:
+        return err
+    cleaned = re.sub(r":\s*0x[0-9a-fA-F]{8,}$", "", err).strip()
+    if re.fullmatch(r"0x08c379a0[0-9a-fA-F]*", cleaned):
+        try:
+            from eth_abi import decode
+            msg = decode(["string"], bytes.fromhex(cleaned[10:]))[0]
+            return f"execution reverted: {msg}"
+        except Exception:
+            pass
+    return cleaned
 
 # Slippage tolerance applied to arb swaps (separate from LP slippage)
 _ARB_SLIPPAGE_BPS = 10  # 0.1% — matches optimizer assumption in cex_dex.py / dex_dex.py
@@ -83,7 +104,7 @@ class ArbitrageExecutor:
             tx_hash=result.hash or None,
             status="confirmed" if result.status == "confirmed" else "failed",
             timestamp=_now_ms(),
-            error=result.error,
+            error=_clean_revert(result.error),
         )
 
     async def execute_dex_sell(
@@ -114,7 +135,7 @@ class ArbitrageExecutor:
             tx_hash=result.hash or None,
             status="confirmed" if result.status == "confirmed" else "failed",
             timestamp=_now_ms(),
-            error=result.error,
+            error=_clean_revert(result.error),
         )
 
     async def execute_cex_buy(
