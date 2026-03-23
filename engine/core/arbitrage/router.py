@@ -52,14 +52,14 @@ def select_route(
         stable_bal = inventory.state.per_account_stable.get(c.buy_venue, Decimal("0"))
         adjusted_size = min(c.optimal_size_usd, stable_bal) if stable_bal > 0 else c.optimal_size_usd
 
-        # Cap size to available cNGN on the sell-side venue.
-        # None means balance not yet seeded — permit the trade.
-        # Decimal("0") means explicitly zero (e.g. set by preflight failure) — block it.
+        # Block if sell-side cNGN balance is unknown (not yet seeded) or explicitly zero.
+        # Only proceed when we have a confirmed positive balance to sell.
+        cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue)
+        if not cngn_bal:
+            continue
         cngn_price = inventory.state.cngn_price_usd
         if cngn_price > 0:
-            cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue)
-            if cngn_bal is not None:
-                adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
+            adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
 
         if adjusted_size <= 0:
             continue
