@@ -686,6 +686,7 @@ class Database:
         sell_tx_hash: Optional[str] = None,
         reason: Optional[str] = None,
         buy_amount_cngn: Optional[Decimal] = None,
+        actual_profit_usd: Optional[float] = None,
     ):
         """Update DEX arbitrage execution status and tx hashes."""
         updates = ["status = ?"]
@@ -703,6 +704,9 @@ class Database:
         if buy_amount_cngn is not None:
             updates.append("buy_amount_cngn = ?")
             params.append(float(buy_amount_cngn))
+        if actual_profit_usd is not None:
+            updates.append("actual_profit_usd = ?")
+            params.append(actual_profit_usd)
 
         params.append(opp_id)
         await self._conn.execute(
@@ -820,11 +824,16 @@ class Database:
                 COUNT(*) as total_detected,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as total_executed,
                 SUM(CASE WHEN status = 'completed' THEN actual_profit_usd ELSE 0 END) as total_profit,
-                SUM(recommended_size_usd) as total_volume
-            FROM arbitrage_opportunities
-            WHERE timestamp >= ?
+                SUM(size_usd) as total_volume
+            FROM (
+                SELECT status, actual_profit_usd, recommended_size_usd as size_usd
+                FROM arbitrage_opportunities WHERE timestamp >= ?
+                UNION ALL
+                SELECT status, actual_profit_usd, optimal_size_usd as size_usd
+                FROM dex_arbitrage_opportunities WHERE timestamp >= ?
+            )
             """,
-            (from_ts,),
+            (from_ts, from_ts),
         )
         row = await cursor.fetchone()
 
