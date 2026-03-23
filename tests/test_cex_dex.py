@@ -87,7 +87,7 @@ class TestFindOptimalArbResult:
 
 
 class TestComputeArbCurve:
-    """compute_arb_curve returns a 1000-point curve."""
+    """compute_arb_curve returns a 5000-point curve."""
 
     def test_returns_none_when_cache_empty(self, monkeypatch):
         from engine.core.arbitrage import pool_state as _ps
@@ -95,11 +95,11 @@ class TestComputeArbCurve:
         result = compute_arb_curve(_TIGHT_DEPTH)
         assert result is None
 
-    def test_curve_has_1000_points(self, seeded_pool_cache):
+    def test_curve_has_5000_points(self, seeded_pool_cache):
         result = compute_arb_curve(_TIGHT_DEPTH)
         assert result is not None
-        assert len(result["curve_cex_to_dex"]) == 1000
-        assert len(result["curve_dex_to_cex"]) == 1000
+        assert len(result["curve_cex_to_dex"]) == 5000
+        assert len(result["curve_dex_to_cex"]) == 5000
 
     def test_curve_points_have_required_keys(self, seeded_pool_cache):
         result = compute_arb_curve(_TIGHT_DEPTH)
@@ -113,4 +113,4 @@ class TestComputeArbCurve:
     def test_curve_sizes_are_sequential(self, seeded_pool_cache):
         result = compute_arb_curve(_TIGHT_DEPTH)
         sizes = [p["size"] for p in result["curve_cex_to_dex"]]
-        assert sizes == list(range(1, 1001))
+        assert sizes == list(range(1, 5001))
