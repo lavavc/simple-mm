@@ -18,7 +18,7 @@ from engine.api.schemas import PriceQuote
 
 if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
-    from engine.venues.dex.pool_reader import PoolPriceReader
+    from engine.venues.dex.pool_reader_v3 import PoolPriceReader
 
 logger = structlog.get_logger()
 

@@ -784,13 +784,13 @@ class Database:
             net_spread_bps=row["net_spread_bps"],
             actual_profit_usd=Decimal(str(row["actual_profit_usd"])) if row["actual_profit_usd"] else None,
             reason=row["reason"],
-            uni_bsc_price=Decimal(str(row["pancake_price"])) if row["pancake_price"] is not None else None,
-            uni_base_price=Decimal(str(row["aerodrome_price"])) if row["aerodrome_price"] is not None else None,
+            uni_bsc_price=Decimal(str(row["uni_bsc_price"])) if row["uni_bsc_price"] is not None else None,
+            uni_base_price=Decimal(str(row["uni_base_price"])) if row["uni_base_price"] is not None else None,
             buy_tx_hash=row["buy_tx_hash"],
             sell_tx_hash=row["sell_tx_hash"],
             slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
-            uni_bsc_fee_bps=dict(row).get("pancake_fee_bps"),
-            uni_base_fee_bps=dict(row).get("aerodrome_fee_bps"),
+            uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
+            uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
             estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
         )
 

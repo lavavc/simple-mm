@@ -1,6 +1,6 @@
 """AssetChain pool read config (watch-only price source)."""
 
-from .pool_reader import PoolReadConfig
+from .pool_reader_v3 import PoolReadConfig
 from engine.config import settings
 
 # Read-only config for AssetChain price fetching (no keys, no trading)
