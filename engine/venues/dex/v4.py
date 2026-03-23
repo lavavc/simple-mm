@@ -289,7 +289,11 @@ class BaseV4DexAdapter(VenueAdapter):
             await self._approve_permit2_to_router_if_needed(token)
 
     def _build_swap_tx(self, token_in: str, amount_in: int, min_amount_out: int) -> tuple[dict, int]:
-        """Build the Universal Router swap transaction. Returns (tx, deadline). Pure — no network side-effects."""
+        """Build the Universal Router swap transaction. Returns (tx, deadline).
+
+        Makes network calls: fetches latest block for deadline, resolves pool key,
+        and queries current nonce + gas price via _get_tx_params.
+        """
         token_out = (
             self.config.token1_address
             if token_in.lower() == self.config.token0_address.lower()

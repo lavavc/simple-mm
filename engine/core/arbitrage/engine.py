@@ -179,6 +179,22 @@ class ArbitrageEngine:
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
             quidax_price = Decimal(str(c.signal["prices"]["quidax"]))
 
+            # If the sell leg is a DEX, simulate it before placing the CEX buy.
+            # A failed DEX sell after a confirmed CEX buy would leave us half-open with no recovery path.
+            if not sell_is_cex:
+                from engine.core.arbitrage.executor import _clean_revert
+                loop = asyncio.get_running_loop()
+                sell_venue = self.venues[sell_venue_name]
+                cngn_estimate = int(size_usd / quidax_price * Decimal(10 ** sell_venue.cngn_decimals))
+                sell_err = await loop.run_in_executor(
+                    None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate, 0
+                )
+                if sell_err:
+                    self.inventory.reconcile_cngn({sell_venue_name: Decimal("0")})
+                    logger.warning("cex_dex_sell_preflight_failed", direction=direction,
+                                   sell_venue=sell_venue_name, error=_clean_revert(sell_err))
+                    return
+
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
             buy_trade = (
@@ -367,23 +383,24 @@ class ArbitrageEngine:
             sell_amount_raw = int(Decimal(str(optimal.get("cngn_transferred", "0"))) * Decimal(10 ** sell_venue.cngn_decimals))
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
 
-            if hasattr(sell_venue, "simulate_swap"):
-                sell_err = await loop.run_in_executor(
-                    None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
-                )
-                if sell_err:
-                    logger.warning("dex_dex_sell_preflight_failed", direction=direction,
-                                   sell_venue=sell_venue_name, error=_clean_revert(sell_err))
-                    return
+            sell_err = await loop.run_in_executor(
+                None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
+            )
+            if sell_err:
+                # Mark sell-side cNGN as zero so the router rejects this route on every
+                # subsequent tick until the scheduler's balance cycle restores the real value.
+                self.inventory.reconcile_cngn({sell_venue_name: Decimal("0")})
+                logger.warning("dex_dex_sell_preflight_failed", direction=direction,
+                               sell_venue=sell_venue_name, error=_clean_revert(sell_err))
+                return
 
-            if hasattr(buy_venue, "simulate_swap"):
-                buy_err = await loop.run_in_executor(
-                    None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
-                )
-                if buy_err:
-                    logger.warning("dex_dex_buy_preflight_failed", direction=direction,
-                                   buy_venue=buy_venue_name, error=_clean_revert(buy_err))
-                    return
+            buy_err = await loop.run_in_executor(
+                None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
+            )
+            if buy_err:
+                logger.warning("dex_dex_buy_preflight_failed", direction=direction,
+                               buy_venue=buy_venue_name, error=_clean_revert(buy_err))
+                return
 
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
