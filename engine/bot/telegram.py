@@ -194,6 +194,21 @@ async def cmd_reset_breaker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _auth(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /recover <opp_id>")
+        return
+    opp_id = context.args[0]
+    await update.message.reply_text(
+        f"⚠️ Recover half-open arb `{opp_id}`.\n"
+        f"Will retry sell if sell-side has cNGN, otherwise reverse the buy to recover capital.",
+        reply_markup=_confirm_kb(f"recover:{opp_id}"),
+        parse_mode="Markdown",
+    )
+
+
 # --- Callback handler ---
 
 async def _do_withdraw(venue: str) -> str:
@@ -247,6 +262,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✅ Circuit breaker reset.")
         else:
             await query.edit_message_text("❌ Arbitrage engine not configured.")
+    elif data.startswith("confirm:recover:"):
+        opp_id = data.split(":", 2)[2]
+        await query.edit_message_text(f"⏳ Retrying sell leg for {opp_id}...")
+        try:
+            result = await _arbitrage_engine.recover_dex_half_open(opp_id)
+            method = "sell retried" if result["method"] == "retry_sell" else "buy reversed"
+            profit = result["profit_usd"]
+            sign = "+" if profit >= 0 else ""
+            await query.message.reply_text(
+                f"✅ Recovered ({method}): tx {result['sell_tx_hash']}, P&L {sign}${profit:.2f}"
+            )
+        except Exception as e:
+            await query.message.reply_text(f"❌ Recovery failed: {e}")
 
 
 # --- Alert forwarding ---
@@ -286,6 +314,7 @@ async def start(s, sched, ven, arb_engine, acct_manager, token_contracts) -> Non
     _app.add_handler(CommandHandler("withdraw", cmd_withdraw))
     _app.add_handler(CommandHandler("shutdown", cmd_shutdown))
     _app.add_handler(CommandHandler("reset_breaker", cmd_reset_breaker))
+    _app.add_handler(CommandHandler("recover", cmd_recover))
     _app.add_handler(CallbackQueryHandler(handle_callback))
 
     await _app.initialize()

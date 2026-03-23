@@ -168,7 +168,8 @@ class Database:
                 slippage_tolerance_bps INTEGER,
                 uni_bsc_fee_bps INTEGER,
                 uni_base_fee_bps INTEGER,
-                gas_usd REAL
+                gas_usd REAL,
+                buy_amount_cngn REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_time ON dex_arbitrage_opportunities(timestamp);
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_status ON dex_arbitrage_opportunities(status);
@@ -200,6 +201,10 @@ class Database:
         if "estimated_gas_usd" in cols:
             await self._conn.execute(
                 "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN estimated_gas_usd TO gas_usd"
+            )
+        if "buy_amount_cngn" not in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities ADD COLUMN buy_amount_cngn REAL"
             )
         await self._conn.commit()
 
@@ -680,6 +685,7 @@ class Database:
         buy_tx_hash: Optional[str] = None,
         sell_tx_hash: Optional[str] = None,
         reason: Optional[str] = None,
+        buy_amount_cngn: Optional[Decimal] = None,
     ):
         """Update DEX arbitrage execution status and tx hashes."""
         updates = ["status = ?"]
@@ -694,6 +700,9 @@ class Database:
         if reason is not None:
             updates.append("reason = ?")
             params.append(reason)
+        if buy_amount_cngn is not None:
+            updates.append("buy_amount_cngn = ?")
+            params.append(float(buy_amount_cngn))
 
         params.append(opp_id)
         await self._conn.execute(
@@ -762,6 +771,7 @@ class Database:
                 uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
                 uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
                 gas_usd=Decimal(str(dict(row).get("gas_usd"))) if dict(row).get("gas_usd") is not None else None,
+                buy_amount_cngn=Decimal(str(dict(row).get("buy_amount_cngn"))) if dict(row).get("buy_amount_cngn") is not None else None,
             )
             for row in rows
         ]
@@ -795,7 +805,8 @@ class Database:
             slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
             uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
             uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
-            estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
+            gas_usd=Decimal(str(dict(row).get("gas_usd"))) if dict(row).get("gas_usd") is not None else None,
+            buy_amount_cngn=Decimal(str(dict(row).get("buy_amount_cngn"))) if dict(row).get("buy_amount_cngn") is not None else None,
         )
 
     async def get_arbitrage_stats(

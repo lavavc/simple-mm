@@ -407,6 +407,7 @@ class ArbitrageEngine:
                 opp_id,
                 status="buy_filled",
                 buy_tx_hash=buy_trade.tx_hash,
+                buy_amount_cngn=buy_trade.amount,
             )
 
             sell_trade = await self.executor.execute_dex_sell(
@@ -522,7 +523,14 @@ class ArbitrageEngine:
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
 
     async def recover_dex_half_open(self, opp_id: str) -> dict:
-        """Attempt to complete only the missing sell leg for a half-open DEX-DEX arb."""
+        """Recover a half-open DEX-DEX arb.
+
+        Two paths, tried in order:
+        1. Retry sell: simulate the original sell leg — if it passes now (e.g. cNGN was
+           deposited externally), execute it.
+        2. Reverse buy: sell the cNGN back on the buy-side chain to recover capital at a
+           small loss (~2× pool fees). Used when the sell-side has no cNGN.
+        """
         db = await get_db()
         opp = await db.get_dex_arbitrage_opportunity(opp_id)
         if opp is None:
@@ -531,63 +539,66 @@ class ArbitrageEngine:
             raise ValueError(f"Opportunity {opp_id} is not recoverable from status {opp.status}")
 
         direction = opp.direction
-        _, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
-        amount_cngn = opp.cngn_transferred
+        buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
+        buy_venue = self.venues[buy_venue_name]
+        sell_venue = self.venues[sell_venue_name]
+        from engine.core.arbitrage.executor import _clean_revert
+        loop = asyncio.get_running_loop()
 
-        logger.warning(
-            "dex_dex_recovery_started",
-            opp_id=opp_id,
-            direction=direction,
-            sell_venue=sell_venue_name,
-            amount_cngn=float(amount_cngn),
-        )
-
-        sell_trade = await self.executor.execute_dex_sell(
-            sell_venue_name,
-            amount_cngn,
-            Decimal("0"),
-            opp_id,
-        )
-
-        if not sell_trade or sell_trade.status == "failed":
-            err = (sell_trade.error if sell_trade else None) or "sell failed"
-            await db.update_dex_arbitrage_execution_state(
-                opp_id,
-                status="half_open",
-                sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                reason=err,
+        # Path 1: simulate the original sell — if it passes, retry it.
+        can_retry_sell = False
+        if hasattr(sell_venue, "simulate_swap"):
+            sell_amount_raw = int(opp.cngn_transferred * Decimal(10 ** sell_venue.cngn_decimals))
+            sell_sim_err = await loop.run_in_executor(
+                None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
             )
-            self.inventory.trip_circuit_breaker(f"DEX-DEX recovery failed: {opp_id}")
-            self.inventory.record_trade_failure(opp_id, f"RECOVERY:{err}")
+            can_retry_sell = sell_sim_err is None
+
+        if can_retry_sell:
+            logger.info("dex_dex_recovery_retrying_sell", opp_id=opp_id, sell_venue=sell_venue_name,
+                        amount_cngn=float(opp.cngn_transferred))
+            sell_trade = await self.executor.execute_dex_sell(sell_venue_name, opp.cngn_transferred, Decimal("0"), opp_id)
+            if sell_trade and sell_trade.status != "failed":
+                actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0")) - opp.optimal_size_usd
+                await db.update_dex_arbitrage_execution_state(opp_id, status="completed",
+                    sell_tx_hash=sell_trade.tx_hash, reason="Recovered: retried sell leg")
+                self.inventory.record_trade_complete(opp_id, opp.optimal_size_usd, actual_profit, Decimal("0"))
+                logger.info("dex_dex_recovery_completed", opp_id=opp_id, method="retry_sell",
+                            sell_tx_hash=sell_trade.tx_hash, profit_usd=float(actual_profit))
+                return {"status": "completed", "method": "retry_sell", "opp_id": opp_id,
+                        "sell_tx_hash": sell_trade.tx_hash, "profit_usd": float(actual_profit)}
+            # Simulation passed but execution failed — fall through to reversal
+            logger.warning("dex_dex_recovery_sell_retry_failed", opp_id=opp_id,
+                           error=sell_trade.error if sell_trade else "unknown")
+
+        # Path 2: reverse the buy — sell cNGN back on the buy-side chain to recover capital.
+        # Use the stored buy_amount_cngn (actual cNGN received in the buy leg), not the live
+        # balance which may include pre-existing cNGN from LP activity or other trades.
+        cngn_to_reverse = opp.buy_amount_cngn
+        if not cngn_to_reverse:
+            raise ValueError(
+                f"Cannot reverse {opp_id}: buy_amount_cngn not recorded "
+                f"(old record — check buy tx {opp.buy_tx_hash} manually)"
+            )
+
+        logger.warning("dex_dex_recovery_reversing_buy", opp_id=opp_id, buy_venue=buy_venue_name,
+                       cngn_to_reverse=float(cngn_to_reverse))
+        reverse_trade = await self.executor.execute_dex_sell(buy_venue_name, cngn_to_reverse, Decimal("0"), opp_id)
+
+        if not reverse_trade or reverse_trade.status == "failed":
+            err = _clean_revert((reverse_trade.error if reverse_trade else None) or "reverse sell failed")
+            self.inventory.trip_circuit_breaker(f"DEX-DEX recovery reversal failed: {opp_id}")
+            self.inventory.record_trade_failure(opp_id, f"RECOVERY_REVERSAL:{err}")
             raise ValueError(err)
 
-        actual_profit = sell_trade.amount * sell_trade.price - opp.optimal_size_usd
-        await db.update_dex_arbitrage_execution_state(
-            opp_id,
-            status="completed",
-            sell_tx_hash=sell_trade.tx_hash,
-            reason="Recovered half-open sell leg",
-        )
-        await db.update_dex_arbitrage_opportunity(
-            opp_id,
-            status="completed",
-            actual_profit_usd=float(actual_profit),
-            reason="Recovered half-open sell leg",
-        )
-        self.inventory.record_trade_complete(opp_id, opp.optimal_size_usd, actual_profit, Decimal("0"))
-        logger.info(
-            "dex_dex_recovery_completed",
-            opp_id=opp_id,
-            sell_venue=sell_venue_name,
-            sell_tx_hash=sell_trade.tx_hash,
-            profit_usd=float(actual_profit),
-        )
-        return {
-            "status": "completed",
-            "opp_id": opp_id,
-            "sell_tx_hash": sell_trade.tx_hash,
-            "profit_usd": float(actual_profit),
-        }
+        actual_loss = reverse_trade.amount * (reverse_trade.price or Decimal("0")) - opp.optimal_size_usd
+        await db.update_dex_arbitrage_execution_state(opp_id, status="completed",
+            sell_tx_hash=reverse_trade.tx_hash, reason="Recovered: reversed buy leg")
+        self.inventory.record_trade_complete(opp_id, opp.optimal_size_usd, actual_loss, Decimal("0"))
+        logger.info("dex_dex_recovery_completed", opp_id=opp_id, method="reverse_buy",
+                    sell_tx_hash=reverse_trade.tx_hash, profit_usd=float(actual_loss))
+        return {"status": "completed", "method": "reverse_buy", "opp_id": opp_id,
+                "sell_tx_hash": reverse_trade.tx_hash, "profit_usd": float(actual_loss)}
 
     async def recover_dex_sell_leg(
         self,
