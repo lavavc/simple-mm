@@ -120,16 +120,26 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
     baseWorstSeries.setData(baseSecondaryPoints);
 
     if (optimalSize && optimalSize > 0) {
-      const optPoint = bscPoints.find(p => (p.time as number) >= optimalSize) || bscPoints[bscPoints.length - 1];
-      if (optPoint) {
-        bscSeries.createPriceLine({
-          price: optPoint.value,
-          color: 'rgba(250,204,21,0.5)',
-          lineWidth: 1,
-          lineStyle: 3,
-          axisLabelVisible: true,
-          title: `Optimal $${optimalSize}`,
-        });
+      const optCurvePoint = curveData.find(d => d.size >= optimalSize) || curveData[curveData.length - 1];
+      if (optCurvePoint) {
+        const bscProfit = optCurvePoint.bsc?.profit ?? Number.NEGATIVE_INFINITY;
+        const baseProfit = optCurvePoint.base?.profit ?? Number.NEGATIVE_INFINITY;
+
+        const winningRoute =
+          bscProfit >= baseProfit
+            ? { label: 'Uniswap BSC', profit: bscProfit }
+            : { label: 'Uniswap Base', profit: baseProfit };
+
+        if (winningRoute.profit > 0) {
+          (winningRoute.label === 'Uniswap BSC' ? bscSeries : baseSeries).createPriceLine({
+            price: winningRoute.profit,
+            color: 'rgba(250,204,21,0.5)',
+            lineWidth: 1,
+            lineStyle: 3,
+            axisLabelVisible: true,
+            title: `Optimal ${winningRoute.label} $${optimalSize}`,
+          });
+        }
       }
     }
 
