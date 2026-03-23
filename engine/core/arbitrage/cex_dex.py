@@ -171,6 +171,8 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
                 best_dir = dir_name
                 best_cngn = b_cngn
                 usd_out_expected = b_out
+            gas_fn = _CEX_DEX_GAS_FN.get(dir_name, _gas_oracle.gas_usd_bsc)
+            gas_usd = gas_fn()
             all_arbs.append({
                 "direction": dir_name,
                 "optimal_size_usd": float(b_size),
@@ -178,6 +180,7 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
                 "cngn_transferred": float(b_cngn),
                 "expected_usd_out": float(b_out),
                 "net_spread_bps": int(((b_out - b_size) / b_size) * 10000),
+                "gas_usd": float(gas_usd) if gas_usd is not None else 0.0,
             })
 
     best_spread_bps = int(((usd_out_expected - best_size) / best_size) * 10000) if best_size > 0 else 0
@@ -203,7 +206,6 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
             "slippage_tolerance_bps": 10,
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000) if uni_bsc_fee else 0,
             "uni_base_fee_bps": int(uni_base_fee * 10000) if uni_base_fee else 0,
-            "assetchain_fee_bps": 30,
             "estimated_gas_usd": float(_CEX_DEX_GAS_FN.get(best_dir, _gas_oracle.gas_usd_bsc)()),
         },
     }

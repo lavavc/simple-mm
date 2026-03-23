@@ -168,7 +168,7 @@ class Database:
                 slippage_tolerance_bps INTEGER,
                 uni_bsc_fee_bps INTEGER,
                 uni_base_fee_bps INTEGER,
-                estimated_gas_usd REAL
+                gas_usd REAL
             );
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_time ON dex_arbitrage_opportunities(timestamp);
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_status ON dex_arbitrage_opportunities(status);
@@ -196,6 +196,10 @@ class Database:
         if "aerodrome_fee_bps" in cols:
             await self._conn.execute(
                 "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN aerodrome_fee_bps TO uni_base_fee_bps"
+            )
+        if "estimated_gas_usd" in cols:
+            await self._conn.execute(
+                "ALTER TABLE dex_arbitrage_opportunities RENAME COLUMN estimated_gas_usd TO gas_usd"
             )
         await self._conn.commit()
 
@@ -613,7 +617,7 @@ class Database:
                 cngn_transferred, expected_usd_out, status, net_spread_bps,
                 actual_profit_usd, reason, uni_bsc_price, uni_base_price,
                 buy_tx_hash, sell_tx_hash, slippage_tolerance_bps, uni_bsc_fee_bps,
-                uni_base_fee_bps, estimated_gas_usd
+                uni_base_fee_bps, gas_usd
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -635,7 +639,7 @@ class Database:
                 opp.slippage_tolerance_bps,
                 opp.uni_bsc_fee_bps,
                 opp.uni_base_fee_bps,
-                float(opp.estimated_gas_usd) if opp.estimated_gas_usd is not None else None,
+                float(opp.gas_usd) if opp.gas_usd is not None else None,
             ),
         )
         await self._conn.commit()
@@ -757,7 +761,7 @@ class Database:
                 slippage_tolerance_bps=dict(row).get("slippage_tolerance_bps"),
                 uni_bsc_fee_bps=dict(row).get("uni_bsc_fee_bps"),
                 uni_base_fee_bps=dict(row).get("uni_base_fee_bps"),
-                estimated_gas_usd=Decimal(str(dict(row).get("estimated_gas_usd"))) if dict(row).get("estimated_gas_usd") is not None else None,
+                gas_usd=Decimal(str(dict(row).get("gas_usd"))) if dict(row).get("gas_usd") is not None else None,
             )
             for row in rows
         ]

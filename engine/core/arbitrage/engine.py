@@ -58,7 +58,7 @@ class ArbitrageEngine:
         self.execute_dex_dex_enabled = execute_dex_dex_enabled
 
         self.inventory = InventoryTracker(params)
-        self.executor = ArbitrageExecutor(venues, execute_cex_dex_enabled or execute_dex_dex_enabled)
+        self.executor = ArbitrageExecutor(venues)
 
         self._enabled = True
         self._arb_executing = False
@@ -81,22 +81,18 @@ class ArbitrageEngine:
 
     def enable_execute_cex_dex(self):
         self.execute_cex_dex_enabled = True
-        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
         logger.info("execution_cex_dex_enabled")
 
     def disable_execute_cex_dex(self):
         self.execute_cex_dex_enabled = False
-        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
         logger.info("execution_cex_dex_disabled")
 
     def enable_execute_dex_dex(self):
         self.execute_dex_dex_enabled = True
-        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
         logger.info("execution_dex_dex_enabled")
 
     def disable_execute_dex_dex(self):
         self.execute_dex_dex_enabled = False
-        self.executor.execution_enabled = self.execute_cex_dex_enabled or self.execute_dex_dex_enabled
         logger.info("execution_dex_dex_disabled")
 
     # ------------------------------------------------------------------
@@ -141,7 +137,7 @@ class ArbitrageEngine:
                     sell_venue=sell_venue,
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
-                    estimated_gas_usd=Decimal(str(arb.get("estimated_gas_usd", 0.005))),
+                    gas_usd=Decimal(str(arb.get("gas_usd", 0))),
                     signal={"prices": signal["prices"], "optimal_arb": arb},
                 ))
             route = select_route(candidates, self.inventory)
@@ -265,7 +261,7 @@ class ArbitrageEngine:
                     sell_venue=sell_venue,
                     optimal_size_usd=Decimal(str(optimal["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(optimal["expected_profit_usd"])),
-                    estimated_gas_usd=Decimal(str(optimal.get("estimated_gas_usd", 0.008))),
+                    gas_usd=Decimal(str(optimal.get("gas_usd", 0))),
                     signal=fast,
                 )
                 route = select_route([candidate], self.inventory)
@@ -313,7 +309,7 @@ class ArbitrageEngine:
                 slippage_tolerance_bps=optimal.get("slippage_tolerance_bps"),
                 uni_bsc_fee_bps=optimal.get("uni_bsc_fee_bps"),
                 uni_base_fee_bps=optimal.get("uni_base_fee_bps"),
-                estimated_gas_usd=optimal.get("estimated_gas_usd"),
+                gas_usd=optimal.get("gas_usd"),
             )
             await db.insert_dex_arbitrage_opportunity(opportunity)
 
@@ -404,7 +400,8 @@ class ArbitrageEngine:
                                "message": f"Half-open DEX-DEX arb {opp_id}: buy {buy_tx} ok, sell failed: {err}"})
                 return
 
-            actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0.0006")) - size_usd
+            cngn_price = Decimal(str(c.signal.get("prices", {}).get(sell_venue_name, "0")))
+            actual_profit = sell_trade.amount * (sell_trade.price or cngn_price) - size_usd
             await db.update_dex_arbitrage_execution_state(
                 opp_id,
                 status="completed",
@@ -517,7 +514,7 @@ class ArbitrageEngine:
             self.inventory.record_trade_failure(opp_id, f"RECOVERY:{err}")
             raise ValueError(err)
 
-        actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0.0006")) - opp.optimal_size_usd
+        actual_profit = sell_trade.amount * sell_trade.price - opp.optimal_size_usd
         await db.update_dex_arbitrage_execution_state(
             opp_id,
             status="completed",
@@ -618,10 +615,10 @@ class ArbitrageEngine:
         for b in balances:
             role = getattr(b, "role", "")
             tb = getattr(b, "token_balances", {})
-            if role in ("uni-bsc-trade", "trade_uni_bsc"):
+            if role == "uni-bsc-trade":
                 venue_stables["uni-bsc"] = Decimal(str(tb.get("USDT", 0)))
                 venue_cngn["uni-bsc"] = Decimal(str(tb.get("cNGN", 0)))
-            elif role in ("uni-base-trade", "trade_uni_base"):
+            elif role == "uni-base-trade":
                 venue_stables["uni-base"] = Decimal(str(tb.get("USDC", 0)))
                 venue_cngn["uni-base"] = Decimal(str(tb.get("cNGN", 0)))
             elif role == "quidax-exchange":

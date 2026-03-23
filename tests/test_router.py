@@ -25,7 +25,7 @@ def _make_candidate(
         sell_venue=sell_venue,
         optimal_size_usd=Decimal(str(size_usd)),
         expected_profit_usd=Decimal(str(profit_usd)),
-        estimated_gas_usd=Decimal(str(gas_usd)),
+        gas_usd=Decimal(str(gas_usd)),
         signal={},
     )
 

@@ -132,8 +132,7 @@ def find_optimal_dex_arb() -> dict | None:
             "slippage_tolerance_bps": 10,
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000),
             "uni_base_fee_bps": int(uni_base_fee * 10000),
-            "assetchain_fee_bps": 30,
-            "estimated_gas_usd": float(_gas_oracle.gas_usd_base() + _gas_oracle.gas_usd_bsc()),
+            "gas_usd": float(_gas_oracle.gas_usd_base() + _gas_oracle.gas_usd_bsc()),
         },
     }
 

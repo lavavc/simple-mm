@@ -22,7 +22,7 @@ class RouteCandidate:
     sell_venue: str
     optimal_size_usd: Decimal
     expected_profit_usd: Decimal
-    estimated_gas_usd: Decimal
+    gas_usd: Decimal
     signal: dict             # passed through to execution methods
 
 
@@ -65,7 +65,7 @@ def select_route(
         # Net profit after gas and rebalance friction
         rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)
         rebalance_cost = adjusted_size * Decimal(rebalance_bps) / Decimal(10000)
-        net_profit = c.expected_profit_usd - c.estimated_gas_usd - rebalance_cost
+        net_profit = c.expected_profit_usd - c.gas_usd - rebalance_cost
 
         if net_profit <= 0:
             continue
