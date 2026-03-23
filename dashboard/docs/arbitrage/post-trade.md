@@ -55,7 +55,7 @@ Every signal, opportunity, execution, and alert is broadcast to connected dashbo
 | Event type | Trigger |
 |------------|---------|
 | `quidax_dex_optimal_arb` | Every Quidax depth update — fast path result + portfolio valuation |
-| `quidax_dex_arb_curve` | Background slow path — full 1000-point curve |
+| `quidax_dex_arb_curve` | Background slow path — full `$1` to `$5,000` curve |
 | `dex_arb_opportunity` | DEX-DEX fast path result |
 | `dex_arb_curve` | DEX-DEX slow path curve |
 | `arb_executed` | CEX-DEX trade completed |

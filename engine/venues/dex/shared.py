@@ -5,6 +5,22 @@ from decimal import Decimal
 
 
 @dataclass
+class PositionState:
+    """LP position state from on-chain."""
+
+    token_id: int
+    liquidity: int
+    tick_lower: int
+    tick_upper: int
+    tokens_owed_0: int
+    tokens_owed_1: int
+    price_lower: Decimal
+    price_upper: Decimal
+    current_price: Decimal
+    in_range: bool
+
+
+@dataclass
 class V4PoolReadConfig:
     """Minimal config for read-only V4 pool price fetching via StateView."""
 

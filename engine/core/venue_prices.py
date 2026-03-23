@@ -18,7 +18,7 @@ from engine.api.schemas import PriceQuote
 
 if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
-    from engine.venues.dex.base import PoolPriceReader
+    from engine.venues.dex.pool_reader_v3 import PoolPriceReader
 
 logger = structlog.get_logger()
 
@@ -403,7 +403,7 @@ class DexAdapterPriceSource(VenuePriceSource):
             return None
 
         # token0=cNGN(6), token1=USDC(6): price = sqrtP^2, no inversion
-        if self.name in ("aerodrome", "uni-base"):
+        if self.name == "uni-base":
             price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (6 - 6))
             human_price = price
         else:

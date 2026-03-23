@@ -5,7 +5,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from engine.api.schemas import DexParams
-from engine.venues.dex.base import PositionState
+from engine.venues.dex.shared import PositionState
 from engine.core.scheduler import TradingScheduler, SchedulerConfig
 from tests.fakes import FakeDexAdapter
 

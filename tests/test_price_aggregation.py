@@ -52,15 +52,15 @@ def _make_venue_prices() -> dict[str, VenuePrice]:
             bid=Decimal("0.000696"), ask=Decimal("0.000698"), mid=Decimal("0.000697"),
             source="quidax",
         ),
-        "aerodrome": _make_venue_price(
-            "aerodrome", "cNGN/USDC",
+        "uni-base": _make_venue_price(
+            "uni-base", "cNGN/USDC",
             bid=Decimal("0.000695"), ask=Decimal("0.000697"), mid=Decimal("0.000696"),
-            source="aerodrome_pool",
+            source="uni-base_pool",
         ),
-        "pancakeswap": _make_venue_price(
-            "pancakeswap", "cNGN/USDT",
+        "uni-bsc": _make_venue_price(
+            "uni-bsc", "cNGN/USDT",
             bid=Decimal("0.000700"), ask=Decimal("0.000702"), mid=Decimal("0.000701"),
-            source="pancakeswap_pool",
+            source="uni-bsc_pool",
         ),
     }
 
@@ -134,19 +134,19 @@ class TestPriceNormalizer:
         assert "quidax" in result
         assert result["quidax"].cngn_usd == Decimal("0.000697")
 
-    def test_normalize_aerodrome_cngn_usdc(self):
-        """Aerodrome cNGN/USDC is already cNGN/USD."""
+    def test_normalize_uni_base_cngn_usdc(self):
+        """uni-base cNGN/USDC is already cNGN/USD."""
         prices = {
-            "aerodrome": _make_venue_price(
-                "aerodrome", "cNGN/USDC",
+            "uni-base": _make_venue_price(
+                "uni-base", "cNGN/USDC",
                 bid=Decimal("0.000695"), ask=Decimal("0.000697"), mid=Decimal("0.000696"),
-                source="aerodrome_pool",
+                source="uni-base_pool",
             ),
         }
         result = self.normalizer.normalize(prices)
 
-        assert "aerodrome" in result
-        assert result["aerodrome"].cngn_usd == Decimal("0.000696")
+        assert "uni-base" in result
+        assert result["uni-base"].cngn_usd == Decimal("0.000696")
 
     def test_normalize_blockradar_direct_cngn_usd(self):
         """Blockradar now reports cNGN/USD directly — used as-is."""
@@ -199,7 +199,7 @@ class TestPriceNormalizer:
         result = self.normalizer.normalize(prices)
 
         assert len(result) == 4
-        assert all(v in result for v in ["bybit", "quidax", "aerodrome", "pancakeswap"])
+        assert all(v in result for v in ["bybit", "quidax", "uni-base", "uni-bsc"])
 
         # All should be in a similar range (~0.0007)
         for np in result.values():
@@ -240,16 +240,16 @@ class TestVWAP:
         calc.venue_weights = {}
 
         weights = {
-            "aerodrome": Decimal("10"),
+            "uni-base": Decimal("10"),
             "quidax": Decimal("1"),
             "bybit": Decimal("1"),
-            "pancakeswap": Decimal("1"),
+            "uni-bsc": Decimal("1"),
         }
         vwap = calc.compute_vwap(normalized, weights)
 
-        # Should be closer to aerodrome's price than the simple mean
-        aerodrome_price = normalized["aerodrome"].cngn_usd
-        assert abs(vwap - aerodrome_price) < Decimal("0.00001")
+        # Should be closer to uni-base's price than the simple mean
+        uni_base_price = normalized["uni-base"].cngn_usd
+        assert abs(vwap - uni_base_price) < Decimal("0.00001")
 
     def test_vwap_empty_input(self):
         calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
@@ -286,11 +286,11 @@ class TestSourceToVenue:
     def test_quidax(self):
         assert BlendedPriceCalculator._source_to_venue("quidax") == "quidax"
 
-    def test_aerodrome_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("aerodrome_pool") == "aerodrome"
+    def test_uni_base_pool(self):
+        assert BlendedPriceCalculator._source_to_venue("uni-base_pool") == "uni-base"
 
-    def test_pancakeswap_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("pancakeswap_pool") == "pancakeswap"
+    def test_uni_bsc_pool(self):
+        assert BlendedPriceCalculator._source_to_venue("uni-bsc_pool") == "uni-bsc"
 
     def test_blockradar(self):
         assert BlendedPriceCalculator._source_to_venue("blockradar") == "blockradar"
@@ -319,8 +319,8 @@ class TestNormalizeSinglePrice:
         result = BlendedPriceCalculator._normalize_single_price("quidax", Decimal("0.000697"))
         assert result == Decimal("0.000697")
 
-    def test_aerodrome_passthrough(self):
-        result = BlendedPriceCalculator._normalize_single_price("aerodrome", Decimal("0.000696"))
+    def test_uni_base_passthrough(self):
+        result = BlendedPriceCalculator._normalize_single_price("uni-base", Decimal("0.000696"))
         assert result == Decimal("0.000696")
 
     def test_blockradar_returns_none(self):
@@ -343,7 +343,7 @@ class TestNormalizeSinglePrice:
 
 
 class TestConfidence:
-    """Test confidence score computation: 90% at 6 venues, -20% per missing venue."""
+    """Test confidence score computation: 90% at 4 venues, -20% per missing venue."""
 
     def _np(self, venue: str) -> NormalizedPrice:
         return NormalizedPrice(
@@ -352,27 +352,24 @@ class TestConfidence:
             basis="cNGN/USDC", timestamp=0,
         )
 
-    def test_all_six_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap", "assetchain", "blockradar"]}
+    def test_all_four_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "assetchain", "blockradar"]}
         assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.9)
 
-    def test_all_five_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap", "blockradar"]}
+    def test_three_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "assetchain"]}
         assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.7)
 
-    def test_four_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome", "pancakeswap"]}
+    def test_two_venues(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax"]}
         assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.5)
 
-    def test_three_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax", "aerodrome"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.3)
-
     def test_one_venue(self):
-        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}) == pytest.approx(0.0)
+        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}) == pytest.approx(0.3)
 
-    def test_empty_returns_zero(self):
-        assert BlendedPriceCalculator._compute_confidence({}) == 0.0
+    def test_empty_returns_near_zero(self):
+        # With 4 total venues: 0.9 - 0.2 * 4 = 0.1 (floored at 0)
+        assert BlendedPriceCalculator._compute_confidence({}) == pytest.approx(0.1)
 
 
 # =============================================================================

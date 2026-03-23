@@ -197,10 +197,10 @@ async def cmd_reset_breaker(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Callback handler ---
 
 async def _do_withdraw(venue: str) -> str:
-    from engine.venues.dex.base import BaseDexAdapter
+    from engine.venues.dex.lp_v4 import V4LPAdapter
     if venue == "all":
-        targets = {k: v for k, v in _venues.items() if isinstance(v, BaseDexAdapter)}
-    elif venue in _venues and isinstance(_venues[venue], BaseDexAdapter):
+        targets = {k: v for k, v in _venues.items() if isinstance(v, V4LPAdapter)}
+    elif venue in _venues and isinstance(_venues[venue], V4LPAdapter):
         targets = {venue: _venues[venue]}
     else:
         return f"❌ Venue {venue} not found or not a DEX."

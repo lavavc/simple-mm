@@ -125,7 +125,7 @@ class TestArbitrageOpportunity:
         o = ArbitrageOpportunity(
             id="test-123",
             timestamp=1700000000000,
-            buy_venue="aerodrome",
+            buy_venue="uni-base",
             sell_venue="quidax",
             buy_price=Decimal("0.000690"),
             sell_price=Decimal("0.000750"),
@@ -135,7 +135,7 @@ class TestArbitrageOpportunity:
             expected_profit_usd=Decimal("80"),
             status="detected",
         )
-        assert o.buy_venue == "aerodrome"
+        assert o.buy_venue == "uni-base"
         assert o.status == "detected"
 
     def test_status_values(self):

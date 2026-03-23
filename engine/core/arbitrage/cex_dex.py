@@ -4,7 +4,7 @@ CEX-DEX arbitrage simulation.
 Provides two entry points:
 - find_optimal_arb: fast path — runs ternary search across all directions,
   returns the best trade without generating a curve. Call on every depth update.
-- compute_arb_curve: slow path — generates the full 1000-point profit curve
+- compute_arb_curve: slow path — generates the full profit curve
   for UI display. Call on a slower poll cycle.
 
 Both functions accept a cex_fee parameter so any CEX venue can be plugged in.
@@ -211,7 +211,7 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
 
 def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE) -> dict | None:
     """
-    Slow path: generate the full 1000-point profit curve for UI display.
+    Slow path: generate the full profit curve for UI display.
     Call on a slower poll cycle; do not block the fast arb path on this.
     """
     if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids:
@@ -233,7 +233,7 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
     curve_cex_to_dex = []
     curve_dex_to_cex = []
 
-    for size in range(1, 1001):
+    for size in range(1, 5001):
         inv = Decimal(size)
 
         # CEX -> DEX: buy cNGN on CEX, sell on DEX

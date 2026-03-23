@@ -11,7 +11,7 @@ import structlog
 
 from engine.config import settings
 from engine.db import get_db
-from engine.venues.dex.base import BaseDexAdapter
+from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.api.schemas import (
     PriceQuote,
     Position,
@@ -426,7 +426,7 @@ async def withdraw_venue_position(venue: str):
         raise HTTPException(status_code=404, detail="Venue not found")
 
     adapter = _venues[venue]
-    if not isinstance(adapter, BaseDexAdapter):
+    if not isinstance(adapter, V4LPAdapter):
         raise HTTPException(status_code=400, detail=f"{venue} is not a DEX venue")
 
     token_ids = adapter.get_owned_positions()
@@ -455,7 +455,7 @@ async def shutdown(unwind: bool = False):
     import asyncio, os, signal
 
     if unwind:
-        dex_venues = {k: v for k, v in _venues.items() if isinstance(v, BaseDexAdapter)}
+        dex_venues = {k: v for k, v in _venues.items() if isinstance(v, V4LPAdapter)}
         unwind_results = {}
         for venue_name, adapter in dex_venues.items():
             token_ids = adapter.get_owned_positions()
@@ -520,7 +520,7 @@ async def update_venue_params(venue: str, params: dict):
 
     venue_adapter = _venues[venue]
     if hasattr(venue_adapter, "params"):
-        if isinstance(venue_adapter, BaseDexAdapter):
+        if isinstance(venue_adapter, V4LPAdapter):
             venue_adapter.params = DexParams(**params)
         else:
             venue_adapter.params = CexParams(**params)
@@ -533,7 +533,7 @@ async def update_venue_params(venue: str, params: dict):
 
 
 class DepositRequest(BaseModel):
-    role: str  # Account role to send from (e.g. "aerodrome-lp")
+    role: str  # Account role to send from (e.g. "uni-base-lp")
     token: str  # Token symbol: "USDC" or "cNGN"
     amount: Decimal
 

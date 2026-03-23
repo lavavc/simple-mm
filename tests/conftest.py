@@ -9,7 +9,6 @@ import time
 import socket
 
 from engine.api.schemas import DexParams, CexParams, WalletParams
-from engine.venues.dex.base import PoolConfig
 
 
 # =============================================================================
@@ -50,26 +49,6 @@ def default_wallet_params() -> WalletParams:
 # =============================================================================
 # SHARED FIXTURES - Pool Configuration
 # =============================================================================
-
-
-@pytest.fixture
-def aerodrome_pool_config() -> PoolConfig:
-    """Aerodrome cNGN/USDC pool config on Base."""
-    return PoolConfig(
-        chain_id=8453,
-        chain_name="base",
-        rpc_url="http://localhost:8545",  # Anvil
-        pool_address="0x0206B696a410277eF692024C2B64CcF4EaC78589",
-        nft_manager_address="0x827922686190790b37229fd06084350E74485b72",
-        router_address="0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5",
-        token0_address="0x46C85152bFe9f96829aA94755D9f915F9B10EF5F",  # cNGN
-        token1_address="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC
-        token0_symbol="cNGN",
-        token1_symbol="USDC",
-        token0_decimals=6,
-        token1_decimals=6,
-        tick_spacing=100,
-    )
 
 
 # =============================================================================

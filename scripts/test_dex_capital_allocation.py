@@ -19,7 +19,7 @@ def simulate_capital_allocation(
     token1_decimals: int = 6,
 ) -> dict:
     """
-    Simulate the capital allocation logic from BaseDexAdapter.calculate_mint_amounts()
+    Simulate the capital allocation logic from V4LPAdapter.calculate_mint_amounts()
 
     Returns dict with calculation breakdown.
     """
