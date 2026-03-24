@@ -265,6 +265,7 @@ class DexArbOpportunity(BaseModel):
     uni_base_fee_bps: Optional[int] = None
     gas_usd: Optional[Decimal] = None
     buy_amount_cngn: Optional[Decimal] = None
+    executed_size_usd: Optional[Decimal] = None
 
 class ArbitrageTrade(BaseModel):
     """Individual trade leg of an arbitrage opportunity."""

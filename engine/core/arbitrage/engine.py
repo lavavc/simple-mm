@@ -475,6 +475,7 @@ class ArbitrageEngine:
                 status="buy_filled",
                 buy_tx_hash=buy_trade.tx_hash,
                 buy_amount_cngn=buy_trade.amount,
+                executed_size_usd=float(size_usd),
             )
 
             # Sell the cNGN actually received from the buy, not the pre-buy estimate.
@@ -646,11 +647,12 @@ class ArbitrageEngine:
                         amount_cngn=float(sell_cngn))
             sell_trade = await self.executor.execute_dex_sell(sell_venue_name, sell_cngn, Decimal("0"), opp_id)
             if sell_trade and sell_trade.status != "failed":
-                actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0")) - opp.optimal_size_usd
+                cost_basis = opp.executed_size_usd if opp.executed_size_usd is not None else opp.optimal_size_usd
+                actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0")) - cost_basis
                 await db.update_dex_arbitrage_execution_state(opp_id, status="completed",
                     sell_tx_hash=sell_trade.tx_hash, reason="Recovered: retried sell leg",
                     actual_profit_usd=float(actual_profit))
-                self.inventory.record_trade_complete(opp_id, opp.optimal_size_usd, actual_profit, Decimal("0"))
+                self.inventory.record_trade_complete(opp_id, cost_basis, actual_profit, Decimal("0"))
                 logger.info("dex_dex_recovery_completed", opp_id=opp_id, method="retry_sell",
                             sell_tx_hash=sell_trade.tx_hash, profit_usd=float(actual_profit))
                 return {"status": "completed", "method": "retry_sell", "opp_id": opp_id,
@@ -672,11 +674,12 @@ class ArbitrageEngine:
             self.inventory.record_trade_failure(opp_id, f"RECOVERY_REVERSAL:{err}")
             raise ValueError(err)
 
-        actual_loss = reverse_trade.amount * (reverse_trade.price or Decimal("0")) - opp.optimal_size_usd
+        cost_basis = opp.executed_size_usd if opp.executed_size_usd is not None else opp.optimal_size_usd
+        actual_loss = reverse_trade.amount * (reverse_trade.price or Decimal("0")) - cost_basis
         await db.update_dex_arbitrage_execution_state(opp_id, status="completed",
             sell_tx_hash=reverse_trade.tx_hash, reason="Recovered: reversed buy leg",
             actual_profit_usd=float(actual_loss))
-        self.inventory.record_trade_complete(opp_id, opp.optimal_size_usd, actual_loss, Decimal("0"))
+        self.inventory.record_trade_complete(opp_id, cost_basis, actual_loss, Decimal("0"))
         logger.info("dex_dex_recovery_completed", opp_id=opp_id, method="reverse_buy",
                     sell_tx_hash=reverse_trade.tx_hash, profit_usd=float(actual_loss))
         return {"status": "completed", "method": "reverse_buy", "opp_id": opp_id,
