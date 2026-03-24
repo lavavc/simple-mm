@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
+from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
+
 # CEX-DEX directions by their cNGN inventory effect
 _SELLS_CNGN_TO_CEX = frozenset({"UNI_BSC_TO_QUIDAX", "UNI_BASE_TO_QUIDAX"})
 _BUYS_CNGN_FROM_CEX = frozenset({"QUIDAX_TO_UNI_BSC", "QUIDAX_TO_UNI_BASE"})
@@ -31,6 +33,7 @@ class SelectedRoute:
     candidate: RouteCandidate
     adjusted_size_usd: Decimal   # capped to available stablecoin
     net_profit_usd: Decimal      # after gas and rebalance penalty
+    execution_signal: Optional[dict] = None  # executable trade details after final routing
 
 
 def select_route(
@@ -64,10 +67,18 @@ def select_route(
         if adjusted_size <= 0:
             continue
 
+        execution_signal = None
+        expected_profit_usd = c.expected_profit_usd
+        if c.pipeline == "dex_dex":
+            execution_signal = estimate_dex_dex_trade(c.direction, adjusted_size)
+            if not execution_signal:
+                continue
+            expected_profit_usd = Decimal(str(execution_signal["expected_profit_usd"]))
+
         # Net profit after gas and rebalance friction
         rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)
         rebalance_cost = adjusted_size * Decimal(rebalance_bps) / Decimal(10000)
-        net_profit = c.expected_profit_usd - c.gas_usd - rebalance_cost
+        net_profit = expected_profit_usd - c.gas_usd - rebalance_cost
 
         if net_profit <= 0:
             continue
@@ -85,7 +96,7 @@ def select_route(
         else:
             aligned = True
 
-        scored.append((net_profit, aligned, SelectedRoute(c, adjusted_size, net_profit)))
+        scored.append((net_profit, aligned, SelectedRoute(c, adjusted_size, net_profit, execution_signal)))
 
     if not scored:
         return None

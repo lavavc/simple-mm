@@ -45,8 +45,10 @@ class FakeV4Venue:
         self._sim_result = sim_result   # None = passes, str = error message
         self._swap_ok = swap_ok
         self.swap_calls = []
+        self.sim_calls = []
 
     def simulate_swap(self, token_in, amount_in, min_out):
+        self.sim_calls.append((token_in, amount_in, min_out))
         return self._sim_result
 
     async def swap(self, token_in, amount_in, min_out):
@@ -77,7 +79,18 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
             "prices": {"uni-bsc": "0.00061", "uni-base": "0.00061"},
         },
     )
-    return SelectedRoute(candidate=candidate, adjusted_size_usd=size, net_profit_usd=Decimal("1.12"))
+    return SelectedRoute(
+        candidate=candidate,
+        adjusted_size_usd=size,
+        net_profit_usd=Decimal("1.12"),
+        execution_signal={
+            "direction": direction,
+            "optimal_size_usd": float(size),
+            "expected_profit_usd": 1.20,
+            "cngn_transferred": 140000.0,
+            "expected_usd_out": 501.20,
+        },
+    )
 
 
 def _make_opp(opp_id, status="buy_filled", buy_amount_cngn=Decimal("798000")):
@@ -170,6 +183,8 @@ class TestPreflightGate:
         assert opp.status == "completed"
         assert opp.actual_profit_usd is not None
         assert opp.sell_tx_hash is not None
+        assert sell_venue.sim_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
+        assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
 
 
 # =============================================================================

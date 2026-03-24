@@ -396,6 +396,7 @@ class ArbitrageEngine:
         try:
             c = route.candidate
             optimal = c.signal["optimal_arb"]
+            execution = route.execution_signal or optimal
             buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
             size_usd = route.adjusted_size_usd
             slippage_bps = optimal.get("slippage_tolerance_bps", 10)
@@ -410,26 +411,45 @@ class ArbitrageEngine:
             loop = asyncio.get_running_loop()
             buy_venue = self.venues[buy_venue_name]
             sell_venue = self.venues[sell_venue_name]
-            sell_amount_raw = int(Decimal(str(optimal.get("cngn_transferred", "0"))) * Decimal(10 ** sell_venue.cngn_decimals))
+            planned_sell_cngn = Decimal(str(execution.get("cngn_transferred", "0")))
+            sell_amount_raw = int(planned_sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
+            min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
 
             sell_err = await loop.run_in_executor(
-                None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
+                None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, min_out_raw
             )
             if sell_err:
                 # Mark sell-side cNGN as zero so the router rejects this route on every
                 # subsequent tick until the scheduler's balance cycle restores the real value.
                 self.inventory.reconcile_cngn({sell_venue_name: Decimal("0")})
-                logger.warning("dex_dex_sell_preflight_failed", direction=direction,
-                               sell_venue=sell_venue_name, error=_clean_revert(sell_err))
+                logger.warning(
+                    "dex_dex_sell_preflight_failed",
+                    direction=direction,
+                    buy_venue=buy_venue_name,
+                    sell_venue=sell_venue_name,
+                    market_optimal_size_usd=float(c.optimal_size_usd),
+                    executable_size_usd=float(size_usd),
+                    planned_sell_cngn=float(planned_sell_cngn),
+                    min_out_usd=float(min_out_usd),
+                    error=_clean_revert(sell_err),
+                )
                 return
 
             buy_err = await loop.run_in_executor(
                 None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
             )
             if buy_err:
-                logger.warning("dex_dex_buy_preflight_failed", direction=direction,
-                               buy_venue=buy_venue_name, error=_clean_revert(buy_err))
+                logger.warning(
+                    "dex_dex_buy_preflight_failed",
+                    direction=direction,
+                    buy_venue=buy_venue_name,
+                    sell_venue=sell_venue_name,
+                    market_optimal_size_usd=float(c.optimal_size_usd),
+                    executable_size_usd=float(size_usd),
+                    planned_sell_cngn=float(planned_sell_cngn),
+                    error=_clean_revert(buy_err),
+                )
                 return
 
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
@@ -458,7 +478,7 @@ class ArbitrageEngine:
             )
 
             sell_trade = await self.executor.execute_dex_sell(
-                sell_venue_name, buy_trade.amount, min_out_usd, opp_id
+                sell_venue_name, planned_sell_cngn, min_out_usd, opp_id
             )
 
             if not sell_trade or sell_trade.status == "failed":
