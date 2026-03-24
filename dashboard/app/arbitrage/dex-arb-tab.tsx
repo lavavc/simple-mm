@@ -9,16 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 import { useAccountBalances } from '@/lib/hooks/useQueries';
-import { ProfitCurveChart } from '@/components/charts/ProfitCurveChart';
-
-interface CurvePoint {
-    size: number;
-    cngn_acquired: number;
-    cngn_assetchain: number;
-    profit: number;
-    profit_after_slippage: number;
-    min_acceptable_usd: number;
-}
+import { ProfitCurveChart, type CurvePoint } from '@/components/charts/ProfitCurveChart';
 
 interface DexArbData {
     timestamp: number;
