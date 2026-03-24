@@ -101,14 +101,23 @@ class TestComputeArbCurve:
         assert len(result["curve_cex_to_dex"]) == 5000
         assert len(result["curve_dex_to_cex"]) == 5000
 
-    def test_curve_points_have_required_keys(self, seeded_pool_cache):
+    def test_curve_points_match_frontend_contract(self, seeded_pool_cache):
+        """Curve point schema must match what both chart components expect.
+
+        This test exists because this schema mismatch has broken the chart four times.
+        TWO components consume this data: OrderBookDepthChart.tsx (CurvePointV2) and
+        ProfitCurveChart.tsx (CurvePoint). If you rename a key here you MUST update
+        both components and this test in the same commit.
+        """
         result = compute_arb_curve(_TIGHT_DEPTH)
-        point = result["curve_cex_to_dex"][0]
-        assert "size" in point
-        assert "bsc" in point
-        assert "base" in point
-        assert "profit" in point["bsc"]
-        assert "usdt_out" in point["bsc"]
+        for curve_name in ("curve_cex_to_dex", "curve_dex_to_cex"):
+            point = result[curve_name][0]
+            assert "size" in point, f"{curve_name}: missing 'size'"
+            for direction_key in ("base_to_bsc", "bsc_to_base"):
+                assert direction_key in point, f"{curve_name}: missing '{direction_key}' (OrderBookDepthChart + ProfitCurveChart read this key)"
+                d = point[direction_key]
+                for field in ("profit", "profit_after_slippage", "min_acceptable_usd", "cngn_acquired", "usdt_out"):
+                    assert field in d, f"{curve_name}['{direction_key}']: missing '{field}'"
 
     def test_curve_sizes_are_sequential(self, seeded_pool_cache):
         result = compute_arb_curve(_TIGHT_DEPTH)
