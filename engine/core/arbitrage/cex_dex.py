@@ -77,6 +77,30 @@ def walk_orderbook_bids(bids: list, usdt_amount: Decimal, fee: Decimal) -> tuple
     return total_cngn * (Decimal("1") - fee), traces
 
 
+def estimate_cex_buy_cngn(
+    quidax_depth: OrderBookDepth | None,
+    usdt_amount: Decimal,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> Decimal:
+    """Estimate cNGN received by walking the CEX bid book for a USDT buy size."""
+    if not quidax_depth or not quidax_depth.bids or usdt_amount <= 0:
+        return Decimal("0")
+    cngn, _ = walk_orderbook_bids(quidax_depth.bids, usdt_amount, cex_fee)
+    return cngn
+
+
+def estimate_cex_sell_usdt(
+    quidax_depth: OrderBookDepth | None,
+    cngn_amount: Decimal,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> Decimal:
+    """Estimate USDT received by walking the CEX ask book for a cNGN sell size."""
+    if not quidax_depth or not quidax_depth.asks or cngn_amount <= 0:
+        return Decimal("0")
+    usdt, _ = walk_orderbook_asks(quidax_depth.asks, cngn_amount, cex_fee)
+    return usdt
+
+
 def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("5000"), tol=Decimal("0.5")):
     """Find the profit-maximising size for a unimodal profit function."""
     while high - low > tol:

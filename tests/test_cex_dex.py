@@ -4,7 +4,13 @@ import pytest
 from decimal import Decimal
 
 from engine.api.schemas import OrderBookDepth, OrderBookLevel
-from engine.core.arbitrage.cex_dex import find_optimal_arb, compute_arb_curve, QUIDAX_FEE
+from engine.core.arbitrage.cex_dex import (
+    QUIDAX_FEE,
+    compute_arb_curve,
+    estimate_cex_buy_cngn,
+    estimate_cex_sell_usdt,
+    find_optimal_arb,
+)
 
 
 def _level(price: float, amount: float) -> OrderBookLevel:
@@ -84,6 +90,40 @@ class TestFindOptimalArbResult:
         result = find_optimal_arb(wide_depth)
         assert result is not None
         # We can only assert on structure — actual directions depend on pool prices
+
+
+class TestOrderbookHelpers:
+    def test_estimate_cex_buy_cngn_walks_bids(self):
+        depth = OrderBookDepth(
+            venue="quidax",
+            pair="cNGN/USDT",
+            timestamp=1700000000000,
+            bids=[_level(1700, 50), _level(1600, 50)],
+            asks=[_level(1500, 50)],
+        )
+
+        cngn = estimate_cex_buy_cngn(depth, Decimal("75"), QUIDAX_FEE)
+
+        expected = (Decimal("50") * Decimal("1700") + Decimal("25") * Decimal("1600")) * (Decimal("1") - QUIDAX_FEE)
+        assert cngn == expected
+
+    def test_estimate_cex_sell_usdt_walks_asks(self):
+        depth = OrderBookDepth(
+            venue="quidax",
+            pair="cNGN/USDT",
+            timestamp=1700000000000,
+            bids=[_level(1700, 50)],
+            asks=[_level(1500, 50), _level(1600, 50)],
+        )
+
+        usdt = estimate_cex_sell_usdt(depth, Decimal("105000"), QUIDAX_FEE)
+
+        expected = (Decimal("50") + (Decimal("30000") / Decimal("1600"))) * (Decimal("1") - QUIDAX_FEE)
+        assert usdt == expected
+
+    def test_estimate_helpers_return_zero_for_missing_books(self):
+        assert estimate_cex_buy_cngn(None, Decimal("50")) == Decimal("0")
+        assert estimate_cex_sell_usdt(None, Decimal("50000")) == Decimal("0")
 
 
 class TestComputeArbCurve:
