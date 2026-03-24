@@ -46,6 +46,12 @@ def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: s
         from decimal import Decimal
         engine.inventory.reconcile_cngn({venue_name: Decimal("0")})
         logger.warning(log_key, venue=venue_name, category=category, error=err, **log_ctx)
+        engine.broadcast({"type": "alert", "severity": "warning",
+                          "message": (
+                              f"cNGN balance on {venue_name} is zero or below required amount — "
+                              "inventory zeroed, venue excluded from sizing. "
+                              f"Error: {err}"
+                          )})
 
     elif category == "rpc":
         logger.warning(log_key, venue=venue_name, category=category, error=err, **log_ctx)
@@ -738,8 +744,9 @@ class ArbitrageEngine:
         """Recover a half-open CEX-DEX arb.
 
         Case A (Quidax buy succeeded, DEX sell failed): reverse by selling cNGN back on Quidax.
-        Case B (DEX buy succeeded, Quidax sell failed): place_market_order already exhausted 5
-            retries internally; surface the error and require manual intervention.
+        Case B (DEX buy succeeded, Quidax sell failed): reverse by selling cNGN back on the
+            buy-side DEX. place_market_order already exhausted 5 retries internally by the time
+            this is called.
         """
         if self._arb_executing:
             raise ValueError("execution in progress")

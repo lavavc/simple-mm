@@ -245,14 +245,15 @@ class TestHandlePreflightError:
     def _breaker(self, engine):
         return engine.inventory.get_status_dict()["circuit_breaker_active"]
 
-    def test_balance_zeroes_inventory(self):
+    def test_balance_zeroes_inventory_and_broadcasts_warning(self):
         from engine.core.arbitrage.engine import _handle_preflight_error
-        engine, _ = self._make_engine_for_preflight()
+        engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
                                 "execution reverted: ERC20: transfer amount exceeds balance",
                                 "test_preflight")
         assert self._cngn(engine, "uni-base") == Decimal("0")
+        assert any(a.get("severity") == "warning" and "uni-base" in a.get("message", "") for a in alerts)
 
     def test_rpc_does_not_zero_inventory_and_broadcasts_warning(self):
         from engine.core.arbitrage.engine import _handle_preflight_error

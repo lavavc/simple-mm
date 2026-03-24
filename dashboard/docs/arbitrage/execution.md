@@ -37,7 +37,7 @@ Execution steps:
 
 When a preflight simulation fails, the error string is classified into one of five categories with different responses:
 
-- **balance** — revert indicates insufficient cNGN balance (`transfer amount exceeds balance`, `STF`, etc.). The venue's cNGN inventory is zeroed so the router stops sizing against it. Logs a warning.
+- **balance** — revert indicates insufficient cNGN balance (`transfer amount exceeds balance`, etc.). The venue's cNGN inventory is zeroed so the router stops sizing against it. Broadcasts a warning to Telegram.
 - **rpc** — network or node error (timeout, connection refused, max retries). Inventory is not touched; the failure is transient. Broadcasts a warning to Telegram so operators can check node connectivity.
 - **permit2** — Permit2 allowance expired or insufficient (`AllowanceExpired`, `InsufficientAllowance`). Inventory is not touched. Broadcasts a critical alert. In normal operation this cannot occur because Permit2 approvals are set to effectively infinite expiry. If it does occur, resetting the circuit breaker is sufficient — `ensure_trade_approvals` runs automatically before every live swap.
 - **pool_paused** — pool is locked or not initialised (`LOK`, `PoolNotInitialized`, `paused`). Inventory is not touched. Trips the circuit breaker and broadcasts a critical alert for manual investigation.
