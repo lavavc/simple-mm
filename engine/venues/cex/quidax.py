@@ -285,8 +285,9 @@ class QuidaxAdapter(VenueAdapter):
 
                 # Catch 4xx client errors immediately without retrying
                 if 400 <= response.status_code < 500:
-                    error_msg = resp_json.get("message", response.text or f"HTTP {response.status_code}")
-                    return False, Decimal("0"), Decimal("0"), str(error_msg)
+                    detail = resp_json.get("message", response.text or "")
+                    error_msg = f"HTTP {response.status_code}: {detail}" if detail else f"HTTP {response.status_code}"
+                    return False, Decimal("0"), Decimal("0"), error_msg
 
                 response.raise_for_status()
                 

@@ -126,7 +126,9 @@ class Database:
                 expected_profit_usd REAL NOT NULL,
                 status TEXT NOT NULL,
                 actual_profit_usd REAL,
-                reason TEXT
+                reason TEXT,
+                buy_amount_cngn REAL,
+                buy_tx_hash TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_arb_opp_time ON arbitrage_opportunities(timestamp);
             CREATE INDEX IF NOT EXISTS idx_arb_opp_status ON arbitrage_opportunities(status);
@@ -181,6 +183,17 @@ class Database:
 
     async def _migrate_schema(self):
         """Run incremental schema migrations."""
+        cursor = await self._conn.execute("PRAGMA table_info(arbitrage_opportunities)")
+        arb_cols = {row[1] for row in await cursor.fetchall()}
+        if "buy_amount_cngn" not in arb_cols:
+            await self._conn.execute(
+                "ALTER TABLE arbitrage_opportunities ADD COLUMN buy_amount_cngn REAL"
+            )
+        if "buy_tx_hash" not in arb_cols:
+            await self._conn.execute(
+                "ALTER TABLE arbitrage_opportunities ADD COLUMN buy_tx_hash TEXT"
+            )
+
         cursor = await self._conn.execute("PRAGMA table_info(dex_arbitrage_opportunities)")
         cols = {row[1] for row in await cursor.fetchall()}
         if "pancake_price" in cols:
@@ -548,26 +561,26 @@ class Database:
         status: str,
         actual_profit_usd: Optional[float] = None,
         reason: Optional[str] = None,
+        buy_amount_cngn: Optional[float] = None,
+        buy_tx_hash: Optional[str] = None,
     ):
         """Update an arbitrage opportunity status."""
+        sets = ["status = ?", "reason = ?"]
+        vals: list[Any] = [status, reason]
         if actual_profit_usd is not None:
-            await self._conn.execute(
-                """
-                UPDATE arbitrage_opportunities
-                SET status = ?, actual_profit_usd = ?, reason = ?
-                WHERE id = ?
-                """,
-                (status, actual_profit_usd, reason, opp_id),
-            )
-        else:
-            await self._conn.execute(
-                """
-                UPDATE arbitrage_opportunities
-                SET status = ?, reason = ?
-                WHERE id = ?
-                """,
-                (status, reason, opp_id),
-            )
+            sets.append("actual_profit_usd = ?")
+            vals.append(actual_profit_usd)
+        if buy_amount_cngn is not None:
+            sets.append("buy_amount_cngn = ?")
+            vals.append(buy_amount_cngn)
+        if buy_tx_hash is not None:
+            sets.append("buy_tx_hash = ?")
+            vals.append(buy_tx_hash)
+        vals.append(opp_id)
+        await self._conn.execute(
+            f"UPDATE arbitrage_opportunities SET {', '.join(sets)} WHERE id = ?",
+            vals,
+        )
         await self._conn.commit()
 
     async def get_arbitrage_opportunities(
@@ -614,9 +627,39 @@ class Database:
                 if row["actual_profit_usd"]
                 else None,
                 reason=row["reason"],
+                buy_amount_cngn=Decimal(str(row["buy_amount_cngn"]))
+                if row["buy_amount_cngn"] is not None
+                else None,
+                buy_tx_hash=row["buy_tx_hash"],
             )
             for row in rows
         ]
+
+    async def get_arbitrage_opportunity(self, opp_id: str) -> Optional[ArbitrageOpportunity]:
+        """Fetch a single CEX-DEX arbitrage opportunity by id."""
+        cursor = await self._conn.execute(
+            "SELECT * FROM arbitrage_opportunities WHERE id = ?", (opp_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return ArbitrageOpportunity(
+            id=row["id"],
+            timestamp=row["timestamp"],
+            buy_venue=row["buy_venue"],
+            sell_venue=row["sell_venue"],
+            buy_price=Decimal(str(row["buy_price"])),
+            sell_price=Decimal(str(row["sell_price"])),
+            gross_spread_bps=row["gross_spread_bps"],
+            net_spread_bps=row["net_spread_bps"],
+            recommended_size_usd=Decimal(str(row["recommended_size_usd"])),
+            expected_profit_usd=Decimal(str(row["expected_profit_usd"])),
+            status=row["status"],
+            actual_profit_usd=Decimal(str(row["actual_profit_usd"])) if row["actual_profit_usd"] else None,
+            reason=row["reason"],
+            buy_amount_cngn=Decimal(str(row["buy_amount_cngn"])) if row["buy_amount_cngn"] is not None else None,
+            buy_tx_hash=row["buy_tx_hash"],
+        )
 
     async def insert_dex_arbitrage_opportunity(self, opp: DexArbOpportunity):
         """Insert a detected DEX arbitrage opportunity."""
