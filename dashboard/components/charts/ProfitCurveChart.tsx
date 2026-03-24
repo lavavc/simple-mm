@@ -7,23 +7,18 @@ import { Activity } from 'lucide-react';
 
 export interface CurvePoint {
     size: number;
-    base_to_bsc?: {
+    base_to_bsc: {
         cngn_acquired: number;
         profit: number;
         profit_after_slippage: number;
         min_acceptable_usd: number;
     };
-    bsc_to_base?: {
+    bsc_to_base: {
         cngn_acquired: number;
         profit: number;
         profit_after_slippage: number;
         min_acceptable_usd: number;
     };
-    // Legacy fallback bindings
-    profit?: number;
-    profit_after_slippage?: number;
-    min_acceptable_usd?: number;
-    cngn_acquired?: number;
 }
 
 interface ProfitCurveChartProps {
@@ -39,30 +34,6 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
     const chartContainerRef = useRef<HTMLDivElement>(null);
     const [hoverData, setHoverData] = useState<CurvePoint | null>(null);
     const [hoverPos, setHoverPos] = useState<{x: number, y: number} | null>(null);
-
-    const isBaseToBsc = direction === 'UNI_BASE_TO_UNI_BSC_DELTA_BALANCE';
-    const isBscToBase = direction === 'UNI_BSC_TO_UNI_BASE_DELTA_BALANCE';
-    const isQuidaxToBsc = direction === 'QUIDAX_TO_UNI_BSC';
-    const isQuidaxToBase = direction === 'QUIDAX_TO_UNI_BASE';
-    const isBscToQuidax = direction === 'UNI_BSC_TO_QUIDAX';
-    const isBaseToQuidax = direction === 'UNI_BASE_TO_QUIDAX';
-
-    let trajectoryText = isBaseToBsc ? 'Base → BSC' : 'BSC → Base';
-    let acquireVenue = isBaseToBsc ? 'Uni Base' : 'Uni BSC';
-    
-    if (isQuidaxToBsc) {
-        trajectoryText = 'Quidax → BSC';
-        acquireVenue = 'Quidax L2';
-    } else if (isQuidaxToBase) {
-        trajectoryText = 'Quidax → Base';
-        acquireVenue = 'Quidax L2';
-    } else if (isBscToQuidax) {
-        trajectoryText = 'BSC → Quidax';
-        acquireVenue = 'Uni BSC';
-    } else if (isBaseToQuidax) {
-        trajectoryText = 'Base → Quidax';
-        acquireVenue = 'Uni Base';
-    }
 
     useEffect(() => {
         if (!chartContainerRef.current || isSyncing || !data || data.length === 0) return;
@@ -134,18 +105,16 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
             priceFormat: { type: 'price', precision: 4, minMove: 0.0001 },
         });
 
-        const d_bsc = data.map(d => ({ time: d.size as Time, value: d.base_to_bsc ? d.base_to_bsc.profit : (d.profit || 0) }));
-        const d_bsc_floor = data.map(d => ({ time: d.size as Time, value: d.base_to_bsc ? d.base_to_bsc.profit_after_slippage : (d.profit_after_slippage || 0) }));
-        
-        const d_base = data.map(d => ({ time: d.size as Time, value: d.bsc_to_base ? d.bsc_to_base.profit : (d.profit || 0) }));
-        const d_base_floor = data.map(d => ({ time: d.size as Time, value: d.bsc_to_base ? d.bsc_to_base.profit_after_slippage : (d.profit_after_slippage || 0) }));
+        const d_bsc = data.map(d => ({ time: d.size as Time, value: d.base_to_bsc.profit }));
+        const d_bsc_floor = data.map(d => ({ time: d.size as Time, value: d.base_to_bsc.profit_after_slippage }));
+
+        const d_base = data.map(d => ({ time: d.size as Time, value: d.bsc_to_base.profit }));
+        const d_base_floor = data.map(d => ({ time: d.size as Time, value: d.bsc_to_base.profit_after_slippage }));
 
         bscSeries.setData(d_bsc);
         bscFloorSeries.setData(d_bsc_floor);
-        if (data[0]?.bsc_to_base) {
-            baseSeries.setData(d_base);
-            baseFloorSeries.setData(d_base_floor);
-        }
+        baseSeries.setData(d_base);
+        baseFloorSeries.setData(d_base_floor);
 
         bscSeries.createPriceLine({
             price: 0,
@@ -322,17 +291,6 @@ export function ProfitCurveChart({ data, optimalSize, maxProfit, isSyncing, dire
                                 </div>
                             )}
                             
-                            {/* Fallback for legacy single curve display */}
-                            {!hoverData.base_to_bsc && !hoverData.bsc_to_base && (
-                                <div className="space-y-1.5">
-                                   <div className="flex items-center justify-between mb-2">
-                                     <span className="text-[10px] font-mono text-blue-400 font-bold uppercase tracking-widest">Target Path</span>
-                                     <span className={`text-[11px] font-mono font-bold ${(hoverData.profit || 0) >= 0 ? 'text-emerald-400' : 'text-white'}`}>
-                                        {(hoverData.profit || 0) >= 0 ? '+' : ''}${(hoverData.profit || 0).toFixed(2)}
-                                     </span>
-                                   </div>
-                                </div>
-                            )}
                         </div>
                     </div>
                 )}

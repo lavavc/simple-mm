@@ -6,10 +6,8 @@ import { useAccountBalances } from '@/lib/hooks/useQueries';
 import { QuidaxOrderBook } from '../orderbook/QuidaxOrderBook';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Crosshair, Zap, Activity, ArrowRight, ArrowRightLeft, AlertTriangle } from 'lucide-react';
+import { Zap, ArrowRight, ArrowRightLeft, AlertTriangle } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { ProfitCurveChart, type CurvePoint } from '@/components/charts/ProfitCurveChart';
 import { OrderBookDepthChart } from '@/components/charts/OrderBookDepthChart';
 
 
@@ -209,132 +207,6 @@ function TargetEngine({ data, isSyncing, arb }: { data: DexArbData | null, isSyn
                 </div>
             </CardContent>
         </Card>
-    );
-}
-
-// Replaces ExecutionCrossfire with the actual ProfitCurveChart and real Arbitrage metrics
-function RealExecutionCrossfire({ data, isSyncing, onHoverPoint }: { data: DexArbData | null, isSyncing: boolean, onHoverPoint: (pt: CurvePoint | null) => void }) {
-    
-    const profitUsd = data?.optimal_arb?.expected_profit_usd || 0;
-    const optimalSize = data?.optimal_arb?.optimal_size_usd || 0;
-    const bps = data?.optimal_arb?.net_spread_bps || 0;
-    
-    const isProfitable = profitUsd > 0;
-
-    return (
-        <div className="flex flex-col items-center justify-center w-full max-w-[440px] h-[560px] relative px-4 text-center mt-6 xl:mt-0 z-10">
-            
-            {/* Connection Lines (Visible on large screens) */}
-            <div className="hidden xl:block absolute top-[25%] left-[-100px] w-[100px] h-px bg-gradient-to-r from-emerald-500/0 via-emerald-500/50 to-emerald-500/0" />
-            <div className="hidden xl:block absolute top-[25%] right-[-100px] w-[100px] h-px bg-gradient-to-r from-blue-500/0 via-blue-500/50 to-blue-500/0" />
-            
-            <div className="h-10 flex items-center justify-center mb-4">
-                <div className="relative">
-                    <Crosshair className={`h-10 w-10 ${isProfitable && !isSyncing ? 'text-white/10' : 'text-white/5'}`} />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                        {isSyncing ? (
-                             <div className="h-2 w-2 bg-yellow-400 rounded-full animate-pulse" />
-                        ) : isProfitable ? (
-                             <div className="h-2 w-2 bg-emerald-400 rounded-full shadow-[0_0_15px_rgba(52,211,153,1)]" />
-                        ) : (
-                             <div className="h-1.5 w-1.5 bg-white/20 rounded-full" />
-                        )}
-                    </div>
-                </div>
-            </div>
-
-            <div className="space-y-1 mb-6">
-                {isSyncing ? (
-                     <>
-                        <h3 className="text-[10px] font-bold tracking-[0.3em] uppercase text-yellow-500/70 animate-pulse">Scanning Liquidity...</h3>
-                        <div className="text-3xl font-mono text-white/30 font-bold tracking-tighter">
-                            ---- <span className="text-sm text-white/20 font-medium tracking-widest">BPS</span>
-                        </div>
-                     </>
-                ) : isProfitable ? (
-                     <>
-                        <h3 className="text-[10px] font-bold tracking-[0.3em] uppercase text-emerald-500/70">Convergence Detected</h3>
-                        <div className="text-3xl font-mono text-white font-bold tracking-tighter">
-                            +{bps} <span className="text-sm text-white/30 font-medium tracking-widest">BPS</span>
-                        </div>
-                     </>
-                ) : (
-                     <>
-                        <h3 className="text-[10px] font-bold tracking-[0.3em] uppercase text-red-500/70">Negative Spread</h3>
-                        <div className="text-3xl font-mono text-white/50 font-bold tracking-tighter">
-                            {bps} <span className="text-sm text-white/30 font-medium tracking-widest">BPS</span>
-                        </div>
-                     </>
-                )}
-            </div>
-
-            {/* Real Chart */}
-            <div className="w-full bg-black/40 border border-white/[0.05] rounded-sm p-4 mb-4 relative overflow-hidden">
-                <div className="text-[9px] text-white/40 uppercase tracking-widest text-left flex items-center gap-2 mb-2">
-                    <Activity className={`h-3 w-3 ${isProfitable ? 'text-emerald-500/50' : 'text-white/20'}`} />
-                    DEX Profit Curve Sweep
-                </div>
-                
-                <div className="w-full h-32 relative mx-[-8px]">
-                    <ProfitCurveChart 
-                        data={data?.curve_cex_to_dex || []} 
-                        optimalSize={optimalSize} 
-                        maxProfit={profitUsd}
-                        isSyncing={isSyncing}
-                        direction={data?.optimal_arb?.direction || ''}
-                        onHoverPoint={onHoverPoint}
-                    />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 mt-6 text-left">
-                     <div>
-                         <div className="text-[9px] text-white/40 uppercase tracking-widest mb-1">Ticket Max</div>
-                         <div className="text-sm font-mono text-white">${formatNumber(optimalSize, 2)}</div>
-                     </div>
-                     <div>
-                         <div className="text-[9px] text-white/40 uppercase tracking-widest mb-1">Net Yield</div>
-                         <div className={`text-sm font-mono ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>
-                             {isProfitable ? '+' : ''}${formatNumber(profitUsd, 2)}
-                         </div>
-                     </div>
-                </div>
-            </div>
-            
-            <div className="w-full grid grid-cols-2 gap-3 mb-4">
-                <div className="bg-black/20 border border-white/5 rounded-sm p-2 flex justify-between items-center">
-                     <span className="text-[9px] font-mono tracking-widest uppercase text-white/40">Gas Est.</span>
-                     <span className="text-[10px] font-mono text-white/80">${formatNumber(data?.optimal_arb?.gas_usd || 0, 2)}</span>
-                </div>
-                <div className="bg-black/20 border border-white/5 rounded-sm p-2 flex justify-between items-center">
-                     <span className="text-[9px] font-mono tracking-widest uppercase text-white/40">Slippage</span>
-                     <span className="text-[10px] font-mono text-yellow-500/80">{data?.optimal_arb?.slippage_tolerance_bps ? (data.optimal_arb.slippage_tolerance_bps / 100).toFixed(2) : '0.10'}%</span>
-                </div>
-            </div>
-
-            <Button 
-                disabled={!isProfitable || isSyncing}
-                className={`w-full h-12 font-mono text-xs uppercase tracking-[0.2em] transition-all group overflow-hidden relative ${
-                    isProfitable 
-                      ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-sm' 
-                      : 'bg-white/5 text-white/20 border border-white/10 rounded-sm'
-                }`}
-            >
-                <span className="relative z-10 flex items-center justify-center gap-2">
-                    <Zap className={`h-4 w-4 ${isProfitable ? 'fill-emerald-400' : ''}`} />
-                    {isProfitable ? 'Execute Sequence' : 'Awaiting Convergence'}
-                </span>
-                {isProfitable && (
-                    <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/0 via-emerald-500/10 to-emerald-500/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
-                )}
-            </Button>
-            
-            <div className="mt-4 flex items-center justify-between w-full text-[9px] font-mono tracking-widest uppercase">
-                <div className="flex items-center gap-1.5 text-white/30">
-                    <div className={`h-1.5 w-1.5 rounded-full ${isSyncing ? 'bg-yellow-500/50 animate-pulse' : 'bg-emerald-500/50'}`} />
-                    {isSyncing ? 'SYNCING...' : 'LIVE WS: DEX CURVE'}
-                </div>
-            </div>
-        </div>
     );
 }
 

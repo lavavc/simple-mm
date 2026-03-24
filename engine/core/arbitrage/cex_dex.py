@@ -246,15 +246,17 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
         curve_cex_to_dex.append({
             "size": float(size),
             "quidax_levels": cx_tr_q,
-            "bsc": {
+            "base_to_bsc": {
                 "cngn_acquired": float(cngn_q),
                 "profit": float(out_bsc_q - inv),
+                "profit_after_slippage": float(out_bsc_q * slippage_multiplier - inv),
                 "min_acceptable_usd": float(out_bsc_q * slippage_multiplier),
                 "usdt_out": float(out_bsc_q),
             },
-            "base": {
+            "bsc_to_base": {
                 "cngn_acquired": float(cngn_q),
                 "profit": float(out_base_q - inv),
+                "profit_after_slippage": float(out_base_q * slippage_multiplier - inv),
                 "min_acceptable_usd": float(out_base_q * slippage_multiplier),
                 "usdt_out": float(out_base_q),
             },
@@ -270,15 +272,17 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
         curve_dex_to_cex.append({
             "size": float(size),
             "quidax_levels": cx_tr_bsc_d if cx_tr_bsc_d else cx_tr_base_d,
-            "bsc": {
+            "base_to_bsc": {
                 "cngn_acquired": float(cngn_bsc_d),
                 "profit": float(out_bsc_d - inv),
+                "profit_after_slippage": float(out_bsc_d * slippage_multiplier - inv),
                 "min_acceptable_usd": float(out_bsc_d * slippage_multiplier),
                 "usdt_out": float(out_bsc_d),
             },
-            "base": {
+            "bsc_to_base": {
                 "cngn_acquired": float(cngn_base_d),
                 "profit": float(out_base_d - inv),
+                "profit_after_slippage": float(out_base_d * slippage_multiplier - inv),
                 "min_acceptable_usd": float(out_base_d * slippage_multiplier),
                 "usdt_out": float(out_base_d),
             },

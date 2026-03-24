@@ -5,15 +5,17 @@ import { createChart, ColorType, Time } from 'lightweight-charts';
 
 export interface CurvePointV2 {
   size: number;
-  bsc: {
+  base_to_bsc: {
     cngn_acquired: number;
     profit: number;
+    profit_after_slippage: number;
     min_acceptable_usd: number;
     usdt_out: number;
   };
-  base: {
+  bsc_to_base: {
     cngn_acquired: number;
     profit: number;
+    profit_after_slippage: number;
     min_acceptable_usd: number;
     usdt_out: number;
   };
@@ -47,10 +49,10 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
       const t = point.size as Time;
       const usdIn = point.size;
 
-      const bscProfit = point.bsc?.profit ?? 0;
-      const baseProfit = point.base?.profit ?? 0;
-      const bscMin = point.bsc?.min_acceptable_usd ?? usdIn;
-      const baseMin = point.base?.min_acceptable_usd ?? usdIn;
+      const bscProfit = point.base_to_bsc?.profit ?? 0;
+      const baseProfit = point.bsc_to_base?.profit ?? 0;
+      const bscMin = point.base_to_bsc?.min_acceptable_usd ?? usdIn;
+      const baseMin = point.bsc_to_base?.min_acceptable_usd ?? usdIn;
 
       bscPoints.push({ time: t, value: bscProfit });
       bscSecondaryPoints.push({ time: t, value: bscMin - usdIn });
@@ -122,8 +124,8 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
     if (optimalSize && optimalSize > 0) {
       const optCurvePoint = curveData.find(d => d.size >= optimalSize) || curveData[curveData.length - 1];
       if (optCurvePoint) {
-        const bscProfit = optCurvePoint.bsc?.profit ?? Number.NEGATIVE_INFINITY;
-        const baseProfit = optCurvePoint.base?.profit ?? Number.NEGATIVE_INFINITY;
+        const bscProfit = optCurvePoint.base_to_bsc?.profit ?? Number.NEGATIVE_INFINITY;
+        const baseProfit = optCurvePoint.bsc_to_base?.profit ?? Number.NEGATIVE_INFINITY;
 
         const winningRoute =
           bscProfit >= baseProfit
@@ -259,7 +261,7 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
         <span className="text-white/20 uppercase tracking-widest">X: Size (USD) — Y: Expected Profit (USD)</span>
       </div>
 
-      {hoverData && hoverPos && hoverData.bsc && hoverData.base && (
+      {hoverData && hoverPos && hoverData.base_to_bsc && hoverData.bsc_to_base && (
         <div 
           className="absolute z-50 bg-[#141923]/95 backdrop-blur-md border border-white/5 rounded-sm shadow-2xl pointer-events-none p-5 min-w-[320px]"
           style={{ left: hoverPos.x, top: hoverPos.y }}
@@ -274,13 +276,13 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
             <div className="space-y-1.5">
                <div className="flex items-center justify-between mb-2">
                  <span className="text-[10px] font-mono text-blue-400 font-bold uppercase tracking-widest">UNISWAP BSC</span>
-                 <span className={`text-[11px] font-mono font-bold ${hoverData.bsc.profit >= 0 ? 'text-emerald-400' : 'text-white'}`}>
-                    {hoverData.bsc.profit >= 0 ? '+' : ''}${hoverData.bsc.profit.toFixed(2)}
+                 <span className={`text-[11px] font-mono font-bold ${hoverData.base_to_bsc.profit >= 0 ? 'text-emerald-400' : 'text-white'}`}>
+                    {hoverData.base_to_bsc.profit >= 0 ? '+' : ''}${hoverData.base_to_bsc.profit.toFixed(2)}
                  </span>
                </div>
                <div className="flex items-center justify-between text-[10px] font-mono text-white/50 border-white/5 pl-2 ml-1 pt-1 border-t border-dashed mt-1">
                  <span className="flex items-center gap-1.5"><span className="h-1 w-1 bg-orange-500 rounded-full" /> Guaranteed Floor</span>
-                 <span className="text-orange-400">${hoverData.bsc.min_acceptable_usd.toFixed(2)}</span>
+                 <span className="text-orange-400">${hoverData.base_to_bsc.min_acceptable_usd.toFixed(2)}</span>
                </div>
             </div>
 
@@ -288,13 +290,13 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
             <div className="space-y-1.5 pt-2 border-t border-white/5">
                <div className="flex items-center justify-between mb-2">
                  <span className="text-[10px] font-mono text-violet-400 font-bold uppercase tracking-widest">UNISWAP BASE</span>
-                 <span className={`text-[11px] font-mono font-bold ${hoverData.base.profit >= 0 ? 'text-emerald-400' : 'text-white'}`}>
-                    {hoverData.base.profit >= 0 ? '+' : ''}${hoverData.base.profit.toFixed(2)}
+                 <span className={`text-[11px] font-mono font-bold ${hoverData.bsc_to_base.profit >= 0 ? 'text-emerald-400' : 'text-white'}`}>
+                    {hoverData.bsc_to_base.profit >= 0 ? '+' : ''}${hoverData.bsc_to_base.profit.toFixed(2)}
                  </span>
                </div>
                <div className="flex items-center justify-between text-[10px] font-mono text-white/50 border-white/5 pl-2 ml-1 pt-1 border-t border-dashed mt-1">
                  <span className="flex items-center gap-1.5"><span className="h-1 w-1 bg-orange-500 rounded-full" /> Guaranteed Floor</span>
-                 <span className="text-orange-400">${hoverData.base.min_acceptable_usd.toFixed(2)}</span>
+                 <span className="text-orange-400">${hoverData.bsc_to_base.min_acceptable_usd.toFixed(2)}</span>
                </div>
             </div>
 
@@ -304,7 +306,7 @@ export function OrderBookDepthChart({ curveCexToDex, curveDexToCex, direction, o
                     <span className="text-white/40 uppercase tracking-widest flex items-center gap-1.5">
                        <span className="h-1 w-1 bg-purple-500 rounded-full" /> cNGN Transferred
                     </span>
-                    <span className="text-white font-bold">{hoverData.bsc.cngn_acquired.toLocaleString(undefined, { maximumFractionDigits: 0 })} cNGN</span>
+                    <span className="text-white font-bold">{hoverData.base_to_bsc.cngn_acquired.toLocaleString(undefined, { maximumFractionDigits: 0 })} cNGN</span>
                 </div>
             </div>
           </div>
