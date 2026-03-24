@@ -482,8 +482,9 @@ class ArbitrageEngine:
                 buy_amount_cngn=buy_trade.amount,
             )
 
+            # Sell the cNGN actually received from the buy, not the pre-buy estimate.
             sell_trade = await self.executor.execute_dex_sell(
-                sell_venue_name, planned_sell_cngn, min_out_usd, opp_id
+                sell_venue_name, buy_trade.amount, min_out_usd, opp_id
             )
 
             if not sell_trade or sell_trade.status == "failed":
@@ -630,7 +631,7 @@ class ArbitrageEngine:
 
         # Path 1: simulate the original sell — if it passes, retry it.
         can_retry_sell = False
-        planned_sell_cngn = opp.planned_sell_cngn or opp.cngn_transferred
+        planned_sell_cngn = opp.planned_sell_cngn if opp.planned_sell_cngn is not None else opp.cngn_transferred
         if hasattr(sell_venue, "simulate_swap"):
             sell_amount_raw = int(planned_sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
             sell_sim_err = await loop.run_in_executor(

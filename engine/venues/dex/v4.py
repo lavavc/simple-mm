@@ -25,7 +25,6 @@ _V4_ACTION_TAKE_ALL = 0x0F
 
 _DEFAULT_APPROVAL_GAS = 100000
 _DEFAULT_PERMIT2_APPROVAL_GAS = 120000
-_DEFAULT_SWAP_GAS = 220000
 _PERMIT2_MAX_AMOUNT = (1 << 160) - 1
 _PERMIT2_EXPIRATION = (1 << 48) - 1
 
@@ -315,7 +314,6 @@ class BaseV4DexAdapter(VenueAdapter):
         v4_input = encode(["bytes", "bytes[]"], [actions, params])
         tx_params = self._get_tx_params(self.trade_account, block=block)
         tx_params["value"] = 0
-        tx_params["gas"] = _DEFAULT_SWAP_GAS
         tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
         return tx, deadline
 
@@ -347,6 +345,9 @@ class BaseV4DexAdapter(VenueAdapter):
         )
 
         tx, deadline = self._build_swap_tx(token_in, amount_in, min_amount_out)
+        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
+        tx["gas"] = int(estimated * 1.2)
+        logger.info("v4_swap_gas_estimated", venue=self.name, estimated=estimated, gas_limit=tx["gas"])
         return await self._send_transaction(tx, self.trade_account)
 
     def _resolve_pool_key(self) -> tuple[str, str, int, int, str]:
