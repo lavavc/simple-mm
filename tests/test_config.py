@@ -36,7 +36,7 @@ class TestSettings:
     def test_arbitrage_defaults(self):
         s = Settings()
         assert s.arbitrage_min_profit_usd == 0.05
-        assert s.arbitrage_max_single_trade_usd == 20.0
+        assert s.arbitrage_max_single_trade_usd == 100.0
 
     def test_scheduler_intervals(self):
         s = Settings()
