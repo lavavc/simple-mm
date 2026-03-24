@@ -460,6 +460,11 @@ class ArbitrageEngine:
                 (opp_id,)
             )
             await db._conn.commit()
+            await db.update_dex_arbitrage_execution_state(
+                opp_id,
+                status="executing",
+                planned_sell_cngn=planned_sell_cngn,
+            )
 
             buy_trade = await self.executor.execute_dex_buy(buy_venue_name, size_usd, opp_id)
 
@@ -625,8 +630,9 @@ class ArbitrageEngine:
 
         # Path 1: simulate the original sell — if it passes, retry it.
         can_retry_sell = False
+        planned_sell_cngn = opp.planned_sell_cngn or opp.cngn_transferred
         if hasattr(sell_venue, "simulate_swap"):
-            sell_amount_raw = int(opp.cngn_transferred * Decimal(10 ** sell_venue.cngn_decimals))
+            sell_amount_raw = int(planned_sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
             sell_sim_err = await loop.run_in_executor(
                 None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
             )
@@ -634,8 +640,8 @@ class ArbitrageEngine:
 
         if can_retry_sell:
             logger.info("dex_dex_recovery_retrying_sell", opp_id=opp_id, sell_venue=sell_venue_name,
-                        amount_cngn=float(opp.cngn_transferred))
-            sell_trade = await self.executor.execute_dex_sell(sell_venue_name, opp.cngn_transferred, Decimal("0"), opp_id)
+                        amount_cngn=float(planned_sell_cngn))
+            sell_trade = await self.executor.execute_dex_sell(sell_venue_name, planned_sell_cngn, Decimal("0"), opp_id)
             if sell_trade and sell_trade.status != "failed":
                 actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0")) - opp.optimal_size_usd
                 await db.update_dex_arbitrage_execution_state(opp_id, status="completed",

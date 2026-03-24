@@ -93,7 +93,12 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
     )
 
 
-def _make_opp(opp_id, status="buy_filled", buy_amount_cngn=Decimal("798000")):
+def _make_opp(
+    opp_id,
+    status="buy_filled",
+    buy_amount_cngn=Decimal("798000"),
+    planned_sell_cngn=None,
+):
     return DexArbOpportunity(
         id=opp_id,
         timestamp=int(time.time() * 1000),
@@ -106,6 +111,7 @@ def _make_opp(opp_id, status="buy_filled", buy_amount_cngn=Decimal("798000")):
         net_spread_bps=24,
         buy_tx_hash="0xbuytx",
         buy_amount_cngn=buy_amount_cngn,
+        planned_sell_cngn=planned_sell_cngn,
     )
 
 
@@ -275,10 +281,19 @@ class TestRecovery:
         venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
 
         opp_id = "opp-recover-1"
-        opp = _make_opp(opp_id, status="half_open", buy_amount_cngn=Decimal("798000"))
+        opp = _make_opp(
+            opp_id,
+            status="half_open",
+            buy_amount_cngn=Decimal("798000"),
+            planned_sell_cngn=Decimal("140000"),
+        )
         await test_db.insert_dex_arbitrage_opportunity(opp)
-        await test_db.update_dex_arbitrage_execution_state(opp_id, status="half_open",
-                                                           buy_amount_cngn=Decimal("798000"))
+        await test_db.update_dex_arbitrage_execution_state(
+            opp_id,
+            status="half_open",
+            buy_amount_cngn=Decimal("798000"),
+            planned_sell_cngn=Decimal("140000"),
+        )
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
@@ -286,6 +301,8 @@ class TestRecovery:
 
         assert result["method"] == "retry_sell"
         assert result["status"] == "completed"
+        _, amount_in, _ = sell_venue.swap_calls[0]
+        assert amount_in == int(Decimal("140000") * Decimal(10 ** sell_venue.cngn_decimals))
         done = await test_db.get_dex_arbitrage_opportunity(opp_id)
         assert done.status == "completed"
         assert done.actual_profit_usd is not None
