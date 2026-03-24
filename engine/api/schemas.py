@@ -237,9 +237,11 @@ class ArbitrageOpportunity(BaseModel):
     net_spread_bps: int  # After estimated fees
     recommended_size_usd: Decimal
     expected_profit_usd: Decimal
-    status: Literal["detected", "executing", "completed", "abandoned", "expired"]
+    status: Literal["detected", "executing", "completed", "abandoned", "expired", "half_open"]
     actual_profit_usd: Optional[Decimal] = None
     reason: Optional[str] = None  # Why it was abandoned/expired
+    buy_amount_cngn: Optional[Decimal] = None
+    buy_tx_hash: Optional[str] = None
 
 
 class DexArbOpportunity(BaseModel):

@@ -267,15 +267,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _arbitrage_engine:
             await query.edit_message_text("❌ Arbitrage engine not configured.")
             return
-        await query.edit_message_text(f"⏳ Retrying sell leg for {opp_id}...")
+        await query.edit_message_text(f"⏳ Recovering {opp_id}...")
         try:
-            result = await _arbitrage_engine.recover_dex_half_open(opp_id)
-            method = "sell retried" if result["method"] == "retry_sell" else "buy reversed"
-            profit = result["profit_usd"]
-            sign = "+" if profit >= 0 else ""
-            await query.message.reply_text(
-                f"✅ Recovered ({method}): tx {result['sell_tx_hash']}, P&L {sign}${profit:.2f}"
-            )
+            try:
+                result = await _arbitrage_engine.recover_dex_half_open(opp_id)
+                method = "sell retried" if result["method"] == "retry_sell" else "buy reversed"
+                profit = result["profit_usd"]
+                sign = "+" if profit >= 0 else ""
+                await query.message.reply_text(
+                    f"✅ Recovered DEX-DEX ({method}): tx {result['sell_tx_hash']}, P&L {sign}${profit:.2f}"
+                )
+            except ValueError as e:
+                if "Unknown DEX arbitrage opportunity" not in str(e):
+                    raise
+                result = await _arbitrage_engine.recover_cex_half_open(opp_id)
+                profit = result["profit_usd"]
+                sign = "+" if profit >= 0 else ""
+                method = result["method"].replace("_", " ")
+                await query.message.reply_text(
+                    f"✅ Recovered CEX-DEX ({method}): P&L {sign}${profit:.2f}"
+                )
         except Exception as e:
             await query.message.reply_text(f"❌ Recovery failed: {e}")
 

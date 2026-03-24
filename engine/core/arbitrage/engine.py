@@ -241,11 +241,20 @@ class ArbitrageEngine:
                 err = (sell_trade.error if sell_trade else None) or "sell failed"
                 buy_tx = buy_trade.tx_hash or ""
                 logger.error("cex_dex_half_open", direction=direction, buy_tx=buy_tx, sell_error=err)
+                await db.update_arbitrage_opportunity(
+                    opp_id, status="half_open", reason=f"HALF_OPEN:{buy_tx}:{err}",
+                    buy_amount_cngn=float(buy_trade.amount),
+                    buy_tx_hash=buy_tx or None,
+                )
+                self.inventory.trip_circuit_breaker(f"CEX-DEX half-open: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
-                await db.update_arbitrage_opportunity(opp_id, status="abandoned",
-                                                      reason=f"HALF_OPEN:{buy_tx}:{err}")
                 self.broadcast({"type": "alert", "severity": "critical",
-                               "message": f"Half-open CEX-DEX arb {opp_id}: buy {buy_tx} ok, sell failed: {err}"})
+                               "message": (
+                                   f"Half-open CEX-DEX arb {opp_id} ({direction}): "
+                                   f"buy on {buy_venue_name} ok (tx {buy_tx}), "
+                                   f"sell on {sell_venue_name} failed: {err}. "
+                                   f"Recover: /recover {opp_id}"
+                               )})
                 return
 
             actual_profit = (
@@ -684,6 +693,99 @@ class ArbitrageEngine:
                     sell_tx_hash=reverse_trade.tx_hash, profit_usd=float(actual_loss))
         return {"status": "completed", "method": "reverse_buy", "opp_id": opp_id,
                 "sell_tx_hash": reverse_trade.tx_hash, "profit_usd": float(actual_loss)}
+
+    async def recover_cex_half_open(self, opp_id: str) -> dict:
+        """Recover a half-open CEX-DEX arb.
+
+        Case A (Quidax buy succeeded, DEX sell failed): reverse by selling cNGN back on Quidax.
+        Case B (DEX buy succeeded, Quidax sell failed): place_market_order already exhausted 5
+            retries internally; surface the error and require manual intervention.
+        """
+        if self._arb_executing:
+            raise ValueError("execution in progress")
+        self._arb_executing = True
+        try:
+            db = await get_db()
+            opp = await db.get_arbitrage_opportunity(opp_id)
+            if opp is None:
+                raise ValueError(f"Unknown CEX-DEX arbitrage opportunity: {opp_id}")
+            if opp.status != "half_open":
+                raise ValueError(f"Opportunity {opp_id} is not recoverable from status {opp.status}")
+            buy_venue_name = opp.buy_venue
+            sell_venue_name = opp.sell_venue
+            buy_is_cex = buy_venue_name == "quidax"
+            buy_amount_cngn = opp.buy_amount_cngn
+            if not buy_amount_cngn:
+                raise ValueError(
+                    f"Cannot recover {opp_id}: buy_amount_cngn not recorded "
+                    f"(old record — check buy tx {opp.buy_tx_hash} manually)"
+                )
+
+            if buy_is_cex:
+                # Case A: Quidax buy succeeded, DEX sell failed → sell cNGN back on Quidax.
+                logger.warning("cex_dex_recovery_reversing_cex_buy", opp_id=opp_id,
+                               buy_venue=buy_venue_name, amount_cngn=float(buy_amount_cngn))
+                reverse_trade = await self.executor.execute_cex_sell(
+                    buy_venue_name, buy_amount_cngn, opp.buy_price, opp_id
+                )
+                if not reverse_trade or reverse_trade.status == "failed":
+                    err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
+                    await db.update_arbitrage_opportunity(opp_id, status="half_open",
+                                                         reason=f"RECOVERY_FAILED:{err}")
+                    self.broadcast({"type": "alert", "severity": "critical",
+                                   "message": (
+                                       f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
+                                       "Manual intervention required."
+                                   )})
+                    raise ValueError(err)
+                actual_loss = (
+                    reverse_trade.amount * (reverse_trade.price or opp.buy_price)
+                    - opp.recommended_size_usd
+                )
+                await db.update_arbitrage_opportunity(opp_id, status="completed",
+                    actual_profit_usd=float(actual_loss),
+                    reason="Recovered: reversed CEX buy leg")
+                self.inventory.record_trade_complete(
+                    opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
+                )
+                logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="reverse_cex_buy",
+                            profit_usd=float(actual_loss))
+                return {"status": "completed", "method": "reverse_cex_buy", "opp_id": opp_id,
+                        "profit_usd": float(actual_loss)}
+            else:
+                # Case B: DEX buy succeeded, Quidax sell already exhausted 5 retries internally.
+                # Reverse: sell the cNGN back on the DEX buy venue to recover capital at a small loss.
+                logger.warning("cex_dex_recovery_reversing_dex_buy", opp_id=opp_id,
+                               buy_venue=buy_venue_name, amount_cngn=float(buy_amount_cngn))
+                reverse_trade = await self.executor.execute_dex_sell(
+                    buy_venue_name, buy_amount_cngn, Decimal("0"), opp_id
+                )
+                if not reverse_trade or reverse_trade.status == "failed":
+                    err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
+                    await db.update_arbitrage_opportunity(opp_id, status="half_open",
+                                                         reason=f"RECOVERY_FAILED:{err}")
+                    self.broadcast({"type": "alert", "severity": "critical",
+                                   "message": (
+                                       f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
+                                       "Manual intervention required."
+                                   )})
+                    raise ValueError(err)
+                actual_loss = (
+                    reverse_trade.amount * (reverse_trade.price or Decimal("0"))
+                    - opp.recommended_size_usd
+                )
+                await db.update_arbitrage_opportunity(opp_id, status="completed",
+                    actual_profit_usd=float(actual_loss),
+                    reason="Recovered: reversed DEX buy leg")
+                self.inventory.record_trade_complete(
+                    opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
+                )
+                logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="reverse_dex_buy",
+                            profit_usd=float(actual_loss))
+                return {"status": "completed", "method": "reverse_dex_buy", "opp_id": opp_id,
+                        "profit_usd": float(actual_loss)}
+        finally:
+            self._arb_executing = False
 
     def _reconcile_balances(self, balances: list) -> None:
         """Refresh per-account stablecoin and cNGN from the scheduler's periodic balance fetch."""
