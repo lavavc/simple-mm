@@ -11,7 +11,7 @@ from eth_abi import encode
 from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote
 from engine.core.arbitrage.engine import ArbitrageEngine
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
-from engine.core.arbitrage.executor import _clean_revert
+from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
 from engine.db.database import Database
 
 
@@ -180,3 +180,113 @@ class TestCleanRevert:
         payload = "0x08c379a0" + encode(["string"], ["INSUFFICIENT_LIQUIDITY"]).hex()
         result = _clean_revert(payload)
         assert result == "execution reverted: INSUFFICIENT_LIQUIDITY"
+
+
+# =============================================================================
+# _classify_preflight_error unit tests
+# =============================================================================
+
+class TestClassifyPreflightError:
+    def test_balance_transfer_exceeds(self):
+        assert _classify_preflight_error("execution reverted: ERC20: transfer amount exceeds balance") == "balance"
+
+    def test_balance_insufficient(self):
+        assert _classify_preflight_error("execution reverted: insufficient balance") == "balance"
+
+    def test_rpc_timeout(self):
+        assert _classify_preflight_error("Read timed out. (connect timeout=10)") == "rpc"
+
+    def test_rpc_connection_error(self):
+        assert _classify_preflight_error("ConnectionError: HTTPSConnectionPool host='rpc.example.com'") == "rpc"
+
+    def test_rpc_max_retries(self):
+        assert _classify_preflight_error("Max retries exceeded with url: /") == "rpc"
+
+    def test_permit2_expired(self):
+        assert _classify_preflight_error("execution reverted: AllowanceExpired") == "permit2"
+
+    def test_permit2_insufficient(self):
+        assert _classify_preflight_error("execution reverted: InsufficientAllowance") == "permit2"
+
+    def test_pool_paused_lok(self):
+        assert _classify_preflight_error("execution reverted: LOK") == "pool_paused"
+
+    def test_pool_not_initialized(self):
+        assert _classify_preflight_error("execution reverted: PoolNotInitialized") == "pool_paused"
+
+    def test_unknown_revert(self):
+        assert _classify_preflight_error("execution reverted: SOME_UNKNOWN_ERROR") == "unknown"
+
+    def test_none_returns_unknown(self):
+        assert _classify_preflight_error(None) == "unknown"
+
+
+# =============================================================================
+# _handle_preflight_error engine integration tests
+# =============================================================================
+
+class TestHandlePreflightError:
+    """Test that _handle_preflight_error takes the right action for each category."""
+
+    def _make_engine_for_preflight(self):
+        from engine.core.arbitrage.engine import ArbitrageEngine
+        alerts = []
+        engine = ArbitrageEngine(
+            venues={},
+            params=_params(),
+            broadcast=lambda e: alerts.append(e),
+        )
+        engine._inventory_seeded = True
+        return engine, alerts
+
+    def _cngn(self, engine, venue):
+        return engine.inventory._state.per_account_cngn.get(venue, Decimal("0"))
+
+    def _breaker(self, engine):
+        return engine.inventory.get_status_dict()["circuit_breaker_active"]
+
+    def test_balance_zeroes_inventory(self):
+        from engine.core.arbitrage.engine import _handle_preflight_error
+        engine, _ = self._make_engine_for_preflight()
+        engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
+        _handle_preflight_error(engine, "uni-base",
+                                "execution reverted: ERC20: transfer amount exceeds balance",
+                                "test_preflight")
+        assert self._cngn(engine, "uni-base") == Decimal("0")
+
+    def test_rpc_does_not_zero_inventory_and_broadcasts_warning(self):
+        from engine.core.arbitrage.engine import _handle_preflight_error
+        engine, alerts = self._make_engine_for_preflight()
+        engine.inventory.reconcile_cngn({"uni-bsc": Decimal("500")})
+        _handle_preflight_error(engine, "uni-bsc", "Read timed out.", "test_preflight")
+        assert self._cngn(engine, "uni-bsc") == Decimal("500"), "RPC error must not zero inventory"
+        assert any(a.get("severity") == "warning" and "uni-bsc" in a.get("message", "") for a in alerts)
+
+    def test_permit2_does_not_zero_inventory_and_broadcasts_critical(self):
+        from engine.core.arbitrage.engine import _handle_preflight_error
+        engine, alerts = self._make_engine_for_preflight()
+        engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
+        _handle_preflight_error(engine, "uni-base",
+                                "execution reverted: AllowanceExpired", "test_preflight")
+        assert self._cngn(engine, "uni-base") == Decimal("500"), "Permit2 error must not zero inventory"
+        assert any(a.get("severity") == "critical" for a in alerts)
+
+    def test_pool_paused_trips_circuit_breaker_and_does_not_zero_inventory(self):
+        from engine.core.arbitrage.engine import _handle_preflight_error
+        engine, alerts = self._make_engine_for_preflight()
+        engine.inventory.reconcile_cngn({"uni-bsc": Decimal("500")})
+        _handle_preflight_error(engine, "uni-bsc",
+                                "execution reverted: LOK", "test_preflight")
+        assert self._cngn(engine, "uni-bsc") == Decimal("500"), "Pool paused must not zero inventory"
+        assert self._breaker(engine) is True
+        assert any(a.get("severity") == "critical" and "uni-bsc" in a.get("message", "") for a in alerts)
+
+    def test_unknown_does_not_zero_inventory_and_does_not_trip_breaker(self):
+        from engine.core.arbitrage.engine import _handle_preflight_error
+        engine, alerts = self._make_engine_for_preflight()
+        engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
+        _handle_preflight_error(engine, "uni-base",
+                                "execution reverted: SOME_WEIRD_ERROR", "test_preflight")
+        assert self._cngn(engine, "uni-base") == Decimal("500"), "Unknown error must not zero inventory"
+        assert self._breaker(engine) is False
+        assert any(a.get("type") == "alert" for a in alerts)

@@ -32,6 +32,57 @@ _DEX_DEX_DIRECTIONS = {
 }
 
 
+def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: str, **log_ctx) -> None:
+    """Classify a simulate_swap failure and take the appropriate action.
+
+    Only a confirmed balance revert zeros the venue's cNGN inventory.
+    All other categories leave inventory intact and either broadcast a warning
+    (rpc, unknown) or trip the circuit breaker (pool_paused, permit2).
+    """
+    from engine.core.arbitrage.executor import _classify_preflight_error
+    category = _classify_preflight_error(err)
+
+    if category == "balance":
+        from decimal import Decimal
+        engine.inventory.reconcile_cngn({venue_name: Decimal("0")})
+        logger.warning(log_key, venue=venue_name, category=category, error=err, **log_ctx)
+
+    elif category == "rpc":
+        logger.warning(log_key, venue=venue_name, category=category, error=err, **log_ctx)
+        engine.broadcast({"type": "alert", "severity": "warning",
+                          "message": (
+                              f"RPC error on {venue_name} during preflight — trading skipped this cycle. "
+                              f"Check node connectivity. Error: {err}"
+                          )})
+
+    elif category == "permit2":
+        logger.error(log_key, venue=venue_name, category=category, error=err, **log_ctx)
+        engine.broadcast({"type": "alert", "severity": "critical",
+                          "message": (
+                              f"Permit2 approval missing or expired on {venue_name}. "
+                              "Approvals run automatically before each swap — reset the circuit breaker to retry. "
+                              f"Error: {err}"
+                          )})
+
+    elif category == "pool_paused":
+        engine.inventory.trip_circuit_breaker(f"Pool paused/locked on {venue_name}")
+        logger.error(log_key, venue=venue_name, category=category, error=err, **log_ctx)
+        engine.broadcast({"type": "alert", "severity": "critical",
+                          "message": (
+                              f"Pool paused or locked on {venue_name} — circuit breaker tripped. "
+                              "Investigate pool state before resetting. "
+                              f"Error: {err}"
+                          )})
+
+    else:  # unknown
+        logger.error(log_key, venue=venue_name, category=category, error=err, **log_ctx)
+        engine.broadcast({"type": "alert", "severity": "warning",
+                          "message": (
+                              f"Unrecognised preflight revert on {venue_name} — trading skipped. "
+                              f"Error: {err}"
+                          )})
+
+
 class ArbitrageEngine:
     """
     Orchestrates arbitrage detection signals into execution.
@@ -188,7 +239,7 @@ class ArbitrageEngine:
             # If the sell leg is a DEX, simulate it before placing the CEX buy.
             # A failed DEX sell after a confirmed CEX buy would leave us half-open with no recovery path.
             if not sell_is_cex:
-                from engine.core.arbitrage.executor import _clean_revert
+                from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
                 loop = asyncio.get_running_loop()
                 sell_venue = self.venues[sell_venue_name]
                 cngn_estimate = int(size_usd / quidax_price * Decimal(10 ** sell_venue.cngn_decimals))
@@ -196,9 +247,10 @@ class ArbitrageEngine:
                     None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate, 0
                 )
                 if sell_err:
-                    self.inventory.reconcile_cngn({sell_venue_name: Decimal("0")})
-                    logger.warning("cex_dex_sell_preflight_failed", direction=direction,
-                                   sell_venue=sell_venue_name, error=_clean_revert(sell_err))
+                    _handle_preflight_error(
+                        self, sell_venue_name, _clean_revert(sell_err),
+                        "cex_dex_sell_preflight_failed", direction=direction,
+                    )
                     return
 
             from engine.api.schemas import ArbitrageOpportunity as ArbOpp
@@ -436,18 +488,10 @@ class ArbitrageEngine:
                 None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, min_out_raw
             )
             if sell_err:
-                # Mark sell-side cNGN as zero so the router rejects this route on every
-                # subsequent tick until the scheduler's balance cycle restores the real value.
-                self.inventory.reconcile_cngn({sell_venue_name: Decimal("0")})
-                logger.warning(
-                    "dex_dex_sell_preflight_failed",
-                    direction=direction,
-                    buy_venue=buy_venue_name,
-                    sell_venue=sell_venue_name,
-                    size_usd=float(size_usd),
-                    sell_cngn_est=float(sell_cngn_est),
-                    min_out_usd=float(min_out_usd),
-                    error=_clean_revert(sell_err),
+                _handle_preflight_error(
+                    self, sell_venue_name, _clean_revert(sell_err),
+                    "dex_dex_sell_preflight_failed", direction=direction,
+                    sell_cngn_est=float(sell_cngn_est), min_out_usd=float(min_out_usd),
                 )
                 return
 
@@ -455,13 +499,9 @@ class ArbitrageEngine:
                 None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
             )
             if buy_err:
-                logger.warning(
-                    "dex_dex_buy_preflight_failed",
-                    direction=direction,
-                    buy_venue=buy_venue_name,
-                    sell_venue=sell_venue_name,
-                    size_usd=float(size_usd),
-                    error=_clean_revert(buy_err),
+                _handle_preflight_error(
+                    self, buy_venue_name, _clean_revert(buy_err),
+                    "dex_dex_buy_preflight_failed", direction=direction,
                 )
                 return
 

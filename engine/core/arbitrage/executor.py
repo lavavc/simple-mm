@@ -33,6 +33,43 @@ def _clean_revert(err: str | None) -> str | None:
             pass
     return cleaned
 
+_RPC_MARKERS = (
+    "connectionerror", "timeouterror", "timeout", "connection refused",
+    "httperror", "read timed out", "max retries", "connectionrefused",
+    "remotedisconnected", "broken pipe", "connection reset",
+)
+_BALANCE_MARKERS = (
+    "transfer amount exceeds balance", "insufficient balance",
+    "erc20: transfer",
+)
+_PERMIT2_MARKERS = ("allowanceexpired", "insufficientallowance")
+_POOL_PAUSED_MARKERS = ("lok", "poolnotinitialized", "paused")
+
+
+def _classify_preflight_error(err: str | None) -> str:
+    """Classify a simulate_swap error string into one of five categories.
+
+    Returns one of: "balance", "permit2", "rpc", "pool_paused", "unknown".
+    Only "balance" should zero the venue's cNGN inventory.
+    """
+    if not err:
+        return "unknown"
+    low = err.lower()
+    for m in _RPC_MARKERS:
+        if m in low:
+            return "rpc"
+    for m in _BALANCE_MARKERS:
+        if m in low:
+            return "balance"
+    for m in _PERMIT2_MARKERS:
+        if m in low:
+            return "permit2"
+    for m in _POOL_PAUSED_MARKERS:
+        if m in low:
+            return "pool_paused"
+    return "unknown"
+
+
 # Slippage tolerance applied to arb swaps (separate from LP slippage)
 _ARB_SLIPPAGE_BPS = 10  # 0.1% — matches optimizer assumption in cex_dex.py / dex_dex.py
 
