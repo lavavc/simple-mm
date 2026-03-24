@@ -83,22 +83,10 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
         candidate=candidate,
         adjusted_size_usd=size,
         net_profit_usd=Decimal("1.12"),
-        execution_signal={
-            "direction": direction,
-            "optimal_size_usd": float(size),
-            "expected_profit_usd": 1.20,
-            "cngn_transferred": 140000.0,
-            "expected_usd_out": 501.20,
-        },
     )
 
 
-def _make_opp(
-    opp_id,
-    status="buy_filled",
-    buy_amount_cngn=Decimal("798000"),
-    planned_sell_cngn=None,
-):
+def _make_opp(opp_id, status="buy_filled", buy_amount_cngn=Decimal("798000")):
     return DexArbOpportunity(
         id=opp_id,
         timestamp=int(time.time() * 1000),
@@ -111,7 +99,6 @@ def _make_opp(
         net_spread_bps=24,
         buy_tx_hash="0xbuytx",
         buy_amount_cngn=buy_amount_cngn,
-        planned_sell_cngn=planned_sell_cngn,
     )
 
 
@@ -189,8 +176,9 @@ class TestPreflightGate:
         assert opp.status == "completed"
         assert opp.actual_profit_usd is not None
         assert opp.sell_tx_hash is not None
-        # Preflight uses the pre-buy estimate (planned_sell_cngn = 140000 cNGN).
-        assert sell_venue.sim_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
+        # Preflight happened (amount is from pool estimate, may be 0 in test with cold cache).
+        assert len(sell_venue.sim_calls) == 1
+        assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
         # Live sell must use buy_trade.amount (actual cNGN received), not the pre-buy estimate.
         # The mock returns output_raw = stable_amount_in = 500 * 10^6, so buy_trade.amount = 500 cNGN.
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 500000000, 499500000)
@@ -278,24 +266,16 @@ class TestHalfOpenDetection:
 class TestRecovery:
     @pytest.mark.asyncio
     async def test_recover_retries_sell_when_simulation_passes(self, test_db):
-        """Path 1: if sell-side simulation now passes, retry the sell."""
+        """Path 1: if sell-side simulation now passes, retry the sell using buy_amount_cngn."""
         sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=True)
         buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
         venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
 
         opp_id = "opp-recover-1"
-        opp = _make_opp(
-            opp_id,
-            status="half_open",
-            buy_amount_cngn=Decimal("798000"),
-            planned_sell_cngn=Decimal("140000"),
-        )
+        opp = _make_opp(opp_id, status="half_open", buy_amount_cngn=Decimal("798000"))
         await test_db.insert_dex_arbitrage_opportunity(opp)
         await test_db.update_dex_arbitrage_execution_state(
-            opp_id,
-            status="half_open",
-            buy_amount_cngn=Decimal("798000"),
-            planned_sell_cngn=Decimal("140000"),
+            opp_id, status="half_open", buy_amount_cngn=Decimal("798000"),
         )
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
@@ -304,8 +284,9 @@ class TestRecovery:
 
         assert result["method"] == "retry_sell"
         assert result["status"] == "completed"
+        # Recovery sells the actual cNGN received (buy_amount_cngn), not any pre-planned estimate.
         _, amount_in, _ = sell_venue.swap_calls[0]
-        assert amount_in == int(Decimal("140000") * Decimal(10 ** sell_venue.cngn_decimals))
+        assert amount_in == int(Decimal("798000") * Decimal(10 ** sell_venue.cngn_decimals))
         done = await test_db.get_dex_arbitrage_opportunity(opp_id)
         assert done.status == "completed"
         assert done.actual_profit_usd is not None

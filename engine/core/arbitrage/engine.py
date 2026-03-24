@@ -396,7 +396,6 @@ class ArbitrageEngine:
         try:
             c = route.candidate
             optimal = c.signal["optimal_arb"]
-            execution = route.execution_signal or optimal
             buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
             size_usd = route.adjusted_size_usd
             slippage_bps = optimal.get("slippage_tolerance_bps", 10)
@@ -408,11 +407,14 @@ class ArbitrageEngine:
             # Catches insufficient balance, missing approvals, and any other revert before
             # we commit to the buy leg.
             from engine.core.arbitrage.executor import _clean_revert
+            from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
             loop = asyncio.get_running_loop()
             buy_venue = self.venues[buy_venue_name]
             sell_venue = self.venues[sell_venue_name]
-            planned_sell_cngn = Decimal(str(execution.get("cngn_transferred", "0")))
-            sell_amount_raw = int(planned_sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
+            # Derive sell estimate from current pool state (same cache routing used).
+            _est = estimate_dex_dex_trade(direction, size_usd)
+            sell_cngn_est = Decimal(str(_est["cngn_transferred"])) if _est else Decimal("0")
+            sell_amount_raw = int(sell_cngn_est * Decimal(10 ** sell_venue.cngn_decimals))
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
             min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
 
@@ -428,9 +430,8 @@ class ArbitrageEngine:
                     direction=direction,
                     buy_venue=buy_venue_name,
                     sell_venue=sell_venue_name,
-                    market_optimal_size_usd=float(c.optimal_size_usd),
-                    executable_size_usd=float(size_usd),
-                    planned_sell_cngn=float(planned_sell_cngn),
+                    size_usd=float(size_usd),
+                    sell_cngn_est=float(sell_cngn_est),
                     min_out_usd=float(min_out_usd),
                     error=_clean_revert(sell_err),
                 )
@@ -445,9 +446,7 @@ class ArbitrageEngine:
                     direction=direction,
                     buy_venue=buy_venue_name,
                     sell_venue=sell_venue_name,
-                    market_optimal_size_usd=float(c.optimal_size_usd),
-                    executable_size_usd=float(size_usd),
-                    planned_sell_cngn=float(planned_sell_cngn),
+                    size_usd=float(size_usd),
                     error=_clean_revert(buy_err),
                 )
                 return
@@ -455,16 +454,7 @@ class ArbitrageEngine:
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
             db = await get_db()
-            await db._conn.execute(
-                "UPDATE dex_arbitrage_opportunities SET status = 'executing' WHERE id = ?",
-                (opp_id,)
-            )
-            await db._conn.commit()
-            await db.update_dex_arbitrage_execution_state(
-                opp_id,
-                status="executing",
-                planned_sell_cngn=planned_sell_cngn,
-            )
+            await db.update_dex_arbitrage_execution_state(opp_id, status="executing")
 
             buy_trade = await self.executor.execute_dex_buy(buy_venue_name, size_usd, opp_id)
 
@@ -629,11 +619,18 @@ class ArbitrageEngine:
         from engine.core.arbitrage.executor import _clean_revert
         loop = asyncio.get_running_loop()
 
-        # Path 1: simulate the original sell — if it passes, retry it.
+        # Both paths need the actual cNGN received in the buy leg.
+        sell_cngn = opp.buy_amount_cngn
+        if not sell_cngn:
+            raise ValueError(
+                f"Cannot recover {opp_id}: buy_amount_cngn not recorded "
+                f"(old record — check buy tx {opp.buy_tx_hash} manually)"
+            )
+
+        # Path 1: simulate the sell — if it passes now, retry it.
         can_retry_sell = False
-        planned_sell_cngn = opp.planned_sell_cngn if opp.planned_sell_cngn is not None else opp.cngn_transferred
         if hasattr(sell_venue, "simulate_swap"):
-            sell_amount_raw = int(planned_sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
+            sell_amount_raw = int(sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
             sell_sim_err = await loop.run_in_executor(
                 None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
             )
@@ -641,8 +638,8 @@ class ArbitrageEngine:
 
         if can_retry_sell:
             logger.info("dex_dex_recovery_retrying_sell", opp_id=opp_id, sell_venue=sell_venue_name,
-                        amount_cngn=float(planned_sell_cngn))
-            sell_trade = await self.executor.execute_dex_sell(sell_venue_name, planned_sell_cngn, Decimal("0"), opp_id)
+                        amount_cngn=float(sell_cngn))
+            sell_trade = await self.executor.execute_dex_sell(sell_venue_name, sell_cngn, Decimal("0"), opp_id)
             if sell_trade and sell_trade.status != "failed":
                 actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0")) - opp.optimal_size_usd
                 await db.update_dex_arbitrage_execution_state(opp_id, status="completed",
@@ -658,18 +655,11 @@ class ArbitrageEngine:
                            error=sell_trade.error if sell_trade else "unknown")
 
         # Path 2: reverse the buy — sell cNGN back on the buy-side chain to recover capital.
-        # Use the stored buy_amount_cngn (actual cNGN received in the buy leg), not the live
-        # balance which may include pre-existing cNGN from LP activity or other trades.
-        cngn_to_reverse = opp.buy_amount_cngn
-        if not cngn_to_reverse:
-            raise ValueError(
-                f"Cannot reverse {opp_id}: buy_amount_cngn not recorded "
-                f"(old record — check buy tx {opp.buy_tx_hash} manually)"
-            )
-
+        # Use sell_cngn (= buy_amount_cngn), not the live balance which may include pre-existing
+        # cNGN from LP activity or other trades.
         logger.warning("dex_dex_recovery_reversing_buy", opp_id=opp_id, buy_venue=buy_venue_name,
-                       cngn_to_reverse=float(cngn_to_reverse))
-        reverse_trade = await self.executor.execute_dex_sell(buy_venue_name, cngn_to_reverse, Decimal("0"), opp_id)
+                       cngn_to_reverse=float(sell_cngn))
+        reverse_trade = await self.executor.execute_dex_sell(buy_venue_name, sell_cngn, Decimal("0"), opp_id)
 
         if not reverse_trade or reverse_trade.status == "failed":
             err = _clean_revert((reverse_trade.error if reverse_trade else None) or "reverse sell failed")

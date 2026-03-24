@@ -138,7 +138,9 @@ class TestSelectRouteNetProfit:
         if r_full and r_drained:
             assert r_full.net_profit_usd >= r_drained.net_profit_usd
 
-    def test_dex_dex_route_uses_recomputed_executable_signal(self, monkeypatch):
+    def test_dex_dex_route_recomputes_profit_at_capped_size(self, monkeypatch):
+        """For DEX-DEX, net profit is recomputed from pool math at the capped size,
+        not taken from the detection signal's unconstrained optimal."""
         inv = _make_inventory(
             per_account={"uni-bsc": 100},
             cngn_per_account={"uni-base": 1000000},
@@ -149,27 +151,20 @@ class TestSelectRouteNetProfit:
             buy_venue="uni-bsc",
             sell_venue="uni-base",
             size_usd=500.0,
-            profit_usd=50.0,
+            profit_usd=50.0,  # unconstrained optimal — overstates profit at capped size
             gas_usd=0.5,
         )
 
         def _fake_estimate(direction, investment_usd):
             assert direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
             assert investment_usd == Decimal("100")
-            return {
-                "direction": direction,
-                "optimal_size_usd": float(investment_usd),
-                "expected_profit_usd": 2.0,
-                "cngn_transferred": 140000.0,
-                "expected_usd_out": 102.0,
-            }
+            return {"expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
 
         monkeypatch.setattr(_router, "estimate_dex_dex_trade", _fake_estimate)
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
-        assert result.execution_signal is not None
-        assert Decimal(str(result.execution_signal["cngn_transferred"])) == Decimal("140000.0")
+        # net = 2.0 (recomputed at $100) - 0.5 (gas) - rebalance_cost
         assert result.net_profit_usd == Decimal("1.4")
 
 
