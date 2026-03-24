@@ -16,7 +16,7 @@ class TestSettings:
         assert s.db_path == "./data/cngn.db"
         assert s.price_update_interval == 10
         assert s.arb_detection_enabled is True
-        assert s.arb_execute_cex_dex_enabled is False
+        assert s.arb_execute_cex_dex_enabled is True
         assert s.arb_execute_dex_dex_enabled is True
 
     def test_rpc_urls_default(self):
@@ -35,7 +35,7 @@ class TestSettings:
 
     def test_arbitrage_defaults(self):
         s = Settings()
-        assert s.arbitrage_min_net_profit_bps == 50
+        assert s.arbitrage_min_profit_usd == 0.05
         assert s.arbitrage_max_single_trade_usd == 100.0
 
     def test_scheduler_intervals(self):

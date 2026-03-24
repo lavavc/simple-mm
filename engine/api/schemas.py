@@ -200,11 +200,7 @@ class ArbitrageParams(BaseModel):
     """
 
     # Detection thresholds
-    min_net_profit_bps: int = settings.arbitrage_min_net_profit_bps
-
-    # Fee estimates (in basis points)
-    dex_swap_fee_bps: int = settings.arbitrage_dex_swap_fee_bps
-    cex_taker_fee_bps: int = settings.arbitrage_cex_taker_fee_bps
+    min_profit_usd: Decimal = Decimal(str(settings.arbitrage_min_profit_usd))
 
     # Position limits
     max_single_trade_usd: Decimal = Decimal(str(settings.arbitrage_max_single_trade_usd))

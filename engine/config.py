@@ -71,15 +71,13 @@ class Settings(BaseSettings):
 
     # Arbitrage settings
     arb_detection_enabled: bool = True       # master toggle for detection
-    arb_execute_cex_dex_enabled: bool = False
+    arb_execute_cex_dex_enabled: bool = True
     arb_execute_dex_dex_enabled: bool = True
     arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
-    arbitrage_min_net_profit_bps: int = 50       # 0.5% minimum after fees
-    arbitrage_dex_swap_fee_bps: int = 30         # Fallback if on-chain fee() call fails
-    arbitrage_cex_taker_fee_bps: int = 10        # CEX taker fee (0.1%)
-    arbitrage_max_single_trade_usd: float = 100.0          # Fallback when pool reserves unavailable
+    arbitrage_min_profit_usd: float = 0.05       # Minimum net profit per trade in USD
+    arbitrage_max_single_trade_usd: float = 20.0          # Hard cap per trade
     arbitrage_max_daily_volume_usd: float = 10000.0
     arbitrage_max_inventory_imbalance_usd: float = 5000.0
     arbitrage_max_consecutive_failures: int = 3

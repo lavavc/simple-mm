@@ -42,7 +42,7 @@ def select_route(
     """
     Pick the best feasible route from candidates.
 
-    Filters: adjusted_size > 0, net_profit > 0, inventory.can_trade() passes.
+    Filters: adjusted_size > 0, net_profit >= min_profit_usd, inventory.can_trade() passes.
     Score: net_profit = expected_profit - gas - rebalance_cost_penalty.
     Tiebreak: prefer routes that reduce current inventory imbalance.
     """
@@ -50,9 +50,11 @@ def select_route(
     imbalance = inventory.state.cngn_imbalance_usd
 
     for c in candidates:
-        # Cap size to available stablecoin on the buy-side venue
-        stable_bal = inventory.state.per_account_stable.get(c.buy_venue, Decimal("0"))
-        adjusted_size = min(c.optimal_size_usd, stable_bal) if stable_bal > 0 else c.optimal_size_usd
+        # Block if buy-side stablecoin balance is unknown or zero — mirrors cNGN check below.
+        stable_bal = inventory.state.per_account_stable.get(c.buy_venue)
+        if not stable_bal:
+            continue
+        adjusted_size = min(c.optimal_size_usd, stable_bal, inventory.params.max_single_trade_usd)
 
         # Block if sell-side cNGN balance is unknown (not yet seeded) or explicitly zero.
         # Only proceed when we have a confirmed positive balance to sell.
@@ -80,7 +82,7 @@ def select_route(
         rebalance_cost = adjusted_size * Decimal(rebalance_bps) / Decimal(10000)
         net_profit = expected_profit_usd - c.gas_usd - rebalance_cost
 
-        if net_profit <= 0:
+        if net_profit < inventory.params.min_profit_usd:
             continue
 
         # Risk gate (circuit breaker, volume cap, imbalance limit, daily loss)

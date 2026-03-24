@@ -70,13 +70,11 @@ class TestSelectRouteEdgeCases:
         c = _make_candidate(profit_usd=0.05, gas_usd=0.07)
         assert select_route([c], inv) is None
 
-    def test_zero_stable_balance_still_tries(self):
-        """With no stable balance seeded, optimal_size_usd is used as-is."""
+    def test_zero_stable_balance_blocks_route(self):
+        """Unseeded buy-side stable balance must block the route — mirrors the cNGN check."""
         inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000})
-        c = _make_candidate(profit_usd=10.0, gas_usd=0.07)
-        result = select_route([c], inv)
-        assert result is not None
-        assert result.adjusted_size_usd == Decimal("500")
+        c = _make_candidate(profit_usd=10.0, gas_usd=0.07, size_usd=50.0)
+        assert select_route([c], inv) is None
 
     def test_unknown_cngn_balance_blocks_route(self):
         """A sell venue with no cNGN balance seeded must be blocked — don't trade blind."""
@@ -104,7 +102,7 @@ class TestSelectRouteEdgeCases:
         assert select_route([c], inv) is None
 
     def test_profitable_route_selected(self):
-        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000})
+        inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(profit_usd=5.0, gas_usd=0.07)
         result = select_route([c], inv)
         assert result is not None
@@ -114,7 +112,7 @@ class TestSelectRouteEdgeCases:
 
 class TestSelectRouteNetProfit:
     def test_net_profit_subtracts_gas(self):
-        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000})
+        inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(profit_usd=5.0, gas_usd=0.5)
         result = select_route([c], inv)
         # rebalance_cost = 0 when no initial seeded (fallback returns cross_chain_rebalance_bps)
@@ -171,7 +169,7 @@ class TestSelectRouteNetProfit:
 class TestSelectRouteTiebreak:
     def test_highest_net_profit_wins(self):
         """When multiple routes are profitable, the highest net profit is chosen."""
-        inv = _make_inventory(cngn_per_account={"uni-base": 5_000_000, "uni-bsc": 5_000_000})
+        inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000, "uni-bsc": 5_000_000})
         c1 = _make_candidate(direction="QUIDAX_TO_UNI_BASE", profit_usd=10.0, gas_usd=0.07)
         c2 = _make_candidate(direction="QUIDAX_TO_UNI_BSC", sell_venue="uni-bsc", profit_usd=5.0, gas_usd=0.07)
         result = select_route([c1, c2], inv)
@@ -182,6 +180,7 @@ class TestSelectRouteTiebreak:
         """When long cNGN (imbalance > threshold), prefer selling cNGN to CEX."""
         inv = _make_inventory(
             imbalance=50.0,  # above $10 threshold
+            per_account={"uni-base": 500, "quidax": 500},
             cngn_per_account={"uni-base": 5_000_000, "quidax": 5_000_000},
         )
         # sell-to-CEX direction (aligned): buy on uni-base, sell on quidax
