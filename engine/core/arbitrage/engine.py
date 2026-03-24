@@ -412,8 +412,13 @@ class ArbitrageEngine:
             buy_venue = self.venues[buy_venue_name]
             sell_venue = self.venues[sell_venue_name]
             # Derive sell estimate from current pool state (same cache routing used).
+            # If the cache is cold here the route would have been rejected at routing time,
+            # so None means something unexpected happened — abort rather than preflight with 0.
             _est = estimate_dex_dex_trade(direction, size_usd)
-            sell_cngn_est = Decimal(str(_est["cngn_transferred"])) if _est else Decimal("0")
+            if not _est:
+                logger.warning("dex_dex_pool_cache_cold_at_execution", direction=direction, size_usd=float(size_usd))
+                return
+            sell_cngn_est = Decimal(str(_est["cngn_transferred"]))
             sell_amount_raw = int(sell_cngn_est * Decimal(10 ** sell_venue.cngn_decimals))
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
             min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))

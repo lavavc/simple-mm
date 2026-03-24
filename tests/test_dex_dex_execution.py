@@ -13,6 +13,16 @@ import os
 from decimal import Decimal
 from unittest.mock import patch
 
+import engine.core.arbitrage.dex_dex as _dex_dex_module
+
+_FAKE_ESTIMATE = {"cngn_transferred": 140000.0, "expected_profit_usd": 1.2}
+
+
+@pytest.fixture(autouse=True)
+def mock_dex_dex_estimate(monkeypatch):
+    """Seed pool estimate so _execute_dex_dex doesn't abort on cold cache in unit tests."""
+    monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: _FAKE_ESTIMATE)
+
 from engine.api.schemas import ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
 from engine.core.arbitrage.engine import ArbitrageEngine
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
