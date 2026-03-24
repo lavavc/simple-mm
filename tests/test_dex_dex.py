@@ -3,7 +3,11 @@
 import pytest
 from decimal import Decimal
 
-from engine.core.arbitrage.dex_dex import find_optimal_dex_arb, _MIN_POOL_STABLE_USD
+from engine.core.arbitrage.dex_dex import (
+    _MIN_POOL_STABLE_USD,
+    estimate_dex_dex_trade,
+    find_optimal_dex_arb,
+)
 
 
 class TestFindOptimalDexArbNullCases:
@@ -114,3 +118,11 @@ class TestFindOptimalDexArbResult:
     def test_spread_bps_computed(self, seeded_pool_cache):
         result = find_optimal_dex_arb()
         assert "net_spread_bps" in result["optimal_arb"]
+
+    def test_estimate_trade_scales_with_routed_size(self, seeded_pool_cache):
+        smaller = estimate_dex_dex_trade("UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", Decimal("100"))
+        larger = estimate_dex_dex_trade("UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", Decimal("500"))
+        assert smaller is not None
+        assert larger is not None
+        assert smaller["cngn_transferred"] < larger["cngn_transferred"]
+        assert smaller["expected_usd_out"] < larger["expected_usd_out"]

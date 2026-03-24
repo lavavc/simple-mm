@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
+from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
+
 # CEX-DEX directions by their cNGN inventory effect
 _SELLS_CNGN_TO_CEX = frozenset({"UNI_BSC_TO_QUIDAX", "UNI_BASE_TO_QUIDAX"})
 _BUYS_CNGN_FROM_CEX = frozenset({"QUIDAX_TO_UNI_BSC", "QUIDAX_TO_UNI_BASE"})
@@ -64,10 +66,19 @@ def select_route(
         if adjusted_size <= 0:
             continue
 
+        expected_profit_usd = c.expected_profit_usd
+        if c.pipeline == "dex_dex":
+            # Recompute profit at capped size — detection found the unconstrained optimum,
+            # which overstates profit when inventory forces a smaller trade.
+            recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
+            if not recomputed:
+                continue
+            expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
+
         # Net profit after gas and rebalance friction
         rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)
         rebalance_cost = adjusted_size * Decimal(rebalance_bps) / Decimal(10000)
-        net_profit = c.expected_profit_usd - c.gas_usd - rebalance_cost
+        net_profit = expected_profit_usd - c.gas_usd - rebalance_cost
 
         if net_profit <= 0:
             continue

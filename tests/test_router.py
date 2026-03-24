@@ -4,6 +4,7 @@ import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+from engine.core.arbitrage import router as _router
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
 from engine.api.schemas import ArbitrageParams
 from engine.core.arbitrage.inventory import InventoryTracker
@@ -136,6 +137,35 @@ class TestSelectRouteNetProfit:
         r_drained = select_route([c], inv_drained)
         if r_full and r_drained:
             assert r_full.net_profit_usd >= r_drained.net_profit_usd
+
+    def test_dex_dex_route_recomputes_profit_at_capped_size(self, monkeypatch):
+        """For DEX-DEX, net profit is recomputed from pool math at the capped size,
+        not taken from the detection signal's unconstrained optimal."""
+        inv = _make_inventory(
+            per_account={"uni-bsc": 100},
+            cngn_per_account={"uni-base": 1000000},
+        )
+        c = _make_candidate(
+            direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
+            pipeline="dex_dex",
+            buy_venue="uni-bsc",
+            sell_venue="uni-base",
+            size_usd=500.0,
+            profit_usd=50.0,  # unconstrained optimal — overstates profit at capped size
+            gas_usd=0.5,
+        )
+
+        def _fake_estimate(direction, investment_usd):
+            assert direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
+            assert investment_usd == Decimal("100")
+            return {"expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
+
+        monkeypatch.setattr(_router, "estimate_dex_dex_trade", _fake_estimate)
+        result = select_route([c], inv)
+        assert result is not None
+        assert result.adjusted_size_usd == Decimal("100")
+        # net = 2.0 (recomputed at $100) - 0.5 (gas) - rebalance_cost
+        assert result.net_profit_usd == Decimal("1.4")
 
 
 class TestSelectRouteTiebreak:

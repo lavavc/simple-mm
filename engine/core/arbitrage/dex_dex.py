@@ -36,6 +36,46 @@ def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Deci
     return best_prof, mid, best_cngn, best_out, best_dir
 
 
+def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | None:
+    """Compute executable DEX-DEX amounts for a specific routed USD size."""
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+    if investment_usd <= 0:
+        return None
+
+    uni_bsc_sqrt, uni_bsc_liq, _, _, _, uni_bsc_fee = \
+        get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    uni_base_sqrt, uni_base_liq, _, _, _, uni_base_fee = \
+        get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
+        return None
+
+    if direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE":
+        cngn = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        usd_out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+    elif direction == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE":
+        cngn = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        usd_out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+    else:
+        return None
+
+    expected_profit = usd_out - investment_usd
+    net_spread_bps = int((expected_profit / investment_usd) * 10000) if investment_usd > 0 else 0
+    return {
+        "direction": direction,
+        "optimal_size_usd": float(investment_usd),
+        "expected_profit_usd": float(expected_profit),
+        "cngn_transferred": float(cngn),
+        "expected_usd_out": float(usd_out),
+        "net_spread_bps": net_spread_bps,
+    }
+
+
 def find_optimal_dex_arb() -> dict | None:
     """
     Fast path: ternary search across both DEX-DEX directions.
