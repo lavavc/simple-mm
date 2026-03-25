@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from eth_abi import encode
 
-from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote
+from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.engine import ArbitrageEngine
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
 from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
@@ -72,6 +72,13 @@ class FakeCexVenue:
 
 def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
     """Build a SelectedRoute for the QUIDAX_TO_UNI_BASE direction."""
+    depth = OrderBookDepth(
+        venue="quidax",
+        pair="cNGN/USDT",
+        timestamp=1700000000000,
+        bids=[OrderBookLevel(price=Decimal("1650"), amount=Decimal("1000"))],
+        asks=[OrderBookLevel(price=Decimal("1600"), amount=Decimal("1000"))],
+    )
     candidate = RouteCandidate(
         direction=direction,
         pipeline="cex_dex",
@@ -86,9 +93,16 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
                 "net_spread_bps": 30,
             },
             "prices": {"quidax": "0.00061"},
+            "depth": depth,
         },
     )
     return SelectedRoute(candidate=candidate, adjusted_size_usd=size, net_profit_usd=Decimal("1.45"))
+
+
+def _cex_dex_route_no_depth(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
+    route = _cex_dex_route(direction=direction, size=size)
+    route.candidate.signal.pop("depth", None)
+    return route
 
 
 @pytest.fixture
@@ -120,6 +134,20 @@ def _make_engine(venues, test_db):
 # =============================================================================
 
 class TestCexDexPreflightGate:
+    @pytest.mark.asyncio
+    async def test_missing_depth_aborts_before_cex_buy(self, test_db):
+        """If Quidax depth is missing, preflight must abort instead of simulating a zero sell."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_cex_dex(_cex_dex_route_no_depth(), "opp-cex-preflight-missing-depth")
+
+        assert cex_venue.buy_calls == [], "CEX buy must not be called when Quidax depth is missing"
+        assert not engine._arb_executing
+
     @pytest.mark.asyncio
     async def test_sell_preflight_fails_cex_buy_never_placed(self, test_db):
         """If DEX sell preflight fails, CEX buy must never be placed."""

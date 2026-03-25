@@ -199,7 +199,7 @@ class ArbitrageEngine:
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
-                    signal={"prices": signal["prices"], "optimal_arb": arb},
+                    signal={"prices": signal["prices"], "optimal_arb": arb, "depth": depth},
                 ))
             route = select_route(candidates, self.inventory)
             if route:
@@ -246,9 +246,20 @@ class ArbitrageEngine:
             # A failed DEX sell after a confirmed CEX buy would leave us half-open with no recovery path.
             if not sell_is_cex:
                 from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
+                from engine.core.arbitrage.cex_dex import estimate_cex_buy_cngn
                 loop = asyncio.get_running_loop()
                 sell_venue = self.venues[sell_venue_name]
-                cngn_estimate = int(size_usd / quidax_price * Decimal(10 ** sell_venue.cngn_decimals))
+                quidax_depth = c.signal.get("depth")
+                cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
+                if cngn_estimate_amount <= 0:
+                    logger.warning(
+                        "cex_dex_preflight_missing_depth_or_zero_estimate",
+                        direction=direction,
+                        size_usd=float(size_usd),
+                        sell_venue=sell_venue_name,
+                    )
+                    return
+                cngn_estimate = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
                 sell_err = await loop.run_in_executor(
                     None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate, 0
                 )
