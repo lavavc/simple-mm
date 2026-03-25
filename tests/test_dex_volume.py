@@ -145,7 +145,7 @@ def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):
 
     monkeypatch.setattr(dex_volume, "_STORE", store)
 
-    async def _boom(config, rpc_url: str, *, allow_unseeded: bool) -> None:
+    async def _boom(config, rpc_url: str):
         raise RuntimeError("fail")
 
     monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _boom)
@@ -171,8 +171,11 @@ def test_refresh_failure_does_not_leave_partial_volume_visible(monkeypatch, tmp_
 
     monkeypatch.setattr(dex_volume, "_STORE", store)
 
-    async def _partial(config, rpc_url: str, *, allow_unseeded: bool) -> None:
-        store.record("pool", Decimal("10"), timestamp_ms=now_ms, event_id="tx2:0", allow_unseeded=allow_unseeded)
+    async def _partial(config, rpc_url: str):
+        staged = dex_volume._PoolVolumeState()
+        staged.swaps.append((now_ms, Decimal("10"), "tx2:0"))
+        staged.total_usd = Decimal("10")
+        staged.event_ids.add("tx2:0")
         raise RuntimeError("midway fail")
 
     monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _partial)
@@ -188,3 +191,37 @@ def test_refresh_failure_does_not_leave_partial_volume_visible(monkeypatch, tmp_
 
     assert store.is_seeded("pool") is False
     assert store.get_24h_volume_usd("pool") == Decimal("0")
+
+
+def test_refresh_keeps_last_good_volume_visible_until_new_window_is_ready(monkeypatch, tmp_path):
+    store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
+    now_ms = int(time.time() * 1000)
+    store.record("pool", Decimal("25"), timestamp_ms=now_ms, event_id="tx1:0", allow_unseeded=True)
+    store.mark_seeded("pool")
+
+    monkeypatch.setattr(dex_volume, "_STORE", store)
+    observed: dict[str, Decimal | bool] = {}
+
+    async def _scan(config, rpc_url: str):
+        observed["seeded_during_scan"] = store.is_seeded("pool")
+        observed["volume_during_scan"] = store.get_24h_volume_usd("pool")
+        staged = dex_volume._PoolVolumeState()
+        staged.swaps.append((now_ms, Decimal("40"), "tx2:0"))
+        staged.total_usd = Decimal("40")
+        staged.event_ids.add("tx2:0")
+        return staged
+
+    monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _scan)
+    monkeypatch.setattr(dex_volume, "_rpc_candidates", lambda config: ["rpc1"])
+
+    class _Config:
+        pool_address = "pool"
+        rpc_url = "rpc1"
+        dexscreener_chain = "base"
+
+    asyncio.run(_refresh_pool(_Config()))
+
+    assert observed["seeded_during_scan"] is True
+    assert observed["volume_during_scan"] == Decimal("25")
+    assert store.is_seeded("pool") is True
+    assert store.get_24h_volume_usd("pool") == Decimal("40")

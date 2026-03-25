@@ -159,6 +159,13 @@ class RollingDexVolumeStore:
         self._evict(pool)
         self.maybe_save(force=True)
 
+    def replace_seeded(self, pool: str, state: _PoolVolumeState) -> None:
+        self.load()
+        state.seeded = True
+        self._pools[pool] = state
+        self._evict(pool)
+        self.maybe_save(force=True)
+
     def reset(self, pool: str) -> None:
         self.load()
         state = self._state(pool)
@@ -267,16 +274,15 @@ async def _find_start_block_24h_ago(w3: AsyncWeb3) -> int:
 async def _scan_pool_window_from_rpc(
     config: V4PoolReadConfig,
     rpc_url: str,
-    *,
-    allow_unseeded: bool,
-) -> None:
+) -> _PoolVolumeState:
     w3 = _make_async_w3(config, rpc_url)
     latest = await w3.eth.get_block("latest")
     latest_number = int(latest["number"])
+    state = _PoolVolumeState()
 
     start_24h_block = await _find_start_block_24h_ago(w3)
     if start_24h_block > latest_number:
-        return
+        return state
 
     block_ts_cache: dict[int, int] = {}
     chunk_size = _log_chunk_size(config)
@@ -296,33 +302,33 @@ async def _scan_pool_window_from_rpc(
                 continue
             block_number = int(log["blockNumber"])
             ts_ms = await _block_timestamp_ms(w3, block_number, block_ts_cache)
-            _STORE.record(
-                config.pool_address,
-                usd_volume,
-                timestamp_ms=ts_ms,
-                event_id=event_id_from_log(log),
-                allow_unseeded=allow_unseeded,
-            )
+            event_id = event_id_from_log(log)
+            if event_id and event_id in state.event_ids:
+                continue
+            state.swaps.append((ts_ms, usd_volume, event_id))
+            state.total_usd += usd_volume
+            if event_id:
+                state.event_ids.add(event_id)
+
+    return state
 
 
 async def _refresh_pool(config: V4PoolReadConfig) -> None:
     last_error: Exception | None = None
     was_seeded = _STORE.is_seeded(config.pool_address)
     for rpc_url in _rpc_candidates(config):
-        _STORE.reset(config.pool_address)
         try:
-            await _scan_pool_window_from_rpc(config, rpc_url, allow_unseeded=True)
+            state = await _scan_pool_window_from_rpc(config, rpc_url)
             if was_seeded:
                 logger.info("dex_volume_resync_succeeded", pool=config.pool_address, rpc=rpc_url)
             else:
                 logger.info("dex_volume_backfill_succeeded", pool=config.pool_address, rpc=rpc_url)
-            _STORE.mark_seeded(config.pool_address)
-            _STORE.maybe_save(force=True)
+            _STORE.replace_seeded(config.pool_address, state)
             return
         except Exception as exc:
-            _STORE.reset(config.pool_address)
             last_error = exc
             logger.warning("dex_volume_backfill_rpc_failed", pool=config.pool_address, rpc=rpc_url, error=str(exc))
+    _STORE.reset(config.pool_address)
     if last_error:
         raise last_error
 
