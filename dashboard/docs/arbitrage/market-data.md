@@ -5,55 +5,89 @@ order: 2
 
 ## Sources
 
-The engine pulls from four data sources continuously:
-
-**Quidax order book — REST polling**
-
-The Quidax CEX API is polled on a short interval (`price_update_interval`, default 10s) for the full order book depth on the cNGN/USDT pair. The raw bids and asks are stored in memory and passed directly into the signal layer. There is no local aggregation — we use the full order book.
-
-Quidax has two API keys: one for the arb trading account (`QUIDAX_API_KEY`) and one for the LP account (`QUIDAX_LP_API_KEY`). Market data uses neither; it hits the public depth endpoint.
+Six venues feed the price pipeline. Four contribute to fair-value calculations; two are display-only.
 
 **Bybit P2P — REST + fraud filtering**
 
-Bybit's P2P market is the primary NGN/USD reference rate. However, the first several listings on any P2P board are almost always fraudulent or manipulated — inflated to bait inattentive buyers, or undercut to poison reference data.
+Bybit's P2P market is the primary NGN/USD reference rate. The first several listings on any P2P board are almost always fraudulent or manipulated, so the engine filters before using any data:
+- The top N listings are skipped unconditionally (the most common fraud position)
+- Remaining ads are filtered by minimum completed order count, completion rate, and maximum release time
+- Outliers beyond 2% of the median are removed
+- The survivors are quantity-weighted to produce bid, ask, and mid
 
-The engine filters the Bybit feed before using it:
-- Minimum transaction count threshold (filters new/fake accounts)
-- Minimum completion rate
-- Ignores top-N listings regardless (the most common fraud position)
+The result is a fraud-resistant VWAP of the filtered mid-market. This is the primary input that determines the NGN leg of the blended price.
 
-The result is a VWAP over the filtered mid-market. This is the reference that feeds the blended price and the CEX-DEX comparison.
+**Quidax order book — REST polling**
+
+The Quidax CEX API is polled on a short interval (`price_update_interval`, default 10s) for the full order book depth on the cNGN/USDT pair. The raw bids and asks are stored in memory and passed directly into the signal layer. Market data hits the public depth endpoint; the two Quidax API keys (`QUIDAX_API_KEY`, `QUIDAX_LP_API_KEY`) are used only for trading.
 
 **Uniswap V4 pools (Base + BSC) — WebSocket**
 
-Pool state is maintained via Alchemy WebSocket subscriptions. The listener (`engine/core/arbitrage/listener.py`) subscribes to the PoolManager contract address on each chain, filtered by the V4 Swap topic and pool ID:
+Pool state is maintained via Alchemy WebSocket subscriptions. The listener subscribes to the PoolManager contract on each chain, filtered by the V4 Swap topic and pool ID:
 
 ```
 V4_SWAP_TOPIC = 0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f
 ```
 
-Each swap event carries the new sqrtPriceX96 and liquidity values inline, so the pool state cache (`_POOL_CACHE` in `pool_state.py`, keyed by pool ID) is updated with **zero RPC calls** — pure event parsing. This is what makes CEX-DEX detection latency sub-second.
+Each swap event carries the new `sqrtPriceX96` and liquidity values inline, so the pool state cache is updated with zero RPC calls. This is what makes CEX-DEX detection latency sub-second. If the cache is cold at startup, `seed_pool_states()` is called as a background task to perform the initial state fetch.
 
-If a pool event arrives and the cache is cold (e.g. first startup), `seed_pool_states()` is called as a background task to perform the initial state fetch.
+**AssetChain — WebSocket (display only)**
 
-**Blockradar — REST**
+AssetChain hosts a small cNGN/USDT pool. Its price is included in the dashboard price display but excluded from fair-value calculations — volume is negligible and including it would dilute the VWAP without improving accuracy.
 
-Blockradar provides a quote API for its fixed-rate swap system. The engine polls this for price awareness but does not currently use it as a live arb signal source.
+**Blockradar — REST (display only)**
 
-## Price Aggregation and Normalisation
+Blockradar provides a quote API for its fixed-rate swap system. Its price is included in the dashboard display but excluded from VWAP and TWAP fair-value calculations — it is a rate-setter, not a price-taker, so it reflects where Blockradar wants to trade, not where the market is.
 
-All venues quote prices in different units. The normaliser converts everything to a common basis: **USD per 1 cNGN**.
+## Price Normalisation
 
-| Source | Raw format | Conversion |
-|--------|-----------|------------|
-| Uniswap Base | sqrtPriceX96 (cNGN/USDC pool) | Unpack Q96 fixed-point → price |
-| Uniswap BSC | sqrtPriceX96 (cNGN/USDT pool) | Unpack Q96 fixed-point → price |
-| Quidax | cNGN/USDT order book | Direct (USDT ≈ USD) |
-| Bybit P2P | NGN/USDT (e.g. 1650) | `1 / rate` → ~0.000606 |
+All venues quote in different units. The normaliser converts everything to a common basis: **USD per 1 cNGN**.
 
-The blended price is a **VWAP** (volume-weighted average price) across venues weighted by their liquidity depth — deeper venues get more weight. This is published on the prices WebSocket channel and used as the reference for delta-neutrality calculations.
+| Venue | Raw pair | Conversion |
+|-------|----------|------------|
+| Bybit P2P | USDT/NGN (e.g. 1600) | `1 / rate` → ~0.000625 |
+| Quidax | cNGN/USDT | Direct (USDT ≈ USD) |
+| Uniswap Base | sqrtPriceX96, cNGN/USDC pool | Unpack Q96 fixed-point |
+| Uniswap BSC | sqrtPriceX96, cNGN/USDT pool, inverted | Unpack Q96 fixed-point, invert |
+| AssetChain | sqrtPriceX96, cNGN/USDT pool | Unpack Q96 fixed-point, invert |
+| Blockradar | cNGN/USDC | Direct |
 
-A **TWAP** (time-weighted average price) is also maintained over a rolling window and used for LP tick-range calculations. VWAP weights by volume; TWAP weights by time. For LP range-setting we want a smoothed view of where price has actually been trading — TWAP is less sensitive to transient spikes, which prevents unnecessary LP resets after brief volatility events.
+Adding a new pair from any venue only requires adding its string to `CNGN_USD_PAIRS` or `INVERTED_PAIRS` in `price_aggregation.py`.
+
+## Blended Price
+
+The blended price combines a VWAP (current snapshot) with two TWAP windows (5-minute and 1-hour). It is published on the prices WebSocket channel and used as the reference for LP tick-range calculations and portfolio delta management.
+
+### VWAP
+
+The VWAP is computed across the four fair-value venues (Bybit, Quidax, uni-base, uni-bsc) with each venue weighted by its effective market depth or volume. The weights are not equal — they reflect how much liquidity each venue actually represents.
+
+**Bybit** — Bybit does not expose a 24h traded P2P volume figure via its API. Instead we derive a depth proxy: fetch page 1 (200 ads) of the buy-side order book, sum `lastQuantity` (remaining USDT available on each ad), then extrapolate to the full ad count using `result.count`. This gives total listed depth across all active buy ads. We then apply a utilization factor (`depth_utilization`, default 5%) on the basis that most listed P2P depth is not actually traded. At typical book sizes (~$30–35M total listed buy-side depth) this produces a proxy of ~$1.5–1.8M, making Bybit the highest-weighted venue. The depth is refreshed every 5 minutes.
+
+**Quidax** — The `/markets/tickers` response includes a `vol` field (24h traded volume in USDT). This is used directly as the VWAP weight.
+
+**Uniswap Base** — 24h volume is fetched from DexScreener (`/latest/dex/pairs/base/{pool_id}`), cached for 5 minutes. If the fetch fails, uni-base is excluded from that VWAP cycle.
+
+**Uniswap BSC** — DexScreener does not index the BSC V4 pool yet. Volume is derived from uni-base: `uni_bsc_volume = uni_base_volume × 0.33`. The ratio reflects observed behaviour — uni-bsc consistently trades at roughly one-third of uni-base volume on a normal day. If uni-base volume is unavailable, uni-bsc is also excluded.
+
+If a venue has no volume data and no derivable proxy, it is excluded from that VWAP cycle with a warning log. There is no silent fallback to equal weighting.
+
+### TWAP
+
+TWAP is computed from stored price snapshots in the database. The 5-minute window smooths out short-term noise; the 1-hour window provides a slower-moving anchor. Blockradar and AssetChain snapshots are excluded from TWAP for the same reasons they are excluded from VWAP. If either TWAP window has insufficient history (e.g. at startup), it falls back to the current VWAP.
+
+### Confidence Score
+
+The blended price carries a confidence score between 0 and 0.9 (never 1.0 — full confidence is never appropriate for NGN price data). It starts at 0.9 when all venues report successfully, and drops by 0.2 for each venue that fails to return a valid price. The total venue count is derived from the live fetch result each cycle, not hardcoded, so it self-corrects as venues are added or removed.
+
+| Venues reporting | Confidence |
+|-----------------|------------|
+| All 6 | 0.90 |
+| 5 | 0.70 |
+| 4 | 0.50 |
+| 3 | 0.30 |
+| 2 | 0.10 |
+| 1 or 0 | 0.00 |
 
 ## The Numeraire
 

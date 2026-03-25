@@ -20,3 +20,9 @@ These are the non-obvious invariants that must hold across every arb path. Each 
 **Trade size must be capped against both legs before execution.** The router (`engine/core/arbitrage/router.py`) caps against buy-side stablecoin and sell-side cNGN. Any change to execution flow must preserve both caps. This assumes all arb directions follow the buy-cNGN/sell-cNGN pattern — if a new direction is added where the sell leg consumes stablecoin instead of cNGN, the inventory model in `router.py` and `inventory.py` must be extended to handle it.
 
 **DB migrations: never use `try/except` around `execute()`.** Use `PRAGMA table_info(table)` to check for existing columns before ALTER TABLE. Caught execute() exceptions leave aiosqlite in a dirty state that hangs pytest.
+
+## Price confidence invariants
+
+**Confidence is capped at 90% — always.** The NGN price is inherently uncertain; 100% confidence is never appropriate. The ceiling is `min(0.9, ...)` in `BlendedPriceCalculator._compute_confidence`. Do not raise it.
+
+**Confidence degrades by 20% per missing venue, flooring at 0.** With all venues reporting: 90%. One missing: 70%. Two missing: 50%, and so on.
