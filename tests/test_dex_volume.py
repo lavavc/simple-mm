@@ -49,21 +49,21 @@ def test_stable_volume_from_bsc_swap_uses_amount0():
     assert volume == Decimal("73.5773")
 
 
-def test_rolling_store_evicts_old_swaps_and_persists_last_block(tmp_path):
+def test_rolling_store_evicts_old_swaps_and_persists_seeded_state(tmp_path):
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     now_ms = int(time.time() * 1000)
     too_old = now_ms - (24 * 60 * 60 * 1000) - 1
 
-    store.record("pool", Decimal("10"), timestamp_ms=too_old, block_number=100, event_id="tx1:0", allow_unseeded=True)
-    store.record("pool", Decimal("25"), timestamp_ms=now_ms, block_number=101, event_id="tx2:0", allow_unseeded=True)
-    store.mark_seeded("pool", 101)
+    store.record("pool", Decimal("10"), timestamp_ms=too_old, event_id="tx1:0", allow_unseeded=True)
+    store.record("pool", Decimal("25"), timestamp_ms=now_ms, event_id="tx2:0", allow_unseeded=True)
+    store.mark_seeded("pool")
 
     store.maybe_save(force=True)
     reloaded = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     reloaded.load()
 
     assert reloaded.get_24h_volume_usd("pool") == Decimal("25")
-    assert reloaded.last_block("pool") == 101
+    assert reloaded.is_seeded("pool") is True
 
 
 def test_rpc_candidates_include_public_chain_fallbacks():
@@ -78,13 +78,13 @@ def test_unseeded_pool_volume_stays_hidden_and_live_updates_are_ignored(tmp_path
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     now_ms = int(time.time() * 1000)
 
-    store.record("pool", Decimal("99.99"), timestamp_ms=now_ms, block_number=123)
+    store.record("pool", Decimal("99.99"), timestamp_ms=now_ms)
     assert store.get_24h_volume_usd("pool") == Decimal("0")
     assert store.is_seeded("pool") is False
 
-    store.record("pool", Decimal("99.99"), timestamp_ms=now_ms, block_number=123, event_id="tx1:0", allow_unseeded=True)
+    store.record("pool", Decimal("99.99"), timestamp_ms=now_ms, event_id="tx1:0", allow_unseeded=True)
     assert store.get_24h_volume_usd("pool") == Decimal("0")
-    store.mark_seeded("pool", 123)
+    store.mark_seeded("pool")
     assert store.get_24h_volume_usd("pool") == Decimal("99.99")
 
 
@@ -92,12 +92,10 @@ def test_reset_clears_partial_unseeded_state(tmp_path):
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     now_ms = int(time.time() * 1000)
 
-    store.record("pool", Decimal("25"), timestamp_ms=now_ms, block_number=101, event_id="tx1:0", allow_unseeded=True)
-    assert store.last_block("pool") == 101
+    store.record("pool", Decimal("25"), timestamp_ms=now_ms, event_id="tx1:0", allow_unseeded=True)
     assert store.is_seeded("pool") is False
 
     store.reset("pool")
-    assert store.last_block("pool") is None
     assert store.is_seeded("pool") is False
     assert store.get_24h_volume_usd("pool") == Decimal("0")
 
@@ -106,9 +104,9 @@ def test_duplicate_event_id_is_not_double_counted(tmp_path):
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     now_ms = int(time.time() * 1000)
 
-    store.record("pool", Decimal("50"), timestamp_ms=now_ms, block_number=10, event_id="tx1:0", allow_unseeded=True)
-    store.mark_seeded("pool", 10)
-    store.record("pool", Decimal("50"), timestamp_ms=now_ms, block_number=10, event_id="tx1:0")
+    store.record("pool", Decimal("50"), timestamp_ms=now_ms, event_id="tx1:0", allow_unseeded=True)
+    store.mark_seeded("pool")
+    store.record("pool", Decimal("50"), timestamp_ms=now_ms, event_id="tx1:0")
 
     assert store.get_24h_volume_usd("pool") == Decimal("50")
 
@@ -117,7 +115,6 @@ def test_legacy_store_forces_reseed_before_exposing_volume(tmp_path):
     path = Path(tmp_path) / "dex_volume.json"
     path.write_text(json.dumps({
         "pool": {
-            "last_block": 123,
             "seeded": True,
             "swaps": [[int(time.time() * 1000), "25"]],
         }

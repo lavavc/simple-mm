@@ -62,7 +62,6 @@ def stable_volume_usd_from_v4_swap(raw_data: bytes | str, pool_config: V4PoolRea
 class _PoolVolumeState:
     swaps: Deque[tuple[int, Decimal, str | None]] = field(default_factory=deque)
     total_usd: Decimal = Decimal("0")
-    last_block: int | None = None
     seeded: bool = False
     event_ids: set[str] = field(default_factory=set)
 
@@ -88,7 +87,6 @@ class RollingDexVolumeStore:
             payload = json.loads(self.path.read_text())
             for pool, data in payload.items():
                 state = self._state(pool)
-                state.last_block = data.get("last_block")
                 state.seeded = bool(data.get("seeded", False))
                 has_legacy_entries = False
                 for entry in data.get("swaps", []):
@@ -118,7 +116,6 @@ class RollingDexVolumeStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 pool: {
-                    "last_block": state.last_block,
                     "seeded": state.seeded,
                     "swaps": [[ts_ms, str(usd), event_id] for ts_ms, usd, event_id in state.swaps],
                 }
@@ -134,7 +131,6 @@ class RollingDexVolumeStore:
         pool: str,
         usd_volume: Decimal,
         timestamp_ms: int | None = None,
-        block_number: int | None = None,
         event_id: str | None = None,
         *,
         allow_unseeded: bool = False,
@@ -153,17 +149,13 @@ class RollingDexVolumeStore:
         state.total_usd += usd_volume
         if event_id:
             state.event_ids.add(event_id)
-        if block_number is not None:
-            state.last_block = max(state.last_block or 0, int(block_number))
         self._evict(pool)
         self.maybe_save()
 
-    def mark_seeded(self, pool: str, block_number: int | None = None) -> None:
+    def mark_seeded(self, pool: str) -> None:
         self.load()
         state = self._state(pool)
         state.seeded = True
-        if block_number is not None:
-            state.last_block = max(state.last_block or 0, int(block_number))
         self._evict(pool)
         self.maybe_save(force=True)
 
@@ -172,7 +164,6 @@ class RollingDexVolumeStore:
         state = self._state(pool)
         state.swaps.clear()
         state.total_usd = Decimal("0")
-        state.last_block = None
         state.seeded = False
         state.event_ids.clear()
         self.maybe_save(force=True)
@@ -187,10 +178,6 @@ class RollingDexVolumeStore:
             return Decimal("0")
         self._evict(pool)
         return self._state(pool).total_usd
-
-    def last_block(self, pool: str) -> int | None:
-        self.load()
-        return self._state(pool).last_block
 
     def _state(self, pool: str) -> _PoolVolumeState:
         return self._pools.setdefault(pool, _PoolVolumeState())
@@ -277,20 +264,23 @@ async def _find_start_block_24h_ago(w3: AsyncWeb3) -> int:
     return lo
 
 
-async def _backfill_pool_from_rpc(config: V4PoolReadConfig, rpc_url: str) -> None:
+async def _scan_pool_window_from_rpc(
+    config: V4PoolReadConfig,
+    rpc_url: str,
+    *,
+    allow_unseeded: bool,
+) -> None:
     w3 = _make_async_w3(config, rpc_url)
     latest = await w3.eth.get_block("latest")
     latest_number = int(latest["number"])
 
     start_24h_block = await _find_start_block_24h_ago(w3)
-    _STORE.reset(config.pool_address)
-    start_block = start_24h_block
-    if start_block > latest_number:
+    if start_24h_block > latest_number:
         return
 
     block_ts_cache: dict[int, int] = {}
     chunk_size = _log_chunk_size(config)
-    for chunk_start in range(start_block, latest_number + 1, chunk_size):
+    for chunk_start in range(start_24h_block, latest_number + 1, chunk_size):
         chunk_end = min(chunk_start + chunk_size - 1, latest_number)
         logs = await w3.eth.get_logs({
             "address": AsyncWeb3.to_checksum_address(config.pool_manager),
@@ -310,61 +300,24 @@ async def _backfill_pool_from_rpc(config: V4PoolReadConfig, rpc_url: str) -> Non
                 config.pool_address,
                 usd_volume,
                 timestamp_ms=ts_ms,
-                block_number=block_number,
                 event_id=event_id_from_log(log),
-                allow_unseeded=True,
+                allow_unseeded=allow_unseeded,
             )
 
-    _STORE.mark_seeded(config.pool_address, latest_number)
-    _STORE.maybe_save(force=True)
 
-
-async def _resync_pool_from_rpc(config: V4PoolReadConfig, rpc_url: str) -> None:
-    w3 = _make_async_w3(config, rpc_url)
-    latest = await w3.eth.get_block("latest")
-    latest_number = int(latest["number"])
-    start_block = await _find_start_block_24h_ago(w3)
-
-    block_ts_cache: dict[int, int] = {}
-    chunk_size = _log_chunk_size(config)
-    for chunk_start in range(start_block, latest_number + 1, chunk_size):
-        chunk_end = min(chunk_start + chunk_size - 1, latest_number)
-        logs = await w3.eth.get_logs({
-            "address": AsyncWeb3.to_checksum_address(config.pool_manager),
-            "topics": [V4_SWAP_TOPIC, config.pool_address],
-            "fromBlock": chunk_start,
-            "toBlock": chunk_end,
-        })
-
-        for log in logs:
-            raw_data = log["data"].hex() if hasattr(log["data"], "hex") else log["data"]
-            usd_volume = stable_volume_usd_from_v4_swap(raw_data, config)
-            if usd_volume <= 0:
-                continue
-            block_number = int(log["blockNumber"])
-            ts_ms = await _block_timestamp_ms(w3, block_number, block_ts_cache)
-            _STORE.record(
-                config.pool_address,
-                usd_volume,
-                timestamp_ms=ts_ms,
-                block_number=block_number,
-                event_id=event_id_from_log(log),
-            )
-
-    _STORE.mark_seeded(config.pool_address, latest_number)
-    _STORE.maybe_save(force=True)
-
-
-async def _backfill_pool(config: V4PoolReadConfig) -> None:
+async def _refresh_pool(config: V4PoolReadConfig) -> None:
     last_error: Exception | None = None
     for rpc_url in _rpc_candidates(config):
         try:
             if _STORE.is_seeded(config.pool_address):
-                await _resync_pool_from_rpc(config, rpc_url)
+                await _scan_pool_window_from_rpc(config, rpc_url, allow_unseeded=False)
                 logger.info("dex_volume_resync_succeeded", pool=config.pool_address, rpc=rpc_url)
             else:
-                await _backfill_pool_from_rpc(config, rpc_url)
+                _STORE.reset(config.pool_address)
+                await _scan_pool_window_from_rpc(config, rpc_url, allow_unseeded=True)
                 logger.info("dex_volume_backfill_succeeded", pool=config.pool_address, rpc=rpc_url)
+            _STORE.mark_seeded(config.pool_address)
+            _STORE.maybe_save(force=True)
             return
         except Exception as exc:
             last_error = exc
@@ -385,7 +338,7 @@ async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> 
 
     for config in configs:
         try:
-            await _backfill_pool(config)
+            await _refresh_pool(config)
         except Exception as exc:
             logger.warning("dex_volume_backfill_failed", pool=config.pool_address, error=str(exc))
 
@@ -394,7 +347,7 @@ async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:
     """Refresh one pool's rolling volume window, filling missed swaps if possible."""
     _STORE.load()
     try:
-        await _backfill_pool(config)
+        await _refresh_pool(config)
     except Exception as exc:
         logger.warning("dex_volume_sync_failed", pool=config.pool_address, error=str(exc))
 
@@ -402,7 +355,6 @@ async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:
 def record_live_v4_swap_volume(
     pool_config: V4PoolReadConfig,
     raw_data: bytes | str,
-    block_number: int | None = None,
     event_id: str | None = None,
 ) -> None:
     usd_volume = stable_volume_usd_from_v4_swap(raw_data, pool_config)
@@ -410,7 +362,6 @@ def record_live_v4_swap_volume(
         pool_config.pool_address,
         usd_volume,
         timestamp_ms=int(time.time() * 1000),
-        block_number=block_number,
         event_id=event_id,
     )
 

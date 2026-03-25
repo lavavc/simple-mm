@@ -135,11 +135,9 @@ class ArbitrageWebSocketListener:
             fee = int.from_bytes(data_bytes[160:192], "big")
 
             update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
-            block_number = int(log["blockNumber"], 16) if isinstance(log.get("blockNumber"), str) else log.get("blockNumber")
             record_live_v4_swap_volume(
                 pool_config,
                 data_bytes,
-                block_number=block_number,
                 event_id=event_id_from_log(log),
             )
             logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
