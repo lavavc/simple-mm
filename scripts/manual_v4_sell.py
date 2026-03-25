@@ -19,38 +19,45 @@ from engine.core.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 
+_ACCOUNT_ROLES = {
+    "uni-base-lp": AccountRole.UNI_BASE_LP,
+    "uni-base-trade": AccountRole.UNI_BASE_TRADE,
+    "uni-bsc-lp": AccountRole.UNI_BSC_LP,
+    "uni-bsc-trade": AccountRole.UNI_BSC_TRADE,
+}
 
-def _build_adapter(venue: str):
+
+def _build_adapter(account: str):
+    role = _ACCOUNT_ROLES[account]
     account_manager = AccountManager(
         mnemonic=settings.wallet_mnemonic if settings.wallet_mnemonic else None,
         use_test_accounts=settings.use_test_accounts,
     )
+    key = account_manager.get_private_key(role)
 
-    if venue == "uni-base":
+    if account.startswith("uni-base"):
         lp_key = account_manager.get_private_key(AccountRole.UNI_BASE_LP)
-        trade_key = account_manager.get_private_key(AccountRole.UNI_BASE_TRADE)
         return UniswapBaseV4Adapter(
             lp_private_key=lp_key,
-            trade_private_key=trade_key,
+            trade_private_key=key,
             rpc_url=settings.base_rpc_url,
             params=DexParams(),
         )
 
-    if venue == "uni-bsc":
+    if account.startswith("uni-bsc"):
         lp_key = account_manager.get_private_key(AccountRole.UNI_BSC_LP)
-        trade_key = account_manager.get_private_key(AccountRole.UNI_BSC_TRADE)
         return UniswapBscV4Adapter(
             lp_private_key=lp_key,
-            trade_private_key=trade_key,
+            trade_private_key=key,
             rpc_url=settings.bsc_rpc_url,
             params=DexParams(),
         )
 
-    raise ValueError(f"Unsupported venue: {venue}")
+    raise ValueError(f"Unsupported account: {account}")
 
 
-async def _run(venue: str, amount_cngn: Decimal, min_out_stable: Decimal, execute: bool):
-    adapter = _build_adapter(venue)
+async def _run(account: str, amount_cngn: Decimal, min_out_stable: Decimal, execute: bool):
+    adapter = _build_adapter(account)
     balance_raw = adapter.w3.eth.contract(
         address=adapter.w3.to_checksum_address(adapter.cngn_address),
         abi=adapter.token0.abi,
@@ -60,8 +67,8 @@ async def _run(venue: str, amount_cngn: Decimal, min_out_stable: Decimal, execut
     amount_in_raw = int(amount_cngn * Decimal(10 ** adapter.cngn_decimals))
     min_out_raw = int(min_out_stable * Decimal(10 ** adapter.stable_decimals))
 
-    print(f"venue={venue}")
-    print(f"trade_account={adapter.trade_account.address}")
+    print(f"account={account}")
+    print(f"address={adapter.trade_account.address}")
     print(f"cngn_balance={balance_cngn}")
     print(f"amount_cngn={amount_cngn}")
     print(f"min_out_stable={min_out_stable}")
@@ -85,7 +92,7 @@ async def _run(venue: str, amount_cngn: Decimal, min_out_stable: Decimal, execut
 
 def main():
     parser = argparse.ArgumentParser(description="Manually sell cNGN on a V4 venue.")
-    parser.add_argument("--venue", choices=["uni-base", "uni-bsc"], required=True)
+    parser.add_argument("--account", choices=list(_ACCOUNT_ROLES), required=True)
     parser.add_argument("--amount-cngn", type=Decimal, required=True)
     parser.add_argument("--min-out-stable", type=Decimal, default=Decimal("0"))
     parser.add_argument("--execute", action="store_true", help="Actually send the transaction")
@@ -93,7 +100,7 @@ def main():
 
     asyncio.run(
         _run(
-            venue=args.venue,
+            account=args.account,
             amount_cngn=args.amount_cngn,
             min_out_stable=args.min_out_stable,
             execute=args.execute,
