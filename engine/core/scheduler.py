@@ -727,14 +727,12 @@ class TradingScheduler:
             if not depth:
                 if self._quidax_depth_ok:
                     self._quidax_depth_ok = False
-                    self.broadcast({"type": "alert", "severity": "warning",
-                                    "message": "Quidax order book depth unavailable — CEX-DEX arb paused until restored."})
+                    logger.warning("quidax_depth_unavailable")
                 return
 
             if not self._quidax_depth_ok:
                 self._quidax_depth_ok = True
-                self.broadcast({"type": "alert", "severity": "warning",
-                                "message": "Quidax order book depth restored — CEX-DEX arb resuming."})
+                logger.info("quidax_depth_restored")
 
             self.broadcast({
                 "type": "quidax_orderbook_depth",
@@ -755,8 +753,7 @@ class TradingScheduler:
             logger.error("quidax_depth_stream_failed", error=str(e))
             if self._quidax_depth_ok:
                 self._quidax_depth_ok = False
-                self.broadcast({"type": "alert", "severity": "warning",
-                                "message": f"Quidax depth fetch error — CEX-DEX arb paused. Error: {e}"})
+                logger.warning("quidax_depth_fetch_error", error=str(e))
 
     async def _get_balances_for_valuation(self, quidax) -> list:
         """Assemble on-chain + CEX balances for portfolio valuation."""

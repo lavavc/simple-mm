@@ -56,7 +56,7 @@ class P2PAd:
     """Bybit P2P advertisement."""
 
     price: Decimal
-    quantity: Decimal
+    last_quantity: Decimal  # remaining USDT available (lastQuantity from API)
     completed_orders: int
     completion_rate: float
     avg_release_time: int
@@ -227,7 +227,7 @@ class BybitP2PPriceSource(VenuePriceSource):
                 ads.append(
                     P2PAd(
                         price=Decimal(str(item["price"])),
-                        quantity=Decimal(str(item.get("quantity", "0"))),
+                        last_quantity=Decimal(str(item.get("lastQuantity", "0"))),
                         completed_orders=int(item.get("recentOrderNum", 0)),
                         completion_rate=float(item.get("recentExecuteRate", 0)),
                         avg_release_time=int(item.get("avgReleaseTime", 0)),
@@ -251,10 +251,10 @@ class BybitP2PPriceSource(VenuePriceSource):
             and ad.is_online
         ]
 
-        # Keep ads whose total NGN value falls within ₦5M–₦20M
+        # Keep ads whose remaining NGN value falls within ₦5M–₦20M
         in_range = [
             ad for ad in reputable
-            if self.config.min_amount_ngn <= ad.price * ad.quantity <= self.config.max_amount_ngn
+            if self.config.min_amount_ngn <= ad.price * ad.last_quantity <= self.config.max_amount_ngn
         ]
 
         if len(in_range) < 3:
