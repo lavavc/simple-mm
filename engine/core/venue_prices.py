@@ -33,6 +33,7 @@ class VenuePriceSource(ABC):
 
     name: str
     pair: str  # e.g. "USDT/NGN", "cNGN/USDC"
+    volume_24h_usd: Optional[Decimal] = None  # Set during fetch_price(); used for VWAP weighting
 
     @abstractmethod
     async def fetch_price(self) -> Optional[PriceQuote]:
@@ -72,6 +73,8 @@ class BybitConfig:
     sample_size: int = 10
     max_deviation_from_median: float = 0.02  # 2%
     cache_seconds: int = 60
+    depth_utilization: float = 0.05   # Fraction of total listed depth treated as effective trading activity
+    depth_cache_seconds: int = 300    # Depth is stable; refresh every 5 minutes
 
 
 class BybitP2PPriceSource(VenuePriceSource):
@@ -91,6 +94,7 @@ class BybitP2PPriceSource(VenuePriceSource):
         self.config = config or BybitConfig()
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: Optional[tuple[PriceQuote, float]] = None
+        self._depth_cache_time: float = 0
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -134,6 +138,13 @@ class BybitP2PPriceSource(VenuePriceSource):
             )
             self._cache = (quote, time.time())
 
+            # Refresh market depth every 5 minutes; used as VWAP weight
+            if time.time() - self._depth_cache_time > self.config.depth_cache_seconds:
+                depth = await self._fetch_total_depth_usdt()
+                if depth is not None:
+                    self.volume_24h_usd = depth
+                self._depth_cache_time = time.time()
+
             logger.info(
                 "bybit_price_fetched",
                 bid=float(bid),
@@ -144,6 +155,51 @@ class BybitP2PPriceSource(VenuePriceSource):
 
         except Exception as e:
             logger.error("bybit_fetch_failed", error=str(e))
+            return None
+
+    async def _fetch_total_depth_usdt(self) -> Optional[Decimal]:
+        """Estimate total market depth from BUY-side ads.
+
+        Fetches page 1 of 200 BUY ads, sums lastQuantity (remaining available USDT),
+        extrapolates to total ad count, then applies a utilization factor since not all
+        listed depth actually trades. Returns a depth proxy in USDT.
+        """
+        client = await self._get_client()
+        payload = {
+            "tokenId": "USDT",
+            "currencyId": "NGN",
+            "side": "1",  # BUY side
+            "size": "200",
+            "page": "1",
+            "payment": [],
+            "amount": "",
+        }
+        try:
+            response = await client.post(
+                "https://api2.bybit.com/fiat/otc/item/online", json=payload
+            )
+            response.raise_for_status()
+            result = response.json().get("result", {})
+            total_count = int(result.get("count", 0))
+            items = result.get("items", [])
+            if not items or total_count == 0:
+                return None
+
+            page_depth = sum(
+                Decimal(str(item.get("lastQuantity", "0"))) for item in items
+            )
+            # Extrapolate page-1 sample to full market, then apply utilization factor
+            total_depth = page_depth * Decimal(str(total_count)) / Decimal(str(len(items)))
+            depth_proxy = total_depth * Decimal(str(self.config.depth_utilization))
+            logger.debug(
+                "bybit_depth_fetched",
+                total_ads=total_count,
+                page1_depth_usdt=float(page_depth),
+                depth_proxy_usdt=float(depth_proxy),
+            )
+            return depth_proxy
+        except Exception as e:
+            logger.warning("bybit_depth_fetch_failed", error=str(e))
             return None
 
     async def _fetch_p2p_ads(self, side: str) -> list[P2PAd]:
@@ -323,6 +379,9 @@ class QuidaxPriceSource(VenuePriceSource):
             )
             self._cache = (quote, time.time())
 
+            vol = ticker.get("vol")
+            self.volume_24h_usd = Decimal(str(vol)) if vol else None
+
             logger.info(
                 "quidax_price_fetched",
                 pair=self.config.pair,
@@ -388,10 +447,13 @@ class DexAdapterPriceSource(VenuePriceSource):
         venue_name: str,
         pair: str,
         pool_address: str,
+        dexscreener_chain: str = "",
     ):
         self.name = venue_name
         self.pair = pair
         self.pool_address = pool_address
+        self._dexscreener_chain = dexscreener_chain
+        self._vol_cache_time: float = 0
 
     async def fetch_price(self) -> Optional[PriceQuote]:
         from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
@@ -410,7 +472,21 @@ class DexAdapterPriceSource(VenuePriceSource):
             # token0=USDT(18), token1=cNGN(6): invert to get USD per cNGN
             price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (18 - 6))
             human_price = Decimal(1) / price if price > 0 else Decimal(0)
-            
+
+        # Refresh 24h volume from DexScreener every 5 minutes
+        if self._dexscreener_chain and time.time() - self._vol_cache_time > 300:
+            try:
+                url = f"https://api.dexscreener.com/latest/dex/pairs/{self._dexscreener_chain}/{self.pool_address}"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url)
+                    pairs = resp.json().get("pairs") or []
+                    if pairs:
+                        vol = pairs[0].get("volume", {}).get("h24")
+                        self.volume_24h_usd = Decimal(str(vol)) if vol is not None else None
+                self._vol_cache_time = time.time()
+            except Exception as e:
+                logger.warning("dexscreener_volume_fetch_failed", venue=self.name, error=str(e))
+
         return PriceQuote(
             source="simulator_cache",
             timestamp=int((timestamp or time.time()) * 1000),
@@ -434,6 +510,7 @@ class VenuePrice:
     quote: Optional[PriceQuote]
     error: Optional[str] = None
     fetched_at: float = field(default_factory=time.time)
+    volume_24h_usd: Optional[Decimal] = None
 
     @property
     def is_valid(self) -> bool:
@@ -496,6 +573,7 @@ class VenuePriceAggregator:
                 pair=source.pair,
                 quote=quote,
                 error=None if quote else "No price returned",
+                volume_24h_usd=source.volume_24h_usd,
             )
         except Exception as e:
             return VenuePrice(
@@ -555,6 +633,7 @@ def create_venue_aggregator(
             venue_name="uni-base",
             pair="cNGN/USDC",
             pool_address=UNISWAP_BASE_POOL_READ_CONFIG.pool_address,
+            dexscreener_chain="base",
         )
     )
     sources.append(

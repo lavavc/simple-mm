@@ -214,21 +214,56 @@ class TestPriceNormalizer:
 class TestVWAP:
     """Test cross-venue VWAP computation."""
 
-    def test_vwap_equal_weights(self):
-        """VWAP with equal weights should be arithmetic mean."""
+    def test_vwap_explicit_equal_weights_is_arithmetic_mean(self):
+        """Explicit equal weights produce arithmetic mean."""
         normalizer = PriceNormalizer()
         prices = _make_venue_prices()
         normalized = normalizer.normalize(prices)
 
-        # Use a dummy aggregator — we just need compute_vwap which is sync
         calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
         calc.venue_weights = {}
-        vwap = calc.compute_vwap(normalized)
+        weights = {v: Decimal("1") for v in normalized}
+        vwap = calc.compute_vwap(normalized, weights)
 
         # Mean of ~0.000696, 0.000697, 0.000696, 0.000701
         values = [np.cngn_usd for np in normalized.values()]
         expected = sum(values) / len(values)
         assert abs(vwap - expected) < Decimal("0.000001")
+
+    def test_vwap_volume_weighted(self):
+        """When venues carry volume_24h_usd, VWAP is weighted by it."""
+        normalizer = PriceNormalizer()
+        prices = _make_venue_prices()
+        normalized = normalizer.normalize(prices)
+
+        # Assign volumes: uni-base dominates
+        normalized["uni-base"].volume_24h_usd = Decimal("200000")
+        normalized["quidax"].volume_24h_usd = Decimal("50000")
+        normalized["bybit"].volume_24h_usd = Decimal("1000000")
+        normalized["uni-bsc"].volume_24h_usd = Decimal("66000")
+
+        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
+        calc.venue_weights = {}
+        vwap = calc.compute_vwap(normalized)
+
+        # bybit dominates — result should be closer to bybit's price than simple mean
+        bybit_price = normalized["bybit"].cngn_usd
+        simple_mean = sum(np.cngn_usd for np in normalized.values()) / len(normalized)
+        assert abs(vwap - bybit_price) < abs(vwap - simple_mean)
+
+    def test_vwap_skips_venue_with_no_volume(self):
+        """Venues with no volume_24h_usd are excluded from volume-weighted VWAP."""
+        normalizer = PriceNormalizer()
+        prices = _make_venue_prices()
+        normalized = normalizer.normalize(prices)
+
+        # Only quidax gets volume — result should equal quidax's price exactly
+        normalized["quidax"].volume_24h_usd = Decimal("50000")
+
+        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
+        calc.venue_weights = {}
+        vwap = calc.compute_vwap(normalized)
+        assert vwap == normalized["quidax"].cngn_usd
 
     def test_vwap_custom_weights(self):
         """VWAP with custom weights should bias toward heavier venues."""
@@ -265,6 +300,7 @@ class TestVWAP:
             ),
         }
         normalized = normalizer.normalize(prices)
+        normalized["quidax"].volume_24h_usd = Decimal("50000")
 
         calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
         calc.venue_weights = {}
@@ -343,7 +379,7 @@ class TestNormalizeSinglePrice:
 
 
 class TestConfidence:
-    """Test confidence score computation: 90% at 4 venues, -20% per missing venue."""
+    """Test confidence score computation: 90% max, -20% per missing venue."""
 
     def _np(self, venue: str) -> NormalizedPrice:
         return NormalizedPrice(
@@ -352,24 +388,31 @@ class TestConfidence:
             basis="cNGN/USDC", timestamp=0,
         )
 
-    def test_all_four_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax", "assetchain", "blockradar"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.9)
+    def test_all_six_venues_caps_at_90(self):
+        """Full house across all current venues must not exceed 90%."""
+        venues = ["bybit", "quidax", "uni-base", "uni-bsc", "assetchain", "blockradar"]
+        normalized = {v: self._np(v) for v in venues}
+        assert BlendedPriceCalculator._compute_confidence(normalized, 6) == pytest.approx(0.9)
 
-    def test_three_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax", "assetchain"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.7)
+    def test_ceiling_prevents_over_90(self):
+        """More venues reporting than total must not push confidence above 90%."""
+        normalized = {v: self._np(v) for v in ["a", "b", "c", "d", "e"]}
+        assert BlendedPriceCalculator._compute_confidence(normalized, 4) == pytest.approx(0.9)
 
-    def test_two_venues(self):
-        normalized = {v: self._np(v) for v in ["bybit", "quidax"]}
-        assert BlendedPriceCalculator._compute_confidence(normalized) == pytest.approx(0.5)
+    def test_one_missing(self):
+        venues = ["bybit", "quidax", "uni-base", "uni-bsc", "assetchain"]
+        normalized = {v: self._np(v) for v in venues}
+        assert BlendedPriceCalculator._compute_confidence(normalized, 6) == pytest.approx(0.7)
+
+    def test_two_missing(self):
+        normalized = {v: self._np(v) for v in ["bybit", "quidax", "uni-base", "uni-bsc"]}
+        assert BlendedPriceCalculator._compute_confidence(normalized, 6) == pytest.approx(0.5)
 
     def test_one_venue(self):
-        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}) == pytest.approx(0.3)
+        assert BlendedPriceCalculator._compute_confidence({"bybit": self._np("bybit")}, 6) == pytest.approx(0.0)
 
-    def test_empty_returns_near_zero(self):
-        # With 4 total venues: 0.9 - 0.2 * 4 = 0.1 (floored at 0)
-        assert BlendedPriceCalculator._compute_confidence({}) == pytest.approx(0.1)
+    def test_empty_floors_at_zero(self):
+        assert BlendedPriceCalculator._compute_confidence({}, 6) == pytest.approx(0.0)
 
 
 # =============================================================================

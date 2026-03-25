@@ -301,6 +301,7 @@ export default function AccountsPage() {
                   <th className="text-center py-3 font-medium">Network</th>
                   <th className="text-right py-3 font-medium">GAS</th>
                   <th className="text-right py-3 font-medium">cNGN</th>
+                  <th className="text-right py-3 font-medium">USDC/T</th>
                   <th className="text-right py-3 font-medium">Status</th>
                 </tr>
               </thead>
@@ -313,6 +314,7 @@ export default function AccountsPage() {
                       <td className="py-4"><div className="h-5 w-16 bg-white/5 rounded-sm animate-pulse mx-auto" /></td>
                       <td className="py-4"><div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse ml-auto" /></td>
                       <td className="py-4"><div className="h-3 w-20 bg-white/10 rounded-sm animate-pulse ml-auto" /></td>
+                      <td className="py-4"><div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse ml-auto" /></td>
                       <td className="py-4"><div className="h-5 w-20 bg-white/10 rounded-sm animate-pulse ml-auto" /></td>
                     </tr>
                   ))
@@ -335,6 +337,12 @@ export default function AccountsPage() {
                       </td>
                       <td className={`py-3 text-right ${account.refill_reasons.some(r => r.includes('cNGN')) ? 'text-yellow-500 font-bold' : ''}`}>
                         {formatNumber(account.token_balances.cNGN || 0, 0)}
+                      </td>
+                      <td className={`py-3 text-right ${account.refill_reasons.some(r => r.includes('USDC') || r.includes('USDT')) ? 'text-yellow-500 font-bold' : ''}`}>
+                        {(() => {
+                          const stable = (account.token_balances.USDC || 0) + (account.token_balances.USDT || 0);
+                          return stable > 0 ? formatNumber(stable, 2) : <span className="text-white/20">—</span>;
+                        })()}
                       </td>
                       <td className="py-3 text-right">
                         {account.needs_refill ? (

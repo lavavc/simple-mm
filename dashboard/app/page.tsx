@@ -176,29 +176,54 @@ export default function DashboardPage() {
               {isSyncing && <div className="h-1.5 w-1.5 bg-white/20 rounded-full animate-ping" />}
             </div>
           </CardHeader>
-          <CardContent className={`p-4 flex-1 flex flex-col justify-end ${isSyncing ? 'opacity-30' : ''}`}>
+          <CardContent className={`p-4 flex-1 flex flex-col justify-between ${isSyncing ? 'opacity-30' : ''}`}>
             {isSyncing ? (
-              <div className="space-y-3">
-                <div className="h-8 w-24 bg-white/10 rounded-sm animate-pulse" />
-                <div className="h-3 w-32 bg-white/5 rounded-sm animate-pulse" />
-              </div>
-            ) : (
-              <div>
-                <div className="text-xl font-bold font-mono tracking-tight text-white mb-1">
-                  {formatCurrency(globalPosition?.total_usd_value || 0)}
+              <div className="space-y-4 pt-1">
+                <div className="flex items-center gap-3">
+                  <div className="h-8 w-8 bg-white/10 rounded-sm animate-pulse" />
+                  <div className="h-5 w-24 bg-white/5 rounded-sm animate-pulse" />
                 </div>
-                <div className="flex justify-between text-[10px] font-mono border-t border-white/[0.05] pt-3 mt-3">
-                  <div className="flex flex-col">
-                    <span className="text-white/30 uppercase tracking-widest mb-1">cNGN</span>
-                    <span className="text-emerald-400">{formatNumber(globalPosition?.total_cngn || 0, 0)}</span>
-                  </div>
-                  <div className="flex flex-col text-right">
-                    <span className="text-white/30 uppercase tracking-widest mb-1">USDC/USDT</span>
-                    <span className="text-blue-400">{formatNumber(globalPosition?.total_usdc || 0, 2)}</span>
-                  </div>
+                <div className="flex justify-between border-t border-white/[0.05] pt-3">
+                  <div className="h-3 w-16 bg-white/5 rounded-sm animate-pulse" />
+                  <div className="h-3 w-16 bg-white/5 rounded-sm animate-pulse" />
                 </div>
               </div>
-            )}
+            ) : (() => {
+              const stableUsd = Number(globalPosition?.total_usdc ?? 0) + Number(globalPosition?.total_usdt ?? 0);
+              const total = Number(globalPosition?.total_usd_value ?? 0);
+              const cngnUsd = total - stableUsd;
+              const cngnPct = total > 0 ? (cngnUsd / total) * 100 : 0;
+              const stablePct = total > 0 ? (stableUsd / total) * 100 : 0;
+              return (
+                <>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="p-2.5 rounded-sm bg-emerald-500/10 border border-emerald-500/20 text-emerald-500">
+                      <Wallet className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-xl font-bold font-mono tracking-tight text-white leading-tight">
+                        {formatCurrency(total)}
+                      </div>
+                      <div className="text-[9px] text-white/40 font-mono tracking-widest uppercase mt-0.5">
+                        TOTAL VALUE
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-[10px] font-mono border-t border-white/[0.05] pt-3 mt-auto">
+                    <div className="flex flex-col">
+                      <span className="text-white/30 uppercase tracking-widest mb-1">cNGN</span>
+                      <span className="text-emerald-400">{formatNumber(globalPosition?.total_cngn || 0, 0)}</span>
+                      <span className="text-white/30 mt-0.5">{cngnPct.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex flex-col text-right">
+                      <span className="text-white/30 uppercase tracking-widest mb-1">USDC/USDT</span>
+                      <span className="text-blue-400">{formatNumber(stableUsd, 2)}</span>
+                      <span className="text-white/30 mt-0.5">{stablePct.toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </CardContent>
         </Card>
 

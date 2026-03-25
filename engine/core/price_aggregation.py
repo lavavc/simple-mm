@@ -41,6 +41,7 @@ class NormalizedPrice:
     raw_quote: PriceQuote  # Original venue quote
     basis: str  # Original pair, e.g. "USDT/NGN", "cNGN/USDC", "cNGN/NGN"
     timestamp: int
+    volume_24h_usd: Optional[Decimal] = None  # 24h USD volume; None → equal weight in VWAP
 
 
 @dataclass
@@ -77,8 +78,14 @@ INVERTED_PAIRS = frozenset({"USDC/cNGN", "USDT/cNGN", "USDT/NGN"})  # 1/mid IS c
 # USDT_NGN_VENUES: used only by the TWAP path which has no pair info (DB snapshots).
 USDT_NGN_VENUES = frozenset({"bybit"})
 
-# Venues excluded from VWAP/TWAP fair-value calculations (rate-setters, not price takers).
-BLOCKRADAR_VENUES = frozenset({"blockradar"})
+# uni-bsc volume as a fraction of uni-base (DexScreener does not index uni-bsc yet).
+# Observed to trade at roughly 1/3 of uni-base volume on a normal day.
+BSC_VOLUME_RATIO = Decimal("0.33")
+
+# Venues excluded from VWAP/TWAP fair-value calculations.
+# blockradar: rate-setter, not a price taker.
+# assetchain: watch-only, negligible volume — included in price display but not fair-value math.
+FAIR_VALUE_EXCLUDED = frozenset({"blockradar", "assetchain"})
 
 
 class PriceNormalizer:
@@ -114,6 +121,7 @@ class PriceNormalizer:
                         raw_quote=price.quote,
                         basis=pair,
                         timestamp=price.quote.timestamp,
+                        volume_24h_usd=price.volume_24h_usd,
                     )
 
             elif pair in CNGN_USD_PAIRS:
@@ -124,6 +132,7 @@ class PriceNormalizer:
                         raw_quote=price.quote,
                         basis=pair,
                         timestamp=price.quote.timestamp,
+                        volume_24h_usd=price.volume_24h_usd,
                     )
 
             # Unknown pairs are silently skipped.
@@ -202,7 +211,13 @@ class BlendedPriceCalculator:
         weighted_sum = Decimal("0")
 
         for venue, np in normalized_prices.items():
-            w = effective_weights.get(venue, Decimal("1"))
+            if effective_weights:
+                w = effective_weights.get(venue, Decimal("1"))
+            else:
+                if np.volume_24h_usd is None:
+                    logger.warning("vwap_no_volume_data", venue=venue)
+                    continue
+                w = np.volume_24h_usd
             weighted_sum += np.cngn_usd * w
             total_weight += w
 
@@ -276,7 +291,7 @@ class BlendedPriceCalculator:
             # Determine the venue from the source string
             # Source may be "quidax", "bybit_p2p", "uni_base_pool", etc.
             venue_name = self._source_to_venue(source)
-            if venue_name in BLOCKRADAR_VENUES:
+            if venue_name in FAIR_VALUE_EXCLUDED:
                 continue
             cngn_usd = self._normalize_single_price(venue_name, mid)
 
@@ -317,9 +332,15 @@ class BlendedPriceCalculator:
         normalized = self.normalizer.normalize(venue_prices)
 
         # Exclude rate-setter venues from fair-value metrics
-        fair_normalized = {k: v for k, v in normalized.items() if k not in BLOCKRADAR_VENUES}
+        fair_normalized = {k: v for k, v in normalized.items() if k not in FAIR_VALUE_EXCLUDED}
 
-        # VWAP across venues right now (blockradar excluded)
+        # uni-bsc has no live volume source; derive from uni-base at a known ratio
+        if "uni-bsc" in fair_normalized and "uni-base" in fair_normalized:
+            base_vol = fair_normalized["uni-base"].volume_24h_usd
+            if base_vol is not None:
+                fair_normalized["uni-bsc"].volume_24h_usd = base_vol * BSC_VOLUME_RATIO
+
+        # VWAP across venues right now
         vwap = self.compute_vwap(fair_normalized)
 
         # TWAP over 5 minutes and 1 hour
@@ -333,7 +354,7 @@ class BlendedPriceCalculator:
             twap_1h = vwap
 
         # Confidence: 90% when all venues report, minus 20% per missing venue
-        confidence = self._compute_confidence(normalized)
+        confidence = self._compute_confidence(normalized, len(venue_prices))
 
         venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}  # all venues for display
 
@@ -403,7 +424,11 @@ class BlendedPriceCalculator:
         return None  # ambiguous range: mid between 1–100 can't be safely classified
 
     @staticmethod
-    def _compute_confidence(normalized: dict[str, NormalizedPrice]) -> float:
-        """Confidence score: 90% at full venue count, minus 20% per missing venue."""
-        TOTAL_VENUES = 4  # bybit, quidax, assetchain, blockradar
-        return max(0.0, 0.9 - 0.2 * (TOTAL_VENUES - len(normalized)))
+    def _compute_confidence(normalized: dict[str, NormalizedPrice], total_venues: int) -> float:
+        """Confidence score: 90% maximum when all venues report, minus 20% per missing venue.
+
+        Ceiling is 0.9 (90%) — never report full confidence on NGN price data.
+        Floor is 0.0. total_venues must be passed from the live fetch count, not hardcoded.
+        """
+        missing = total_venues - len(normalized)
+        return min(0.9, max(0.0, 0.9 - 0.2 * missing))
