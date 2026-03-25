@@ -307,19 +307,20 @@ async def _scan_pool_window_from_rpc(
 
 async def _refresh_pool(config: V4PoolReadConfig) -> None:
     last_error: Exception | None = None
+    was_seeded = _STORE.is_seeded(config.pool_address)
     for rpc_url in _rpc_candidates(config):
+        _STORE.reset(config.pool_address)
         try:
-            if _STORE.is_seeded(config.pool_address):
-                await _scan_pool_window_from_rpc(config, rpc_url, allow_unseeded=False)
+            await _scan_pool_window_from_rpc(config, rpc_url, allow_unseeded=True)
+            if was_seeded:
                 logger.info("dex_volume_resync_succeeded", pool=config.pool_address, rpc=rpc_url)
             else:
-                _STORE.reset(config.pool_address)
-                await _scan_pool_window_from_rpc(config, rpc_url, allow_unseeded=True)
                 logger.info("dex_volume_backfill_succeeded", pool=config.pool_address, rpc=rpc_url)
             _STORE.mark_seeded(config.pool_address)
             _STORE.maybe_save(force=True)
             return
         except Exception as exc:
+            _STORE.reset(config.pool_address)
             last_error = exc
             logger.warning("dex_volume_backfill_rpc_failed", pool=config.pool_address, rpc=rpc_url, error=str(exc))
     if last_error:

@@ -1,11 +1,15 @@
+import asyncio
 import time
 import json
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+import engine.core.arbitrage.dex_volume as dex_volume
 from engine.core.arbitrage.dex_volume import (
     RollingDexVolumeStore,
     _rpc_candidates,
+    _refresh_pool,
     event_id_from_log,
     stable_volume_usd_from_v4_swap,
 )
@@ -131,3 +135,56 @@ def test_event_id_from_log_handles_hex_strings():
         "logIndex": "0x2",
     }
     assert event_id_from_log(log) == "0xabc:2"
+
+
+def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):
+    store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
+    now_ms = int(time.time() * 1000)
+    store.record("pool", Decimal("25"), timestamp_ms=now_ms, event_id="tx1:0", allow_unseeded=True)
+    store.mark_seeded("pool")
+
+    monkeypatch.setattr(dex_volume, "_STORE", store)
+
+    async def _boom(config, rpc_url: str, *, allow_unseeded: bool) -> None:
+        raise RuntimeError("fail")
+
+    monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _boom)
+    monkeypatch.setattr(dex_volume, "_rpc_candidates", lambda config: ["rpc1"])
+
+    class _Config:
+        pool_address = "pool"
+        rpc_url = "rpc1"
+        dexscreener_chain = "base"
+
+    with pytest.raises(RuntimeError, match="fail"):
+        asyncio.run(_refresh_pool(_Config()))
+
+    assert store.is_seeded("pool") is False
+    assert store.get_24h_volume_usd("pool") == Decimal("0")
+
+
+def test_refresh_failure_does_not_leave_partial_volume_visible(monkeypatch, tmp_path):
+    store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
+    now_ms = int(time.time() * 1000)
+    store.record("pool", Decimal("25"), timestamp_ms=now_ms, event_id="tx1:0", allow_unseeded=True)
+    store.mark_seeded("pool")
+
+    monkeypatch.setattr(dex_volume, "_STORE", store)
+
+    async def _partial(config, rpc_url: str, *, allow_unseeded: bool) -> None:
+        store.record("pool", Decimal("10"), timestamp_ms=now_ms, event_id="tx2:0", allow_unseeded=allow_unseeded)
+        raise RuntimeError("midway fail")
+
+    monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _partial)
+    monkeypatch.setattr(dex_volume, "_rpc_candidates", lambda config: ["rpc1"])
+
+    class _Config:
+        pool_address = "pool"
+        rpc_url = "rpc1"
+        dexscreener_chain = "base"
+
+    with pytest.raises(RuntimeError, match="midway fail"):
+        asyncio.run(_refresh_pool(_Config()))
+
+    assert store.is_seeded("pool") is False
+    assert store.get_24h_volume_usd("pool") == Decimal("0")
