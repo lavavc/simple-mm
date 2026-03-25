@@ -7,6 +7,7 @@ to get a complete picture of the market at a point in time.
 import asyncio
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional, TYPE_CHECKING
@@ -67,10 +68,10 @@ class BybitConfig:
     """Configuration for Bybit P2P fraud filtering."""
 
     min_completed_orders: int = 100
-    min_completion_rate: float = 0.95
+    min_completion_rate: float = 0.90
     max_avg_release_time: int = 900  # 15 minutes
-    skip_first_n: int = 5
-    sample_size: int = 10
+    min_amount_ngn: Decimal = Decimal("5000000")   # ₦5M minimum ad size
+    max_amount_ngn: Decimal = Decimal("20000000")  # ₦20M maximum ad size
     max_deviation_from_median: float = 0.02  # 2%
     cache_seconds: int = 60
     depth_utilization: float = 0.05   # Fraction of total listed depth treated as effective trading activity
@@ -81,10 +82,10 @@ class BybitP2PPriceSource(VenuePriceSource):
     """Fetches USDT/NGN price from Bybit P2P with fraud filtering.
 
     Strategy:
-    1. Skip first N ads (likely fraud/bait prices)
-    2. Filter by trader reputation
-    3. Reject outliers using median-based filtering
-    4. Calculate volume-weighted average
+    1. Filter by trader reputation (completion rate, order count, release time)
+    2. Filter by ad size (₦5M–₦20M) to exclude retail noise and whale outliers
+    3. Reject outliers beyond 2% of the median
+    4. Return the mode (most frequently occurring rate)
     """
 
     name = "bybit"
@@ -240,41 +241,39 @@ class BybitP2PPriceSource(VenuePriceSource):
             return []
 
     def _filter_and_aggregate(self, ads: list[P2PAd]) -> Optional[Decimal]:
-        """Apply fraud filtering and calculate VWAP."""
-        if len(ads) < self.config.skip_first_n + 3:
-            return None
-
-        after_skip = ads[self.config.skip_first_n:]
-
+        """Apply fraud filtering and return the modal price."""
         reputable = [
             ad
-            for ad in after_skip
+            for ad in ads
             if ad.completed_orders >= self.config.min_completed_orders
             and ad.completion_rate >= self.config.min_completion_rate
             and ad.avg_release_time <= self.config.max_avg_release_time
             and ad.is_online
         ]
 
-        if len(reputable) < 3:
-            logger.warning("bybit_insufficient_reputable_ads", count=len(reputable))
+        # Keep ads whose total NGN value falls within ₦5M–₦20M
+        in_range = [
+            ad for ad in reputable
+            if self.config.min_amount_ngn <= ad.price * ad.quantity <= self.config.max_amount_ngn
+        ]
+
+        if len(in_range) < 3:
+            logger.warning("bybit_insufficient_filtered_ads", count=len(in_range))
             return None
 
-        sample = reputable[: self.config.sample_size]
-
-        prices = sorted([ad.price for ad in sample])
+        prices = sorted(ad.price for ad in in_range)
         median = prices[len(prices) // 2]
 
         max_dev = Decimal(str(self.config.max_deviation_from_median))
-        filtered = [ad for ad in sample if abs(ad.price - median) / median <= max_dev]
+        filtered = [ad for ad in in_range if abs(ad.price - median) / median <= max_dev]
 
         if len(filtered) < 2:
-            filtered = sample
+            filtered = in_range
 
-        total_volume = sum(ad.quantity for ad in filtered)
-        if total_volume == 0:
-            return sum(ad.price for ad in filtered) / len(filtered)
-
-        return sum(ad.price * ad.quantity for ad in filtered) / total_volume
+        # Mode: round to nearest integer NGN to cluster equivalent prices
+        counts = Counter(int(ad.price.to_integral_value()) for ad in filtered)
+        mode_ngn = counts.most_common(1)[0][0]
+        return Decimal(str(mode_ngn))
 
 
 # =============================================================================

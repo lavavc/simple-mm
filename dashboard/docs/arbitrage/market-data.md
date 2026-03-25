@@ -9,13 +9,13 @@ Six venues feed the price pipeline. Four contribute to fair-value calculations; 
 
 **Bybit P2P — REST + fraud filtering**
 
-Bybit's P2P market is the primary NGN/USD reference rate. The first several listings on any P2P board are almost always fraudulent or manipulated, so the engine filters before using any data:
-- The top N listings are skipped unconditionally (the most common fraud position)
-- Remaining ads are filtered by minimum completed order count, completion rate, and maximum release time
-- Outliers beyond 2% of the median are removed
-- The survivors are quantity-weighted to produce bid, ask, and mid
+Bybit's P2P market is the primary NGN/USD reference rate. Raw listings contain manipulated and retail-noise prices, so the engine filters before using any data:
+- Ads are filtered by merchant quality: minimum completed order count, completion rate ≥ 90%, and maximum release time
+- Ads outside the ₦5M–₦20M total size band are excluded: below that is retail noise, above that is whale/outlier territory
+- Prices more than 2% from the median of the remaining ads are removed
+- The modal price (most frequently occurring integer NGN rate) of the survivors is used as the side price
 
-The result is a fraud-resistant VWAP of the filtered mid-market. This is the primary input that determines the NGN leg of the blended price.
+The result is the rate the largest cohort of reputable mid-market merchants agree on. This is the primary input that determines the NGN leg of the blended price.
 
 **Quidax order book — REST polling**
 
