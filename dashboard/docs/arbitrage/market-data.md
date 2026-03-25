@@ -11,7 +11,6 @@ Six venues feed the price pipeline. Four contribute to fair-value calculations; 
 
 Bybit's P2P market is the primary NGN/USD reference rate. Raw listings contain manipulated and retail-noise prices, so the engine filters before using any data:
 - Ads are filtered by merchant quality: minimum completed order count, completion rate ≥ 90%, and maximum release time
-- Ads outside the ₦5M–₦20M total size band are excluded: below that is retail noise, above that is whale/outlier territory
 - Prices more than 2% from the median of the remaining ads are removed
 - The modal price (most frequently occurring integer NGN rate) of the survivors is used as the side price
 

@@ -56,7 +56,6 @@ class P2PAd:
     """Bybit P2P advertisement."""
 
     price: Decimal
-    last_quantity: Decimal  # remaining USDT available (lastQuantity from API)
     completed_orders: int
     completion_rate: float
     avg_release_time: int
@@ -70,8 +69,6 @@ class BybitConfig:
     min_completed_orders: int = 100
     min_completion_rate: float = 0.90
     max_avg_release_time: int = 900  # 15 minutes
-    min_amount_ngn: Decimal = Decimal("5000000")   # ₦5M minimum ad size
-    max_amount_ngn: Decimal = Decimal("20000000")  # ₦20M maximum ad size
     max_deviation_from_median: float = 0.02  # 2%
     cache_seconds: int = 60
     depth_utilization: float = 0.05   # Fraction of total listed depth treated as effective trading activity
@@ -83,9 +80,8 @@ class BybitP2PPriceSource(VenuePriceSource):
 
     Strategy:
     1. Filter by trader reputation (completion rate, order count, release time)
-    2. Filter by ad size (₦5M–₦20M) to exclude retail noise and whale outliers
-    3. Reject outliers beyond 2% of the median
-    4. Return the mode (most frequently occurring rate)
+    2. Reject outliers beyond 2% of the median
+    3. Return the mode (most frequently occurring rate)
     """
 
     name = "bybit"
@@ -227,7 +223,6 @@ class BybitP2PPriceSource(VenuePriceSource):
                 ads.append(
                     P2PAd(
                         price=Decimal(str(item["price"])),
-                        last_quantity=Decimal(str(item.get("lastQuantity", "0"))),
                         completed_orders=int(item.get("recentOrderNum", 0)),
                         completion_rate=float(item.get("recentExecuteRate", 0)),
                         avg_release_time=int(item.get("avgReleaseTime", 0)),
@@ -251,24 +246,18 @@ class BybitP2PPriceSource(VenuePriceSource):
             and ad.is_online
         ]
 
-        # Keep ads whose remaining NGN value falls within ₦5M–₦20M
-        in_range = [
-            ad for ad in reputable
-            if self.config.min_amount_ngn <= ad.price * ad.last_quantity <= self.config.max_amount_ngn
-        ]
-
-        if len(in_range) < 3:
-            logger.warning("bybit_insufficient_filtered_ads", count=len(in_range))
+        if len(reputable) < 3:
+            logger.warning("bybit_insufficient_filtered_ads", count=len(reputable))
             return None
 
-        prices = sorted(ad.price for ad in in_range)
+        prices = sorted(ad.price for ad in reputable)
         median = prices[len(prices) // 2]
 
         max_dev = Decimal(str(self.config.max_deviation_from_median))
-        filtered = [ad for ad in in_range if abs(ad.price - median) / median <= max_dev]
+        filtered = [ad for ad in reputable if abs(ad.price - median) / median <= max_dev]
 
         if len(filtered) < 2:
-            filtered = in_range
+            filtered = reputable
 
         # Mode: round to nearest integer NGN to cluster equivalent prices
         counts = Counter(int(ad.price.to_integral_value()) for ad in filtered)
