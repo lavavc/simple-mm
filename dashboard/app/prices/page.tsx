@@ -54,9 +54,11 @@ function buildSparkline(
 function PriceCard({
   price,
   sparklineData,
+  dexVolume24hUsd,
 }: {
   price: VenuePriceResponse;
   sparklineData: { time: string; value: number }[];
+  dexVolume24hUsd?: number | null;
 }) {
   const label = VENUE_LABELS[price.venue] || { name: price.venue, chain: 'Unknown', type: '?' };
   const hasPrice = !!price.quote;
@@ -96,6 +98,13 @@ function PriceCard({
   const sparkDelta = sparklineData.length >= 2
     ? sparklineData[sparklineData.length - 1].value - sparklineData[0].value
     : 0;
+  const showDexVolume = price.venue === 'uni-base' || price.venue === 'uni-bsc';
+  const formatCompactUsd = (value: number | null | undefined) => {
+    if (value == null) return '—';
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+    return `$${formatNumber(value, 0)}`;
+  };
 
   return (
     <Card className="hover:border-emerald-500/50 transition-colors bg-white/[0.02] border-white/[0.05]">
@@ -119,6 +128,12 @@ function PriceCard({
             {spread !== null && (
               <div className="mt-1 mb-3">
                 <Badge variant="outline" className="text-[9px] bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-mono tracking-wider">{spread} BPS SPREAD</Badge>
+              </div>
+            )}
+            {showDexVolume && (
+              <div className="mt-1 mb-3 text-[9px] font-mono border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
+                <div className="text-white/30 uppercase tracking-widest mb-1">24H Volume</div>
+                <div className="text-white/80">{formatCompactUsd(dexVolume24hUsd)}</div>
               </div>
             )}
 
@@ -357,6 +372,7 @@ export default function PricesPage() {
               key={price.venue}
               price={price}
               sparklineData={sparklines[price.venue] ?? []}
+              dexVolume24hUsd={blended?.dex_volume_24h_usd?.[price.venue] ?? null}
             />
           ))
         )}
