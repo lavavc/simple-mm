@@ -191,9 +191,8 @@ export default function DashboardPage() {
             ) : (() => {
               const stableUsd = Number(globalPosition?.total_usdc ?? 0) + Number(globalPosition?.total_usdt ?? 0);
               const total = Number(globalPosition?.total_usd_value ?? 0);
-              const cngnUsd = total - stableUsd;
-              const cngnPct = total > 0 ? (cngnUsd / total) * 100 : 0;
-              const stablePct = total > 0 ? (stableUsd / total) * 100 : 0;
+              const cngnPct = Number(globalPosition?.delta_ratio ?? 0) * 100;
+              const stablePct = 100 - cngnPct;
               return (
                 <>
                   <div className="flex items-center gap-3 mb-4">
