@@ -244,6 +244,7 @@ async def get_blended_price():
             num_sources=blended.num_sources,
             total_venues=blended.total_venues,
             confidence=blended.confidence,
+            dex_volume_24h_usd=blended.dex_volume_24h_usd,
         )
     except Exception as e:
         logger.error("blended_price_fetch_failed", error=str(e))

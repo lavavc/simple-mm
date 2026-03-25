@@ -15,6 +15,14 @@ export function BlendedPriceCard({ blended }: BlendedPriceCardProps) {
   const confidenceColor =
     confidencePct >= 80 ? 'text-green-500' : confidencePct >= 50 ? 'text-yellow-500' : 'text-red-500';
   const degraded = blended.num_sources < blended.total_venues;
+  const dexVolumes = blended.dex_volume_24h_usd ?? {};
+
+  const formatCompactUsd = (value: number | null | undefined) => {
+    if (value == null) return '—';
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+    return `$${formatNumber(value, 0)}`;
+  };
 
   // VWAP as NGN/USD for display (invert cNGN/USD)
   const ngnPerUsd = blended.vwap > 0 ? 1 / blended.vwap : 0;
@@ -44,6 +52,17 @@ export function BlendedPriceCard({ blended }: BlendedPriceCardProps) {
           <div>
             <span className="text-muted-foreground">TWAP 1h: </span>
             <span>{blended.twap_1h > 0 ? formatNumber(1 / blended.twap_1h, 2) : '—'}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground mb-3">
+          <div>
+            <span>UNI Base 24h Vol: </span>
+            <span className="text-foreground">{formatCompactUsd(dexVolumes['uni-base'])}</span>
+          </div>
+          <div>
+            <span>UNI BSC 24h Vol: </span>
+            <span className="text-foreground">{formatCompactUsd(dexVolumes['uni-bsc'])}</span>
           </div>
         </div>
 

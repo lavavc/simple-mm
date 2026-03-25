@@ -1,6 +1,5 @@
 import asyncio
 import json
-import time
 import websockets
 import structlog
 from typing import Callable, Any
@@ -8,13 +7,15 @@ from typing import Callable, Any
 from engine.config import settings
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+from engine.core.arbitrage.dex_volume import (
+    V4_SWAP_TOPIC,
+    event_id_from_log,
+    record_live_v4_swap_volume,
+    sync_pool_volume_24h,
+)
 from engine.core.arbitrage.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
-
-# Uniswap V4 Swap event topic
-# Keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
 
 class ArbitrageWebSocketListener:
     """Listens for DEX Swaps via WebSockets to trigger curve calculations instantly."""
@@ -88,6 +89,7 @@ class ArbitrageWebSocketListener:
 
                     response = await ws.recv()
                     logger.debug("wss_subscribed", chain=chain_name, response=response)
+                    await sync_pool_volume_24h(pool_config)
 
                     while self._running:
                         msg = await ws.recv()
@@ -133,6 +135,13 @@ class ArbitrageWebSocketListener:
             fee = int.from_bytes(data_bytes[160:192], "big")
 
             update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
+            block_number = int(log["blockNumber"], 16) if isinstance(log.get("blockNumber"), str) else log.get("blockNumber")
+            record_live_v4_swap_volume(
+                pool_config,
+                data_bytes,
+                block_number=block_number,
+                event_id=event_id_from_log(log),
+            )
             logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
         except Exception as e:
             logger.error("v4_swap_event_parse_failed", error=str(e))
