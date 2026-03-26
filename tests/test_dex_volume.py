@@ -154,7 +154,7 @@ def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):
     class _Config:
         pool_address = "pool"
         rpc_url = "rpc1"
-        dexscreener_chain = "base"
+        chain_id_str = "base"
 
     with pytest.raises(RuntimeError, match="fail"):
         asyncio.run(_refresh_pool(_Config()))
@@ -184,7 +184,7 @@ def test_refresh_failure_does_not_leave_partial_volume_visible(monkeypatch, tmp_
     class _Config:
         pool_address = "pool"
         rpc_url = "rpc1"
-        dexscreener_chain = "base"
+        chain_id_str = "base"
 
     with pytest.raises(RuntimeError, match="midway fail"):
         asyncio.run(_refresh_pool(_Config()))
@@ -217,7 +217,7 @@ def test_refresh_keeps_last_good_volume_visible_until_new_window_is_ready(monkey
     class _Config:
         pool_address = "pool"
         rpc_url = "rpc1"
-        dexscreener_chain = "base"
+        chain_id_str = "base"
 
     asyncio.run(_refresh_pool(_Config()))
 
