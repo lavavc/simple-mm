@@ -4,6 +4,7 @@ import pytest
 import tempfile
 import os
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from eth_abi import encode
@@ -38,6 +39,7 @@ class FakeV4Venue:
         self.cngn_address = "0xcngn"
         self.stable_decimals = 6
         self.cngn_decimals = 6
+        self.trade_account = SimpleNamespace(address="0x23DF63FAKE0000000000000000000000002e14E4")
         self._sim_result = sim_result
         self._swap_ok = swap_ok
         self.swap_calls = []
@@ -92,7 +94,7 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
                 "slippage_tolerance_bps": 10,
                 "net_spread_bps": 30,
             },
-            "prices": {"quidax": "0.00061"},
+            "prices": {"quidax": "0.00061", "uni-base": "0.00071"},
             "depth": depth,
         },
     )
@@ -161,6 +163,24 @@ class TestCexDexPreflightGate:
 
         assert cex_venue.buy_calls == [], "CEX buy must not be called when sell preflight fails"
         assert not engine._arb_executing
+
+    @pytest.mark.asyncio
+    async def test_sell_preflight_alert_includes_trade_and_wallet_context(self, test_db):
+        """Unknown preflight alerts should include route size and wallet inventory for debugging."""
+        sell_venue = FakeV4Venue("uni-base", sim_result="execution reverted: TRANSFER_FROM_FAILED")
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine.inventory.reconcile_cngn({"uni-base": Decimal("26999")})
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_cex_dex(_cex_dex_route(size=Decimal("500")), "opp-cex-preflight-debug")
+
+        message = next(a["message"] for a in alerts if a.get("type") == "alert")
+        assert "Trade size: $500.00" in message
+        assert "Estimated sell:" in message
+        assert "Wallet: 0x23DF...2e14E4 | 26,999.00 cNGN | ~$19.17" in message
+        assert "Shortfall:" in message
 
     @pytest.mark.asyncio
     async def test_sell_preflight_passes_cex_buy_is_attempted(self, test_db):

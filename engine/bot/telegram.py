@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+import time
 from typing import Optional
 
 import structlog
@@ -20,6 +21,7 @@ _venues = None
 _arbitrage_engine = None
 _account_manager = None
 _token_contracts: dict = {}
+_recent_alerts: dict[str, float] = {}
 
 
 def _auth(update: Update) -> bool:
@@ -299,10 +301,23 @@ async def forward_alert(event: dict) -> None:
     severity = event.get("severity", "")
     if severity not in ("critical", "warning"):
         return
+    now = time.monotonic()
+    for key, expires_at in list(_recent_alerts.items()):
+        if expires_at <= now:
+            _recent_alerts.pop(key, None)
+    cooldown_s = float(event.get("cooldown_s", 60))
+    dedupe_key = str(event.get("dedupe_key") or f"{severity}:{event.get('message', '')}")
+    if cooldown_s > 0:
+        last_expires_at = _recent_alerts.get(dedupe_key)
+        if last_expires_at and last_expires_at > now:
+            logger.info("telegram_alert_suppressed_duplicate", dedupe_key=dedupe_key, severity=severity)
+            return
+        _recent_alerts[dedupe_key] = now + cooldown_s
     icon = "🚨" if severity == "critical" else "⚠️"
     try:
         await _app.bot.send_message(_settings.telegram_chat_id, f"{icon} {event.get('message', '')}")
     except Exception as e:
+        _recent_alerts.pop(dedupe_key, None)
         logger.warning("telegram_alert_failed", error=str(e))
 
 
