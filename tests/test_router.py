@@ -5,7 +5,9 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 from engine.core.arbitrage import router as _router
+from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
+
 from engine.api.schemas import ArbitrageParams, OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.inventory import InventoryTracker
 
@@ -32,6 +34,7 @@ def _make_candidate(
 ) -> RouteCandidate:
     if signal is None:
         signal = {"depth": _default_depth()} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
+    route_def = ROUTES_BY_DIRECTION.get(direction)
     return RouteCandidate(
         direction=direction,
         pipeline=pipeline,
@@ -41,6 +44,7 @@ def _make_candidate(
         expected_profit_usd=Decimal(str(profit_usd)),
         gas_usd=Decimal(str(gas_usd)),
         signal=signal,
+        cngn_effect=route_def.cngn_effect if route_def else "neutral",
     )
 
 
@@ -265,13 +269,13 @@ class TestSelectRouteTiebreak:
         )
         # sell-to-CEX direction (aligned): buy on uni-base, sell on quidax
         c_sell = _make_candidate(
-            direction="UNI_BASE_TO_QUIDAX",  # in _SELLS_CNGN_TO_CEX
+            direction="UNI_BASE_TO_QUIDAX",  # cngn_effect="sells_cngn_to_cex"
             buy_venue="uni-base", sell_venue="quidax",
             profit_usd=5.0, gas_usd=0.07,
         )
         # buy-from-CEX direction (misaligned): buy on quidax, sell on uni-base
         c_buy = _make_candidate(
-            direction="QUIDAX_TO_UNI_BASE",  # in _BUYS_CNGN_FROM_CEX
+            direction="QUIDAX_TO_UNI_BASE",  # cngn_effect="buys_cngn_from_cex"
             buy_venue="quidax", sell_venue="uni-base",
             profit_usd=5.0, gas_usd=0.07,
         )

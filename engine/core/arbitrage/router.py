@@ -11,9 +11,6 @@ from typing import Optional
 from engine.core.arbitrage.cex_dex import estimate_cex_dex_trade, estimate_max_cex_buy_usd_for_cngn
 from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
 
-# CEX-DEX directions by their cNGN inventory effect
-_SELLS_CNGN_TO_CEX = frozenset({"UNI_BSC_TO_QUIDAX", "UNI_BASE_TO_QUIDAX"})
-_BUYS_CNGN_FROM_CEX = frozenset({"QUIDAX_TO_UNI_BSC", "QUIDAX_TO_UNI_BASE"})
 _IMBALANCE_THRESHOLD_USD = Decimal("10")
 
 
@@ -27,6 +24,7 @@ class RouteCandidate:
     expected_profit_usd: Decimal
     gas_usd: Decimal
     signal: dict             # passed through to execution methods
+    cngn_effect: str         # "buys_cngn_from_cex" | "sells_cngn_to_cex" | "neutral"
 
 
 @dataclass
@@ -64,7 +62,7 @@ def select_route(
         if not cngn_bal:
             continue
 
-        if c.pipeline == "cex_dex" and c.direction in _BUYS_CNGN_FROM_CEX:
+        if c.cngn_effect == "buys_cngn_from_cex":
             adjusted_size = min(
                 adjusted_size,
                 estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal),
@@ -106,11 +104,11 @@ def select_route(
         if not can:
             continue
 
-        # Inventory alignment tiebreak
+        # Inventory alignment tiebreak: neutral (DEX-DEX) counts as aligned in both cases
         if imbalance > _IMBALANCE_THRESHOLD_USD:
-            aligned = c.direction in _SELLS_CNGN_TO_CEX
+            aligned = c.cngn_effect in ("sells_cngn_to_cex", "neutral")
         elif imbalance < -_IMBALANCE_THRESHOLD_USD:
-            aligned = c.direction in _BUYS_CNGN_FROM_CEX
+            aligned = c.cngn_effect in ("buys_cngn_from_cex", "neutral")
         else:
             aligned = True
 
