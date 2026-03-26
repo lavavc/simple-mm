@@ -447,7 +447,6 @@ class DexAdapterPriceSource(VenuePriceSource):
         venue_name: str,
         pair: str,
         pool_address: str,
-        dexscreener_chain: str = "",
     ):
         self.name = venue_name
         self.pair = pair
@@ -619,7 +618,6 @@ def create_venue_aggregator(
             venue_name="uni-base",
             pair="cNGN/USDC",
             pool_address=UNISWAP_BASE_POOL_READ_CONFIG.pool_address,
-            dexscreener_chain="base",
         )
     )
     sources.append(

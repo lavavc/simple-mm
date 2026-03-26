@@ -21,7 +21,7 @@ UNISWAP_BASE_POOL_READ_CONFIG = V4PoolReadConfig(
     token0_decimals=6,
     token1_decimals=6,
     invert_price=False,
-    dexscreener_chain="base",
+    chain_id_str="base",
 )
 
 UNISWAP_BASE_EXECUTION_CONFIG = V4ExecutionConfig(

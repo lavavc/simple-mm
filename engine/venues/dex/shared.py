@@ -35,7 +35,7 @@ class V4PoolReadConfig:
     token0_decimals: int
     token1_decimals: int
     invert_price: bool = False
-    dexscreener_chain: str = ""
+    chain_id_str: str = ""
 
 
 def sqrt_price_x96_to_decimal(

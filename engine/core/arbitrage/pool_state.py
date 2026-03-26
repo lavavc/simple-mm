@@ -200,10 +200,10 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
         #    amount1 = L * (sqrt_p - sqrt_lower) / Q96 / 10^t1_dec
         #    (handle out-of-range: all token0 if sqrt_p<=sqrt_lower, all token1 if sqrt_p>=sqrt_upper)
         balance0, balance1 = None, None
-        if config.dexscreener_chain:
+        if config.chain_id_str:
             try:
                 import httpx
-                url = f"https://api.dexscreener.com/latest/dex/pairs/{config.dexscreener_chain}/{config.pool_address}"
+                url = f"https://api.dexscreener.com/latest/dex/pairs/{config.chain_id_str}/{config.pool_address}"
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     resp = await client.get(url)
                 pairs = (resp.json().get("pairs") or [])
@@ -226,8 +226,8 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             # When BSC is indexed, the DexScreener fetch will succeed and this fallback will stop firing.
             # Until then: use approximate values so the dashboard shows non-zero TVL.
             # Update these periodically until DexScreener indexes the BSC pool.
-            balance0 = Decimal("9200") if config.dexscreener_chain == "bsc" else Decimal(0)
-            balance1 = Decimal("26090000") if config.dexscreener_chain == "bsc" else Decimal(0)
+            balance0 = Decimal("9200") if config.chain_id_str == "bsc" else Decimal(0)
+            balance1 = Decimal("26090000") if config.chain_id_str == "bsc" else Decimal(0)
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,

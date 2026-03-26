@@ -210,7 +210,7 @@ _STORE = RollingDexVolumeStore(_DEFAULT_STORE_PATH)
 
 def _rpc_candidates(config: V4PoolReadConfig) -> list[str]:
     candidates = [config.rpc_url]
-    fallback = _PUBLIC_RPC_FALLBACKS.get(config.dexscreener_chain)
+    fallback = _PUBLIC_RPC_FALLBACKS.get(config.chain_id_str)
     if fallback and fallback not in candidates:
         candidates.append(fallback)
     return candidates
@@ -218,13 +218,13 @@ def _rpc_candidates(config: V4PoolReadConfig) -> list[str]:
 
 def _make_async_w3(config: V4PoolReadConfig, rpc_url: str) -> AsyncWeb3:
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
-    if config.dexscreener_chain == "bsc":
+    if config.chain_id_str == "bsc":
         w3.middleware_onion.inject(async_geth_poa_middleware, layer=0)
     return w3
 
 
 def _log_chunk_size(config: V4PoolReadConfig) -> int:
-    if config.dexscreener_chain == "bsc":
+    if config.chain_id_str == "bsc":
         return 5_000
     return 50_000
 
