@@ -180,7 +180,21 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             liquidity = Decimal(liquidity_raw)
             logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)  # noqa: keep v4_ prefix for V4-specific path
 
-        balance0, balance1 = None, None  # computed in lp_v4.get_pool_metrics via tick math
+        # cNGN is only deployed in one pool, so balanceOf(poolManager, cNGN) gives the pool amount, for now.
+        # Stable balance is derived from cNGN × price (poolManager holds all chains' stables combined).
+        cngn_is_token0 = "cngn" in config.token0_symbol.lower()
+        cngn_address = config.token0_address if cngn_is_token0 else config.token1_address
+        cngn_decimals = config.token0_decimals if cngn_is_token0 else config.token1_decimals
+        balance_call = "0x70a08231" + w3.to_checksum_address(config.pool_manager)[2:].zfill(64)
+        cngn_raw = await w3.eth.call({"to": w3.to_checksum_address(cngn_address), "data": balance_call})
+        cngn_balance = Decimal(int.from_bytes(cngn_raw[:32], "big")) / Decimal(10 ** cngn_decimals)
+
+        price_t0_in_t1 = (sqrt_price_x96 / Q96) ** 2 * Decimal(10 ** (config.token0_decimals - config.token1_decimals))
+        cngn_price_in_stable = price_t0_in_t1 if cngn_is_token0 else (Decimal(1) / price_t0_in_t1 if price_t0_in_t1 > 0 else Decimal(0))
+        stable_balance = cngn_balance * cngn_price_in_stable
+
+        balance0 = cngn_balance if cngn_is_token0 else stable_balance
+        balance1 = stable_balance if cngn_is_token0 else cngn_balance
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,

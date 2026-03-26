@@ -14,12 +14,10 @@ from engine.core.arbitrage.pool_state import (
 
 logger = structlog.get_logger()
 
-_ABSOLUTE_MAX_USD = Decimal("15000")
-
 from engine.core import gas_oracle as _gas_oracle  # noqa: E402
 
 
-def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):
+def _ternary_search(eval_func, high: Decimal, low=Decimal("1"), tol=Decimal("0.5")):
     """Find the profit-maximising size for a unimodal profit function."""
     while high - low > tol:
         m1 = low + (high - low) / Decimal("3")
@@ -107,8 +105,8 @@ def find_optimal_dex_arb() -> dict | None:
         logger.warning("dex_arb_blocked_thin_pools")
         return None
 
-    uni_bsc_stable, uni_bsc_cngn = uni_bsc_b0, uni_bsc_b1  # may be None (stats only)
-    uni_base_cngn, uni_base_stable = uni_base_b0, uni_base_b1  # may be None (stats only)
+    uni_bsc_stable, uni_bsc_cngn = uni_bsc_b0, uni_bsc_b1
+    uni_base_cngn, uni_base_stable = uni_base_b0, uni_base_b1
 
     uni_bsc_raw = ((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
     uni_bsc_price_usd = float(Decimal(1) / uni_bsc_raw)
@@ -118,16 +116,14 @@ def find_optimal_dex_arb() -> dict | None:
         if asset_sqrt else None
     )
 
-    # Use pool balances to bound the search when available; fall back to absolute cap.
+    # Bound search by virtual pool depth (derived from on-chain liquidity and price).
     max_usd_v1 = min(
-        uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)) if uni_bsc_cngn is not None else _ABSOLUTE_MAX_USD,
-        uni_base_stable if uni_base_stable is not None else _ABSOLUTE_MAX_USD,
-        _ABSOLUTE_MAX_USD,
+        uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)),
+        uni_base_stable,
     )
     max_usd_v2 = min(
-        uni_base_cngn * Decimal(str(uni_base_price_usd)) if uni_base_cngn is not None else _ABSOLUTE_MAX_USD,
-        uni_bsc_stable if uni_bsc_stable is not None else _ABSOLUTE_MAX_USD,
-        _ABSOLUTE_MAX_USD,
+        uni_base_cngn * Decimal(str(uni_base_price_usd)),
+        uni_bsc_stable,
     )
 
     def eval_bsc_to_base(inv: Decimal):
