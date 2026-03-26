@@ -77,7 +77,7 @@ class Settings(BaseSettings):
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
     arbitrage_min_profit_usd: float = 0.05       # Minimum net profit per trade in USD
-    arbitrage_max_single_trade_usd: float = 100.0          # Hard cap per trade
+    arbitrage_max_single_trade_usd: float = 200.0          # Hard cap per trade
     arbitrage_max_daily_volume_usd: float = 10000.0
     arbitrage_max_inventory_imbalance_usd: float = 5000.0
     arbitrage_max_consecutive_failures: int = 3

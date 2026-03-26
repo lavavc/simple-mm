@@ -93,6 +93,7 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
         candidate=candidate,
         adjusted_size_usd=size,
         net_profit_usd=Decimal("1.12"),
+        expected_profit_usd=Decimal("1.12"),
     )
 
 

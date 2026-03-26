@@ -298,9 +298,6 @@ export default function DexArbPage() {
                                         );
                                     })()}
 
-                                    <Button className="w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-sm font-mono text-[11px] uppercase tracking-wider h-10 transition-colors mt-2">
-                                        Execute Sequence
-                                    </Button>
                                 </div>
                             )}
                         </CardContent>

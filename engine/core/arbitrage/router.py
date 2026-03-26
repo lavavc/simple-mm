@@ -34,7 +34,7 @@ class SelectedRoute:
     candidate: RouteCandidate
     adjusted_size_usd: Decimal   # capped to available stablecoin
     net_profit_usd: Decimal      # after gas and rebalance penalty
-    expected_profit_usd: Optional[Decimal] = None  # recomputed at adjusted size when needed
+    expected_profit_usd: Decimal                     # recomputed at adjusted size when needed
 
 
 def select_route(

@@ -104,7 +104,7 @@ class TestArbitrageParams:
     def test_defaults(self):
         p = ArbitrageParams()
         assert p.min_profit_usd == Decimal("0.05")
-        assert p.max_single_trade_usd == Decimal("100")
+        assert p.max_single_trade_usd == Decimal("200")
 
     def test_custom_values(self):
         p = ArbitrageParams(
