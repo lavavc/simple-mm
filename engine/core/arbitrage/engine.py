@@ -281,7 +281,11 @@ class ArbitrageEngine:
                 gross_spread_bps=net_spread_bps,
                 net_spread_bps=net_spread_bps,
                 recommended_size_usd=size_usd,
-                expected_profit_usd=c.expected_profit_usd,
+                expected_profit_usd=(
+                    route.expected_profit_usd
+                    if route.expected_profit_usd is not None
+                    else c.expected_profit_usd
+                ),
                 status="executing",
             ))
 

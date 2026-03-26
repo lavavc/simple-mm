@@ -96,7 +96,12 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
             "depth": depth,
         },
     )
-    return SelectedRoute(candidate=candidate, adjusted_size_usd=size, net_profit_usd=Decimal("1.45"))
+    return SelectedRoute(
+        candidate=candidate,
+        adjusted_size_usd=size,
+        net_profit_usd=Decimal("1.45"),
+        expected_profit_usd=Decimal("1.50"),
+    )
 
 
 def _cex_dex_route_no_depth(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
@@ -175,6 +180,44 @@ class TestCexDexPreflightGate:
 
         assert len(cex_venue.buy_calls) == 1, "CEX buy must be called when sell preflight passes"
         assert not engine._arb_executing
+
+    @pytest.mark.asyncio
+    async def test_execution_persists_route_expected_profit(self, test_db):
+        """The DB record should use the capped/recomputed route profit, not the stale detection value."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        route = _cex_dex_route()
+        route.expected_profit_usd = Decimal("0.42")
+        route.candidate.expected_profit_usd = Decimal("1.50")
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_cex_dex(route, "opp-cex-profit-persist")
+
+        opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-persist")
+        assert opp is not None
+        assert opp.expected_profit_usd == Decimal("0.42")
+
+    @pytest.mark.asyncio
+    async def test_execution_persists_zero_route_expected_profit(self, test_db):
+        """A recomputed expected profit of zero is still authoritative and must not fall back."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        route = _cex_dex_route()
+        route.expected_profit_usd = Decimal("0")
+        route.candidate.expected_profit_usd = Decimal("1.50")
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_cex_dex(route, "opp-cex-profit-zero")
+
+        opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-zero")
+        assert opp is not None
+        assert opp.expected_profit_usd == Decimal("0")
 
 
 # =============================================================================
