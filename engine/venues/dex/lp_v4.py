@@ -255,6 +255,20 @@ class V4LPAdapter(BaseV4DexAdapter):
             if pos_state:
                 our_liquidity = pos_state.liquidity
 
+        from engine.core.arbitrage.pool_state import set_pool_tick_range
+        if pos_state:
+            set_pool_tick_range(self.config.pool_id, pos_state.tick_lower, pos_state.tick_upper)
+        else:
+            from engine.db import get_db
+            try:
+                db = await get_db()
+                prices = await db.get_recent_prices(limit=100)
+                if len(prices) >= 2:
+                    tick_lower, tick_upper = self.calculate_tick_range(prices)
+                    set_pool_tick_range(self.config.pool_id, tick_lower, tick_upper)
+            except Exception as e:
+                logger.warning("tick_range_estimate_failed", venue=self.name, error=str(e))
+
         pool_tvl_usd, volume_24h_usd, our_share_pct = await self.get_pool_metrics(our_liquidity, pos_state)
 
         if pos_state:

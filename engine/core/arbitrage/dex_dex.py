@@ -116,15 +116,12 @@ def find_optimal_dex_arb() -> dict | None:
         if asset_sqrt else None
     )
 
-    # Bound search by virtual pool depth (derived from on-chain liquidity and price).
-    max_usd_v1 = min(
-        uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)),
-        uni_base_stable,
-    )
-    max_usd_v2 = min(
-        uni_base_cngn * Decimal(str(uni_base_price_usd)),
-        uni_bsc_stable,
-    )
+    # Bound search by pool depth. Stable side is None until first position read;
+    # fall back to cNGN-side bound only in that case.
+    bsc_cngn_usd = uni_bsc_cngn * Decimal(str(uni_bsc_price_usd))
+    base_cngn_usd = uni_base_cngn * Decimal(str(uni_base_price_usd))
+    max_usd_v1 = min(bsc_cngn_usd, uni_base_stable) if uni_base_stable is not None else bsc_cngn_usd
+    max_usd_v2 = min(base_cngn_usd, uni_bsc_stable) if uni_bsc_stable is not None else base_cngn_usd
 
     def eval_bsc_to_base(inv: Decimal):
         cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)

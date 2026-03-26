@@ -5,6 +5,7 @@ Supports V3-compatible pools (AssetChain) and V4 pools (Uniswap Base/BSC).
 
 from decimal import Decimal, getcontext
 import asyncio
+import math
 import time
 from engine.config import settings
 from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
@@ -80,6 +81,15 @@ def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | 
     if data:
         return data["sqrt_p"], data["liquidity"], data.get("balance0"), data.get("balance1"), data.get("timestamp"), data.get("fee")
     return None, None, None, None, None, None
+
+def set_pool_tick_range(pool_id: str, tick_lower: int, tick_upper: int) -> None:
+    """Write position tick range into pool cache for balance computation.
+    Called by LP adapter with actual or strategy-estimated ticks."""
+    cached = _POOL_CACHE.get(pool_id)
+    if cached is not None:
+        cached["tick_lower"] = tick_lower
+        cached["tick_upper"] = tick_upper
+
 
 async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str = None) -> bool:
     """Fetches the state for a single V3-compatible pool and updates the cache. Returns True if successful."""
@@ -180,21 +190,18 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             liquidity = Decimal(liquidity_raw)
             logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)  # noqa: keep v4_ prefix for V4-specific path
 
-        # cNGN is only deployed in one pool, so balanceOf(poolManager, cNGN) gives the pool amount, for now.
-        # Stable balance is derived from cNGN × price (poolManager holds all chains' stables combined).
-        cngn_is_token0 = "cngn" in config.token0_symbol.lower()
-        cngn_address = config.token0_address if cngn_is_token0 else config.token1_address
-        cngn_decimals = config.token0_decimals if cngn_is_token0 else config.token1_decimals
-        balance_call = "0x70a08231" + w3.to_checksum_address(config.pool_manager)[2:].zfill(64)
-        cngn_raw = await w3.eth.call({"to": w3.to_checksum_address(cngn_address), "data": balance_call})
-        cngn_balance = Decimal(int.from_bytes(cngn_raw[:32], "big")) / Decimal(10 ** cngn_decimals)
+        # Compute token amounts from tick math using the stored tick range.
+        # tick_lower/tick_upper are written by the LP adapter (actual or estimated from strategy params).
+        tick_lower = (cached_data or {}).get("tick_lower")
+        tick_upper = (cached_data or {}).get("tick_upper")
 
-        price_t0_in_t1 = (sqrt_price_x96 / Q96) ** 2 * Decimal(10 ** (config.token0_decimals - config.token1_decimals))
-        cngn_price_in_stable = price_t0_in_t1 if cngn_is_token0 else (Decimal(1) / price_t0_in_t1 if price_t0_in_t1 > 0 else Decimal(0))
-        stable_balance = cngn_balance * cngn_price_in_stable
-
-        balance0 = cngn_balance if cngn_is_token0 else stable_balance
-        balance1 = stable_balance if cngn_is_token0 else cngn_balance
+        balance0, balance1 = None, None
+        if tick_lower is not None and tick_upper is not None and liquidity > 0:
+            sqrt_lower = Decimal(str(math.exp(tick_lower * math.log(1.0001) / 2))) * Q96
+            sqrt_upper = Decimal(str(math.exp(tick_upper * math.log(1.0001) / 2))) * Q96
+            sqrt_p_c = max(sqrt_lower, min(sqrt_upper, sqrt_price_x96))
+            balance0 = liquidity * Q96 * (sqrt_upper - sqrt_p_c) / (sqrt_p_c * sqrt_upper) / Decimal(10 ** config.token0_decimals)
+            balance1 = liquidity * (sqrt_p_c - sqrt_lower) / Q96 / Decimal(10 ** config.token1_decimals)
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,
@@ -203,6 +210,8 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             "sqrt_p": sqrt_price_x96,
             "balance0": balance0,
             "balance1": balance1,
+            "tick_lower": tick_lower,
+            "tick_upper": tick_upper,
             "timestamp": time.time(),
         }
         return True
@@ -221,6 +230,8 @@ def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick
         "sqrt_p": Decimal(sqrt_p),
         "balance0": cached.get("balance0"),
         "balance1": cached.get("balance1"),
+        "tick_lower": cached.get("tick_lower"),
+        "tick_upper": cached.get("tick_upper"),
         "timestamp": time.time(),
     }
 
