@@ -65,9 +65,9 @@ The VWAP is computed across the four fair-value venues (Bybit, Quidax, uni-base,
 
 **Quidax** — The `/markets/tickers` response includes a `vol` field (24h traded volume in USDT). This is used directly as the VWAP weight.
 
-**Uniswap Base** — 24h volume is fetched from DexScreener (`/latest/dex/pairs/base/{pool_id}`), cached for 5 minutes. If the fetch fails, uni-base is excluded from that VWAP cycle.
+**Uniswap Base** — 24h volume is tracked on-chain. Every V4 Swap event carries the stable-side token delta inline; the engine extracts the USDC amount from each event and accumulates it in a rolling 24h window. The window is seeded at startup and on WebSocket reconnect by scanning the last 24h of swap logs directly from the RPC. Live events keep it current with zero additional RPC calls.
 
-**Uniswap BSC** — DexScreener does not index the BSC V4 pool yet. Volume is derived from uni-base: `uni_bsc_volume = uni_base_volume × 0.33`. The ratio reflects observed behaviour — uni-bsc consistently trades at roughly one-third of uni-base volume on a normal day. If uni-base volume is unavailable, uni-bsc is also excluded.
+**Uniswap BSC** — Same on-chain rolling window as uni-base, using the USDT delta from each swap event. Both pools now have independent real volume figures; the previous 0.33× ratio derived from uni-base is removed.
 
 If a venue has no volume data and no derivable proxy, it is excluded from that VWAP cycle with a warning log. There is no silent fallback to equal weighting.
 

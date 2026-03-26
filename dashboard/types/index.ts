@@ -168,6 +168,7 @@ export interface BlendedPriceResponse {
   num_sources: number;
   total_venues: number;
   confidence: number;
+  dex_volume_24h_usd: Record<string, number | null>;
 }
 
 export interface NormalizedPriceResponse {

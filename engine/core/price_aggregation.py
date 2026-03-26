@@ -56,6 +56,7 @@ class BlendedPrice:
     num_sources: int  # How many venues contributed valid prices
     confidence: float  # 0-1, based on source agreement
     total_venues: int = 0  # How many venues were attempted
+    dex_volume_24h_usd: dict[str, Decimal | None] = field(default_factory=dict)
 
     @property
     def reference_price_ngn(self) -> Decimal:
@@ -77,10 +78,6 @@ INVERTED_PAIRS = frozenset({"USDC/cNGN", "USDT/cNGN", "USDT/NGN"})  # 1/mid IS c
 
 # USDT_NGN_VENUES: used only by the TWAP path which has no pair info (DB snapshots).
 USDT_NGN_VENUES = frozenset({"bybit"})
-
-# uni-bsc volume as a fraction of uni-base (DexScreener does not index uni-bsc yet).
-# Observed to trade at roughly 1/3 of uni-base volume on a normal day.
-BSC_VOLUME_RATIO = Decimal("0.33")
 
 # Venues excluded from VWAP/TWAP fair-value calculations.
 # blockradar: rate-setter, not a price taker.
@@ -334,12 +331,6 @@ class BlendedPriceCalculator:
         # Exclude rate-setter venues from fair-value metrics
         fair_normalized = {k: v for k, v in normalized.items() if k not in FAIR_VALUE_EXCLUDED}
 
-        # uni-bsc has no live volume source; derive from uni-base at a known ratio
-        if "uni-bsc" in fair_normalized and "uni-base" in fair_normalized:
-            base_vol = fair_normalized["uni-base"].volume_24h_usd
-            if base_vol is not None:
-                fair_normalized["uni-bsc"].volume_24h_usd = base_vol * BSC_VOLUME_RATIO
-
         # VWAP across venues right now
         vwap = self.compute_vwap(fair_normalized)
 
@@ -357,6 +348,11 @@ class BlendedPriceCalculator:
         confidence = self._compute_confidence(normalized, len(venue_prices))
 
         venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}  # all venues for display
+        dex_volume_24h_usd = {
+            venue: venue_prices[venue].volume_24h_usd
+            for venue in ("uni-base", "uni-bsc")
+            if venue in venue_prices
+        }
 
         blended = BlendedPrice(
             vwap=vwap,
@@ -367,6 +363,7 @@ class BlendedPriceCalculator:
             num_sources=len(normalized),
             total_venues=len(venue_prices),
             confidence=confidence,
+            dex_volume_24h_usd=dex_volume_24h_usd,
         )
 
         self._last_blended = blended

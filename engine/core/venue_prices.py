@@ -16,6 +16,7 @@ import httpx
 import structlog
 
 from engine.api.schemas import PriceQuote
+from engine.core.arbitrage.dex_volume import get_pool_volume_24h_usd
 
 if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
@@ -435,13 +436,10 @@ class DexAdapterPriceSource(VenuePriceSource):
         venue_name: str,
         pair: str,
         pool_address: str,
-        dexscreener_chain: str = "",
     ):
         self.name = venue_name
         self.pair = pair
         self.pool_address = pool_address
-        self._dexscreener_chain = dexscreener_chain
-        self._vol_cache_time: float = 0
 
     async def fetch_price(self) -> Optional[PriceQuote]:
         from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
@@ -461,19 +459,7 @@ class DexAdapterPriceSource(VenuePriceSource):
             price = ((sqrt_p / Q96) ** 2) * Decimal(10 ** (18 - 6))
             human_price = Decimal(1) / price if price > 0 else Decimal(0)
 
-        # Refresh 24h volume from DexScreener every 5 minutes
-        if self._dexscreener_chain and time.time() - self._vol_cache_time > 300:
-            try:
-                url = f"https://api.dexscreener.com/latest/dex/pairs/{self._dexscreener_chain}/{self.pool_address}"
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(url)
-                    pairs = resp.json().get("pairs") or []
-                    if pairs:
-                        vol = pairs[0].get("volume", {}).get("h24")
-                        self.volume_24h_usd = Decimal(str(vol)) if vol is not None else None
-                self._vol_cache_time = time.time()
-            except Exception as e:
-                logger.warning("dexscreener_volume_fetch_failed", venue=self.name, error=str(e))
+        self.volume_24h_usd = get_pool_volume_24h_usd(self.pool_address)
 
         return PriceQuote(
             source="simulator_cache",
@@ -621,7 +607,6 @@ def create_venue_aggregator(
             venue_name="uni-base",
             pair="cNGN/USDC",
             pool_address=UNISWAP_BASE_POOL_READ_CONFIG.pool_address,
-            dexscreener_chain="base",
         )
     )
     sources.append(

@@ -307,6 +307,39 @@ class TestVWAP:
         vwap = calc.compute_vwap(normalized)
         assert vwap == Decimal("0.000697")
 
+    @pytest.mark.asyncio
+    async def test_calculate_current_does_not_proxy_uni_bsc_volume(self):
+        class DummyAggregator:
+            async def fetch_all(self):
+                prices = _make_venue_prices()
+                prices["bybit"].volume_24h_usd = Decimal("1000000")
+                prices["quidax"].volume_24h_usd = Decimal("50000")
+                prices["uni-base"].volume_24h_usd = Decimal("200000")
+                prices["uni-bsc"].volume_24h_usd = None
+                return prices
+
+        calc = BlendedPriceCalculator(
+            price_aggregator=DummyAggregator(),
+            normalizer=PriceNormalizer(),
+        )
+
+        async def _zero_twap(window_seconds: int = 300, venue: str | None = None) -> Decimal:
+            return Decimal("0")
+
+        calc.compute_twap = _zero_twap  # type: ignore[method-assign]
+
+        blended = await calc.get_blended_price(force_refresh=True)
+
+        expected = (
+            (Decimal("1") / Decimal("1436")) * Decimal("1000000")
+            + Decimal("0.000697") * Decimal("50000")
+            + Decimal("0.000696") * Decimal("200000")
+        ) / Decimal("1250000")
+
+        assert abs(blended.vwap - expected) < Decimal("0.0000001")
+        assert blended.dex_volume_24h_usd["uni-base"] == Decimal("200000")
+        assert blended.dex_volume_24h_usd["uni-bsc"] is None
+
 
 # =============================================================================
 # Source-to-venue mapping

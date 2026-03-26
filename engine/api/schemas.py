@@ -187,6 +187,7 @@ class BlendedPriceResponse(BaseModel):
     num_sources: int
     total_venues: int = 0
     confidence: float  # 0-1 based on source agreement
+    dex_volume_24h_usd: dict[str, Optional[Decimal]] = {}
 
 
 # === Arbitrage Schemas ===
