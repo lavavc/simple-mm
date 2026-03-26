@@ -19,9 +19,6 @@ SLOT0_SELECTOR = bytes.fromhex("3850c7bd")
 # Function selector for liquidity(): keccak256("liquidity()")[:4] = 0x1a686502
 LIQUIDITY_SELECTOR = bytes.fromhex("1a686502")
 
-# DexScreener chain identifiers
-DEXSCREENER_CHAIN_MAP = {8453: "base", 56: "bsc"}
-
 
 @dataclass
 class PoolReadConfig:

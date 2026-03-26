@@ -36,6 +36,7 @@ class V4PoolReadConfig:
     token1_decimals: int
     invert_price: bool = False
     chain_id_str: str = ""
+    avg_block_seconds: float = 2.0  # used to estimate 24h block range without binary search
 
 
 def sqrt_price_x96_to_decimal(

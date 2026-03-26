@@ -1,9 +1,41 @@
 """Uniswap V4 LP adapter — extends BaseV4DexAdapter with position management."""
 
+import asyncio
 import math
 import time as _time
 from decimal import Decimal
 from typing import Optional
+
+_Q96 = Decimal(2 ** 96)
+
+
+def _tvl_from_position(
+    liquidity: int,
+    sqrt_p: Decimal,
+    tick_lower: int,
+    tick_upper: int,
+    token0_decimals: int,
+    token1_decimals: int,
+    invert_price: bool,
+) -> Optional[Decimal]:
+    """Compute USD TVL from tick math. stable token is token1 (Base) or token0 (BSC)."""
+    if liquidity == 0 or sqrt_p == 0:
+        return None
+    L = Decimal(liquidity)
+    sqrt_lower = Decimal(str(math.exp(tick_lower * math.log(1.0001) / 2))) * _Q96
+    sqrt_upper = Decimal(str(math.exp(tick_upper * math.log(1.0001) / 2))) * _Q96
+    sqrt_p_c = max(sqrt_lower, min(sqrt_upper, sqrt_p))
+    amount0 = L * _Q96 * (sqrt_upper - sqrt_p_c) / (sqrt_p_c * sqrt_upper) / Decimal(10 ** token0_decimals)
+    amount1 = L * (sqrt_p_c - sqrt_lower) / _Q96 / Decimal(10 ** token1_decimals)
+    # price of token0 in token1 (human units)
+    price0_in_1 = (sqrt_p / _Q96) ** 2 * Decimal(10 ** (token0_decimals - token1_decimals))
+    if invert_price:
+        # token0=stable(USDT), token1=cNGN; price0_in_1 = cNGN per USDT → cNGN_usd = 1/price0_in_1
+        cngn_usd = (Decimal(1) / price0_in_1) if price0_in_1 > 0 else Decimal(0)
+        return amount0 + amount1 * cngn_usd
+    else:
+        # token0=cNGN, token1=stable(USDC); price0_in_1 = USDC per cNGN
+        return amount0 * price0_in_1 + amount1
 
 import structlog
 from eth_abi import encode
@@ -223,7 +255,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             if pos_state:
                 our_liquidity = pos_state.liquidity
 
-        pool_tvl_usd, volume_24h_usd, our_share_pct = await self.get_pool_metrics(our_liquidity)
+        pool_tvl_usd, volume_24h_usd, our_share_pct = await self.get_pool_metrics(our_liquidity, pos_state)
 
         if pos_state:
             lp_position = LPPosition(
@@ -358,38 +390,24 @@ class V4LPAdapter(BaseV4DexAdapter):
     # === Pool metrics (used by get_position) ===
 
     async def get_pool_metrics(
-        self, our_liquidity: int = 0
+        self, our_liquidity: int = 0, pos_state: Optional[PositionState] = None
     ) -> tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
-        """Fetch pool TVL and 24h volume from DexScreener; compute our share."""
-        import httpx
-
+        """Fetch pool total liquidity from StateView; compute TVL, 24h volume, and our share."""
         now = _time.time()
         cache_stale = not hasattr(self, "_metrics_cache_time") or now - self._metrics_cache_time > 60
 
         if cache_stale:
-            pool_tvl_usd: Optional[Decimal] = None
-            volume_24h_usd: Optional[Decimal] = None
-            pool_total_liquidity: int = 0
+            pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
+            pool_total_liquidity = 0
+            try:
+                pool_total_liquidity = await asyncio.to_thread(
+                    self.state_view.functions.getLiquidity(pool_id_bytes).call
+                )
+            except Exception as e:
+                logger.warning("state_view_get_liquidity_failed", venue=self.name, error=str(e))
 
-            chain = {8453: "base", 56: "bsc"}.get(self.config.chain_id)
-            if chain:
-                try:
-                    url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{self.config.pool_id}"
-                    async with httpx.AsyncClient(timeout=5.0) as client:
-                        resp = await client.get(url)
-                    pairs = resp.json().get("pairs") or []
-                    if pairs:
-                        pair = pairs[0]
-                        tvl = pair.get("liquidity", {}).get("usd")
-                        vol = pair.get("volume", {}).get("h24")
-                        pool_tvl_usd = Decimal(str(tvl)) if tvl is not None else None
-                        volume_24h_usd = Decimal(str(vol)) if vol is not None else None
-                        pool_total_liquidity = our_liquidity  # best estimate without V3 liquidity()
-                except Exception as e:
-                    logger.warning("dexscreener_fetch_failed", venue=self.name, error=str(e))
-
-            self._metrics_tvl = pool_tvl_usd
-            self._metrics_vol = volume_24h_usd
+            from engine.core.arbitrage.dex_volume import get_pool_volume_24h_usd
+            self._metrics_vol = get_pool_volume_24h_usd(self.config.pool_id)
             self._metrics_total_liq = pool_total_liquidity
             self._metrics_cache_time = now
 
@@ -397,7 +415,22 @@ class V4LPAdapter(BaseV4DexAdapter):
         if our_liquidity > 0 and self._metrics_total_liq > 0:
             our_share_pct = Decimal(our_liquidity) / Decimal(self._metrics_total_liq) * Decimal(100)
 
-        return self._metrics_tvl, self._metrics_vol, our_share_pct
+        pool_tvl_usd: Optional[Decimal] = None
+        if pos_state and self._metrics_total_liq > 0:
+            from engine.core.arbitrage.pool_state import get_cached_pool_state
+            sqrt_p, _, _, _, _, _ = get_cached_pool_state(self.config.pool_id)
+            if sqrt_p:
+                pool_tvl_usd = _tvl_from_position(
+                    self._metrics_total_liq,
+                    sqrt_p,
+                    pos_state.tick_lower,
+                    pos_state.tick_upper,
+                    self.config.token0_decimals,
+                    self.config.token1_decimals,
+                    self.config.invert_price,
+                )
+
+        return pool_tvl_usd, self._metrics_vol, our_share_pct
 
     # === Capital allocation ===
 

@@ -42,6 +42,13 @@ STATE_VIEW_ABI = [
         "type": "function",
     },
     {
+        "inputs": [{"name": "poolId", "type": "bytes32"}],
+        "name": "getLiquidity",
+        "outputs": [{"name": "liquidity", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
         "inputs": [
             {"name": "poolId", "type": "bytes32"},
             {"name": "owner", "type": "address"},

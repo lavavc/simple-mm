@@ -4,7 +4,6 @@ import pytest
 from decimal import Decimal
 
 from engine.core.arbitrage.dex_dex import (
-    _MIN_POOL_STABLE_USD,
     estimate_dex_dex_trade,
     find_optimal_dex_arb,
 )
@@ -48,8 +47,8 @@ class TestFindOptimalDexArbNullCases:
         result = find_optimal_dex_arb()
         assert result is None
 
-    def test_none_when_pools_too_thin(self, monkeypatch):
-        """Stable balance below _MIN_POOL_STABLE_USD blocks execution."""
+    def test_none_when_pools_have_zero_liquidity(self, monkeypatch):
+        """Zero in-range liquidity (no active LP) blocks execution."""
         from engine.core.arbitrage import pool_state as _ps
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
@@ -61,17 +60,13 @@ class TestFindOptimalDexArbNullCases:
 
         fake_cache = {
             UNISWAP_BASE_POOL_READ_CONFIG.pool_address: {
-                "tick": -276324, "liquidity": Decimal(10**18), "fee": Decimal("0.0005"),
-                "sqrt_p": base_sqrt,
-                "balance0": Decimal("10000"),  # cNGN
-                "balance1": Decimal("1"),       # USDC — below _MIN_POOL_STABLE_USD
+                "tick": -276324, "liquidity": Decimal(0), "fee": Decimal("0.0005"),
+                "sqrt_p": base_sqrt, "balance0": None, "balance1": None,
                 "timestamp": time.time(),
             },
             UNISWAP_BSC_POOL_READ_CONFIG.pool_address: {
-                "tick": -276324, "liquidity": Decimal(10**18), "fee": Decimal("0.0005"),
-                "sqrt_p": bsc_sqrt,
-                "balance0": Decimal("1"),       # USDT — below _MIN_POOL_STABLE_USD
-                "balance1": Decimal("26090000"),
+                "tick": -276324, "liquidity": Decimal(0), "fee": Decimal("0.0005"),
+                "sqrt_p": bsc_sqrt, "balance0": None, "balance1": None,
                 "timestamp": time.time(),
             },
             ASSETCHAIN_POOL_READ_CONFIG.pool_address: {

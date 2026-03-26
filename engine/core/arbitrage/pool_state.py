@@ -180,54 +180,7 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
             liquidity = Decimal(liquidity_raw)
             logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)  # noqa: keep v4_ prefix for V4-specific path
 
-        # Try DexScreener for accurate per-pool token amounts.
-        # Falls back to balanceOf(poolManager) — accurate for cNGN (unique token),
-        # overcounts shared stables (USDT/USDC) due to V4 singleton architecture.
-        #
-        # ON-CHAIN FALLBACK (if DexScreener goes down):
-        # V4 PositionManager (Base: 0x7c5f5a4bbd8fd63184577525326123b519429bdc,
-        #                      BSC:  0x7a4a5c919ae2541aed11041a1aeee68f1287f95b)
-        # 1. Find LP's NFT tokenId: eth_getLogs on PositionManager for
-        #    Transfer(from=0x0, to=lp_address) events, take logs[-1]["topics"][3]
-        # 2. Call positions(tokenId) → bytes32 PositionInfo. Decode:
-        #    raw = int.from_bytes(result, "big")
-        #    tick_lower = sign_extend_24((raw >> 8)  & 0xFFFFFF)
-        #    tick_upper = sign_extend_24((raw >> 32) & 0xFFFFFF)
-        # 3. StateView.getPositionLiquidity(poolId, lp_addr, tick_lower, tick_upper, bytes32(0))
-        # 4. Token amounts from tick math (standard V3 formula):
-        #    sqrt_lower/upper = 1.0001^(tick/2) * Q96
-        #    amount0 = L * Q96 * (sqrt_upper - sqrt_p) / (sqrt_p * sqrt_upper) / 10^t0_dec
-        #    amount1 = L * (sqrt_p - sqrt_lower) / Q96 / 10^t1_dec
-        #    (handle out-of-range: all token0 if sqrt_p<=sqrt_lower, all token1 if sqrt_p>=sqrt_upper)
-        balance0, balance1 = None, None
-        if config.chain_id_str:
-            try:
-                import httpx
-                url = f"https://api.dexscreener.com/latest/dex/pairs/{config.chain_id_str}/{config.pool_address}"
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(url)
-                pairs = (resp.json().get("pairs") or [])
-                if pairs:
-                    liq = pairs[0].get("liquidity", {})
-                    base_addr = pairs[0].get("baseToken", {}).get("address", "").lower()
-                    base_amt = liq.get("base")
-                    quote_amt = liq.get("quote")
-                    if base_amt is not None and quote_amt is not None:
-                        if base_addr == config.token0_address.lower():
-                            balance0, balance1 = Decimal(str(base_amt)), Decimal(str(quote_amt))
-                        else:
-                            balance0, balance1 = Decimal(str(quote_amt)), Decimal(str(base_amt))
-            except Exception as e:
-                logger.warning("v4_dexscreener_balance_fetch_failed", pool=config.pool_address, error=str(e))
-
-        if balance0 is None or balance1 is None:
-            # BSC V4 pool not yet indexed by DexScreener (as of 2026-03-23).
-            # Base pool IS indexed (dexId "uniswap", labels ["v4"]) and takes the DexScreener path above.
-            # When BSC is indexed, the DexScreener fetch will succeed and this fallback will stop firing.
-            # Until then: use approximate values so the dashboard shows non-zero TVL.
-            # Update these periodically until DexScreener indexes the BSC pool.
-            balance0 = Decimal("9200") if config.chain_id_str == "bsc" else Decimal(0)
-            balance1 = Decimal("26090000") if config.chain_id_str == "bsc" else Decimal(0)
+        balance0, balance1 = None, None  # computed in lp_v4.get_pool_metrics via tick math
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,
@@ -263,9 +216,11 @@ async def seed_pool_states():
     logger.info("seeding_initial_pool_states")
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-    await update_single_v4_pool_state(UNISWAP_BSC_POOL_READ_CONFIG)
-    await update_single_v4_pool_state(UNISWAP_BASE_POOL_READ_CONFIG)
-    await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
+    await asyncio.gather(
+        update_single_v4_pool_state(UNISWAP_BSC_POOL_READ_CONFIG),
+        update_single_v4_pool_state(UNISWAP_BASE_POOL_READ_CONFIG),
+        update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url),
+    )
 
 # ========== CONCENTRATED LIQUIDITY SWAP MATH ==========
 # Identical formula for both V3 and V4 pools (same CFMM invariant).

@@ -14,7 +14,6 @@ from engine.core.arbitrage.pool_state import (
 
 logger = structlog.get_logger()
 
-_MIN_POOL_STABLE_USD = Decimal("500")
 _ABSOLUTE_MAX_USD = Decimal("15000")
 
 from engine.core import gas_oracle as _gas_oracle  # noqa: E402
@@ -104,13 +103,12 @@ def find_optimal_dex_arb() -> dict | None:
         logger.warning("dex_arb_cache_miss")
         return None
 
-    uni_bsc_stable, uni_bsc_cngn = uni_bsc_b0, uni_bsc_b1  # token0=USDT, token1=cNGN
-    uni_base_cngn, uni_base_stable = uni_base_b0, uni_base_b1  # token0=cNGN, token1=USDC
-
-    if (uni_bsc_stable is None or uni_bsc_stable < _MIN_POOL_STABLE_USD or
-            uni_base_stable is None or uni_base_stable < _MIN_POOL_STABLE_USD):
+    if uni_bsc_liq is None or uni_bsc_liq == 0 or uni_base_liq is None or uni_base_liq == 0:
         logger.warning("dex_arb_blocked_thin_pools")
         return None
+
+    uni_bsc_stable, uni_bsc_cngn = uni_bsc_b0, uni_bsc_b1  # may be None (stats only)
+    uni_base_cngn, uni_base_stable = uni_base_b0, uni_base_b1  # may be None (stats only)
 
     uni_bsc_raw = ((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
     uni_bsc_price_usd = float(Decimal(1) / uni_bsc_raw)
@@ -120,8 +118,17 @@ def find_optimal_dex_arb() -> dict | None:
         if asset_sqrt else None
     )
 
-    max_usd_v1 = min(uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)), uni_base_stable, _ABSOLUTE_MAX_USD)
-    max_usd_v2 = min(uni_base_cngn * Decimal(str(uni_base_price_usd)), uni_bsc_stable, _ABSOLUTE_MAX_USD)
+    # Use pool balances to bound the search when available; fall back to absolute cap.
+    max_usd_v1 = min(
+        uni_bsc_cngn * Decimal(str(uni_bsc_price_usd)) if uni_bsc_cngn is not None else _ABSOLUTE_MAX_USD,
+        uni_base_stable if uni_base_stable is not None else _ABSOLUTE_MAX_USD,
+        _ABSOLUTE_MAX_USD,
+    )
+    max_usd_v2 = min(
+        uni_base_cngn * Decimal(str(uni_base_price_usd)) if uni_base_cngn is not None else _ABSOLUTE_MAX_USD,
+        uni_bsc_stable if uni_bsc_stable is not None else _ABSOLUTE_MAX_USD,
+        _ABSOLUTE_MAX_USD,
+    )
 
     def eval_bsc_to_base(inv: Decimal):
         cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
