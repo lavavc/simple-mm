@@ -14,10 +14,12 @@ from engine.core.arbitrage.pool_state import (
 
 logger = structlog.get_logger()
 
+_ABSOLUTE_MAX_USD = Decimal("15000")
+
 from engine.core import gas_oracle as _gas_oracle  # noqa: E402
 
 
-def _ternary_search(eval_func, high: Decimal, low=Decimal("1"), tol=Decimal("0.5")):
+def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):
     """Find the profit-maximising size for a unimodal profit function."""
     while high - low > tol:
         m1 = low + (high - low) / Decimal("3")
@@ -41,9 +43,9 @@ def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | No
     if investment_usd <= 0:
         return None
 
-    uni_bsc_sqrt, uni_bsc_liq, _, _, _, uni_bsc_fee = \
+    uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = \
         get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
-    uni_base_sqrt, uni_base_liq, _, _, _, uni_base_fee = \
+    uni_base_sqrt, uni_base_liq, _, uni_base_fee = \
         get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
     if (
@@ -86,11 +88,11 @@ def find_optimal_dex_arb() -> dict | None:
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
-    uni_bsc_sqrt, uni_bsc_liq, uni_bsc_b0, uni_bsc_b1, uni_bsc_ts, uni_bsc_fee = \
+    uni_bsc_sqrt, uni_bsc_liq, uni_bsc_ts, uni_bsc_fee = \
         get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
-    uni_base_sqrt, uni_base_liq, uni_base_b0, uni_base_b1, uni_base_ts, uni_base_fee = \
+    uni_base_sqrt, uni_base_liq, uni_base_ts, uni_base_fee = \
         get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
-    asset_sqrt, asset_liq, asset_b0, asset_b1, asset_ts, _ = \
+    asset_sqrt, asset_liq, asset_ts, _ = \
         get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
 
     if uni_bsc_fee is None or uni_base_fee is None:
@@ -101,13 +103,6 @@ def find_optimal_dex_arb() -> dict | None:
         logger.warning("dex_arb_cache_miss")
         return None
 
-    if uni_bsc_liq is None or uni_bsc_liq == 0 or uni_base_liq is None or uni_base_liq == 0:
-        logger.warning("dex_arb_blocked_thin_pools")
-        return None
-
-    uni_bsc_stable, uni_bsc_cngn = uni_bsc_b0, uni_bsc_b1
-    uni_base_cngn, uni_base_stable = uni_base_b0, uni_base_b1
-
     uni_bsc_raw = ((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
     uni_bsc_price_usd = float(Decimal(1) / uni_bsc_raw)
     uni_base_price_usd = float(((uni_base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6)))
@@ -116,12 +111,8 @@ def find_optimal_dex_arb() -> dict | None:
         if asset_sqrt else None
     )
 
-    # Bound search by pool depth. Stable side is None until first position read;
-    # fall back to cNGN-side bound only in that case.
-    bsc_cngn_usd = uni_bsc_cngn * Decimal(str(uni_bsc_price_usd))
-    base_cngn_usd = uni_base_cngn * Decimal(str(uni_base_price_usd))
-    max_usd_v1 = min(bsc_cngn_usd, uni_base_stable) if uni_base_stable is not None else bsc_cngn_usd
-    max_usd_v2 = min(base_cngn_usd, uni_bsc_stable) if uni_bsc_stable is not None else base_cngn_usd
+    max_usd_v1 = _ABSOLUTE_MAX_USD
+    max_usd_v2 = _ABSOLUTE_MAX_USD
 
     def eval_bsc_to_base(inv: Decimal):
         cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
@@ -152,12 +143,6 @@ def find_optimal_dex_arb() -> dict | None:
             "uni_bsc_liquidity_cngn_raw": str(uni_bsc_liq),
             "uni_base_liquidity_cngn_raw": str(uni_base_liq),
             "assetchain_liquidity_cngn_raw": str(asset_liq),
-            "uni_bsc_stable": float(uni_bsc_stable or 0),
-            "uni_bsc_cngn": float(uni_bsc_cngn or 0),
-            "uni_base_stable": float(uni_base_stable or 0),
-            "uni_base_cngn": float(uni_base_cngn or 0),
-            "assetchain_stable": float(asset_b0 or 0),
-            "assetchain_cngn": float(asset_b1 or 0),
             "uni_bsc_ts": float(uni_bsc_ts or 0),
             "uni_base_ts": float(uni_base_ts or 0),
             "assetchain_ts": float(asset_ts or 0),
@@ -191,8 +176,8 @@ def generate_dex_profit_curve() -> dict:
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
-    uni_bsc_sqrt, uni_bsc_liq, _, _, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
-    uni_base_sqrt, uni_base_liq, _, _, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+    uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    uni_base_sqrt, uni_base_liq, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
     optimal_size = fast["optimal_arb"]["optimal_size_usd"]
     curve_max = max(5000, int(optimal_size * 1.5))

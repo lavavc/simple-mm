@@ -254,14 +254,21 @@ async def _block_timestamp_ms(w3: AsyncWeb3, block_number: int, cache: dict[int,
     return cache[block_number]
 
 
-def _start_block_24h_ago(latest_number: int, avg_block_seconds: float) -> int:
-    """Estimate the block number ~24h ago using known average block time.
+async def _find_start_block_24h_ago(w3: AsyncWeb3) -> int:
+    latest = await w3.eth.get_block("latest")
+    latest_number = int(latest["number"])
+    target_ts = int(latest["timestamp"]) - 86400
 
-    Overshoots by 10% to ensure no swaps are missed. Eliminates the
-    ~27-RPC binary search that was previously used.
-    """
-    blocks_per_24h = int(86400 / avg_block_seconds * 1.1)
-    return max(0, latest_number - blocks_per_24h)
+    lo = 0
+    hi = latest_number
+    while lo < hi:
+        mid = (lo + hi) // 2
+        block = await w3.eth.get_block(mid)
+        if int(block["timestamp"]) < target_ts:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
 
 
 async def _scan_pool_window_from_rpc(
@@ -273,7 +280,7 @@ async def _scan_pool_window_from_rpc(
     latest_number = int(latest["number"])
     state = _PoolVolumeState()
 
-    start_24h_block = _start_block_24h_ago(latest_number, config.avg_block_seconds)
+    start_24h_block = await _find_start_block_24h_ago(w3)
     if start_24h_block > latest_number:
         return state
 
@@ -328,8 +335,6 @@ async def _refresh_pool(config: V4PoolReadConfig) -> None:
 
 async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> None:
     """Restore and backfill rolling 24h volume for tracked DEX pools."""
-    import asyncio
-
     if configs is None:
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -338,10 +343,11 @@ async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> 
 
     _STORE.load()
 
-    results = await asyncio.gather(*[_refresh_pool(c) for c in configs], return_exceptions=True)
-    for config, result in zip(configs, results):
-        if isinstance(result, Exception):
-            logger.warning("dex_volume_backfill_failed", pool=config.pool_address, error=str(result))
+    for config in configs:
+        try:
+            await _refresh_pool(config)
+        except Exception as exc:
+            logger.warning("dex_volume_backfill_failed", pool=config.pool_address, error=str(exc))
 
 
 async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:

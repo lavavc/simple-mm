@@ -211,8 +211,10 @@ class BlendedPriceCalculator:
             if effective_weights:
                 w = effective_weights.get(venue, Decimal("1"))
             else:
-                # None volume → equal weight (1), as documented on NormalizedPrice
-                w = np.volume_24h_usd if np.volume_24h_usd is not None else Decimal("1")
+                if np.volume_24h_usd is None:
+                    logger.warning("vwap_no_volume_data", venue=venue)
+                    continue
+                w = np.volume_24h_usd
             weighted_sum += np.cngn_usd * w
             total_weight += w
 

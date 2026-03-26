@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatNumber } from '@/lib/utils';
 import { useStatus, usePortfolioValuation } from '@/lib/hooks/useQueries';
-import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge } from 'lucide-react';
+import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge, ExternalLink } from 'lucide-react';
 import type { VenueStatus } from '@/types';
 
 const venueInfo: Record<
@@ -321,8 +321,23 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
 
                     <div className="h-px w-24 bg-white/10 mb-4" />
 
-                    <ActivityIcon className="h-4 w-4 text-white/10 mb-2" />
-                    <div className="text-[10px] font-mono text-white/30 uppercase tracking-widest">NO AMM POSITION DETECTED</div>
+                    <div className="text-[10px] text-white/30 font-mono uppercase tracking-widest mb-1">NGN per USD</div>
+                    <div className="text-2xl font-mono text-emerald-400 tracking-tight mb-1">
+                      {venue.price?.quote?.mid ? Math.round(1 / Number(venue.price.quote.mid)).toLocaleString() : '—'}
+                    </div>
+                    <div className="text-[10px] text-white/30 font-mono uppercase tracking-widest mb-4">NGN per $1 USD</div>
+                    {['uni-base', 'uni-bsc'].includes(venue.name) && (
+                      <a
+                        href={venue.name === 'uni-base'
+                          ? 'https://app.uniswap.org/explore/pools/base/0x84fa97768196067f0e5aa157709039a3897e219cba3002d9ad38bf44e300fe93'
+                          : 'https://app.uniswap.org/explore/pools/bnb/0x2268f03a28f37f16cd3610dc669536f8c815d9d4cb2906feeeba9150fb2d8596'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] font-mono text-emerald-500/70 uppercase tracking-widest hover:text-emerald-400 flex items-center gap-1"
+                      >
+                        Pool data <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
                   </>
                 )}
               </CardContent>

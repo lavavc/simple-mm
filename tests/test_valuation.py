@@ -63,7 +63,7 @@ class TestDexHoldingsValue:
     def test_cngn_is_token0_uses_swap_t0_for_t1(self, seeded_pool_cache):
         from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token0_for_token1
         base_key = seeded_pool_cache["uni-base"]
-        sqrt_p, liq, _, _, _, fee = get_cached_pool_state(base_key)
+        sqrt_p, liq, _, fee = get_cached_pool_state(base_key)
 
         value = dex_holdings_value(
             cngn_amount=Decimal("100000"),
@@ -77,7 +77,7 @@ class TestDexHoldingsValue:
     def test_cngn_is_token1_uses_swap_t1_for_t0(self, seeded_pool_cache):
         from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token1_for_token0
         bsc_key = seeded_pool_cache["uni-bsc"]
-        sqrt_p, liq, _, _, _, fee = get_cached_pool_state(bsc_key)
+        sqrt_p, liq, _, fee = get_cached_pool_state(bsc_key)
 
         value = dex_holdings_value(
             cngn_amount=Decimal("100000"),

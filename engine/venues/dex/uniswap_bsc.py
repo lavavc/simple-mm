@@ -22,7 +22,6 @@ UNISWAP_BSC_POOL_READ_CONFIG = V4PoolReadConfig(
     token1_decimals=6,
     invert_price=True,
     chain_id_str="bsc",
-    avg_block_seconds=3.0,
 )
 
 UNISWAP_BSC_EXECUTION_CONFIG = V4ExecutionConfig(

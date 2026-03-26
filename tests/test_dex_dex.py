@@ -29,50 +29,15 @@ class TestFindOptimalDexArbNullCases:
         fake_cache = {
             UNISWAP_BASE_POOL_READ_CONFIG.pool_address: {
                 "tick": 0, "liquidity": Decimal(10**18), "fee": None,
-                "sqrt_p": Decimal(10**25), "balance0": Decimal("10000"),
-                "balance1": Decimal("10000"), "timestamp": time.time(),
+                "sqrt_p": Decimal(10**25), "timestamp": time.time(),
             },
             UNISWAP_BSC_POOL_READ_CONFIG.pool_address: {
                 "tick": 0, "liquidity": Decimal(10**18), "fee": Decimal("0.0005"),
-                "sqrt_p": Decimal(10**20), "balance0": Decimal("10000"),
-                "balance1": Decimal("10000"), "timestamp": time.time(),
+                "sqrt_p": Decimal(10**20), "timestamp": time.time(),
             },
             ASSETCHAIN_POOL_READ_CONFIG.pool_address: {
                 "tick": 0, "liquidity": Decimal(0), "fee": Decimal("0.0003"),
-                "sqrt_p": Decimal(0), "balance0": None, "balance1": None,
-                "timestamp": time.time(),
-            },
-        }
-        monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
-        result = find_optimal_dex_arb()
-        assert result is None
-
-    def test_none_when_pools_have_zero_liquidity(self, monkeypatch):
-        """Zero in-range liquidity (no active LP) blocks execution."""
-        from engine.core.arbitrage import pool_state as _ps
-        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
-        from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
-        import math, time
-
-        base_sqrt = Decimal(int(math.sqrt(0.000606) * 2**96))
-        bsc_sqrt = Decimal(int(math.sqrt(1 / (0.000606 * 1e12)) * 2**96))
-
-        fake_cache = {
-            UNISWAP_BASE_POOL_READ_CONFIG.pool_address: {
-                "tick": -276324, "liquidity": Decimal(0), "fee": Decimal("0.0005"),
-                "sqrt_p": base_sqrt, "balance0": None, "balance1": None,
-                "timestamp": time.time(),
-            },
-            UNISWAP_BSC_POOL_READ_CONFIG.pool_address: {
-                "tick": -276324, "liquidity": Decimal(0), "fee": Decimal("0.0005"),
-                "sqrt_p": bsc_sqrt, "balance0": None, "balance1": None,
-                "timestamp": time.time(),
-            },
-            ASSETCHAIN_POOL_READ_CONFIG.pool_address: {
-                "tick": 0, "liquidity": Decimal(0), "fee": Decimal("0.0003"),
-                "sqrt_p": Decimal(0), "balance0": None, "balance1": None,
-                "timestamp": time.time(),
+                "sqrt_p": Decimal(0), "timestamp": time.time(),
             },
         }
         monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)

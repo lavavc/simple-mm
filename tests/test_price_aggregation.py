@@ -251,21 +251,19 @@ class TestVWAP:
         simple_mean = sum(np.cngn_usd for np in normalized.values()) / len(normalized)
         assert abs(vwap - bybit_price) < abs(vwap - simple_mean)
 
-    def test_vwap_equal_weights_venues_with_no_volume(self):
-        """Venues with no volume_24h_usd receive equal weight (1) in volume-weighted VWAP."""
+    def test_vwap_skips_venue_with_no_volume(self):
+        """Venues with no volume_24h_usd are excluded from volume-weighted VWAP."""
         normalizer = PriceNormalizer()
         prices = _make_venue_prices()
         normalized = normalizer.normalize(prices)
 
-        # Only quidax gets a volume weight; others use equal weight (1)
+        # Only quidax gets volume — result should equal quidax's price exactly
         normalized["quidax"].volume_24h_usd = Decimal("50000")
 
         calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
         calc.venue_weights = {}
         vwap = calc.compute_vwap(normalized)
-        # quidax (w=50000) dominates the average but other venues still contribute
-        assert vwap != normalized["quidax"].cngn_usd  # not exactly quidax alone
-        assert vwap > Decimal("0")
+        assert vwap == normalized["quidax"].cngn_usd
 
     def test_vwap_custom_weights(self):
         """VWAP with custom weights should bias toward heavier venues."""
