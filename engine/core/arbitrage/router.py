@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
+from engine.core.arbitrage.cex_dex import estimate_cex_dex_trade, estimate_max_cex_buy_usd_for_cngn
 from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
 
 # CEX-DEX directions by their cNGN inventory effect
@@ -33,6 +34,7 @@ class SelectedRoute:
     candidate: RouteCandidate
     adjusted_size_usd: Decimal   # capped to available stablecoin
     net_profit_usd: Decimal      # after gas and rebalance penalty
+    expected_profit_usd: Optional[Decimal] = None  # recomputed at adjusted size when needed
 
 
 def select_route(
@@ -61,15 +63,29 @@ def select_route(
         cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue)
         if not cngn_bal:
             continue
-        cngn_price = inventory.state.cngn_price_usd
-        if cngn_price > 0:
-            adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
+
+        if c.pipeline == "cex_dex" and c.direction in _BUYS_CNGN_FROM_CEX:
+            adjusted_size = min(
+                adjusted_size,
+                estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal),
+            )
+        else:
+            cngn_price = inventory.state.cngn_price_usd
+            if cngn_price > 0:
+                adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
 
         if adjusted_size <= 0:
             continue
 
         expected_profit_usd = c.expected_profit_usd
-        if c.pipeline == "dex_dex":
+        if c.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
+            # Detection already priced the unconstrained optimum. Only rescore when
+            # inventory/depth caps force us onto a smaller trade size.
+            recomputed = estimate_cex_dex_trade(c.direction, c.signal.get("depth"), adjusted_size)
+            if not recomputed:
+                continue
+            expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
+        elif c.pipeline == "dex_dex":
             # Recompute profit at capped size — detection found the unconstrained optimum,
             # which overstates profit when inventory forces a smaller trade.
             recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
@@ -98,7 +114,7 @@ def select_route(
         else:
             aligned = True
 
-        scored.append((net_profit, aligned, SelectedRoute(c, adjusted_size, net_profit)))
+        scored.append((net_profit, aligned, SelectedRoute(c, adjusted_size, net_profit, expected_profit_usd)))
 
     if not scored:
         return None

@@ -6,8 +6,18 @@ from unittest.mock import MagicMock
 
 from engine.core.arbitrage import router as _router
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
-from engine.api.schemas import ArbitrageParams
+from engine.api.schemas import ArbitrageParams, OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.inventory import InventoryTracker
+
+
+def _default_depth() -> OrderBookDepth:
+    return OrderBookDepth(
+        venue="quidax",
+        pair="cNGN/USDT",
+        timestamp=1700000000000,
+        bids=[OrderBookLevel(price=Decimal("1700"), amount=Decimal("1000"))],
+        asks=[OrderBookLevel(price=Decimal("1600"), amount=Decimal("1000"))],
+    )
 
 
 def _make_candidate(
@@ -18,7 +28,10 @@ def _make_candidate(
     size_usd: float = 500.0,
     profit_usd: float = 5.0,
     gas_usd: float = 0.07,
+    signal: dict | None = None,
 ) -> RouteCandidate:
+    if signal is None:
+        signal = {"depth": _default_depth()} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
     return RouteCandidate(
         direction=direction,
         pipeline=pipeline,
@@ -27,7 +40,7 @@ def _make_candidate(
         optimal_size_usd=Decimal(str(size_usd)),
         expected_profit_usd=Decimal(str(profit_usd)),
         gas_usd=Decimal(str(gas_usd)),
-        signal={},
+        signal=signal,
     )
 
 
@@ -88,13 +101,53 @@ class TestSelectRouteEdgeCases:
         c = _make_candidate(sell_venue="uni-base", profit_usd=10.0, gas_usd=0.07)
         assert select_route([c], inv) is None
 
-    def test_size_capped_to_available_stable(self):
+    def test_size_capped_to_available_stable(self, monkeypatch):
         """adjusted_size is capped to per_account_stable on the buy venue."""
+        monkeypatch.setattr(
+            _router,
+            "estimate_cex_dex_trade",
+            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10")},
+        )
         inv = _make_inventory(per_account={"quidax": 100}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(size_usd=500.0, profit_usd=10.0)
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
+
+    def test_cex_buy_routes_cap_to_max_safe_usd_from_wallet_cngn(self, monkeypatch):
+        """QUIDAX->DEX routes should cap using inverted Quidax buy math, not cNGN/USD proxy."""
+        monkeypatch.setattr(
+            _router,
+            "estimate_cex_dex_trade",
+            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10")},
+        )
+        inv = _make_inventory(
+            per_account={"quidax": 500},
+            cngn_per_account={"uni-base": 26999},
+        )
+        inv._state.cngn_price_usd = Decimal("0")
+        c = _make_candidate(
+            size_usd=500.0,
+            profit_usd=10.0,
+            signal={"depth": _default_depth()},
+        )
+
+        result = select_route([c], inv)
+
+        assert result is not None
+        assert result.adjusted_size_usd < Decimal("16")
+        assert result.adjusted_size_usd > Decimal("15")
+
+    def test_cex_buy_routes_block_when_depth_missing_for_wallet_cap(self):
+        """Without Quidax depth we cannot safely invert the buy path, so QUIDAX->DEX should be blocked."""
+        inv = _make_inventory(
+            per_account={"quidax": 500},
+            cngn_per_account={"uni-base": 26999},
+        )
+        inv._state.cngn_price_usd = Decimal("0")
+        c = _make_candidate(size_usd=500.0, profit_usd=10.0, signal={})
+
+        assert select_route([c], inv) is None
 
     def test_circuit_breaker_blocks_all_routes(self):
         inv = _make_inventory(circuit_breaker=True)
@@ -103,7 +156,7 @@ class TestSelectRouteEdgeCases:
 
     def test_profitable_route_selected(self):
         inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000})
-        c = _make_candidate(profit_usd=5.0, gas_usd=0.07)
+        c = _make_candidate(size_usd=100.0, profit_usd=5.0, gas_usd=0.07)
         result = select_route([c], inv)
         assert result is not None
         assert isinstance(result, SelectedRoute)
@@ -113,11 +166,11 @@ class TestSelectRouteEdgeCases:
 class TestSelectRouteNetProfit:
     def test_net_profit_subtracts_gas(self):
         inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000})
-        c = _make_candidate(profit_usd=5.0, gas_usd=0.5)
+        c = _make_candidate(size_usd=100.0, profit_usd=5.0, gas_usd=0.5)
         result = select_route([c], inv)
         # rebalance_cost = 0 when no initial seeded (fallback returns cross_chain_rebalance_bps)
         # actually fallback returns params.cross_chain_rebalance_bps = 20 bps
-        # rebalance_cost = 500 * 20/10000 = 1.0
+        # rebalance_cost = 100 * 20/10000 = 0.2
         assert result is not None
         # net = 5.0 - 0.5 - rebalance_cost
         assert result.net_profit_usd < Decimal("5.0")
@@ -165,13 +218,40 @@ class TestSelectRouteNetProfit:
         # net = 2.0 (recomputed at $100) - 0.5 (gas) - rebalance_cost
         assert result.net_profit_usd == Decimal("1.4")
 
+    def test_cex_dex_route_recomputes_profit_at_capped_size(self, monkeypatch):
+        """For CEX-DEX, the capped route must be rescored at the capped size."""
+        inv = _make_inventory(
+            per_account={"quidax": 100},
+            cngn_per_account={"uni-base": 5_000_000},
+        )
+        c = _make_candidate(
+            direction="QUIDAX_TO_UNI_BASE",
+            pipeline="cex_dex",
+            buy_venue="quidax",
+            sell_venue="uni-base",
+            size_usd=500.0,
+            profit_usd=50.0,
+            gas_usd=0.07,
+        )
+
+        def _fake_estimate(direction, depth, investment_usd):
+            assert direction == "QUIDAX_TO_UNI_BASE"
+            assert depth == c.signal["depth"]
+            assert investment_usd == Decimal("100")
+            return {"expected_profit_usd": Decimal("0.05")}
+
+        monkeypatch.setattr(_router, "estimate_cex_dex_trade", _fake_estimate)
+        result = select_route([c], inv)
+
+        assert result is None
+
 
 class TestSelectRouteTiebreak:
     def test_highest_net_profit_wins(self):
         """When multiple routes are profitable, the highest net profit is chosen."""
         inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000, "uni-bsc": 5_000_000})
-        c1 = _make_candidate(direction="QUIDAX_TO_UNI_BASE", profit_usd=10.0, gas_usd=0.07)
-        c2 = _make_candidate(direction="QUIDAX_TO_UNI_BSC", sell_venue="uni-bsc", profit_usd=5.0, gas_usd=0.07)
+        c1 = _make_candidate(direction="QUIDAX_TO_UNI_BASE", size_usd=100.0, profit_usd=10.0, gas_usd=0.07)
+        c2 = _make_candidate(direction="QUIDAX_TO_UNI_BSC", sell_venue="uni-bsc", size_usd=100.0, profit_usd=5.0, gas_usd=0.07)
         result = select_route([c1, c2], inv)
         assert result is not None
         assert result.candidate.direction == "QUIDAX_TO_UNI_BASE"

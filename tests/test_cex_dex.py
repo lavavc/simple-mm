@@ -8,6 +8,8 @@ from engine.core.arbitrage.cex_dex import (
     QUIDAX_FEE,
     compute_arb_curve,
     estimate_cex_buy_cngn,
+    estimate_cex_dex_trade,
+    estimate_max_cex_buy_usd_for_cngn,
     find_optimal_arb,
 )
 
@@ -108,6 +110,33 @@ class TestOrderbookHelpers:
 
     def test_estimate_cex_buy_cngn_returns_zero_for_missing_depth(self):
         assert estimate_cex_buy_cngn(None, Decimal("50")) == Decimal("0")
+
+    def test_estimate_max_cex_buy_usd_for_cngn_inverts_bid_walk(self):
+        depth = OrderBookDepth(
+            venue="quidax",
+            pair="cNGN/USDT",
+            timestamp=1700000000000,
+            bids=[_level(1700, 50), _level(1600, 50)],
+            asks=[_level(1500, 50)],
+        )
+
+        wallet_cngn = Decimal("100000")
+        max_usdt = estimate_max_cex_buy_usd_for_cngn(depth, wallet_cngn, QUIDAX_FEE)
+        bought_cngn = estimate_cex_buy_cngn(depth, max_usdt, QUIDAX_FEE)
+
+        assert bought_cngn <= wallet_cngn
+        assert estimate_cex_buy_cngn(depth, max_usdt + Decimal("0.01"), QUIDAX_FEE) > wallet_cngn
+
+    def test_estimate_max_cex_buy_usd_for_cngn_returns_zero_for_missing_depth(self):
+        assert estimate_max_cex_buy_usd_for_cngn(None, Decimal("50000")) == Decimal("0")
+
+    def test_estimate_cex_dex_trade_recomputes_specific_direction(self, seeded_pool_cache):
+        result = estimate_cex_dex_trade("QUIDAX_TO_UNI_BASE", _TIGHT_DEPTH, Decimal("10"))
+
+        assert result is not None
+        assert result["cngn_transferred"] > 0
+        assert result["expected_usd_out"] > 0
+        assert result["expected_profit_usd"] == result["expected_usd_out"] - Decimal("10")
 
 
 class TestComputeArbCurve:

@@ -89,6 +89,84 @@ def estimate_cex_buy_cngn(
     return cngn
 
 
+def estimate_max_cex_buy_usd_for_cngn(
+    quidax_depth: OrderBookDepth | None,
+    wallet_cngn: Decimal,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> Decimal:
+    """Invert the Quidax buy walk: max USDT size whose bought cNGN fits in wallet_cngn."""
+    if not quidax_depth or not quidax_depth.bids or wallet_cngn <= 0:
+        return Decimal("0")
+    net_multiplier = Decimal("1") - cex_fee
+    if net_multiplier <= 0:
+        return Decimal("0")
+
+    remaining_gross_cngn = wallet_cngn / net_multiplier
+    total_usdt = Decimal("0")
+    for bid in sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True):
+        if remaining_gross_cngn <= 0:
+            break
+        if bid.price <= 0 or bid.amount <= 0:
+            continue
+        max_usdt_at_level = remaining_gross_cngn / bid.price
+        buy_usdt = min(bid.amount, max_usdt_at_level)
+        total_usdt += buy_usdt
+        remaining_gross_cngn -= buy_usdt * bid.price
+    return total_usdt
+
+
+def estimate_cex_dex_trade(
+    direction: str,
+    quidax_depth: OrderBookDepth | None,
+    investment_usd: Decimal,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> dict[str, Decimal] | None:
+    """Recompute a specific CEX-DEX trade at an exact size using current depth and pool state."""
+    if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids or investment_usd <= 0:
+        return None
+
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+    uni_bsc_sqrt, uni_bsc_liq, _, _, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    uni_base_sqrt, uni_base_liq, _, _, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+
+    if not uni_bsc_sqrt or not uni_base_sqrt or uni_bsc_fee is None or uni_base_fee is None:
+        return None
+
+    bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True)
+    asks = sorted(quidax_depth.asks, key=lambda x: x.price)
+
+    if direction == "QUIDAX_TO_UNI_BSC":
+        cngn, _ = walk_orderbook_bids(bids, investment_usd, cex_fee)
+        if cngn <= 0:
+            return None
+        usd_out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+    elif direction == "UNI_BSC_TO_QUIDAX":
+        cngn = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        if cngn <= 0:
+            return None
+        usd_out, _ = walk_orderbook_asks(asks, cngn, cex_fee)
+    elif direction == "QUIDAX_TO_UNI_BASE":
+        cngn, _ = walk_orderbook_bids(bids, investment_usd, cex_fee)
+        if cngn <= 0:
+            return None
+        usd_out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+    elif direction == "UNI_BASE_TO_QUIDAX":
+        cngn = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        if cngn <= 0:
+            return None
+        usd_out, _ = walk_orderbook_asks(asks, cngn, cex_fee)
+    else:
+        return None
+
+    return {
+        "expected_profit_usd": usd_out - investment_usd,
+        "expected_usd_out": usd_out,
+        "cngn_transferred": cngn,
+    }
+
+
 
 def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("5000"), tol=Decimal("0.5")):
     """Find the profit-maximising size for a unimodal profit function."""
