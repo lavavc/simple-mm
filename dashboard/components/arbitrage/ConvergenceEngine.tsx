@@ -23,12 +23,6 @@ interface DexArbData {
         uni_bsc_liquidity_cngn_raw: string;
         uni_base_liquidity_cngn_raw: string;
         assetchain_liquidity_cngn_raw: string;
-        uni_bsc_stable?: number;
-        uni_bsc_cngn?: number;
-        uni_base_stable?: number;
-        uni_base_cngn?: number;
-        assetchain_stable?: number;
-        assetchain_cngn?: number;
         uni_bsc_ts?: number;
         uni_base_ts?: number;
         assetchain_ts?: number;

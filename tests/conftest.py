@@ -240,8 +240,6 @@ def seeded_pool_cache(monkeypatch):
             "liquidity": _POOL_LIQUIDITY,
             "fee": _POOL_FEE,
             "sqrt_p": _BASE_SQRT_X96,
-            "balance0": Decimal("500000"),  # cNGN
-            "balance1": Decimal("600"),     # USDC
             "timestamp": time.time(),
         },
         bsc_key: {
@@ -249,8 +247,6 @@ def seeded_pool_cache(monkeypatch):
             "liquidity": _POOL_LIQUIDITY,
             "fee": _POOL_FEE,
             "sqrt_p": _BSC_SQRT_X96,
-            "balance0": Decimal("9200"),      # USDT
-            "balance1": Decimal("26090000"),  # cNGN
             "timestamp": time.time(),
         },
     }

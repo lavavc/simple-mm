@@ -37,7 +37,7 @@ class Position(BaseModel):
     balances: dict[str, Decimal]
     lp_position: Optional[LPPosition] = None
     open_orders: Optional[dict] = None
-    pool_tvl_usd: Optional[Decimal] = None
+    position_value_usd: Optional[Decimal] = None
     volume_24h_usd: Optional[Decimal] = None
     rates: Optional[dict[str, Decimal]] = None  # per-route cNGN/USD rates (blockradar only)
 

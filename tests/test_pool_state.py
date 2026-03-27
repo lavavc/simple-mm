@@ -109,8 +109,7 @@ class TestUpdatePoolStateFromEvent:
         fake_cache = {
             "0xpool": {
                 "tick": 0, "liquidity": Decimal(1), "fee": Decimal("0"),
-                "sqrt_p": Decimal(1), "balance0": Decimal("999"), "balance1": Decimal("888"),
-                "timestamp": 0,
+                "sqrt_p": Decimal(1), "timestamp": 0,
             }
         }
         monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
@@ -119,9 +118,6 @@ class TestUpdatePoolStateFromEvent:
 
         entry = fake_cache["0xpool"]
         assert entry["tick"] == -100
-        # balance0 and balance1 should be preserved from old cache
-        assert entry["balance0"] == Decimal("999")
-        assert entry["balance1"] == Decimal("888")
 
     def test_timestamp_set(self, monkeypatch):
         from engine.core.arbitrage import pool_state as _ps
@@ -145,11 +141,10 @@ class TestGetCachedPoolState:
 
     def test_cache_hit_returns_state(self, seeded_pool_cache):
         base_key = seeded_pool_cache["uni-base"]
-        sqrt_p, liq, b0, b1, ts, fee = get_cached_pool_state(base_key)
+        sqrt_p, liq, ts, fee = get_cached_pool_state(base_key)
         assert sqrt_p is not None
         assert liq == Decimal(10 ** 18)
         assert fee == Decimal("0.0005")
-        assert b0 == Decimal("500000")
 
     def test_cold_cache_returns_nones(self, monkeypatch):
         from engine.core.arbitrage import pool_state as _ps
@@ -159,10 +154,9 @@ class TestGetCachedPoolState:
 
     def test_bsc_pool_state_readable(self, seeded_pool_cache):
         bsc_key = seeded_pool_cache["uni-bsc"]
-        sqrt_p, liq, b0, b1, ts, fee = get_cached_pool_state(bsc_key)
+        sqrt_p, liq, ts, fee = get_cached_pool_state(bsc_key)
         assert sqrt_p is not None and sqrt_p > 0
         assert fee == Decimal("0.0005")
-        assert b1 == Decimal("26090000")  # cNGN
 
     def test_price_in_expected_range(self, seeded_pool_cache):
         """Seeded sqrtPriceX96 should decode to price ≈ 0.000606 for Base pool."""

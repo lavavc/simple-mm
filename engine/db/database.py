@@ -70,7 +70,7 @@ class Database:
                 in_range INTEGER,
                 open_buy_orders INTEGER,
                 open_sell_orders INTEGER,
-                pool_tvl_usd REAL,
+                position_value_usd REAL,
                 volume_24h_usd REAL
             );
             CREATE INDEX IF NOT EXISTS idx_position_venue_time ON positions(venue, timestamp);
@@ -224,6 +224,13 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE dex_arbitrage_opportunities ADD COLUMN executed_size_usd REAL"
             )
+
+        cursor = await self._conn.execute("PRAGMA table_info(positions)")
+        pos_cols = {row[1] for row in await cursor.fetchall()}
+        if "pool_tvl_usd" in pos_cols:
+            await self._conn.execute(
+                "ALTER TABLE positions RENAME COLUMN pool_tvl_usd TO position_value_usd"
+            )
         await self._conn.commit()
 
     # === System State ===
@@ -347,7 +354,7 @@ class Database:
             INSERT INTO positions (
                 venue, pair, timestamp, cngn_balance, usdt_balance, usdc_balance,
                 lp_token_id, lp_liquidity, range_min, range_max, in_range,
-                open_buy_orders, open_sell_orders, pool_tvl_usd, volume_24h_usd
+                open_buy_orders, open_sell_orders, position_value_usd, volume_24h_usd
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -364,7 +371,7 @@ class Database:
                 1 if lp and lp.in_range else 0 if lp else None,
                 orders.get("buy_count") if orders else None,
                 orders.get("sell_count") if orders else None,
-                float(position.pool_tvl_usd) if position.pool_tvl_usd is not None else None,
+                float(position.position_value_usd) if position.position_value_usd is not None else None,
                 float(position.volume_24h_usd) if position.volume_24h_usd is not None else None,
             ),
         )
@@ -374,8 +381,8 @@ class Database:
         """Return pool TVL and volume snapshots for given venues since from_ts."""
         placeholders = ",".join("?" * len(venues))
         cursor = await self._conn.execute(
-            f"SELECT timestamp, venue, pool_tvl_usd, volume_24h_usd FROM positions "
-            f"WHERE venue IN ({placeholders}) AND timestamp >= ? AND pool_tvl_usd IS NOT NULL "
+            f"SELECT timestamp, venue, position_value_usd, volume_24h_usd FROM positions "
+            f"WHERE venue IN ({placeholders}) AND timestamp >= ? AND position_value_usd IS NOT NULL "
             f"ORDER BY timestamp ASC",
             (*venues, from_ts),
         )

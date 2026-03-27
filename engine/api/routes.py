@@ -754,8 +754,8 @@ async def get_liquidation_valuation():
         except Exception:
             pass
 
-    bsc_sqrt, bsc_liq, _, _, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
-    base_sqrt, base_liq, _, _, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+    bsc_sqrt, bsc_liq, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    base_sqrt, base_liq, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
     try:
         balances = await _account_manager.check_all_balances(_token_contracts)
@@ -1102,14 +1102,7 @@ async def get_pool_metrics():
     for pool in _DEX_POOLS:
         name = pool["venue"]
         venue = (_venues or {}).get(name)
-        entry = {"venue": name, "chain": pool["chain"], "pool_tvl_usd": None, "volume_24h_usd": None}
-        if venue and hasattr(venue, "get_pool_metrics"):
-            try:
-                tvl, vol, _ = await venue.get_pool_metrics(0)
-                entry["pool_tvl_usd"] = float(tvl) if tvl is not None else None
-                entry["volume_24h_usd"] = float(vol) if vol is not None else None
-            except Exception as e:
-                logger.warning("pool_metrics_fetch_failed", venue=name, error=str(e))
+        entry = {"venue": name, "chain": pool["chain"], "position_value_usd": None, "volume_24h_usd": None}
         results.append(entry)
     return results
 

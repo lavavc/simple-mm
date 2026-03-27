@@ -12,8 +12,6 @@ The engine manages two Uniswap V4 concentrated liquidity pools:
 | `uni-base` | Base (8453) | cNGN / USDC | 100 |
 | `uni-bsc` | BSC (56) | cNGN / USDT | 200 |
 
-Both are Uniswap V4 pools on the respective chain's PoolManager. Aerodrome (Base) and PancakeSwap (BSC) remain in the codebase, but are not actvely used. If reference for handling V3 pools is required, those are the relevant files.
-
 ## LP vs trade wallet separation
 
 Each venue has two dedicated HD-wallet accounts:
@@ -30,11 +28,27 @@ V4 pools do not emit a convenient `PositionUpdated` event. The engine reconstruc
 1. **Find the LP NFT**: scan `Transfer` events on the PositionManager contract to find the `tokenId` owned by the LP address.
 2. **Decode PositionInfo**: call `PositionManager.getPositionInfo(tokenId)` which returns a packed `bytes32`. `tickLower` is at bits 8–31, `tickUpper` at bits 32–55.
 3. **Get liquidity**: call `StateView.getPositionLiquidity(poolId, ..., tickLower, tickUpper)`.
-4. **Compute amounts**: use tick math (same as Uniswap SDK) to convert liquidity + current sqrtPriceX96 → token amounts.
+4. **Compute amounts**: use exact tick math to convert our position's liquidity + current sqrtPriceX96 → token amounts. See below.
 
-If position lookup fails (e.g. no NFT found), the engine falls back to `balanceOf(poolManager)` for a rough estimate.
+Pool state itself (sqrtPriceX96, current tick, in-range liquidity) is updated inline from V4 Swap events — zero RPC calls during normal operation.
 
-Pool state itself (sqrtPriceX96, current tick, liquidity) is updated inline from V4 Swap events — zero RPC calls during normal operation.
+## Position value and fee share
+
+The dashboard shows **Position Value** — the USD value of the tokens held in the LP position — computed from exact tick math using the position's `tickLower`, `tickUpper`, and the current `sqrtPriceX96`:
+
+- If the current price is below the position's range, the position holds only token0 (cNGN on Base, USDT on BSC).
+- If above the range, it holds only token1 (USDC on Base, cNGN on BSC).
+- If in range, both tokens are held in proportion to how far through the range the current price sits.
+
+Token amounts are converted to USD using the sqrtPriceX96-derived cNGN/USD price.
+
+### Active liquidity and fee earnings
+
+V4 tracks the total liquidity active at the current tick — the sum of all LP positions whose tick range currently includes the price. The dashboard shows **Our Share %**, which is our position's liquidity divided by this active total.
+
+Fee earnings are proportional to active share. If our position is in range and we hold 40% of active liquidity, we earn 40% of swap fees while the price stays in range. When the price moves outside our range, our share drops to zero and fee accrual stops until the price re-enters. Widening the tick range increases the chance of staying in range but dilutes the concentration (and therefore the share of active liquidity relative to other LPs).
+
+The engine does not auto-compound fees. Collected fees sit in the LP wallet until manually redeployed.
 
 ## Capital deployment
 

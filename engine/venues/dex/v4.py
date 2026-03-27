@@ -255,7 +255,7 @@ class BaseV4DexAdapter(VenueAdapter):
             timestamp=int(_time.time() * 1000),
             balances=balances,
             lp_position=None,
-            pool_tvl_usd=None,
+            position_value_usd=None,
             volume_24h_usd=None,
         )
 

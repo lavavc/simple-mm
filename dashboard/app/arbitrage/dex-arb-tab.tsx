@@ -22,12 +22,6 @@ interface DexArbData {
         uni_bsc_liquidity_cngn_raw: string;
         uni_base_liquidity_cngn_raw: string;
         assetchain_liquidity_cngn_raw: string;
-        uni_bsc_stable?: number;
-        uni_bsc_cngn?: number;
-        uni_base_stable?: number;
-        uni_base_cngn?: number;
-        assetchain_stable?: number;
-        assetchain_cngn?: number;
         uni_bsc_ts?: number;
         uni_base_ts?: number;
         assetchain_ts?: number;
@@ -109,7 +103,6 @@ export default function DexArbPage() {
         prices: { 'uni-bsc': 0, 'uni-base': 0, assetchain: 0 },
         stats: {
             uni_bsc_liquidity_cngn_raw: "0", uni_base_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0",
-            uni_bsc_stable: 0, uni_bsc_cngn: 0, uni_base_stable: 0, uni_base_cngn: 0, assetchain_stable: 0, assetchain_cngn: 0,
             uni_bsc_ts: 0, uni_base_ts: 0, assetchain_ts: 0
         },
         curve: [],
@@ -415,20 +408,6 @@ export default function DexArbPage() {
                                                     {formatNumber(1 / (resolvedCurveData.prices['uni-bsc'] || 1), 2)} cNGN
                                                 </div>
                                             </div>
-                                            <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
-                                                <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
-                                                <div className="flex justify-between items-end mb-1">
-                                                    <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.uni_bsc_stable || 0, 2)} USDT</div>
-                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.uni_bsc_cngn || 0, 2)} cNGN</div>
-                                                </div>
-                                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
-                                                    <div
-                                                        className="h-full bg-[#2563eb]"
-                                                        style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.uni_bsc_stable || 0) / ((resolvedCurveData.stats.uni_bsc_stable || 1) + (resolvedCurveData.stats.uni_bsc_cngn || 1) / 1500)) * 100))}%` }}
-                                                    />
-                                                    <div className="h-full flex-1 bg-emerald-400" />
-                                                </div>
-                                            </div>
                                         </div>
                                         <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
                                             {resolvedCurveData.stats.uni_bsc_ts ? Math.max(0, Math.floor(now / 1000 - resolvedCurveData.stats.uni_bsc_ts)) : timeSinceLastPacket}S AGO
@@ -458,20 +437,6 @@ export default function DexArbPage() {
                                                     {formatNumber(1 / (resolvedCurveData.prices['uni-base'] || 1), 2)} cNGN
                                                 </div>
                                             </div>
-                                            <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
-                                                <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
-                                                <div className="flex justify-between items-end mb-1">
-                                                    <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.uni_base_stable || 0, 2)} USDC</div>
-                                                    <div className="text-emerald-400 font-bold">{formatNumber(resolvedCurveData.stats.uni_base_cngn || 0, 2)} cNGN</div>
-                                                </div>
-                                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
-                                                    <div
-                                                        className="h-full bg-[#2563eb]"
-                                                        style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.uni_base_stable || 0) / ((resolvedCurveData.stats.uni_base_stable || 1) + (resolvedCurveData.stats.uni_base_cngn || 1) / 1500)) * 100))}%` }}
-                                                    />
-                                                    <div className="h-full flex-1 bg-emerald-400" />
-                                                </div>
-                                            </div>
                                         </div>
                                         <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
                                             {resolvedCurveData.stats.uni_base_ts ? Math.max(0, Math.floor(now / 1000 - resolvedCurveData.stats.uni_base_ts)) : timeSinceLastPacket}S AGO
@@ -499,20 +464,6 @@ export default function DexArbPage() {
                                                 <div className="flex items-center gap-1.5 text-blue-400">
                                                     <ArrowRightLeft className="h-3 w-3" />
                                                     {formatNumber(1 / (resolvedCurveData.prices.assetchain || 1), 2)} cNGN
-                                                </div>
-                                            </div>
-                                            <div className="col-span-2 mt-2 pt-2 border-t border-white/[0.05]">
-                                                <div className="text-white/30 uppercase tracking-widest mb-2 text-[10px]">Pool balances</div>
-                                                <div className="flex justify-between items-end mb-1">
-                                                    <div className="text-white font-bold">{formatNumber(resolvedCurveData.stats.assetchain_stable || 0, 2)} USDT</div>
-                                                    <div className="text-blue-400 font-bold">{formatNumber(resolvedCurveData.stats.assetchain_cngn || 0, 2)} cNGN</div>
-                                                </div>
-                                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex">
-                                                    <div
-                                                        className="h-full bg-slate-500"
-                                                        style={{ width: `${Math.max(10, Math.min(90, ((resolvedCurveData.stats.assetchain_stable || 0) / ((resolvedCurveData.stats.assetchain_stable || 1) + (resolvedCurveData.stats.assetchain_cngn || 1) / 1500)) * 100))}%` }}
-                                                    />
-                                                    <div className="h-full flex-1 bg-blue-400" />
                                                 </div>
                                             </div>
                                         </div>

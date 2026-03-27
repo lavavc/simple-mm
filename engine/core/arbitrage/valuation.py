@@ -69,7 +69,7 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
     bsc_bal = next((b for b in balances if b.role in ("uni-bsc-trade", "trade_uni_bsc")), None)
     if bsc_bal:
         result["uni_bsc_usdt"] = float(bsc_bal.token_balances.get("USDT", Decimal(0)))
-        bsc_sqrt, bsc_liq, _, _, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+        bsc_sqrt, bsc_liq, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
         if bsc_sqrt:
             bsc_cngn = bsc_bal.token_balances.get("cNGN", Decimal(0))
             if bsc_cngn > 0:
@@ -79,7 +79,7 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
     base_bal = next((b for b in balances if b.role in ("uni-base-trade", "trade_uni_base")), None)
     if base_bal:
         result["uni_base_usdc"] = float(base_bal.token_balances.get("USDC", Decimal(0)))
-        base_sqrt, base_liq, _, _, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+        base_sqrt, base_liq, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
         if base_sqrt:
             base_cngn = base_bal.token_balances.get("cNGN", Decimal(0))
             if base_cngn > 0:
