@@ -2,16 +2,16 @@
 
 import { useMemo, useState } from 'react';
 import {
-  ComposedChart,
+  LineChart,
   Line,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  Legend,
+  CartesianGrid,
 } from 'recharts';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { TrendingUp } from 'lucide-react';
 import { usePoolMetricsHistory } from '@/lib/hooks/useQueries';
 import type { PoolMetricPoint } from '@/types';
 
@@ -21,40 +21,25 @@ const TIME_WINDOWS = [
   { label: '30d', minutes: 43200 },
 ] as const;
 
-const SERIES = {
-  uni_base_tvl: { label: 'Uni Base Position', color: '#1976D2', axis: 'left'  },
-  uni_bsc_tvl:  { label: 'Uni BSC Position',  color: '#7B1FA2', axis: 'left'  },
-  uni_base_vol: { label: 'Uni Base 24hr Vol', color: '#42A5F5', axis: 'right' },
-  uni_bsc_vol:  { label: 'Uni BSC 24hr Vol',  color: '#CE93D8', axis: 'right' },
-} as const;
-
 function fmtUsd(v: number) {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000)     return `$${(v / 1_000).toFixed(0)}K`;
   return `$${Math.round(v)}`;
 }
 
-function buildChartData(points: PoolMetricPoint[], minutes: number) {
-  if (!points.length) return [];
+function buildChartData(points: PoolMetricPoint[], venue: string, minutes: number) {
+  const filtered = points.filter(p => p.venue === venue && p.position_value_usd != null);
+  if (!filtered.length) return [];
 
   const bucketMs =
     minutes <= 1440  ? 1_800_000 :
     minutes <= 10080 ? 3_600_000 :
                        21_600_000;
 
-  const buckets = new Map<number, Record<string, number>>();
-
-  for (const p of points) {
+  const buckets = new Map<number, number>();
+  for (const p of filtered) {
     const bucket = Math.floor(p.timestamp / bucketMs) * bucketMs;
-    if (!buckets.has(bucket)) buckets.set(bucket, {});
-    const b = buckets.get(bucket)!;
-    if (p.venue === 'uni-base') {
-      if (p.pool_tvl_usd   != null) b.uni_base_tvl = p.pool_tvl_usd;
-      if (p.volume_24h_usd != null) b.uni_base_vol = p.volume_24h_usd;
-    } else if (p.venue === 'uni-bsc') {
-      if (p.pool_tvl_usd   != null) b.uni_bsc_tvl = p.pool_tvl_usd;
-      if (p.volume_24h_usd != null) b.uni_bsc_vol = p.volume_24h_usd;
-    }
+    buckets.set(bucket, p.position_value_usd!);
   }
 
   const fmt = (ts: number) =>
@@ -64,93 +49,93 @@ function buildChartData(points: PoolMetricPoint[], minutes: number) {
 
   return Array.from(buckets.entries())
     .sort((a, b) => a[0] - b[0])
-    .map(([ts, vals]) => ({ time: fmt(ts), ...vals }));
+    .map(([ts, value]) => ({ time: fmt(ts), value }));
 }
 
-export function PoolMetricsChart() {
+export function PoolMetricsChart({ venue }: { venue: string }) {
   const [minutes, setMinutes] = useState(1440);
   const { data: points } = usePoolMetricsHistory(minutes);
-  const chartData = useMemo(() => buildChartData(points ?? [], minutes), [points, minutes]);
+  const chartData = useMemo(
+    () => buildChartData(points ?? [], venue, minutes),
+    [points, venue, minutes],
+  );
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">DEX Pool Metrics</CardTitle>
+    <div className="bg-[#12161C] border border-white/[0.05] rounded-sm">
+      <div className="p-3 border-b border-white/[0.02] flex items-center justify-between">
+        <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-white/40" />
+          LP POSITION VALUE
+        </div>
         <div className="flex gap-1">
           {TIME_WINDOWS.map(({ label, minutes: m }) => (
             <Button
               key={label}
               variant={minutes === m ? 'default' : 'ghost'}
               size="sm"
-              className="h-6 px-2 text-xs"
+              className={`h-5 px-2 text-[10px] font-mono uppercase tracking-widest rounded-sm ${
+                minutes === m
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30'
+                  : 'text-white/30 hover:text-white/60 hover:bg-white/[0.03]'
+              }`}
               onClick={() => setMinutes(m)}
             >
               {label}
             </Button>
           ))}
         </div>
-      </CardHeader>
-      <CardContent>
+      </div>
+
+      <div className="p-4">
         {chartData.length === 0 ? (
-          <div className="h-64 flex items-center justify-center text-sm text-muted-foreground">
-            Waiting for data&hellip;
+          <div className="h-32 flex items-center justify-center">
+            <div className="text-[11px] font-mono text-white/20 uppercase tracking-widest">
+              No position history
+            </div>
           </div>
         ) : (
-          <div className="h-64">
+          <div className="h-32">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData}>
-                <XAxis dataKey="time" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
-                <YAxis
-                  yAxisId="left"
-                  tick={{ fontSize: 9 }}
+              <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.03)" vertical={false} />
+                <XAxis
+                  dataKey="time"
+                  tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.25)', fontFamily: 'monospace' }}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={fmtUsd}
-                  width={48}
                 />
                 <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tick={{ fontSize: 9 }}
+                  tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.25)', fontFamily: 'monospace' }}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={fmtUsd}
-                  width={48}
+                  width={44}
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
+                    backgroundColor: '#0d1117',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    borderRadius: '2px',
                     fontSize: '11px',
+                    fontFamily: 'monospace',
+                    color: 'rgba(255,255,255,0.7)',
                   }}
-                  formatter={(value: number, name: string) => [
-                    fmtUsd(value),
-                    SERIES[name as keyof typeof SERIES]?.label ?? name,
-                  ]}
+                  formatter={(v: number) => [fmtUsd(v), 'Position Value']}
+                  labelStyle={{ color: 'rgba(255,255,255,0.3)', fontSize: '10px' }}
                 />
-                <Legend
-                  verticalAlign="bottom"
-                  wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }}
-                  formatter={(name) => SERIES[name as keyof typeof SERIES]?.label ?? name}
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  stroke="#34d399"
+                  strokeWidth={1.5}
+                  dot={false}
+                  connectNulls
                 />
-                {(Object.keys(SERIES) as (keyof typeof SERIES)[]).map((key) => (
-                  <Line
-                    key={key}
-                    type="monotone"
-                    dataKey={key}
-                    yAxisId={SERIES[key].axis}
-                    stroke={SERIES[key].color}
-                    strokeWidth={2}
-                    dot={false}
-                    connectNulls
-                  />
-                ))}
-              </ComposedChart>
+              </LineChart>
             </ResponsiveContainer>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

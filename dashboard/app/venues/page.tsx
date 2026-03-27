@@ -7,6 +7,7 @@ import { formatNumber } from '@/lib/utils';
 import { useStatus, usePortfolioValuation } from '@/lib/hooks/useQueries';
 import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge, ExternalLink } from 'lucide-react';
 import type { VenueStatus } from '@/types';
+import { PoolMetricsChart } from '@/components/charts/PoolMetricsChart';
 
 const venueInfo: Record<
   string,
@@ -345,6 +346,11 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
           )}
         </div>
 
+
+        {/* LP Position Value History (DEX venues only) */}
+        {['uni-base', 'uni-bsc'].includes(venue.name) && (
+          <PoolMetricsChart venue={venue.name} />
+        )}
 
         {/* Bottom Row: Parameters (Detailed List) */}
         <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">

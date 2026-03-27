@@ -111,7 +111,7 @@ export function VenueCard({ venue }: VenueCardProps) {
                 </Badge>
               </div>
             )}
-            {(venue.position.volume_24h_usd != null || venue.position.pool_tvl_usd != null) && (
+            {(venue.position.volume_24h_usd != null || venue.position.position_value_usd != null) && (
               <div className="mt-2 text-xs space-y-0.5">
                 {venue.position.volume_24h_usd != null && (
                   <div className="flex justify-between">
@@ -119,10 +119,10 @@ export function VenueCard({ venue }: VenueCardProps) {
                     <span>${Math.round(venue.position.volume_24h_usd).toLocaleString()}</span>
                   </div>
                 )}
-                {venue.position.pool_tvl_usd != null && (
+                {venue.position.position_value_usd != null && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Position Value</span>
-                    <span>${Math.round(venue.position.pool_tvl_usd).toLocaleString()}</span>
+                    <span>${Math.round(venue.position.position_value_usd).toLocaleString()}</span>
                   </div>
                 )}
                 {venue.position.lp_position?.our_share_pct != null && (

@@ -74,14 +74,6 @@ export function usePortfolioValuation() {
   });
 }
 
-export function usePoolMetrics() {
-  return useQuery({
-    queryKey: ['poolMetrics'],
-    queryFn: api.getPoolMetrics,
-    refetchInterval: 60_000,
-  });
-}
-
 export function usePoolMetricsHistory(minutes: number) {
   return useQuery({
     queryKey: ['poolMetricsHistory', minutes],

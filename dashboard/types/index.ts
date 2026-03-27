@@ -24,7 +24,7 @@ export interface Position {
   balances: Record<string, number>;
   lp_position?: LPPosition;
   open_orders?: Record<string, unknown>;
-  pool_tvl_usd?: number;
+  position_value_usd?: number;
   volume_24h_usd?: number;
   rates?: Record<string, number>;  // per-route cNGN/USD rates (blockradar only)
 }
@@ -182,14 +182,14 @@ export interface NormalizedPriceResponse {
 export interface PoolMetrics {
   venue: string;
   chain: string;
-  pool_tvl_usd: number | null;
+  position_value_usd: number | null;
   volume_24h_usd: number | null;
 }
 
 export interface PoolMetricPoint {
   timestamp: number;
   venue: string;
-  pool_tvl_usd: number | null;
+  position_value_usd: number | null;
   volume_24h_usd: number | null;
 }
 

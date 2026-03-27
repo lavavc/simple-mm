@@ -12,7 +12,6 @@ import type {
   HealthCheck,
   BlendedPriceResponse,
   NormalizedPriceResponse,
-  PoolMetrics,
   PoolMetricPoint,
 } from '@/types';
 
@@ -102,10 +101,7 @@ export const api = {
   getAccountBalance: (role: string): Promise<AccountBalance> =>
     fetchJson(`${API_BASE}/accounts/${role}/balance`),
 
-  // Pool metrics
-  getPoolMetrics: (): Promise<PoolMetrics[]> =>
-    fetchJson(`${API_BASE}/pool-metrics`),
-
+  // Pool metrics history
   getPoolMetricsHistory: (minutes: number): Promise<PoolMetricPoint[]> =>
     fetchJson(`${API_BASE}/pool-metrics/history?minutes=${minutes}`),
 
