@@ -92,7 +92,7 @@ export function useEventStream() {
           addNotification({
             type: 'arbitrage',
             title: `DEX: ${d.direction.replace(/_/g, ' ')}`,
-            message: `Size: $${d.optimal_size_usd} | V3 Live Profit: $${d.expected_profit_usd.toFixed(2)}`,
+            message: `Size: $${d.optimal_size_usd} | Est. Profit: $${d.expected_profit_usd.toFixed(2)}`,
             data: d,
           });
         }
