@@ -5,8 +5,10 @@ from decimal import Decimal
 
 from engine.core.arbitrage.dex_dex import (
     estimate_dex_dex_trade,
+    estimate_max_dex_buy_usd_for_cngn,
     find_optimal_dex_arb,
 )
+import engine.core.arbitrage.dex_dex as _dex_dex
 
 
 class TestFindOptimalDexArbNullCases:
@@ -86,3 +88,15 @@ class TestFindOptimalDexArbResult:
         assert larger is not None
         assert smaller["cngn_transferred"] < larger["cngn_transferred"]
         assert smaller["expected_usd_out"] < larger["expected_usd_out"]
+
+    def test_estimate_max_buy_size_caps_from_wallet_cngn(self, monkeypatch):
+        monkeypatch.setattr(_dex_dex, "get_cached_pool_state", lambda pool_address: (Decimal("1"), Decimal("1"), 0, Decimal("0.001")))
+        monkeypatch.setattr(_dex_dex, "swap_token1_for_token0", lambda amount_in, *_args: amount_in * Decimal("1400"))
+
+        capped = estimate_max_dex_buy_usd_for_cngn(
+            "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            Decimal("467.77"),
+        )
+
+        assert capped > Decimal("0.32")
+        assert capped < Decimal("0.34")

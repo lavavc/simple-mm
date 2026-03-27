@@ -15,6 +15,7 @@ from engine.core.arbitrage.pool_state import (
 logger = structlog.get_logger()
 
 _ABSOLUTE_MAX_USD = Decimal("15000")
+_REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
 from engine.core import gas_oracle as _gas_oracle  # noqa: E402
 
@@ -73,6 +74,52 @@ def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | No
         "expected_usd_out": float(usd_out),
         "net_spread_bps": net_spread_bps,
     }
+
+
+def estimate_max_dex_buy_usd_for_cngn(
+    direction: str,
+    wallet_cngn: Decimal,
+) -> Decimal:
+    """Reverse of estimate_dex_dex_trade(): max USD buy size supported by wallet_cngn."""
+    if wallet_cngn <= 0:
+        return Decimal("0")
+
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+    uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = \
+        get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    uni_base_sqrt, uni_base_liq, _, uni_base_fee = \
+        get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
+        return Decimal("0")
+
+    if direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE":
+        def cngn_required(investment_usd: Decimal) -> Decimal:
+            return swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+    elif direction == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE":
+        def cngn_required(investment_usd: Decimal) -> Decimal:
+            return swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+    else:
+        return Decimal("0")
+
+    if cngn_required(_ABSOLUTE_MAX_USD) <= wallet_cngn:
+        return _ABSOLUTE_MAX_USD
+
+    low = Decimal("0")
+    high = _ABSOLUTE_MAX_USD
+    while high - low > _REVERSE_SEARCH_TOL_USD:
+        mid = (low + high) / Decimal("2")
+        if cngn_required(mid) <= wallet_cngn:
+            low = mid
+        else:
+            high = mid
+
+    return low
 
 
 def find_optimal_dex_arb() -> dict | None:

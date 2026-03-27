@@ -17,7 +17,7 @@ from engine.api.schemas import (
 )
 from engine.core.arbitrage.executor import ArbitrageExecutor
 from engine.core.arbitrage.inventory import InventoryTracker
-from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
+from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, evaluate_route_candidate, select_route
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 
@@ -263,6 +263,53 @@ def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: s
                           )})
 
 
+def _format_history_preflight_reason(
+    engine,
+    venue_name: str,
+    title: str,
+    err: str | None = None,
+    **log_ctx,
+) -> str:
+    context_text, _ = _build_preflight_context(engine, venue_name, log_ctx)
+    if err:
+        return f"{title}: {err}{context_text}"
+    return f"{title}{context_text}"
+
+
+def _format_route_rejection_reason(engine, route: SelectedRoute, reason: str) -> str:
+    lines = [f"Route rejected: {reason}"]
+    lines.append(f"Direction: {route.candidate.direction}")
+    lines.append(f"Optimal size: {_fmt_usd(route.candidate.optimal_size_usd)}")
+    lines.append(f"Executable size: {_fmt_usd(route.adjusted_size_usd)}")
+    lines.append(f"Expected profit after routing: {_fmt_usd(route.expected_profit_usd)}")
+    lines.append(f"Net profit after routing: {_fmt_usd(route.net_profit_usd)}")
+    if route.cap_reason:
+        lines.append(f"Cap reason: {route.cap_reason}")
+
+    buy_wallet = _build_history_wallet(
+        route.candidate.buy_venue,
+        engine._stable_symbol_for_venue(route.candidate.buy_venue),
+        route.buy_wallet_stable_balance,
+        route.buy_wallet_cngn_balance,
+    )
+    sell_wallet = _build_history_wallet(
+        route.candidate.sell_venue,
+        engine._stable_symbol_for_venue(route.candidate.sell_venue),
+        route.sell_wallet_stable_balance,
+        route.sell_wallet_cngn_balance,
+    )
+
+    def _wallet_text(label: str, wallet: ArbitrageHistoryWalletSnapshot) -> str:
+        stable_symbol = wallet.stable_symbol or "stable"
+        stable_part = f"{_fmt_decimal(wallet.stable_balance)} {stable_symbol}" if wallet.stable_balance is not None else "—"
+        cngn_part = f"{_fmt_decimal(wallet.cngn_balance)} cNGN" if wallet.cngn_balance is not None else "—"
+        return f"{label}: {wallet.venue} | {stable_part} | {cngn_part}"
+
+    lines.append(_wallet_text("Buy wallet", buy_wallet))
+    lines.append(_wallet_text("Sell wallet", sell_wallet))
+    return "\n".join(lines)
+
+
 class ArbitrageEngine:
     """
     Orchestrates arbitrage detection signals into execution.
@@ -485,6 +532,31 @@ class ArbitrageEngine:
         )
         self.broadcast({"type": "arb_history_updated", "data": {"opportunity_id": opp_id}})
 
+    async def _is_duplicate_rejected_history(
+        self,
+        route: SelectedRoute,
+        reason: str,
+    ) -> bool:
+        db = await get_db()
+        if db is None or not hasattr(db, "get_arbitrage_history"):
+            return False
+
+        items = await db.get_arbitrage_history(pipeline=route.candidate.pipeline, limit=20)
+        latest = next(
+            (
+                item for item in items
+                if item.direction == route.candidate.direction and item.latest_status == "rejected"
+            ),
+            None,
+        )
+        if latest is None:
+            return False
+
+        return (
+            latest.cap_reason == route.cap_reason
+            and latest.reason == reason
+        )
+
     async def _execute_cex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a CEX-DEX arbitrage."""
         self._arb_executing = True
@@ -511,6 +583,8 @@ class ArbitrageEngine:
                 sell_venue = self.venues[sell_venue_name]
                 quidax_depth = c.signal.get("depth")
                 cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
+                if route.sell_wallet_cngn_balance is not None:
+                    cngn_estimate_amount = min(cngn_estimate_amount, route.sell_wallet_cngn_balance)
                 if cngn_estimate_amount <= 0:
                     logger.warning(
                         "cex_dex_preflight_missing_depth_or_zero_estimate",
@@ -523,7 +597,14 @@ class ArbitrageEngine:
                         opp_id,
                         event_type="failed",
                         status="abandoned",
-                        reason="Missing Quidax depth or zero cNGN estimate during sell preflight",
+                        reason=_format_history_preflight_reason(
+                            self,
+                            sell_venue_name,
+                            "Missing Quidax depth or zero cNGN estimate during sell preflight",
+                            direction=direction,
+                            size_usd=float(size_usd),
+                            wallet_asset="cngn",
+                        ),
                     )
                     return
                 cngn_estimate = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
@@ -546,7 +627,17 @@ class ArbitrageEngine:
                         opp_id,
                         event_type="failed",
                         status="abandoned",
-                        reason=f"Sell preflight failed: {_clean_revert(sell_err)}",
+                        reason=_format_history_preflight_reason(
+                            self,
+                            sell_venue_name,
+                            "Sell preflight failed",
+                            _clean_revert(sell_err),
+                            direction=direction,
+                            size_usd=float(size_usd),
+                            sell_cngn_est=float(cngn_estimate_amount),
+                            sell_price_usd=float(sell_price_usd) if sell_price_usd is not None else None,
+                            wallet_asset="cngn",
+                        ),
                     )
                     return
 
@@ -702,9 +793,38 @@ class ArbitrageEngine:
                     gas_usd=Decimal(str(gas_usd_raw)),
                     signal=fast,
                 )
-                route = select_route([candidate], self.inventory)
-                if route:
-                    asyncio.create_task(self._execute_dex_dex(route, opp_id))
+                evaluation = evaluate_route_candidate(candidate, self.inventory)
+                if evaluation.route:
+                    asyncio.create_task(self._execute_dex_dex(evaluation.route, opp_id))
+                else:
+                    rejected = evaluation.snapshot
+                    rejection_reason = evaluation.rejection_reason or "Route rejected before execution"
+                    rejection_text = _format_route_rejection_reason(self, rejected, rejection_reason)
+                    if await self._is_duplicate_rejected_history(rejected, rejection_text):
+                        db = await get_db()
+                        if db is not None:
+                            await db.update_dex_arbitrage_execution_state(
+                                opp_id,
+                                status="abandoned",
+                                reason="Duplicate rejected route suppressed",
+                            )
+                        return
+                    await self._record_history_event(rejected, opp_id, event_type="detected", status="detected")
+                    await self._record_history_event(rejected, opp_id, event_type="routed", status="rejected")
+                    await self._record_history_event(
+                        rejected,
+                        opp_id,
+                        event_type="failed",
+                        status="rejected",
+                        reason=rejection_text,
+                    )
+                    db = await get_db()
+                    if db is not None:
+                        await db.update_dex_arbitrage_execution_state(
+                            opp_id,
+                            status="abandoned",
+                            reason=rejection_reason,
+                        )
 
         if not self._dex_curve_task or self._dex_curve_task.done():
             self._dex_curve_task = asyncio.create_task(self._broadcast_dex_curve())
@@ -818,10 +938,19 @@ class ArbitrageEngine:
                     opp_id,
                     event_type="failed",
                     status="abandoned",
-                    reason="DEX-DEX pool cache cold at execution",
+                    reason=_format_history_preflight_reason(
+                        self,
+                        sell_venue_name,
+                        "DEX-DEX pool cache cold at execution",
+                        direction=direction,
+                        size_usd=float(size_usd),
+                        wallet_asset="cngn",
+                    ),
                 )
                 return
             sell_cngn_est = Decimal(str(_est["cngn_transferred"]))
+            if route.sell_wallet_cngn_balance is not None:
+                sell_cngn_est = min(sell_cngn_est, route.sell_wallet_cngn_balance)
             sell_amount_raw = int(sell_cngn_est * Decimal(10 ** sell_venue.cngn_decimals))
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
             min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
@@ -844,7 +973,17 @@ class ArbitrageEngine:
                     opp_id,
                     event_type="failed",
                     status="abandoned",
-                    reason=f"Sell preflight failed: {_clean_revert(sell_err)}",
+                    reason=_format_history_preflight_reason(
+                        self,
+                        sell_venue_name,
+                        "Sell preflight failed",
+                        _clean_revert(sell_err),
+                        direction=direction,
+                        size_usd=float(size_usd),
+                        sell_cngn_est=float(sell_cngn_est),
+                        min_out_usd=float(min_out_usd),
+                        wallet_asset="cngn",
+                    ),
                 )
                 return
 
@@ -868,7 +1007,19 @@ class ArbitrageEngine:
                     opp_id,
                     event_type="failed",
                     status="abandoned",
-                    reason=f"Buy preflight failed: {_clean_revert(buy_err)}",
+                    reason=_format_history_preflight_reason(
+                        self,
+                        buy_venue_name,
+                        "Buy preflight failed",
+                        _clean_revert(buy_err),
+                        direction=direction,
+                        size_usd=float(size_usd),
+                        wallet_asset="stable",
+                        wallet_symbol=getattr(getattr(buy_venue, "config", None), "token0_symbol", None)
+                        if getattr(getattr(buy_venue, "config", None), "invert_price", False)
+                        else getattr(getattr(buy_venue, "config", None), "token1_symbol", None),
+                        required_amount=float(size_usd),
+                    ),
                 )
                 return
 

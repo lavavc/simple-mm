@@ -5,7 +5,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 from engine.core.arbitrage import router as _router
-from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
+from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, evaluate_route_candidate, select_route
 from engine.api.schemas import ArbitrageParams, OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.inventory import InventoryTracker
 
@@ -211,12 +211,82 @@ class TestSelectRouteNetProfit:
             assert investment_usd == Decimal("100")
             return {"expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
 
+        monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: Decimal("100"))
         monkeypatch.setattr(_router, "estimate_dex_dex_trade", _fake_estimate)
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
         # net = 2.0 (recomputed at $100) - 0.5 (gas) - rebalance_cost
         assert result.net_profit_usd == Decimal("1.4")
+
+    def test_dex_dex_route_caps_from_sell_wallet_via_pool_math(self, monkeypatch):
+        """DEX-DEX should convert sell-wallet cNGN back through route math before sizing."""
+        inv = _make_inventory(
+            per_account={"uni-base": 35.65},
+            cngn_per_account={"uni-bsc": 467.77},
+        )
+        inv._state.cngn_price_usd = Decimal("0")
+        c = _make_candidate(
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            pipeline="dex_dex",
+            buy_venue="uni-base",
+            sell_venue="uni-bsc",
+            size_usd=64.95,
+            profit_usd=10.0,
+            gas_usd=0.0,
+        )
+
+        monkeypatch.setattr(
+            _router,
+            "estimate_max_dex_buy_usd_for_cngn",
+            lambda direction, wallet_cngn: Decimal("0.334"),
+        )
+        monkeypatch.setattr(
+            _router,
+            "estimate_dex_dex_trade",
+            lambda direction, investment_usd: {
+                "expected_profit_usd": float(Decimal("1.00")),
+                "cngn_transferred": float(investment_usd * Decimal("1400")),
+            },
+        )
+
+        result = select_route([c], inv)
+
+        assert result is not None
+        assert result.cap_reason == "sell_wallet_cngn"
+        assert result.adjusted_size_usd == Decimal("0.334")
+
+    def test_evaluate_route_candidate_returns_rejection_context(self, monkeypatch):
+        inv = _make_inventory(
+            per_account={"uni-base": 35.65},
+            cngn_per_account={"uni-bsc": 467.77},
+        )
+        c = _make_candidate(
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            pipeline="dex_dex",
+            buy_venue="uni-base",
+            sell_venue="uni-bsc",
+            size_usd=64.95,
+            profit_usd=0.01,
+            gas_usd=0.05,
+        )
+
+        monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: Decimal("0.334"))
+        monkeypatch.setattr(
+            _router,
+            "estimate_dex_dex_trade",
+            lambda direction, investment_usd: {
+                "expected_profit_usd": float(Decimal("0.00")),
+                "cngn_transferred": float(investment_usd * Decimal("1400")),
+            },
+        )
+
+        evaluation = evaluate_route_candidate(c, inv)
+
+        assert evaluation.route is None
+        assert evaluation.snapshot.adjusted_size_usd == Decimal("0.334")
+        assert evaluation.snapshot.cap_reason == "sell_wallet_cngn"
+        assert "below threshold" in (evaluation.rejection_reason or "")
 
     def test_cex_dex_route_recomputes_profit_at_capped_size(self, monkeypatch):
         """For CEX-DEX, the capped route must be rescored at the capped size."""

@@ -25,6 +25,21 @@ function humanizeCapReason(reason?: string) {
     .join(', ');
 }
 
+function formatReason(reason?: string) {
+  if (!reason) return null;
+
+  const cleaned = reason
+    .replace(/\('([^']+)',\s*'0x[0-9a-fA-F]+'\)/g, '$1')
+    .replace(/,\s*'0x[0-9a-fA-F]+'/g, '')
+    .replace(/:\s*0x[0-9a-fA-F]{16,}/g, '');
+
+  return cleaned
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 function walletLine(label: string, wallet?: ArbitrageHistoryWalletSnapshot) {
   if (!wallet) return null;
   const venueLabel = VENUE_LABELS[wallet.venue]?.name ?? wallet.venue;
@@ -117,9 +132,11 @@ export function ArbHistoryPanel({
           const finalEvent = item.events.find((event) => event.event_type === 'executed')
             ?? item.events.find((event) => event.event_type === 'failed');
           const isExecuted = finalEvent?.event_type === 'executed';
+          const isRejected = finalEvent?.status === 'rejected';
           const sizeDelta = (item.optimal_size_usd != null && item.routed_size_usd != null)
             ? item.optimal_size_usd - item.routed_size_usd
             : undefined;
+          const displayReason = formatReason(item.reason) ?? (isExecuted ? 'Executed cleanly' : 'Awaiting final result');
 
           return (
             <div key={item.opportunity_id} className="rounded-sm border border-white/5 bg-black/20 p-4">
@@ -144,7 +161,11 @@ export function ArbHistoryPanel({
 
                 <div className="flex flex-col items-start gap-2 text-left md:items-end md:text-right">
                   <div className={`rounded-sm px-2 py-1 text-[10px] font-mono uppercase tracking-[0.18em] ${
-                    isExecuted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
+                    isExecuted
+                      ? 'bg-emerald-500/10 text-emerald-400'
+                      : isRejected
+                        ? 'bg-amber-500/10 text-amber-400'
+                        : 'bg-red-500/10 text-red-400'
                   }`}>
                     {item.latest_status.replace(/_/g, ' ')}
                   </div>
@@ -216,7 +237,7 @@ export function ArbHistoryPanel({
                 )}
 
                 {stageShell(
-                  isExecuted ? 'Executed' : 'Failed',
+                  isExecuted ? 'Executed' : isRejected ? 'Rejected' : 'Failed',
                   isExecuted ? 'good' : 'bad',
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
@@ -225,8 +246,10 @@ export function ArbHistoryPanel({
                       ) : (
                         <XCircle className="h-4 w-4 text-red-400" />
                       )}
-                      <div className={`text-[12px] font-semibold ${isExecuted ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {isExecuted ? 'Trade completed' : 'Execution stopped'}
+                      <div className={`text-[12px] font-semibold ${
+                        isExecuted ? 'text-emerald-400' : isRejected ? 'text-amber-400' : 'text-red-400'
+                      }`}>
+                        {isExecuted ? 'Trade completed' : isRejected ? 'Not executed' : 'Execution stopped'}
                       </div>
                     </div>
 
@@ -246,8 +269,8 @@ export function ArbHistoryPanel({
 
                     <div className="space-y-1 text-[12px]">
                       <div className="text-white/45">Reason</div>
-                      <div className="font-mono text-white/70">
-                        {item.reason ?? (isExecuted ? 'Executed cleanly' : 'Awaiting final result')}
+                      <div className="max-w-full whitespace-pre-wrap break-words break-all rounded-sm border border-white/5 bg-black/20 px-3 py-2 font-mono text-[11px] leading-5 text-white/70">
+                        {displayReason}
                       </div>
                     </div>
 
