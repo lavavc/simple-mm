@@ -17,7 +17,7 @@ class TestSettings:
         assert s.price_update_interval == 10
         assert s.arb_detection_enabled is True
         assert s.arb_execute_cex_dex_enabled is True
-        assert s.arb_execute_dex_dex_enabled is True
+        assert s.arb_execute_dex_dex_enabled is False
 
     def test_rpc_urls_default(self):
         s = Settings()
