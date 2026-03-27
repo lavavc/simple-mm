@@ -310,6 +310,47 @@ def _format_route_rejection_reason(engine, route: SelectedRoute, reason: str) ->
     return "\n".join(lines)
 
 
+def _format_dex_dex_sell_failure_reason(
+    engine,
+    route: SelectedRoute,
+    err: str,
+    *,
+    sell_cngn_est: Decimal | None,
+    buy_amount_cngn: Decimal | None,
+    min_out_usd: Decimal,
+    buy_tx_hash: str | None = None,
+    sell_tx_hash: str | None = None,
+) -> str:
+    lines = [f"Sell execution failed after buy: {err}"]
+    lines.append(f"Direction: {route.candidate.direction}")
+    lines.append(f"Trade size: {_fmt_usd(route.adjusted_size_usd)}")
+    if sell_cngn_est is not None:
+        lines.append(f"Preflight sell estimate: {_fmt_decimal(sell_cngn_est)} cNGN")
+        lines.append(f"Sell amount attempted: {_fmt_decimal(sell_cngn_est)} cNGN")
+    if buy_amount_cngn is not None:
+        lines.append(f"Base buy output recorded: {_fmt_decimal(buy_amount_cngn)} cNGN")
+    if sell_cngn_est is not None and buy_amount_cngn is not None:
+        delta = buy_amount_cngn - sell_cngn_est
+        if delta != 0:
+            sign = "+" if delta > 0 else "-"
+            lines.append(f"Buy vs sell delta: {sign}{_fmt_decimal(abs(delta))} cNGN")
+    lines.append(f"Min out: {_fmt_usd(min_out_usd)}")
+
+    buy_wallet, sell_wallet = engine._history_wallets_for_route(route)
+
+    def _wallet_text(label: str, wallet: ArbitrageHistoryWalletSnapshot) -> str:
+        stable_symbol = wallet.stable_symbol or "stable"
+        stable_part = f"{_fmt_decimal(wallet.stable_balance)} {stable_symbol}" if wallet.stable_balance is not None else "—"
+        cngn_part = f"{_fmt_decimal(wallet.cngn_balance)} cNGN" if wallet.cngn_balance is not None else "—"
+        return f"{label}: {wallet.venue} | {stable_part} | {cngn_part}"
+
+    lines.append(_wallet_text("Buy wallet", buy_wallet))
+    lines.append(_wallet_text("Sell wallet", sell_wallet))
+    lines.append(f"Buy tx: {buy_tx_hash or '—'}")
+    lines.append(f"Sell tx: {sell_tx_hash or '—'}")
+    return "\n".join(lines)
+
+
 class ArbitrageEngine:
     """
     Orchestrates arbitrage detection signals into execution.
@@ -914,6 +955,7 @@ class ArbitrageEngine:
         """Execute a DEX-DEX delta-balance arbitrage."""
         self._arb_executing = True
         buy_trade = None
+        sell_cngn_est: Decimal | None = None
         direction = route.candidate.direction
         try:
             c = route.candidate
@@ -1059,9 +1101,11 @@ class ArbitrageEngine:
                 executed_size_usd=float(size_usd),
             )
 
-            # Sell the cNGN actually received from the buy, not the pre-buy estimate.
+            # Sell the same cNGN amount that preflight validated on the sell venue.
+            # The buy-side output on the other chain is recorded for diagnostics and recovery,
+            # but should not replace the validated sell estimate here.
             sell_trade = await self.executor.execute_dex_sell(
-                sell_venue_name, buy_trade.amount, min_out_usd, opp_id
+                sell_venue_name, sell_cngn_est, min_out_usd, opp_id
             )
 
             if not sell_trade or sell_trade.status == "failed":
@@ -1075,7 +1119,16 @@ class ArbitrageEngine:
                     status="half_open",
                     buy_tx_hash=buy_tx or None,
                     sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                    reason=err,
+                    reason=_format_dex_dex_sell_failure_reason(
+                        self,
+                        route,
+                        err,
+                        sell_cngn_est=sell_cngn_est,
+                        buy_amount_cngn=buy_trade.amount,
+                        min_out_usd=min_out_usd,
+                        buy_tx_hash=buy_tx or None,
+                        sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                    ),
                 )
                 self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
@@ -1084,7 +1137,16 @@ class ArbitrageEngine:
                     opp_id,
                     event_type="failed",
                     status="half_open",
-                    reason=err,
+                    reason=_format_dex_dex_sell_failure_reason(
+                        self,
+                        route,
+                        err,
+                        sell_cngn_est=sell_cngn_est,
+                        buy_amount_cngn=buy_trade.amount,
+                        min_out_usd=min_out_usd,
+                        buy_tx_hash=buy_tx or None,
+                        sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                    ),
                     executed_size_usd=size_usd,
                     buy_tx_hash=buy_tx or None,
                     sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
@@ -1138,7 +1200,15 @@ class ArbitrageEngine:
                     opp_id,
                     status="half_open",
                     buy_tx_hash=buy_tx or None,
-                    reason=err,
+                    reason=_format_dex_dex_sell_failure_reason(
+                        self,
+                        route,
+                        err,
+                        sell_cngn_est=sell_cngn_est,
+                        buy_amount_cngn=buy_trade.amount,
+                        min_out_usd=min_out_usd,
+                        buy_tx_hash=buy_tx or None,
+                    ),
                 )
                 self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
@@ -1147,7 +1217,15 @@ class ArbitrageEngine:
                     opp_id,
                     event_type="failed",
                     status="half_open",
-                    reason=err,
+                    reason=_format_dex_dex_sell_failure_reason(
+                        self,
+                        route,
+                        err,
+                        sell_cngn_est=sell_cngn_est,
+                        buy_amount_cngn=buy_trade.amount,
+                        min_out_usd=min_out_usd,
+                        buy_tx_hash=buy_tx or None,
+                    ),
                     executed_size_usd=route.adjusted_size_usd,
                     buy_tx_hash=buy_tx or None,
                 )

@@ -191,9 +191,8 @@ class TestPreflightGate:
         # Preflight happened (amount is from pool estimate, may be 0 in test with cold cache).
         assert len(sell_venue.sim_calls) == 1
         assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
-        # Live sell must use buy_trade.amount (actual cNGN received), not the pre-buy estimate.
-        # The mock returns output_raw = stable_amount_in = 500 * 10^6, so buy_trade.amount = 500 cNGN.
-        assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 500000000, 499500000)
+        # Live sell must use the same cNGN estimate that preflight validated.
+        assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
 
     @pytest.mark.asyncio
     async def test_sell_preflight_uses_full_estimated_cngn_not_wallet_clamp(self, test_db):
@@ -612,6 +611,33 @@ class TestHalfOpenDetection:
         opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
         assert opp.reason is not None
         assert "0x08c379a0" not in opp.reason
+
+    @pytest.mark.asyncio
+    async def test_half_open_reason_includes_sell_context(self, test_db):
+        """Half-open DEX-DEX failures should record the sell estimate and buy/sell delta."""
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=False)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        opp_id = "opp-halfopen-context"
+        route = _route(size=Decimal("100"))
+        route.buy_wallet_stable_balance = Decimal("35.65")
+        route.buy_wallet_cngn_balance = Decimal("624524.94")
+        route.sell_wallet_stable_balance = Decimal("316.35")
+        route.sell_wallet_cngn_balance = Decimal("42525.01")
+        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_dex_dex(route, opp_id)
+
+        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        assert opp.reason is not None
+        assert "Preflight sell estimate: 140,000.00 cNGN" in opp.reason
+        assert "Base buy output recorded: 100.00 cNGN" in opp.reason
+        assert "Buy vs sell delta: -139,900.00 cNGN" in opp.reason
+        assert "Buy wallet: uni-base | 35.65 stable | 624,524.94 cNGN" in opp.reason
+        assert "Sell wallet: uni-bsc | 316.35 stable | 42,525.01 cNGN" in opp.reason
 
 
 # =============================================================================
