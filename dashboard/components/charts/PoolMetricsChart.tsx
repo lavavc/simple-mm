@@ -22,8 +22,8 @@ const TIME_WINDOWS = [
 ] as const;
 
 const SERIES = {
-  uni_base_tvl: { label: 'Uni Base TVL',      color: '#1976D2', axis: 'left'  },
-  uni_bsc_tvl:  { label: 'Uni BSC TVL',       color: '#7B1FA2', axis: 'left'  },
+  uni_base_tvl: { label: 'Uni Base Position', color: '#1976D2', axis: 'left'  },
+  uni_bsc_tvl:  { label: 'Uni BSC Position',  color: '#7B1FA2', axis: 'left'  },
   uni_base_vol: { label: 'Uni Base 24hr Vol', color: '#42A5F5', axis: 'right' },
   uni_bsc_vol:  { label: 'Uni BSC 24hr Vol',  color: '#CE93D8', axis: 'right' },
 } as const;

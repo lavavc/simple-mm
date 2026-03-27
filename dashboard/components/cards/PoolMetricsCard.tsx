@@ -38,7 +38,7 @@ export function PoolMetricsCard() {
                     <span>{fmtUsd(pool.volume_24h_usd)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Pool TVL</span>
+                    <span className="text-muted-foreground">Position Value</span>
                     <span>{fmtUsd(pool.pool_tvl_usd)}</span>
                   </div>
                 </div>

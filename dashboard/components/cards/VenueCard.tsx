@@ -121,7 +121,7 @@ export function VenueCard({ venue }: VenueCardProps) {
                 )}
                 {venue.position.pool_tvl_usd != null && (
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Pool TVL</span>
+                    <span className="text-muted-foreground">Position Value</span>
                     <span>${Math.round(venue.position.pool_tvl_usd).toLocaleString()}</span>
                   </div>
                 )}
