@@ -1096,7 +1096,11 @@ class Database:
                     optimal_size_usd=detected.optimal_size_usd,
                     routed_size_usd=routed.routed_size_usd,
                     executed_size_usd=executed.executed_size_usd,
-                    expected_profit_usd=routed.expected_profit_usd or detected.expected_profit_usd,
+                    expected_profit_usd=(
+                        routed.expected_profit_usd
+                        if routed.expected_profit_usd is not None
+                        else detected.expected_profit_usd
+                    ),
                     actual_profit_usd=executed.actual_profit_usd,
                     net_profit_usd=routed.net_profit_usd,
                     net_spread_bps=detected.net_spread_bps or routed.net_spread_bps,

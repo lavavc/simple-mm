@@ -414,6 +414,67 @@ class TestArbitrageHistory:
         assert history[0].opportunity_id == "hist-limit-2"
         assert history[1].opportunity_id == "hist-limit-1"
 
+    @pytest.mark.asyncio
+    async def test_history_keeps_zero_routed_expected_profit(self, db):
+        opp_id = "hist-zero-profit"
+        now_ms = int(time.time() * 1000)
+
+        await db.insert_arbitrage_history_event(
+            ArbitrageHistoryEvent(
+                opportunity_id=opp_id,
+                pipeline="dex_dex",
+                event_type="detected",
+                timestamp=now_ms,
+                direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                buy_venue="uni-base",
+                sell_venue="uni-bsc",
+                status="detected",
+                optimal_size_usd=Decimal("191.44"),
+                expected_profit_usd=Decimal("0.04"),
+                buy_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-base"),
+                sell_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-bsc"),
+            )
+        )
+        await db.insert_arbitrage_history_event(
+            ArbitrageHistoryEvent(
+                opportunity_id=opp_id,
+                pipeline="dex_dex",
+                event_type="routed",
+                timestamp=now_ms + 1,
+                direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                buy_venue="uni-base",
+                sell_venue="uni-bsc",
+                status="rejected",
+                optimal_size_usd=Decimal("191.44"),
+                routed_size_usd=Decimal("0.33"),
+                expected_profit_usd=Decimal("0.00"),
+                net_profit_usd=Decimal("-0.01"),
+                cap_reason="sell_wallet_cngn",
+                buy_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-base"),
+                sell_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-bsc"),
+            )
+        )
+        await db.insert_arbitrage_history_event(
+            ArbitrageHistoryEvent(
+                opportunity_id=opp_id,
+                pipeline="dex_dex",
+                event_type="failed",
+                timestamp=now_ms + 2,
+                direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                buy_venue="uni-base",
+                sell_venue="uni-bsc",
+                status="rejected",
+                reason="Route rejected",
+                buy_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-base"),
+                sell_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-bsc"),
+            )
+        )
+
+        history = await db.get_arbitrage_history(limit=10)
+
+        assert len(history) == 1
+        assert history[0].expected_profit_usd == Decimal("0.00")
+
 
 class TestActions:
     """Test action logging."""

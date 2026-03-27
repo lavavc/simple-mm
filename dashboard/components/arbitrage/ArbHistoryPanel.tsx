@@ -189,7 +189,7 @@ export function ArbHistoryPanel({
                     <div className="flex items-center justify-between text-[12px]">
                       <span className="text-white/45">Expected profit</span>
                       <span className="font-mono text-emerald-400/85">
-                        {item.expected_profit_usd != null ? formatCurrency(item.expected_profit_usd) : '—'}
+                        {detected?.expected_profit_usd != null ? formatCurrency(detected.expected_profit_usd) : '—'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-[12px]">

@@ -42,9 +42,11 @@ class FakeV4Venue:
         self.trade_account = SimpleNamespace(address="0x23DF63FAKE0000000000000000000000002e14E4")
         self._sim_result = sim_result
         self._swap_ok = swap_ok
+        self.sim_calls = []
         self.swap_calls = []
 
     def simulate_swap(self, token_in, amount_in, min_out):
+        self.sim_calls.append((token_in, amount_in, min_out))
         return self._sim_result
 
     async def swap(self, token_in, amount_in, min_out):
@@ -186,6 +188,24 @@ class TestCexDexPreflightGate:
         assert "Estimated sell:" in message
         assert "Wallet: 0x23DF...2e14E4 | 26,999.00 cNGN | ~$19.17" in message
         assert "Shortfall:" in message
+
+    @pytest.mark.asyncio
+    async def test_sell_preflight_uses_full_estimated_cngn_not_wallet_clamp(self, test_db, monkeypatch):
+        """Sell preflight must simulate the true required cNGN, not a wallet-clamped amount."""
+        sell_venue = FakeV4Venue("uni-base", sim_result="execution reverted: TRANSFER_FROM_FAILED")
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        route = _cex_dex_route(size=Decimal("100"))
+        route.sell_wallet_cngn_balance = Decimal("900")
+
+        monkeypatch.setattr("engine.core.arbitrage.cex_dex.estimate_cex_buy_cngn", lambda depth, size_usd: Decimal("1200"))
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_cex_dex(route, "opp-cex-preflight-unclamped")
+
+        assert sell_venue.sim_calls == [(sell_venue.cngn_address, 1200000000, 0)]
 
     @pytest.mark.asyncio
     async def test_sell_preflight_passes_cex_buy_is_attempted(self, test_db):

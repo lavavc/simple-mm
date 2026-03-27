@@ -196,6 +196,24 @@ class TestPreflightGate:
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 500000000, 499500000)
 
     @pytest.mark.asyncio
+    async def test_sell_preflight_uses_full_estimated_cngn_not_wallet_clamp(self, test_db):
+        """DEX-DEX sell preflight must simulate the full estimated cNGN, not the wallet balance."""
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result="execution reverted: TRANSFER_FROM_FAILED", swap_ok=False)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        route = _route(size=Decimal("100"))
+        route.sell_wallet_cngn_balance = Decimal("900")
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_dex_dex(route, "opp-preflight-unclamped")
+
+        assert len(sell_venue.sim_calls) == 1
+        assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
+        assert sell_venue.sim_calls[0][1] == 140000000000
+
+    @pytest.mark.asyncio
     async def test_successful_execution_writes_history_timeline(self, test_db):
         """DEX-DEX execution should also emit detected/routed/executed history stages."""
         buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)

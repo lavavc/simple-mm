@@ -594,8 +594,6 @@ class ArbitrageEngine:
                 sell_venue = self.venues[sell_venue_name]
                 quidax_depth = c.signal.get("depth")
                 cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
-                if route.sell_wallet_cngn_balance is not None:
-                    cngn_estimate_amount = min(cngn_estimate_amount, route.sell_wallet_cngn_balance)
                 if cngn_estimate_amount <= 0:
                     logger.warning(
                         "cex_dex_preflight_missing_depth_or_zero_estimate",
@@ -960,8 +958,6 @@ class ArbitrageEngine:
                 )
                 return
             sell_cngn_est = Decimal(str(_est["cngn_transferred"]))
-            if route.sell_wallet_cngn_balance is not None:
-                sell_cngn_est = min(sell_cngn_est, route.sell_wallet_cngn_balance)
             sell_amount_raw = int(sell_cngn_est * Decimal(10 ** sell_venue.cngn_decimals))
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
             min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
