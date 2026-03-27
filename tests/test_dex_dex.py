@@ -98,5 +98,8 @@ class TestFindOptimalDexArbResult:
             Decimal("467.77"),
         )
 
-        assert capped > Decimal("0.32")
-        assert capped < Decimal("0.34")
+        assert capped is not None
+        assert capped["direction"] == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"
+        assert capped["optimal_size_usd"] > 0.32
+        assert capped["optimal_size_usd"] < 0.34
+        assert capped["cngn_transferred"] <= 467.77

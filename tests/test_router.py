@@ -211,7 +211,18 @@ class TestSelectRouteNetProfit:
             assert investment_usd == Decimal("100")
             return {"expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
 
-        monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: Decimal("100"))
+        monkeypatch.setattr(
+            _router,
+            "estimate_max_dex_buy_usd_for_cngn",
+            lambda direction, wallet_cngn: {
+                "optimal_size_usd": 100.0,
+                "expected_profit_usd": 2.0,
+                "cngn_transferred": 140000.0,
+                "expected_usd_out": 102.0,
+                "direction": direction,
+                "net_spread_bps": 200,
+            },
+        )
         monkeypatch.setattr(_router, "estimate_dex_dex_trade", _fake_estimate)
         result = select_route([c], inv)
         assert result is not None
@@ -239,7 +250,14 @@ class TestSelectRouteNetProfit:
         monkeypatch.setattr(
             _router,
             "estimate_max_dex_buy_usd_for_cngn",
-            lambda direction, wallet_cngn: Decimal("0.334"),
+            lambda direction, wallet_cngn: {
+                "optimal_size_usd": 0.334,
+                "expected_profit_usd": 1.0,
+                "cngn_transferred": 467.6,
+                "expected_usd_out": 1.334,
+                "direction": direction,
+                "net_spread_bps": 2994,
+            },
         )
         monkeypatch.setattr(
             _router,
@@ -271,7 +289,18 @@ class TestSelectRouteNetProfit:
             gas_usd=0.05,
         )
 
-        monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: Decimal("0.334"))
+        monkeypatch.setattr(
+            _router,
+            "estimate_max_dex_buy_usd_for_cngn",
+            lambda direction, wallet_cngn: {
+                "optimal_size_usd": 0.334,
+                "expected_profit_usd": 0.0,
+                "cngn_transferred": 467.6,
+                "expected_usd_out": 0.334,
+                "direction": direction,
+                "net_spread_bps": 0,
+            },
+        )
         monkeypatch.setattr(
             _router,
             "estimate_dex_dex_trade",

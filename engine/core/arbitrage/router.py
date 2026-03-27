@@ -98,7 +98,10 @@ def evaluate_route_candidate(
         size_caps.append(("sell_wallet_cngn", sell_cngn_cap))
         adjusted_size = min(adjusted_size, sell_cngn_cap)
     elif c.pipeline == "dex_dex":
-        sell_cngn_cap = estimate_max_dex_buy_usd_for_cngn(c.direction, sell_cngn)
+        sell_cngn_cap_trade = estimate_max_dex_buy_usd_for_cngn(c.direction, sell_cngn)
+        if not sell_cngn_cap_trade:
+            return RouteEvaluation(None, _snapshot(), "Could not convert sell wallet cNGN into executable DEX size")
+        sell_cngn_cap = Decimal(str(sell_cngn_cap_trade["optimal_size_usd"]))
         size_caps.append(("sell_wallet_cngn", sell_cngn_cap))
         adjusted_size = min(adjusted_size, sell_cngn_cap)
     else:

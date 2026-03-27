@@ -538,21 +538,32 @@ class ArbitrageEngine:
         reason: str,
     ) -> bool:
         db = await get_db()
-        if db is None or not hasattr(db, "get_arbitrage_history"):
+        if db is None:
             return False
 
-        items = await db.get_arbitrage_history(pipeline=route.candidate.pipeline, limit=20)
-        latest = next(
-            (
-                item for item in items
-                if item.direction == route.candidate.direction and item.latest_status == "rejected"
-            ),
-            None,
-        )
+        latest = None
+        if hasattr(db, "get_latest_final_history_event"):
+            latest = await db.get_latest_final_history_event(
+                pipeline=route.candidate.pipeline,
+                direction=route.candidate.direction,
+            )
+        elif hasattr(db, "get_arbitrage_history"):
+            items = await db.get_arbitrage_history(pipeline=route.candidate.pipeline, limit=20)
+            latest = next(
+                (
+                    item for item in items
+                    if item.direction == route.candidate.direction and item.latest_status == "rejected"
+                ),
+                None,
+            )
+
         if latest is None:
             return False
 
         return (
+            latest.event_type == "failed"
+            and latest.status == "rejected"
+            and
             latest.cap_reason == route.cap_reason
             and latest.reason == reason
         )

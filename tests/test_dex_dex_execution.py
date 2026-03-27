@@ -24,7 +24,7 @@ def mock_dex_dex_estimate(monkeypatch):
     """Seed pool estimate so _execute_dex_dex doesn't abort on cold cache in unit tests."""
     monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: _FAKE_ESTIMATE)
 
-from engine.api.schemas import ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
+from engine.api.schemas import ArbitrageHistoryEvent, ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
 from engine.core.arbitrage.engine import ArbitrageEngine
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
 from engine.db.database import Database
@@ -334,6 +334,191 @@ class TestPreflightGate:
         history = await test_db.get_arbitrage_history(limit=10)
         assert len(history) == 1
         assert [event.event_type for event in history[0].events] == ["detected", "routed", "failed"]
+
+    @pytest.mark.asyncio
+    async def test_identical_rejected_route_is_suppressed_even_if_older_than_grouped_window(self, test_db, monkeypatch):
+        """Duplicate rejected DEX-DEX routes should be suppressed even after many newer unrelated history items."""
+        venues = {"uni-base": FakeV4Venue("uni-base"), "uni-bsc": FakeV4Venue("uni-bsc")}
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine.inventory.reconcile_stables({"uni-base": Decimal("35.65")})
+        engine.inventory.reconcile_cngn({"uni-bsc": Decimal("467.77")})
+
+        fast = {
+            "optimal_arb": {
+                "direction": "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                "optimal_size_usd": 64.95,
+                "expected_profit_usd": 0.01,
+                "cngn_transferred": 91360.42,
+                "expected_usd_out": 64.96,
+                "net_spread_bps": 1,
+                "gas_usd": 0.05,
+            },
+            "prices": {"uni-base": 0.0007, "uni-bsc": 0.0007},
+        }
+
+        candidate = RouteCandidate(
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            pipeline="dex_dex",
+            buy_venue="uni-base",
+            sell_venue="uni-bsc",
+            optimal_size_usd=Decimal("64.95"),
+            expected_profit_usd=Decimal("0.01"),
+            gas_usd=Decimal("0.05"),
+            signal=fast,
+        )
+        snapshot = SelectedRoute(
+            candidate=candidate,
+            adjusted_size_usd=Decimal("0.334"),
+            net_profit_usd=Decimal("-0.05"),
+            expected_profit_usd=Decimal("0.00"),
+            cap_reason="sell_wallet_cngn",
+            buy_wallet_stable_balance=Decimal("35.65"),
+            buy_wallet_cngn_balance=Decimal("624524.94"),
+            sell_wallet_stable_balance=Decimal("346.35"),
+            sell_wallet_cngn_balance=Decimal("467.77"),
+        )
+
+        monkeypatch.setattr(_dex_dex_module, "find_optimal_dex_arb", lambda: fast)
+        monkeypatch.setattr(
+            "engine.core.arbitrage.engine.evaluate_route_candidate",
+            lambda candidate, inventory: RouteEvaluation(None, snapshot, "Net profit after routing $-0.05 is below threshold $0.00"),
+        )
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine.on_dex_dex_update()
+
+            for i in range(25):
+                await test_db.insert_arbitrage_history_event(
+                    ArbitrageHistoryEvent(
+                        opportunity_id=f"noise-{i}",
+                        pipeline="dex_dex",
+                        event_type="failed",
+                        timestamp=int(time.time() * 1000) + i + 1,
+                        direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
+                        buy_venue="uni-bsc",
+                        sell_venue="uni-base",
+                        status="rejected",
+                        cap_reason="buy_wallet_stable",
+                        reason=f"Noise rejection {i}",
+                    )
+                )
+
+            await engine.on_dex_dex_update()
+
+        history = await test_db.get_arbitrage_history(limit=50)
+        matching = [item for item in history if item.direction == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"]
+        assert len(matching) == 1
+        assert [event.event_type for event in matching[0].events] == ["detected", "routed", "failed"]
+
+    @pytest.mark.asyncio
+    async def test_rejected_route_is_not_suppressed_after_newer_success_for_same_direction(self, test_db, monkeypatch):
+        """A newer successful final event should reset rejected-route dedupe for that direction."""
+        venues = {"uni-base": FakeV4Venue("uni-base"), "uni-bsc": FakeV4Venue("uni-bsc")}
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine.inventory.reconcile_stables({"uni-base": Decimal("35.65")})
+        engine.inventory.reconcile_cngn({"uni-bsc": Decimal("467.77")})
+
+        fast = {
+            "optimal_arb": {
+                "direction": "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                "optimal_size_usd": 64.95,
+                "expected_profit_usd": 0.01,
+                "cngn_transferred": 91360.42,
+                "expected_usd_out": 64.96,
+                "net_spread_bps": 1,
+                "gas_usd": 0.05,
+            },
+            "prices": {"uni-base": 0.0007, "uni-bsc": 0.0007},
+        }
+
+        candidate = RouteCandidate(
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            pipeline="dex_dex",
+            buy_venue="uni-base",
+            sell_venue="uni-bsc",
+            optimal_size_usd=Decimal("64.95"),
+            expected_profit_usd=Decimal("0.01"),
+            gas_usd=Decimal("0.05"),
+            signal=fast,
+        )
+        snapshot = SelectedRoute(
+            candidate=candidate,
+            adjusted_size_usd=Decimal("0.334"),
+            net_profit_usd=Decimal("-0.05"),
+            expected_profit_usd=Decimal("0.00"),
+            cap_reason="sell_wallet_cngn",
+            buy_wallet_stable_balance=Decimal("35.65"),
+            buy_wallet_cngn_balance=Decimal("624524.94"),
+            sell_wallet_stable_balance=Decimal("346.35"),
+            sell_wallet_cngn_balance=Decimal("467.77"),
+        )
+
+        monkeypatch.setattr(_dex_dex_module, "find_optimal_dex_arb", lambda: fast)
+        monkeypatch.setattr(
+            "engine.core.arbitrage.engine.evaluate_route_candidate",
+            lambda candidate, inventory: RouteEvaluation(None, snapshot, "Net profit after routing $-0.05 is below threshold $0.00"),
+        )
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine.on_dex_dex_update()
+
+            await test_db.insert_arbitrage_history_event(
+                ArbitrageHistoryEvent(
+                    opportunity_id="success-det",
+                    pipeline="dex_dex",
+                    event_type="detected",
+                    timestamp=int(time.time() * 1000) + 1,
+                    direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                    buy_venue="uni-base",
+                    sell_venue="uni-bsc",
+                    status="detected",
+                    optimal_size_usd=Decimal("100"),
+                    expected_profit_usd=Decimal("1.00"),
+                )
+            )
+            await test_db.insert_arbitrage_history_event(
+                ArbitrageHistoryEvent(
+                    opportunity_id="success-det",
+                    pipeline="dex_dex",
+                    event_type="routed",
+                    timestamp=int(time.time() * 1000) + 2,
+                    direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                    buy_venue="uni-base",
+                    sell_venue="uni-bsc",
+                    status="routed",
+                    optimal_size_usd=Decimal("100"),
+                    routed_size_usd=Decimal("100"),
+                    expected_profit_usd=Decimal("1.00"),
+                    net_profit_usd=Decimal("0.90"),
+                )
+            )
+            await test_db.insert_arbitrage_history_event(
+                ArbitrageHistoryEvent(
+                    opportunity_id="success-det",
+                    pipeline="dex_dex",
+                    event_type="executed",
+                    timestamp=int(time.time() * 1000) + 3,
+                    direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                    buy_venue="uni-base",
+                    sell_venue="uni-bsc",
+                    status="completed",
+                    optimal_size_usd=Decimal("100"),
+                    routed_size_usd=Decimal("100"),
+                    executed_size_usd=Decimal("100"),
+                    expected_profit_usd=Decimal("1.00"),
+                    actual_profit_usd=Decimal("0.95"),
+                    net_profit_usd=Decimal("0.90"),
+                )
+            )
+
+            await engine.on_dex_dex_update()
+
+        history = await test_db.get_arbitrage_history(limit=50)
+        matching_rejected = [
+            item for item in history
+            if item.direction == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE" and item.latest_status == "rejected"
+        ]
+        assert len(matching_rejected) == 2
 
 
 # =============================================================================
