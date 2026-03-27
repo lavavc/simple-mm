@@ -557,8 +557,9 @@ class ArbitrageEngine:
 
     async def _record_dex_opportunity(self, fast: dict) -> str:
         """Persist the DEX-DEX opportunity to DB and broadcast it. Returns opp_id."""
+        from engine.config import settings
         optimal = fast.get("optimal_arb", {})
-        if optimal.get("expected_profit_usd", -1) <= 0:
+        if optimal.get("expected_profit_usd", -1) < settings.arbitrage_min_profit_usd:
             return f"dex-arb-{uuid.uuid4()}"
 
         db = await get_db()
