@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import type { ArbitrageHistoryEvent, ArbitrageHistoryItem, ArbitrageHistoryWalletSnapshot } from '@/types';
-import { formatCurrency, formatNumber, formatRelativeTime, formatAddress, VENUE_LABELS } from '@/lib/utils';
+import { formatCurrency, formatProfitCurrency, formatNumber, formatRelativeTime, formatAddress, VENUE_LABELS } from '@/lib/utils';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { ArrowRight, CheckCircle2, Clock3, Wallet, XCircle } from 'lucide-react';
 
@@ -73,7 +73,7 @@ function stageShell(
         : 'border-white/5 bg-white/[0.02]';
 
   return (
-    <div className={`rounded-sm border p-3 ${toneClass}`}>
+    <div className={`min-w-0 rounded-sm border p-3 ${toneClass}`}>
       <div className="mb-3 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-white/45">
         {title}
       </div>
@@ -175,7 +175,7 @@ export function ArbHistoryPanel({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
                 {stageShell(
                   'Detected',
                   'neutral',
@@ -189,7 +189,7 @@ export function ArbHistoryPanel({
                     <div className="flex items-center justify-between text-[12px]">
                       <span className="text-white/45">Expected profit</span>
                       <span className="font-mono text-emerald-400/85">
-                        {detected?.expected_profit_usd != null ? formatCurrency(detected.expected_profit_usd) : '—'}
+                        {detected?.expected_profit_usd != null ? formatProfitCurrency(detected.expected_profit_usd) : '—'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-[12px]">
@@ -207,7 +207,7 @@ export function ArbHistoryPanel({
                 {stageShell(
                   'Routed',
                   'neutral',
-                  <div className="space-y-3">
+                  <div className="min-w-0 space-y-3">
                     <div className="flex items-center justify-between text-[12px]">
                       <span className="text-white/45">Executable size</span>
                       <span className="font-mono text-white/80">
@@ -217,7 +217,7 @@ export function ArbHistoryPanel({
                     <div className="flex items-center justify-between text-[12px]">
                       <span className="text-white/45">Net profit after routing</span>
                       <span className="font-mono text-emerald-400/85">
-                        {item.net_profit_usd != null ? formatCurrency(item.net_profit_usd) : '—'}
+                        {item.net_profit_usd != null ? formatProfitCurrency(item.net_profit_usd) : '—'}
                       </span>
                     </div>
                     <div className="space-y-1 text-[12px]">
@@ -239,7 +239,7 @@ export function ArbHistoryPanel({
                 {stageShell(
                   isExecuted ? 'Executed' : isRejected ? 'Rejected' : 'Failed',
                   isExecuted ? 'good' : 'bad',
-                  <div className="space-y-3">
+                  <div className="min-w-0 space-y-3">
                     <div className="flex items-center gap-2">
                       {isExecuted ? (
                         <CheckCircle2 className="h-4 w-4 text-emerald-400" />
@@ -263,7 +263,7 @@ export function ArbHistoryPanel({
                     <div className="flex items-center justify-between text-[12px]">
                       <span className="text-white/45">Actual profit</span>
                       <span className={`font-mono ${isExecuted ? 'text-emerald-400/90' : 'text-white/45'}`}>
-                        {item.actual_profit_usd != null ? formatCurrency(item.actual_profit_usd) : '—'}
+                        {item.actual_profit_usd != null ? formatProfitCurrency(item.actual_profit_usd) : '—'}
                       </span>
                     </div>
 

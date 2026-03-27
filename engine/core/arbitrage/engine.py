@@ -385,6 +385,7 @@ class ArbitrageEngine:
         self._cex_curve_task: Optional[asyncio.Task] = None
         self._dex_curve_task: Optional[asyncio.Task] = None
         self._pool_seed_task: Optional[asyncio.Task] = None
+        self._last_dex_final_state_signature: dict[str, str] = {}
 
     @property
     def enabled(self) -> bool:
@@ -528,6 +529,139 @@ class ArbitrageEngine:
             ),
         )
 
+    @staticmethod
+    def _history_signature_decimal(value: Decimal | None) -> str:
+        return "none" if value is None else format(value.normalize(), "f")
+
+    @staticmethod
+    def _route_market_state_markers(route: SelectedRoute) -> tuple[str, ...]:
+        stats = route.candidate.signal.get("stats", {}) if isinstance(route.candidate.signal, dict) else {}
+        venue_keys = {
+            "uni-base": "uni_base_ts",
+            "uni-bsc": "uni_bsc_ts",
+            "assetchain": "assetchain_ts",
+        }
+        markers: list[str] = []
+        for venue in (route.candidate.buy_venue, route.candidate.sell_venue):
+            key = venue_keys.get(venue)
+            if key:
+                markers.append(f"{venue}:{int(float(stats.get(key) or 0))}")
+        return tuple(markers)
+
+    def _build_dex_final_state_signature(
+        self,
+        route: SelectedRoute,
+        *,
+        status: str,
+        reason: str | None,
+    ) -> str:
+        buy_wallet, sell_wallet = self._history_wallets_for_route(route)
+        parts = (
+            route.candidate.direction,
+            status,
+            *self._route_market_state_markers(route),
+            buy_wallet.venue,
+            self._history_signature_decimal(buy_wallet.stable_balance),
+            self._history_signature_decimal(buy_wallet.cngn_balance),
+            sell_wallet.venue,
+            self._history_signature_decimal(sell_wallet.stable_balance),
+            self._history_signature_decimal(sell_wallet.cngn_balance),
+        )
+        return "|".join(parts)
+
+    def _is_duplicate_dex_final_state(
+        self,
+        route: SelectedRoute,
+        *,
+        status: str,
+        reason: str | None,
+    ) -> bool:
+        if route.candidate.pipeline != "dex_dex":
+            return False
+        signature = self._build_dex_final_state_signature(route, status=status, reason=reason)
+        return self._last_dex_final_state_signature.get(route.candidate.direction) == signature
+
+    def _remember_dex_final_state(
+        self,
+        route: SelectedRoute,
+        *,
+        status: str,
+        reason: str | None,
+    ) -> None:
+        if route.candidate.pipeline != "dex_dex":
+            return
+        self._last_dex_final_state_signature[route.candidate.direction] = (
+            self._build_dex_final_state_signature(route, status=status, reason=reason)
+        )
+
+    async def _fetch_venue_wallet_snapshot(
+        self,
+        venue_name: str,
+    ) -> tuple[Decimal | None, Decimal | None]:
+        """Read the latest trade-wallet stable/cNGN balances for a venue."""
+        venue = self.venues.get(venue_name)
+        if venue is None:
+            return None, None
+
+        if all(
+            hasattr(venue, attr)
+            for attr in ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals")
+        ):
+            loop = asyncio.get_running_loop()
+
+            def _read_trade_wallet() -> tuple[int, int]:
+                stable_raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
+                cngn_raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
+                return stable_raw, cngn_raw
+
+            try:
+                stable_raw, cngn_raw = await loop.run_in_executor(None, _read_trade_wallet)
+                return (
+                    Decimal(stable_raw) / Decimal(10 ** venue.stable_decimals),
+                    Decimal(cngn_raw) / Decimal(10 ** venue.cngn_decimals),
+                )
+            except Exception as e:
+                logger.warning("trade_wallet_refresh_failed", venue=venue_name, error=str(e))
+
+        try:
+            position = await venue.get_position()
+        except Exception as e:
+            logger.warning("venue_position_refresh_failed", venue=venue_name, error=str(e))
+            return None, None
+
+        balances = getattr(position, "balances", {}) or {}
+        stable_symbol = self._stable_symbol_for_venue(venue_name).lower()
+        stable_balance = _coerce_decimal(balances.get(stable_symbol))
+        if stable_balance is None:
+            stable_balance = _coerce_decimal(balances.get("usdc"))
+        if stable_balance is None:
+            stable_balance = _coerce_decimal(balances.get("usdt"))
+        cngn_balance = _coerce_decimal(balances.get("cngn"))
+        return stable_balance, cngn_balance
+
+    async def _refresh_inventory_for_venues(self, *venue_names: str) -> None:
+        """Refresh in-memory wallet balances for the supplied venues."""
+        unique_venues = [name for name in dict.fromkeys(venue_names) if name]
+        if not unique_venues:
+            return
+
+        snapshots = await asyncio.gather(
+            *(self._fetch_venue_wallet_snapshot(venue_name) for venue_name in unique_venues)
+        )
+
+        stable_updates: dict[str, Decimal] = {}
+        cngn_updates: dict[str, Decimal] = {}
+        for venue_name, (stable_balance, cngn_balance) in zip(unique_venues, snapshots):
+            if stable_balance is not None:
+                stable_updates[venue_name] = stable_balance
+            if cngn_balance is not None:
+                cngn_updates[venue_name] = cngn_balance
+
+        if stable_updates:
+            self.inventory.reconcile_stables(stable_updates)
+        if cngn_updates:
+            self.inventory.reconcile_cngn(cngn_updates)
+
     async def _record_history_event(
         self,
         route: SelectedRoute,
@@ -546,6 +680,7 @@ class ArbitrageEngine:
             return
         buy_wallet, sell_wallet = self._history_wallets_for_route(route)
         c = route.candidate
+        event_expected_profit = c.expected_profit_usd if event_type == "detected" else route.expected_profit_usd
         await db.insert_arbitrage_history_event(
             ArbitrageHistoryEvent(
                 opportunity_id=opp_id,
@@ -559,7 +694,7 @@ class ArbitrageEngine:
                 optimal_size_usd=c.optimal_size_usd,
                 routed_size_usd=route.adjusted_size_usd,
                 executed_size_usd=executed_size_usd,
-                expected_profit_usd=route.expected_profit_usd,
+                expected_profit_usd=event_expected_profit,
                 actual_profit_usd=actual_profit_usd,
                 net_profit_usd=route.net_profit_usd,
                 net_spread_bps=c.signal.get("optimal_arb", {}).get("net_spread_bps"),
@@ -571,43 +706,9 @@ class ArbitrageEngine:
                 sell_tx_hash=sell_tx_hash,
             )
         )
+        if c.pipeline == "dex_dex" and event_type in {"executed", "failed"}:
+            self._remember_dex_final_state(route, status=status, reason=reason)
         self.broadcast({"type": "arb_history_updated", "data": {"opportunity_id": opp_id}})
-
-    async def _is_duplicate_rejected_history(
-        self,
-        route: SelectedRoute,
-        reason: str,
-    ) -> bool:
-        db = await get_db()
-        if db is None:
-            return False
-
-        latest = None
-        if hasattr(db, "get_latest_final_history_event"):
-            latest = await db.get_latest_final_history_event(
-                pipeline=route.candidate.pipeline,
-                direction=route.candidate.direction,
-            )
-        elif hasattr(db, "get_arbitrage_history"):
-            items = await db.get_arbitrage_history(pipeline=route.candidate.pipeline, limit=20)
-            latest = next(
-                (
-                    item for item in items
-                    if item.direction == route.candidate.direction and item.latest_status == "rejected"
-                ),
-                None,
-            )
-
-        if latest is None:
-            return False
-
-        return (
-            latest.event_type == "failed"
-            and latest.status == "rejected"
-            and
-            latest.cap_reason == route.cap_reason
-            and latest.reason == reason
-        )
 
     async def _execute_cex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a CEX-DEX arbitrage."""
@@ -771,6 +872,7 @@ class ArbitrageEngine:
             await db.update_arbitrage_opportunity(opp_id, status="completed",
                                                   actual_profit_usd=float(actual_profit))
             self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
+            await self._refresh_inventory_for_venues(buy_venue_name, sell_venue_name)
             await self._record_history_event(
                 route,
                 opp_id,
@@ -850,7 +952,11 @@ class ArbitrageEngine:
                     rejected = evaluation.snapshot
                     rejection_reason = evaluation.rejection_reason or "Route rejected before execution"
                     rejection_text = _format_route_rejection_reason(self, rejected, rejection_reason)
-                    if await self._is_duplicate_rejected_history(rejected, rejection_text):
+                    if self._is_duplicate_dex_final_state(
+                        rejected,
+                        status="rejected",
+                        reason=rejection_text,
+                    ):
                         db = await get_db()
                         if db is not None:
                             await db.update_dex_arbitrage_execution_state(
@@ -1171,6 +1277,7 @@ class ArbitrageEngine:
                 actual_profit_usd=float(actual_profit),
             )
             self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
+            await self._refresh_inventory_for_venues(buy_venue_name, sell_venue_name)
             await self._record_history_event(
                 route,
                 opp_id,
@@ -1348,6 +1455,7 @@ class ArbitrageEngine:
                     sell_tx_hash=sell_trade.tx_hash, reason="Recovered: retried sell leg",
                     actual_profit_usd=float(actual_profit))
                 self.inventory.record_trade_complete(opp_id, cost_basis, actual_profit, Decimal("0"))
+                await self._refresh_inventory_for_venues(buy_venue_name, sell_venue_name)
                 logger.info("dex_dex_recovery_completed", opp_id=opp_id, method="retry_sell",
                             sell_tx_hash=sell_trade.tx_hash, profit_usd=float(actual_profit))
                 return {"status": "completed", "method": "retry_sell", "opp_id": opp_id,
@@ -1375,6 +1483,7 @@ class ArbitrageEngine:
             sell_tx_hash=reverse_trade.tx_hash, reason="Recovered: reversed buy leg",
             actual_profit_usd=float(actual_loss))
         self.inventory.record_trade_complete(opp_id, cost_basis, actual_loss, Decimal("0"))
+        await self._refresh_inventory_for_venues(buy_venue_name, sell_venue_name)
         logger.info("dex_dex_recovery_completed", opp_id=opp_id, method="reverse_buy",
                     sell_tx_hash=reverse_trade.tx_hash, profit_usd=float(actual_loss))
         return {"status": "completed", "method": "reverse_buy", "opp_id": opp_id,
@@ -1435,6 +1544,7 @@ class ArbitrageEngine:
                 self.inventory.record_trade_complete(
                     opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
                 )
+                await self._refresh_inventory_for_venues(buy_venue_name, sell_venue_name)
                 logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="reverse_cex_buy",
                             profit_usd=float(actual_loss))
                 return {"status": "completed", "method": "reverse_cex_buy", "opp_id": opp_id,
@@ -1467,6 +1577,7 @@ class ArbitrageEngine:
                 self.inventory.record_trade_complete(
                     opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
                 )
+                await self._refresh_inventory_for_venues(buy_venue_name, sell_venue_name)
                 logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="reverse_dex_buy",
                             profit_usd=float(actual_loss))
                 return {"status": "completed", "method": "reverse_dex_buy", "opp_id": opp_id,

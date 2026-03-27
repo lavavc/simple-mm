@@ -3,6 +3,7 @@
 import time
 from decimal import Decimal
 from typing import Optional
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -135,6 +136,34 @@ async def _get_reference_price_ngn() -> Optional[Decimal]:
             return Decimal("1") / quidax.quote.mid
 
     return None
+
+
+async def _load_engine_balance_snapshot() -> tuple[list, list]:
+    """Fetch fresh HD-account balances plus the Quidax exchange balance for arb inventory."""
+    if not _account_manager:
+        raise HTTPException(status_code=503, detail="Account manager not configured")
+
+    balances = list(await _account_manager.check_all_balances(_token_contracts))
+    engine_balances = list(balances)
+
+    quidax_adapter = _venues.get("quidax") if _venues else None
+    if quidax_adapter:
+        try:
+            qx_pos = await quidax_adapter.get_position()
+            if qx_pos and qx_pos.balances:
+                engine_balances.append(
+                    SimpleNamespace(
+                        role="quidax-exchange",
+                        token_balances={
+                            "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
+                            "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
+                        },
+                    )
+                )
+        except Exception as e:
+            logger.warning("quidax_exchange_balance_refresh_failed", error=str(e))
+
+    return balances, engine_balances
 
 
 # === Status Routes ===
@@ -968,11 +997,8 @@ async def list_accounts():
 @router.get("/accounts/balances", response_model=list[AccountBalanceResponse])
 async def get_all_account_balances():
     """Get balances for all accounts."""
-    if not _account_manager:
-        raise HTTPException(status_code=503, detail="Account manager not configured")
-
     try:
-        balances = await _account_manager.check_all_balances(_token_contracts)
+        balances, _ = await _load_engine_balance_snapshot()
         result = [
             AccountBalanceResponse(
                 role=b.role,
@@ -1008,6 +1034,36 @@ async def get_all_account_balances():
         return result
     except Exception as e:
         logger.error("balance_fetch_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/accounts/refresh-balances", dependencies=[Depends(verify_token)])
+async def refresh_account_balances():
+    """Force-refresh balance snapshots used by the scheduler and arb engine."""
+    if not _arbitrage_engine:
+        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
+
+    try:
+        hd_balances, engine_balances = await _load_engine_balance_snapshot()
+        if _scheduler is not None:
+            _scheduler._last_balances = hd_balances
+        _arbitrage_engine._reconcile_balances(engine_balances)
+
+        venues = sorted({
+            getattr(balance, "role", "")
+            for balance in engine_balances
+            if getattr(balance, "role", "")
+        })
+        logger.info("account_balances_refreshed_via_api", venues=venues)
+        return {
+            "status": "refreshed",
+            "timestamp": int(time.time() * 1000),
+            "venues": venues,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("account_balance_refresh_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -15,8 +15,28 @@ export function formatNumber(value: number, decimals = 2): string {
   }).format(value);
 }
 
-export function formatCurrency(value: number, currency = 'USD'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(value);
+export function formatCurrency(
+  value: number,
+  currency = 'USD',
+  options?: { minimumFractionDigits?: number; maximumFractionDigits?: number },
+): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: options?.minimumFractionDigits,
+    maximumFractionDigits: options?.maximumFractionDigits,
+  }).format(value);
+}
+
+export function formatProfitCurrency(value: number): string {
+  const abs = Math.abs(value);
+  if (abs === 0) {
+    return formatCurrency(value);
+  }
+  if (abs < 0.01) {
+    return formatCurrency(value, 'USD', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  }
+  return formatCurrency(value);
 }
 
 export function formatBps(bps: number): string {

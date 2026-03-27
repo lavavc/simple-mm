@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from engine.config import settings
 from engine.core.accounts import AccountManager, AccountRole
+from scripts._engine_refresh import trigger_engine_balance_refresh
 
 TOKEN_ADDRESSES = {
     ("CNGN", 8453): settings.cngn_base_address,
@@ -83,6 +84,7 @@ async def main():
     else:
         tx_hash = await mgr.transfer_erc20(role, token_address, args.to_address, args.amount)
     print(f"Sent: {tx_hash}")
+    await trigger_engine_balance_refresh()
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from engine.config import settings
 from engine.core.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
+from scripts._engine_refresh import trigger_engine_balance_refresh
 
 _ACCOUNT_ROLES = {
     "uni-base-lp": AccountRole.UNI_BASE_LP,
@@ -95,6 +96,8 @@ async def _run(account: str, amount_usd: Decimal, min_out_cngn: Decimal, execute
         print(f"output_cngn={output_cngn}")
     if result.error:
         print(f"error={result.error}")
+    if result.status == "confirmed":
+        await trigger_engine_balance_refresh()
 
 
 def main():

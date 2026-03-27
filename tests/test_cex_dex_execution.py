@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from eth_abi import encode
 
-from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
+from engine.api.schemas import ArbitrageParams, Position, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.engine import ArbitrageEngine
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
 from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
@@ -33,7 +33,7 @@ def _params():
 class FakeV4Venue:
     """DEX venue double for CEX-DEX sell-leg tests."""
 
-    def __init__(self, name, sim_result=None, swap_ok=True):
+    def __init__(self, name, sim_result=None, swap_ok=True, balances=None, post_balances=None):
         self.name = name
         self.stable_address = "0xstable"
         self.cngn_address = "0xcngn"
@@ -44,6 +44,14 @@ class FakeV4Venue:
         self._swap_ok = swap_ok
         self.sim_calls = []
         self.swap_calls = []
+        self._balances = {
+            key: Decimal(str(value))
+            for key, value in (balances or {}).items()
+        }
+        self._post_balances = (
+            {key: Decimal(str(value)) for key, value in post_balances.items()}
+            if post_balances is not None else None
+        )
 
     def simulate_swap(self, token_in, amount_in, min_out):
         self.sim_calls.append((token_in, amount_in, min_out))
@@ -52,6 +60,8 @@ class FakeV4Venue:
     async def swap(self, token_in, amount_in, min_out):
         self.swap_calls.append((token_in, amount_in, min_out))
         if self._swap_ok:
+            if self._post_balances is not None:
+                self._balances = dict(self._post_balances)
             return TxResult(hash="0xselltx", status="confirmed", output_raw=amount_in)
         return TxResult(hash="", status="failed", error="execution reverted: SWAP_FAILED")
 
@@ -59,19 +69,45 @@ class FakeV4Venue:
         return PriceQuote(source=self.name, timestamp=0,
                           bid=Decimal("0.00061"), ask=Decimal("0.00061"), mid=Decimal("0.00061"))
 
+    async def get_position(self):
+        return Position(
+            venue=self.name,
+            pair="CNGN/STABLE",
+            timestamp=0,
+            balances=dict(self._balances),
+        )
+
 
 class FakeCexVenue:
     """CEX venue double for CEX-DEX buy-leg tests."""
 
-    def __init__(self, buy_ok=True):
+    def __init__(self, buy_ok=True, balances=None, post_balances=None):
         self.buy_calls = []
         self._buy_ok = buy_ok
+        self._balances = {
+            key: Decimal(str(value))
+            for key, value in (balances or {}).items()
+        }
+        self._post_balances = (
+            {key: Decimal(str(value)) for key, value in post_balances.items()}
+            if post_balances is not None else None
+        )
 
     async def place_market_order(self, side, amount):
         self.buy_calls.append((side, amount))
         if self._buy_ok:
+            if self._post_balances is not None:
+                self._balances = dict(self._post_balances)
             return True, amount, Decimal("0.00061"), None
         return False, amount, Decimal("0"), "order rejected"
+
+    async def get_position(self):
+        return Position(
+            venue="quidax",
+            pair="CNGN/USDT",
+            timestamp=0,
+            balances=dict(self._balances),
+        )
 
 
 def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
@@ -262,8 +298,18 @@ class TestCexDexPreflightGate:
     @pytest.mark.asyncio
     async def test_execution_writes_history_detected_routed_and_executed(self, test_db):
         """Successful CEX-DEX execution should emit a three-stage history timeline."""
-        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
-        cex_venue = FakeCexVenue(buy_ok=True)
+        sell_venue = FakeV4Venue(
+            "uni-base",
+            sim_result=None,
+            swap_ok=True,
+            balances={"usdc": Decimal("167.07"), "cngn": Decimal("26999")},
+            post_balances={"usdc": Decimal("280.50"), "cngn": Decimal("12345.67")},
+        )
+        cex_venue = FakeCexVenue(
+            buy_ok=True,
+            balances={"usdt": Decimal("250"), "cngn": Decimal("100000")},
+            post_balances={"usdt": Decimal("151.25"), "cngn": Decimal("222222.22")},
+        )
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
@@ -277,8 +323,14 @@ class TestCexDexPreflightGate:
         assert len(history) == 1
         item = history[0]
         assert [event.event_type for event in item.events] == ["detected", "routed", "executed"]
+        assert item.events[0].expected_profit_usd == Decimal("1.50")
+        assert item.events[1].expected_profit_usd == Decimal("1.50")
         assert item.routed_size_usd == Decimal("100")
         assert item.events[1].sell_wallet.cngn_balance == Decimal("26999")
+        assert engine.inventory.state.per_account_stable["quidax"] == Decimal("151.25")
+        assert engine.inventory.state.per_account_cngn["quidax"] == Decimal("222222.22")
+        assert engine.inventory.state.per_account_stable["uni-base"] == Decimal("280.50")
+        assert engine.inventory.state.per_account_cngn["uni-base"] == Decimal("12345.67")
 
 
 # =============================================================================

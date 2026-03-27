@@ -1112,28 +1112,6 @@ class Database:
 
         return items
 
-    async def get_latest_final_history_event(
-        self,
-        *,
-        pipeline: str,
-        direction: str,
-    ) -> Optional[ArbitrageHistoryEvent]:
-        """Get the latest final history event for a pipeline+direction."""
-        cursor = await self._conn.execute(
-            """
-            SELECT *
-            FROM arbitrage_history_events
-            WHERE pipeline = ? AND direction = ? AND event_type IN ('executed', 'failed')
-            ORDER BY timestamp DESC, id DESC
-            LIMIT 1
-            """,
-            (pipeline, direction),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return self._history_event_from_row(row)
-
     async def get_arbitrage_stats(
         self,
         from_ts: int,
