@@ -220,7 +220,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         if token_ids:
             pos_state = self.get_position_state(token_ids[0])
 
-        pool_tvl_usd, volume_24h_usd, our_share_pct = self.get_pool_metrics(pos_state)
+        position_value_usd, volume_24h_usd, our_share_pct = self.get_pool_metrics(pos_state)
 
         if pos_state:
             lp_position = LPPosition(
@@ -248,7 +248,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             timestamp=int(_time.time() * 1000),
             balances=balances,
             lp_position=lp_position,
-            pool_tvl_usd=pool_tvl_usd,
+            position_value_usd=position_value_usd,
             volume_24h_usd=volume_24h_usd,
         )
 
@@ -378,24 +378,24 @@ class V4LPAdapter(BaseV4DexAdapter):
         if not sqrt_p or not pool_liquidity:
             return None, None, None
 
-        _Q96 = 2 ** 96
+        Q96_INT = int(Q96)
         L = pos_state.liquidity
-        sqrt_lower = int(math.exp(pos_state.tick_lower * math.log(1.0001) / 2) * _Q96)
-        sqrt_upper = int(math.exp(pos_state.tick_upper * math.log(1.0001) / 2) * _Q96)
+        sqrt_lower = int(math.exp(pos_state.tick_lower * math.log(1.0001) / 2) * Q96_INT)
+        sqrt_upper = int(math.exp(pos_state.tick_upper * math.log(1.0001) / 2) * Q96_INT)
         sp = int(sqrt_p)
 
         t0_scale = Decimal(10 ** self.config.token0_decimals)
         t1_scale = Decimal(10 ** self.config.token1_decimals)
 
         if sp <= sqrt_lower:
-            amount0 = Decimal(L * _Q96 * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
+            amount0 = Decimal(L * Q96_INT * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
             amount1 = Decimal(0)
         elif sp >= sqrt_upper:
             amount0 = Decimal(0)
-            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // _Q96) / t1_scale
+            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // Q96_INT) / t1_scale
         else:
-            amount0 = Decimal(L * _Q96 * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
-            amount1 = Decimal(L * (sp - sqrt_lower) // _Q96) / t1_scale
+            amount0 = Decimal(L * Q96_INT * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
+            amount1 = Decimal(L * (sp - sqrt_lower) // Q96_INT) / t1_scale
 
         if self.config.token0_symbol.upper() == "CNGN":
             # Base: token0=cNGN (6 dec), token1=USDC (6 dec)
@@ -407,7 +407,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             cngn_price_usd = Decimal(1) / ((sqrt_p / Q96) ** 2 * dec_adj)
             position_value_usd = amount0 + amount1 * cngn_price_usd
 
-        our_share_pct = Decimal(L) / pool_liquidity * Decimal(100)
+        our_share_pct = Decimal(L) / pool_liquidity * Decimal(100) if pos_state.in_range else Decimal(0)
 
         return position_value_usd, None, our_share_pct
 
