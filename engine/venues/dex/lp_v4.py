@@ -216,14 +216,11 @@ class V4LPAdapter(BaseV4DexAdapter):
 
         lp_position = None
         token_ids = self.get_owned_positions()
-        our_liquidity = 0
         pos_state = None
         if token_ids:
             pos_state = self.get_position_state(token_ids[0])
-            if pos_state:
-                our_liquidity = pos_state.liquidity
 
-        pool_tvl_usd, volume_24h_usd, our_share_pct = await self.get_pool_metrics(our_liquidity)
+        pool_tvl_usd, volume_24h_usd, our_share_pct = self.get_pool_metrics(pos_state)
 
         if pos_state:
             lp_position = LPPosition(
@@ -357,47 +354,62 @@ class V4LPAdapter(BaseV4DexAdapter):
 
     # === Pool metrics (used by get_position) ===
 
-    async def get_pool_metrics(
-        self, our_liquidity: int = 0
-    ) -> tuple[Optional[Decimal], Optional[Decimal], Optional[Decimal]]:
-        """Fetch pool TVL and 24h volume from DexScreener; compute our share."""
-        import httpx
+    def get_pool_metrics(
+        self, pos_state: Optional[PositionState] = None
+    ) -> tuple[Optional[Decimal], None, Optional[Decimal]]:
+        """Compute position value and our share of active pool liquidity.
 
-        now = _time.time()
-        cache_stale = not hasattr(self, "_metrics_cache_time") or now - self._metrics_cache_time > 60
+        Position value uses exact tick math: given the position's tick range and the
+        current sqrtPriceX96 from the pool state cache, computes the precise token
+        amounts held in the position and converts to USD. No external calls.
 
-        if cache_stale:
-            pool_tvl_usd: Optional[Decimal] = None
-            volume_24h_usd: Optional[Decimal] = None
-            pool_total_liquidity: int = 0
+        Our share is our position liquidity divided by the pool's total active
+        in-range liquidity (from the same cache), which determines our proportion
+        of swap fees earned on every trade through the pool.
 
-            chain = {8453: "base", 56: "bsc"}.get(self.config.chain_id)
-            if chain:
-                try:
-                    url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{self.config.pool_id}"
-                    async with httpx.AsyncClient(timeout=5.0) as client:
-                        resp = await client.get(url)
-                    pairs = resp.json().get("pairs") or []
-                    if pairs:
-                        pair = pairs[0]
-                        tvl = pair.get("liquidity", {}).get("usd")
-                        vol = pair.get("volume", {}).get("h24")
-                        pool_tvl_usd = Decimal(str(tvl)) if tvl is not None else None
-                        volume_24h_usd = Decimal(str(vol)) if vol is not None else None
-                        pool_total_liquidity = our_liquidity  # best estimate without V3 liquidity()
-                except Exception as e:
-                    logger.warning("dexscreener_fetch_failed", venue=self.name, error=str(e))
+        Volume is not available on-chain without event indexing; always returns None.
+        """
+        if pos_state is None:
+            return None, None, None
 
-            self._metrics_tvl = pool_tvl_usd
-            self._metrics_vol = volume_24h_usd
-            self._metrics_total_liq = pool_total_liquidity
-            self._metrics_cache_time = now
+        from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
 
-        our_share_pct: Optional[Decimal] = None
-        if our_liquidity > 0 and self._metrics_total_liq > 0:
-            our_share_pct = Decimal(our_liquidity) / Decimal(self._metrics_total_liq) * Decimal(100)
+        sqrt_p, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
+        if not sqrt_p or not pool_liquidity:
+            return None, None, None
 
-        return self._metrics_tvl, self._metrics_vol, our_share_pct
+        _Q96 = 2 ** 96
+        L = pos_state.liquidity
+        sqrt_lower = int(math.exp(pos_state.tick_lower * math.log(1.0001) / 2) * _Q96)
+        sqrt_upper = int(math.exp(pos_state.tick_upper * math.log(1.0001) / 2) * _Q96)
+        sp = int(sqrt_p)
+
+        t0_scale = Decimal(10 ** self.config.token0_decimals)
+        t1_scale = Decimal(10 ** self.config.token1_decimals)
+
+        if sp <= sqrt_lower:
+            amount0 = Decimal(L * _Q96 * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
+            amount1 = Decimal(0)
+        elif sp >= sqrt_upper:
+            amount0 = Decimal(0)
+            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // _Q96) / t1_scale
+        else:
+            amount0 = Decimal(L * _Q96 * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
+            amount1 = Decimal(L * (sp - sqrt_lower) // _Q96) / t1_scale
+
+        if self.config.token0_symbol.upper() == "CNGN":
+            # Base: token0=cNGN (6 dec), token1=USDC (6 dec)
+            cngn_price_usd = (sqrt_p / Q96) ** 2
+            position_value_usd = amount0 * cngn_price_usd + amount1
+        else:
+            # BSC: token0=USDT (18 dec), token1=cNGN (6 dec)
+            dec_adj = Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals))
+            cngn_price_usd = Decimal(1) / ((sqrt_p / Q96) ** 2 * dec_adj)
+            position_value_usd = amount0 + amount1 * cngn_price_usd
+
+        our_share_pct = Decimal(L) / pool_liquidity * Decimal(100)
+
+        return position_value_usd, None, our_share_pct
 
     # === Capital allocation ===
 
