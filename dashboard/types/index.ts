@@ -96,9 +96,63 @@ export interface ArbitrageOpportunity {
   net_spread_bps: number;
   recommended_size_usd: number;
   expected_profit_usd: number;
-  status: 'detected' | 'executing' | 'completed' | 'abandoned' | 'expired';
+  status: 'detected' | 'executing' | 'completed' | 'abandoned' | 'expired' | 'half_open';
   actual_profit_usd?: number;
   reason?: string;
+}
+
+export interface ArbitrageHistoryWalletSnapshot {
+  venue: string;
+  stable_symbol?: string;
+  stable_balance?: number;
+  cngn_balance?: number;
+}
+
+export interface ArbitrageHistoryEvent {
+  id?: number;
+  opportunity_id: string;
+  pipeline: 'cex_dex' | 'dex_dex';
+  event_type: 'detected' | 'routed' | 'executed' | 'failed';
+  timestamp: number;
+  direction: string;
+  buy_venue: string;
+  sell_venue: string;
+  status: string;
+  optimal_size_usd?: number;
+  routed_size_usd?: number;
+  executed_size_usd?: number;
+  expected_profit_usd?: number;
+  actual_profit_usd?: number;
+  net_profit_usd?: number;
+  net_spread_bps?: number;
+  cap_reason?: string;
+  reason?: string;
+  buy_wallet?: ArbitrageHistoryWalletSnapshot;
+  sell_wallet?: ArbitrageHistoryWalletSnapshot;
+  buy_tx_hash?: string;
+  sell_tx_hash?: string;
+}
+
+export interface ArbitrageHistoryItem {
+  opportunity_id: string;
+  pipeline: 'cex_dex' | 'dex_dex';
+  direction: string;
+  buy_venue: string;
+  sell_venue: string;
+  latest_status: string;
+  latest_event_type: 'detected' | 'routed' | 'executed' | 'failed';
+  detected_at: number;
+  updated_at: number;
+  optimal_size_usd?: number;
+  routed_size_usd?: number;
+  executed_size_usd?: number;
+  expected_profit_usd?: number;
+  actual_profit_usd?: number;
+  net_profit_usd?: number;
+  net_spread_bps?: number;
+  cap_reason?: string;
+  reason?: string;
+  events: ArbitrageHistoryEvent[];
 }
 
 export interface ArbitrageStatus {

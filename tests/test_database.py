@@ -5,7 +5,15 @@ import time
 from decimal import Decimal
 
 from engine.db.database import Database
-from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity
+from engine.api.schemas import (
+    PriceQuote,
+    Position,
+    Alert,
+    ArbitrageOpportunity,
+    DexArbOpportunity,
+    ArbitrageHistoryEvent,
+    ArbitrageHistoryWalletSnapshot,
+)
 
 
 # =============================================================================
@@ -318,6 +326,93 @@ class TestDexArbOpportunities:
         assert stats["opportunities_detected"] == 3
         assert stats["opportunities_executed"] == 2
         assert stats["total_profit_usd"] == Decimal("3.50")
+
+
+class TestArbitrageHistory:
+    """Test unified lifecycle history storage and grouping."""
+
+    @pytest.mark.asyncio
+    async def test_groups_detected_routed_and_executed_events(self, db):
+        opp_id = "hist-1"
+        wallet_buy = ArbitrageHistoryWalletSnapshot(
+            venue="quidax",
+            stable_symbol="USDT",
+            stable_balance=Decimal("250"),
+            cngn_balance=Decimal("100000"),
+        )
+        wallet_sell = ArbitrageHistoryWalletSnapshot(
+            venue="uni-base",
+            stable_symbol="USDC",
+            stable_balance=Decimal("167.07"),
+            cngn_balance=Decimal("26999"),
+        )
+
+        for event_type, status, executed_size, actual_profit in [
+            ("detected", "detected", None, None),
+            ("routed", "routed", None, None),
+            ("executed", "completed", Decimal("100"), Decimal("0.11")),
+        ]:
+            await db.insert_arbitrage_history_event(
+                ArbitrageHistoryEvent(
+                    opportunity_id=opp_id,
+                    pipeline="cex_dex",
+                    event_type=event_type,
+                    timestamp=int(time.time() * 1000),
+                    direction="QUIDAX_TO_UNI_BASE",
+                    buy_venue="quidax",
+                    sell_venue="uni-base",
+                    status=status,
+                    optimal_size_usd=Decimal("157"),
+                    routed_size_usd=Decimal("100"),
+                    executed_size_usd=executed_size,
+                    expected_profit_usd=Decimal("0.06"),
+                    actual_profit_usd=actual_profit,
+                    net_profit_usd=Decimal("0.01"),
+                    cap_reason="sell_wallet_cngn, max_single_trade",
+                    buy_wallet=wallet_buy,
+                    sell_wallet=wallet_sell,
+                )
+            )
+
+        history = await db.get_arbitrage_history(limit=10)
+
+        assert len(history) == 1
+        item = history[0]
+        assert item.opportunity_id == opp_id
+        assert item.latest_event_type == "executed"
+        assert item.routed_size_usd == Decimal("100")
+        assert item.actual_profit_usd == Decimal("0.11")
+        assert len(item.events) == 3
+        assert item.events[1].buy_wallet.stable_symbol == "USDT"
+        assert item.events[1].sell_wallet.cngn_balance == Decimal("26999")
+
+    @pytest.mark.asyncio
+    async def test_history_limit_is_by_opportunity(self, db):
+        now_ms = int(time.time() * 1000)
+        for idx in range(3):
+            opp_id = f"hist-limit-{idx}"
+            await db.insert_arbitrage_history_event(
+                ArbitrageHistoryEvent(
+                    opportunity_id=opp_id,
+                    pipeline="dex_dex",
+                    event_type="detected",
+                    timestamp=now_ms + idx,
+                    direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                    buy_venue="uni-base",
+                    sell_venue="uni-bsc",
+                    status="detected",
+                    optimal_size_usd=Decimal("100"),
+                    routed_size_usd=Decimal("100"),
+                    expected_profit_usd=Decimal("0.05"),
+                    buy_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-base"),
+                    sell_wallet=ArbitrageHistoryWalletSnapshot(venue="uni-bsc"),
+                )
+            )
+
+        history = await db.get_arbitrage_history(limit=2)
+        assert len(history) == 2
+        assert history[0].opportunity_id == "hist-limit-2"
+        assert history[1].opportunity_id == "hist-limit-1"
 
 
 class TestActions:

@@ -22,6 +22,9 @@ const EVENT_TO_KEYS: Record<string, string[][]> = {
   account_balances: [['accountBalances']],
   arbitrage_opportunity: [['opportunities'], ['arbitrageStatus']],
   arbitrage_completed: [['opportunities'], ['arbitrageStatus']],
+  arb_history_updated: [['arbHistory']],
+  arb_executed: [['arbHistory'], ['opportunities'], ['arbitrageStatus']],
+  dex_arb_executed: [['arbHistory'], ['dex_arbitrage_opportunities'], ['arbitrageStatus']],
   quidax_orderbook_depth: [['quidaxDepth']],
   action: [], // logged only — no cache to invalidate
 };

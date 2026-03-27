@@ -6,6 +6,7 @@ import type {
   Position,
   ArbitrageStatus,
   ArbitrageOpportunity,
+  ArbitrageHistoryItem,
   AccountInfo,
   AccountBalance,
   Alert,
@@ -86,6 +87,21 @@ export const api = {
     if (params?.limit) searchParams.set('limit', String(params.limit));
     const query = searchParams.toString();
     return fetchJson(`${API_BASE}/arbitrage/opportunities${query ? `?${query}` : ''}`);
+  },
+
+  getArbHistory: (params?: {
+    pipeline?: string;
+    from_ts?: number;
+    to_ts?: number;
+    limit?: number;
+  }): Promise<ArbitrageHistoryItem[]> => {
+    const searchParams = new URLSearchParams();
+    if (params?.pipeline) searchParams.set('pipeline', params.pipeline);
+    if (params?.from_ts) searchParams.set('from_ts', String(params.from_ts));
+    if (params?.to_ts) searchParams.set('to_ts', String(params.to_ts));
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    const query = searchParams.toString();
+    return fetchJson(`${API_BASE}/arbitrage/history${query ? `?${query}` : ''}`);
   },
 
   getPortfolioValuation: (): Promise<any> =>

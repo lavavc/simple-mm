@@ -34,7 +34,12 @@ class SelectedRoute:
     candidate: RouteCandidate
     adjusted_size_usd: Decimal   # capped to available stablecoin
     net_profit_usd: Decimal      # after gas and rebalance penalty
-    expected_profit_usd: Decimal                     # recomputed at adjusted size when needed
+    expected_profit_usd: Decimal  # recomputed at adjusted size when needed
+    cap_reason: Optional[str] = None
+    buy_wallet_stable_balance: Optional[Decimal] = None
+    buy_wallet_cngn_balance: Optional[Decimal] = None
+    sell_wallet_stable_balance: Optional[Decimal] = None
+    sell_wallet_cngn_balance: Optional[Decimal] = None
 
 
 def select_route(
@@ -56,7 +61,12 @@ def select_route(
         stable_bal = inventory.state.per_account_stable.get(c.buy_venue)
         if not stable_bal:
             continue
-        adjusted_size = min(c.optimal_size_usd, stable_bal, inventory.params.max_single_trade_usd)
+        max_trade_cap = inventory.params.max_single_trade_usd
+        size_caps: list[tuple[str, Decimal]] = [
+            ("buy_wallet_stable", stable_bal),
+            ("max_single_trade", max_trade_cap),
+        ]
+        adjusted_size = min(c.optimal_size_usd, stable_bal, max_trade_cap)
 
         # Block if sell-side cNGN balance is unknown (not yet seeded) or explicitly zero.
         # Only proceed when we have a confirmed positive balance to sell.
@@ -65,17 +75,24 @@ def select_route(
             continue
 
         if c.pipeline == "cex_dex" and c.direction in _BUYS_CNGN_FROM_CEX:
-            adjusted_size = min(
-                adjusted_size,
-                estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal),
-            )
+            sell_cngn_cap = estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal)
+            size_caps.append(("sell_wallet_cngn", sell_cngn_cap))
+            adjusted_size = min(adjusted_size, sell_cngn_cap)
         else:
             cngn_price = inventory.state.cngn_price_usd
             if cngn_price > 0:
-                adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
+                sell_cngn_cap = cngn_bal * cngn_price
+                size_caps.append(("sell_wallet_cngn", sell_cngn_cap))
+                adjusted_size = min(adjusted_size, sell_cngn_cap)
 
         if adjusted_size <= 0:
             continue
+
+        cap_reasons = [
+            name for name, cap_value in size_caps
+            if cap_value == adjusted_size and cap_value < c.optimal_size_usd
+        ]
+        cap_reason = ", ".join(cap_reasons) if cap_reasons else None
 
         expected_profit_usd = c.expected_profit_usd
         if c.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
@@ -114,7 +131,21 @@ def select_route(
         else:
             aligned = True
 
-        scored.append((net_profit, aligned, SelectedRoute(c, adjusted_size, net_profit, expected_profit_usd)))
+        scored.append((
+            net_profit,
+            aligned,
+            SelectedRoute(
+                c,
+                adjusted_size,
+                net_profit,
+                expected_profit_usd,
+                cap_reason=cap_reason,
+                buy_wallet_stable_balance=inventory.state.per_account_stable.get(c.buy_venue),
+                buy_wallet_cngn_balance=inventory.state.per_account_cngn.get(c.buy_venue),
+                sell_wallet_stable_balance=inventory.state.per_account_stable.get(c.sell_venue),
+                sell_wallet_cngn_balance=inventory.state.per_account_cngn.get(c.sell_venue),
+            ),
+        ))
 
     if not scored:
         return None

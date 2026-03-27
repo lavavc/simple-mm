@@ -54,6 +54,13 @@ export function useOpportunities(limit = 50) {
   });
 }
 
+export function useArbHistory(limit = 30, pipeline?: 'cex_dex' | 'dex_dex') {
+  return useQuery({
+    queryKey: ['arbHistory', pipeline, limit],
+    queryFn: () => api.getArbHistory({ limit, pipeline }),
+  });
+}
+
 export function useAccountBalances() {
   return useQuery({ queryKey: ['accountBalances'], queryFn: api.getAccountBalances });
 }

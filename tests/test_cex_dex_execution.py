@@ -239,6 +239,27 @@ class TestCexDexPreflightGate:
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0")
 
+    @pytest.mark.asyncio
+    async def test_execution_writes_history_detected_routed_and_executed(self, test_db):
+        """Successful CEX-DEX execution should emit a three-stage history timeline."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine.inventory.reconcile_stables({"quidax": Decimal("250"), "uni-base": Decimal("167.07")})
+        engine.inventory.reconcile_cngn({"quidax": Decimal("100000"), "uni-base": Decimal("26999")})
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_cex_dex(_cex_dex_route(size=Decimal("100")), "opp-cex-history")
+
+        history = await test_db.get_arbitrage_history(limit=10)
+        assert len(history) == 1
+        item = history[0]
+        assert [event.event_type for event in item.events] == ["detected", "routed", "executed"]
+        assert item.routed_size_usd == Decimal("100")
+        assert item.events[1].sell_wallet.cngn_balance == Decimal("26999")
+
 
 # =============================================================================
 # Issue 6: _clean_revert tests

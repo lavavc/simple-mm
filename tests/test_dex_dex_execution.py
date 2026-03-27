@@ -194,6 +194,28 @@ class TestPreflightGate:
         # The mock returns output_raw = stable_amount_in = 500 * 10^6, so buy_trade.amount = 500 cNGN.
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 500000000, 499500000)
 
+    @pytest.mark.asyncio
+    async def test_successful_execution_writes_history_timeline(self, test_db):
+        """DEX-DEX execution should also emit detected/routed/executed history stages."""
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=True)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine.inventory.reconcile_stables({"uni-base": Decimal("186.22"), "uni-bsc": Decimal("0")})
+        engine.inventory.reconcile_cngn({"uni-base": Decimal("26999"), "uni-bsc": Decimal("206751")})
+        await test_db.insert_dex_arbitrage_opportunity(_make_opp("opp-preflight-history", status="detected"))
+
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            await engine._execute_dex_dex(_route(size=Decimal("100")), "opp-preflight-history")
+
+        history = await test_db.get_arbitrage_history(limit=10)
+        assert len(history) == 1
+        item = history[0]
+        assert [event.event_type for event in item.events] == ["detected", "routed", "executed"]
+        assert item.routed_size_usd == Decimal("100")
+        assert item.events[1].buy_wallet.stable_balance == Decimal("186.22")
+
 
 # =============================================================================
 # 2. Half-open detection

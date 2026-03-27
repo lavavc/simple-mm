@@ -8,7 +8,13 @@ from typing import Any, Callable, Optional
 
 import structlog
 
-from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportunity
+from engine.api.schemas import (
+    ArbitrageParams,
+    ArbitrageStatus,
+    DexArbOpportunity,
+    ArbitrageHistoryEvent,
+    ArbitrageHistoryWalletSnapshot,
+)
 from engine.core.arbitrage.executor import ArbitrageExecutor
 from engine.core.arbitrage.inventory import InventoryTracker
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
@@ -69,6 +75,20 @@ def _infer_wallet_symbol(venue: Any, wallet_asset: str) -> str:
             return config.token0_symbol if getattr(config, "invert_price", False) else config.token1_symbol
         return "stable"
     return "cNGN"
+
+
+def _build_history_wallet(
+    venue_name: str,
+    stable_symbol: str,
+    stable_balance: Decimal | None,
+    cngn_balance: Decimal | None,
+) -> ArbitrageHistoryWalletSnapshot:
+    return ArbitrageHistoryWalletSnapshot(
+        venue=venue_name,
+        stable_symbol=stable_symbol,
+        stable_balance=stable_balance,
+        cngn_balance=cngn_balance,
+    )
 
 
 def _build_preflight_context(engine, venue_name: str, log_ctx: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -382,6 +402,89 @@ class ArbitrageEngine:
         except Exception as e:
             logger.error("cex_dex_curve_compute_failed", error=str(e))
 
+    def _stable_symbol_for_venue(self, venue_name: str) -> str:
+        venue = self.venues.get(venue_name)
+        if venue_name == "quidax":
+            return "USDT"
+        if venue is not None:
+            return _infer_wallet_symbol(venue, "stable")
+        return "stable"
+
+    def _history_wallets_for_route(self, route: SelectedRoute) -> tuple[ArbitrageHistoryWalletSnapshot, ArbitrageHistoryWalletSnapshot]:
+        c = route.candidate
+        buy_stable = route.buy_wallet_stable_balance
+        if buy_stable is None:
+            buy_stable = self.inventory.state.per_account_stable.get(c.buy_venue)
+        buy_cngn = route.buy_wallet_cngn_balance
+        if buy_cngn is None:
+            buy_cngn = self.inventory.state.per_account_cngn.get(c.buy_venue)
+        sell_stable = route.sell_wallet_stable_balance
+        if sell_stable is None:
+            sell_stable = self.inventory.state.per_account_stable.get(c.sell_venue)
+        sell_cngn = route.sell_wallet_cngn_balance
+        if sell_cngn is None:
+            sell_cngn = self.inventory.state.per_account_cngn.get(c.sell_venue)
+
+        return (
+            _build_history_wallet(
+                c.buy_venue,
+                self._stable_symbol_for_venue(c.buy_venue),
+                buy_stable,
+                buy_cngn,
+            ),
+            _build_history_wallet(
+                c.sell_venue,
+                self._stable_symbol_for_venue(c.sell_venue),
+                sell_stable,
+                sell_cngn,
+            ),
+        )
+
+    async def _record_history_event(
+        self,
+        route: SelectedRoute,
+        opp_id: str,
+        *,
+        event_type: str,
+        status: str,
+        reason: str | None = None,
+        executed_size_usd: Decimal | None = None,
+        actual_profit_usd: Decimal | None = None,
+        buy_tx_hash: str | None = None,
+        sell_tx_hash: str | None = None,
+    ) -> None:
+        db = await get_db()
+        if db is None or not hasattr(db, "insert_arbitrage_history_event"):
+            return
+        buy_wallet, sell_wallet = self._history_wallets_for_route(route)
+        c = route.candidate
+        await db.insert_arbitrage_history_event(
+            ArbitrageHistoryEvent(
+                opportunity_id=opp_id,
+                pipeline=c.pipeline,
+                event_type=event_type,
+                timestamp=int(time.time() * 1000),
+                direction=c.direction,
+                buy_venue=c.buy_venue,
+                sell_venue=c.sell_venue,
+                status=status,
+                optimal_size_usd=c.optimal_size_usd,
+                routed_size_usd=route.adjusted_size_usd,
+                executed_size_usd=executed_size_usd,
+                expected_profit_usd=route.expected_profit_usd,
+                actual_profit_usd=actual_profit_usd,
+                net_profit_usd=route.net_profit_usd,
+                net_spread_bps=c.signal.get("optimal_arb", {}).get("net_spread_bps"),
+                cap_reason=route.cap_reason,
+                reason=reason,
+                buy_wallet=buy_wallet,
+                sell_wallet=sell_wallet,
+                buy_tx_hash=buy_tx_hash,
+                sell_tx_hash=sell_tx_hash,
+            )
+        )
+        self.broadcast({"type": "arb_history_updated", "data": {"opportunity_id": opp_id}})
+
     async def _execute_cex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a CEX-DEX arbitrage."""
         self._arb_executing = True
@@ -395,6 +498,9 @@ class ArbitrageEngine:
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
             quidax_price = Decimal(str(c.signal["prices"]["quidax"]))
             net_spread_bps = c.signal["optimal_arb"].get("net_spread_bps", 0)
+
+            await self._record_history_event(route, opp_id, event_type="detected", status="detected")
+            await self._record_history_event(route, opp_id, event_type="routed", status="routed")
 
             # If the sell leg is a DEX, simulate it before placing the CEX buy.
             # A failed DEX sell after a confirmed CEX buy would leave us half-open with no recovery path.
@@ -412,6 +518,13 @@ class ArbitrageEngine:
                         size_usd=float(size_usd),
                         sell_venue=sell_venue_name,
                     )
+                    await self._record_history_event(
+                        route,
+                        opp_id,
+                        event_type="failed",
+                        status="abandoned",
+                        reason="Missing Quidax depth or zero cNGN estimate during sell preflight",
+                    )
                     return
                 cngn_estimate = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
                 sell_err = await loop.run_in_executor(
@@ -427,6 +540,13 @@ class ArbitrageEngine:
                         sell_cngn_est=float(cngn_estimate_amount),
                         sell_price_usd=float(sell_price_usd) if sell_price_usd is not None else None,
                         wallet_asset="cngn",
+                    )
+                    await self._record_history_event(
+                        route,
+                        opp_id,
+                        event_type="failed",
+                        status="abandoned",
+                        reason=f"Sell preflight failed: {_clean_revert(sell_err)}",
                     )
                     return
 
@@ -458,6 +578,13 @@ class ArbitrageEngine:
                 logger.error("cex_dex_buy_failed", direction=direction, error=err)
                 self.inventory.record_trade_failure(opp_id, err)
                 await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="abandoned",
+                    reason=err,
+                )
                 return
 
             sell_trade = (
@@ -477,6 +604,16 @@ class ArbitrageEngine:
                 )
                 self.inventory.trip_circuit_breaker(f"CEX-DEX half-open: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="half_open",
+                    reason=err,
+                    executed_size_usd=size_usd,
+                    buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                )
                 self.broadcast({"type": "alert", "severity": "critical",
                                "message": (
                                    f"Half-open CEX-DEX arb {opp_id} ({direction}): "
@@ -493,6 +630,16 @@ class ArbitrageEngine:
             await db.update_arbitrage_opportunity(opp_id, status="completed",
                                                   actual_profit_usd=float(actual_profit))
             self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
+            await self._record_history_event(
+                route,
+                opp_id,
+                event_type="executed",
+                status="completed",
+                executed_size_usd=size_usd,
+                actual_profit_usd=actual_profit,
+                buy_tx_hash=buy_trade.tx_hash,
+                sell_tx_hash=sell_trade.tx_hash,
+            )
             self.broadcast({"type": "arb_executed", "data": {
                 "id": opp_id, "direction": direction, "profit_usd": float(actual_profit),
             }})
@@ -502,6 +649,13 @@ class ArbitrageEngine:
         except Exception as e:
             logger.error("cex_dex_execution_error", opp_id=opp_id, error=str(e))
             self.inventory.record_trade_failure(opp_id, str(e))
+            await self._record_history_event(
+                route,
+                opp_id,
+                event_type="failed",
+                status="abandoned",
+                reason=str(e),
+            )
         finally:
             self._arb_executing = False
 
@@ -640,6 +794,9 @@ class ArbitrageEngine:
             slippage_bps = optimal.get("slippage_tolerance_bps", 10)
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
 
+            await self._record_history_event(route, opp_id, event_type="detected", status="detected")
+            await self._record_history_event(route, opp_id, event_type="routed", status="routed")
+
             # Simulate both legs via eth_call before executing either.
             # Buy (chain A) and sell (chain B) are on different chains — sell-side state is
             # independent of the buy, so the simulation is valid through execution.
@@ -656,6 +813,13 @@ class ArbitrageEngine:
             _est = estimate_dex_dex_trade(direction, size_usd)
             if not _est:
                 logger.warning("dex_dex_pool_cache_cold_at_execution", direction=direction, size_usd=float(size_usd))
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="abandoned",
+                    reason="DEX-DEX pool cache cold at execution",
+                )
                 return
             sell_cngn_est = Decimal(str(_est["cngn_transferred"]))
             sell_amount_raw = int(sell_cngn_est * Decimal(10 ** sell_venue.cngn_decimals))
@@ -675,6 +839,13 @@ class ArbitrageEngine:
                     min_out_usd=float(min_out_usd),
                     wallet_asset="cngn",
                 )
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="abandoned",
+                    reason=f"Sell preflight failed: {_clean_revert(sell_err)}",
+                )
                 return
 
             buy_err = await loop.run_in_executor(
@@ -692,6 +863,13 @@ class ArbitrageEngine:
                     else getattr(getattr(buy_venue, "config", None), "token1_symbol", None),
                     required_amount=float(size_usd),
                 )
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="abandoned",
+                    reason=f"Buy preflight failed: {_clean_revert(buy_err)}",
+                )
                 return
 
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
@@ -706,6 +884,13 @@ class ArbitrageEngine:
                 logger.error("dex_dex_buy_failed", direction=direction, error=err)
                 self.inventory.record_trade_failure(opp_id, err)
                 await db.expire_old_dex_arbitrage_opportunities(0)  # mark abandoned via expiry
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="abandoned",
+                    reason=err,
+                )
                 return
 
             await db.update_dex_arbitrage_execution_state(
@@ -736,6 +921,16 @@ class ArbitrageEngine:
                 )
                 self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="half_open",
+                    reason=err,
+                    executed_size_usd=size_usd,
+                    buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
+                )
                 self.broadcast({"type": "alert", "severity": "critical",
                                "message": (
                                    f"Half-open DEX-DEX arb {opp_id} ({direction}): "
@@ -756,6 +951,16 @@ class ArbitrageEngine:
                 actual_profit_usd=float(actual_profit),
             )
             self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
+            await self._record_history_event(
+                route,
+                opp_id,
+                event_type="executed",
+                status="completed",
+                executed_size_usd=size_usd,
+                actual_profit_usd=actual_profit,
+                buy_tx_hash=buy_trade.tx_hash,
+                sell_tx_hash=sell_trade.tx_hash,
+            )
             self.broadcast({"type": "dex_arb_executed", "data": {
                 "id": opp_id, "direction": direction, "profit_usd": float(actual_profit),
             }})
@@ -779,6 +984,15 @@ class ArbitrageEngine:
                 )
                 self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
                 self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="half_open",
+                    reason=err,
+                    executed_size_usd=route.adjusted_size_usd,
+                    buy_tx_hash=buy_tx or None,
+                )
                 self.broadcast({"type": "alert", "severity": "critical",
                                "message": (
                                    f"Half-open DEX-DEX arb {opp_id} ({direction}): "
@@ -790,6 +1004,13 @@ class ArbitrageEngine:
             else:
                 logger.error("dex_dex_execution_error", opp_id=opp_id, error=err)
                 self.inventory.record_trade_failure(opp_id, err)
+                await self._record_history_event(
+                    route,
+                    opp_id,
+                    event_type="failed",
+                    status="abandoned",
+                    reason=err,
+                )
         finally:
             self._arb_executing = False
 
