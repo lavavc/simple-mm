@@ -15,6 +15,7 @@ from engine.core.arbitrage.pool_state import (
 logger = structlog.get_logger()
 
 _ABSOLUTE_MAX_USD = Decimal("15000")
+_REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
 from engine.core import gas_oracle as _gas_oracle  # noqa: E402
 
@@ -35,13 +36,9 @@ def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Deci
     return best_prof, mid, best_cngn, best_out, best_dir
 
 
-def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | None:
-    """Compute executable DEX-DEX amounts for a specific routed USD size."""
+def _load_dex_dex_pool_state() -> dict | None:
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-
-    if investment_usd <= 0:
-        return None
 
     uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = \
         get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
@@ -54,15 +51,57 @@ def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | No
     ):
         return None
 
+    return {
+        "uni_bsc_sqrt": uni_bsc_sqrt,
+        "uni_bsc_liq": uni_bsc_liq,
+        "uni_bsc_fee": uni_bsc_fee,
+        "uni_base_sqrt": uni_base_sqrt,
+        "uni_base_liq": uni_base_liq,
+        "uni_base_fee": uni_base_fee,
+    }
+
+
+def _estimate_dex_dex_amounts(direction: str, investment_usd: Decimal, pool_state: dict) -> tuple[Decimal, Decimal] | None:
     if direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE":
-        cngn = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        usd_out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
+        cngn = swap_token0_for_token1(
+            investment_usd,
+            pool_state["uni_bsc_sqrt"],
+            pool_state["uni_bsc_liq"],
+            pool_state["uni_bsc_fee"],
+            18,
+            6,
+        )
+        usd_out = swap_token0_for_token1(
+            cngn,
+            pool_state["uni_base_sqrt"],
+            pool_state["uni_base_liq"],
+            pool_state["uni_base_fee"],
+            6,
+            6,
+        )
     elif direction == "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE":
-        cngn = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        usd_out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
+        cngn = swap_token1_for_token0(
+            investment_usd,
+            pool_state["uni_base_sqrt"],
+            pool_state["uni_base_liq"],
+            pool_state["uni_base_fee"],
+            6,
+            6,
+        )
+        usd_out = swap_token1_for_token0(
+            cngn,
+            pool_state["uni_bsc_sqrt"],
+            pool_state["uni_bsc_liq"],
+            pool_state["uni_bsc_fee"],
+            18,
+            6,
+        )
     else:
         return None
+    return cngn, usd_out
 
+
+def _build_dex_dex_trade_result(direction: str, investment_usd: Decimal, cngn: Decimal, usd_out: Decimal) -> dict:
     expected_profit = usd_out - investment_usd
     net_spread_bps = int((expected_profit / investment_usd) * 10000) if investment_usd > 0 else 0
     return {
@@ -73,6 +112,67 @@ def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | No
         "expected_usd_out": float(usd_out),
         "net_spread_bps": net_spread_bps,
     }
+
+
+def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | None:
+    """Compute executable DEX-DEX amounts for a specific routed USD size."""
+    if investment_usd <= 0:
+        return None
+
+    pool_state = _load_dex_dex_pool_state()
+    if pool_state is None:
+        return None
+
+    amounts = _estimate_dex_dex_amounts(direction, investment_usd, pool_state)
+    if amounts is None:
+        return None
+    cngn, usd_out = amounts
+    return _build_dex_dex_trade_result(direction, investment_usd, cngn, usd_out)
+
+
+def estimate_max_dex_buy_usd_for_cngn(direction: str, wallet_cngn: Decimal) -> dict | None:
+    """Invert the DEX-DEX path so sell-side cNGN caps the buy-side USD size exactly."""
+    if wallet_cngn <= 0:
+        return None
+
+    pool_state = _load_dex_dex_pool_state()
+    if pool_state is None:
+        return None
+
+    def cngn_required(investment_usd: Decimal) -> Decimal | None:
+        amounts = _estimate_dex_dex_amounts(direction, investment_usd, pool_state)
+        if amounts is None:
+            return None
+        cngn, _ = amounts
+        return cngn
+
+    max_required = cngn_required(_ABSOLUTE_MAX_USD)
+    if max_required is None:
+        return None
+    if max_required <= wallet_cngn:
+        amounts = _estimate_dex_dex_amounts(direction, _ABSOLUTE_MAX_USD, pool_state)
+        if amounts is None:
+            return None
+        cngn, usd_out = amounts
+        return _build_dex_dex_trade_result(direction, _ABSOLUTE_MAX_USD, cngn, usd_out)
+
+    low = Decimal("0")
+    high = _ABSOLUTE_MAX_USD
+    while high - low > _REVERSE_SEARCH_TOL_USD:
+        mid = (low + high) / Decimal("2")
+        required = cngn_required(mid)
+        if required is None:
+            return None
+        if required <= wallet_cngn:
+            low = mid
+        else:
+            high = mid
+
+    amounts = _estimate_dex_dex_amounts(direction, low, pool_state)
+    if amounts is None:
+        return None
+    cngn, usd_out = amounts
+    return _build_dex_dex_trade_result(direction, low, cngn, usd_out)
 
 
 def find_optimal_dex_arb() -> dict | None:

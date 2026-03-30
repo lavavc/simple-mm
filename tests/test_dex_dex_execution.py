@@ -190,9 +190,8 @@ class TestPreflightGate:
         # Preflight happened (amount is from pool estimate, may be 0 in test with cold cache).
         assert len(sell_venue.sim_calls) == 1
         assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
-        # Live sell must use buy_trade.amount (actual cNGN received), not the pre-buy estimate.
-        # The mock returns output_raw = stable_amount_in = 500 * 10^6, so buy_trade.amount = 500 cNGN.
-        assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 500000000, 499500000)
+        # Live sell must use the same sell estimate that the sell-side preflight validated.
+        assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
 
 
 # =============================================================================

@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Optional
 
 from engine.core.arbitrage.cex_dex import estimate_cex_dex_trade, estimate_max_cex_buy_usd_for_cngn
-from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
+from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade, estimate_max_dex_buy_usd_for_cngn
 
 # CEX-DEX directions by their cNGN inventory effect
 _SELLS_CNGN_TO_CEX = frozenset({"UNI_BSC_TO_QUIDAX", "UNI_BASE_TO_QUIDAX"})
@@ -69,6 +69,11 @@ def select_route(
                 adjusted_size,
                 estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal),
             )
+        elif c.pipeline == "dex_dex":
+            sell_cngn_cap_trade = estimate_max_dex_buy_usd_for_cngn(c.direction, cngn_bal)
+            if not sell_cngn_cap_trade:
+                continue
+            adjusted_size = min(adjusted_size, Decimal(str(sell_cngn_cap_trade["optimal_size_usd"])))
         else:
             cngn_price = inventory.state.cngn_price_usd
             if cngn_price > 0:

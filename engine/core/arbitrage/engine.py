@@ -728,9 +728,9 @@ class ArbitrageEngine:
                 executed_size_usd=float(size_usd),
             )
 
-            # Sell the cNGN actually received from the buy, not the pre-buy estimate.
+            # Sell the same cNGN amount that preflight validated on the sell venue.
             sell_trade = await self.executor.execute_dex_sell(
-                sell_venue_name, buy_trade.amount, min_out_usd, opp_id
+                sell_venue_name, sell_cngn_est, min_out_usd, opp_id
             )
 
             if not sell_trade or sell_trade.status == "failed":

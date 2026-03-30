@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from engine.core.arbitrage.dex_dex import (
     estimate_dex_dex_trade,
+    estimate_max_dex_buy_usd_for_cngn,
     find_optimal_dex_arb,
 )
 
@@ -81,3 +82,16 @@ class TestFindOptimalDexArbResult:
         assert larger is not None
         assert smaller["cngn_transferred"] < larger["cngn_transferred"]
         assert smaller["expected_usd_out"] < larger["expected_usd_out"]
+
+    def test_exact_wallet_cap_inverts_trade_size(self, seeded_pool_cache):
+        trade = estimate_dex_dex_trade("UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", Decimal("250"))
+        assert trade is not None
+
+        capped = estimate_max_dex_buy_usd_for_cngn(
+            "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
+            Decimal(str(trade["cngn_transferred"])),
+        )
+
+        assert capped is not None
+        assert abs(Decimal(str(capped["optimal_size_usd"])) - Decimal("250")) <= Decimal("0.05")
+        assert Decimal(str(capped["cngn_transferred"])) <= Decimal(str(trade["cngn_transferred"]))
