@@ -277,6 +277,7 @@ class ArbitrageEngine:
         self._cex_curve_task: Optional[asyncio.Task] = None
         self._dex_curve_task: Optional[asyncio.Task] = None
         self._pool_seed_task: Optional[asyncio.Task] = None
+        self._latest_dex_curve: Optional[dict[str, Any]] = None
 
     @property
     def enabled(self) -> bool:
@@ -620,6 +621,7 @@ class ArbitrageEngine:
             loop = asyncio.get_running_loop()
             curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
             if curve_data:
+                self._latest_dex_curve = curve_data
                 # Persist pool prices to DB for history charts
                 from engine.api.schemas import PriceQuote
                 db = await get_db()
@@ -637,6 +639,31 @@ class ArbitrageEngine:
                 self.broadcast({"type": "dex_arb_curve", "data": curve_data})
         except Exception as e:
             logger.error("dex_curve_compute_failed", error=str(e))
+
+    async def get_dex_curve_snapshot(self) -> Optional[dict[str, Any]]:
+        """Return the latest DEX-DEX curve, computing it on demand for first page load."""
+        from engine.core.arbitrage.dex_dex import generate_dex_profit_curve
+        from engine.core.arbitrage.pool_state import seed_pool_states
+
+        if self._latest_dex_curve:
+            return self._latest_dex_curve
+
+        if not self._inventory_seeded:
+            await self._seed_account_inventory()
+
+        loop = asyncio.get_running_loop()
+        curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
+        if curve_data:
+            self._latest_dex_curve = curve_data
+            return curve_data
+
+        await seed_pool_states()
+        curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
+        if curve_data:
+            self._latest_dex_curve = curve_data
+            return curve_data
+
+        return None
 
     async def _execute_dex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a DEX-DEX delta-balance arbitrage."""

@@ -727,6 +727,19 @@ async def get_dex_arbitrage_opportunities(
     return await db.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
 
+@router.get("/arbitrage/dex-curve")
+async def get_dex_arbitrage_curve():
+    """Get the latest DEX arbitrage curve, computing it on demand if needed."""
+    if not _arbitrage_engine:
+        raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
+
+    try:
+        return await _arbitrage_engine.get_dex_curve_snapshot()
+    except Exception as e:
+        logger.error("dex_arbitrage_curve_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/arbitrage/liquidation")
 async def get_liquidation_valuation():
     """
