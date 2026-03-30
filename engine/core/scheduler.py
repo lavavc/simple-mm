@@ -255,19 +255,16 @@ class TradingScheduler:
             if chain_name not in ("base", "bsc"):
                 continue
 
-            stable_symbol = venue.config.token0_symbol if getattr(venue.config, "invert_price", False) else venue.config.token1_symbol
             subscriptions.setdefault(chain_name, []).extend([
                 WalletActivitySubscription(
                     venue_name=venue_name,
                     wallet_address=venue.trade_account.address,
                     token_address=venue.stable_address,
-                    token_symbol=stable_symbol,
                 ),
                 WalletActivitySubscription(
                     venue_name=venue_name,
                     wallet_address=venue.trade_account.address,
                     token_address=venue.cngn_address,
-                    token_symbol="cNGN",
                 ),
             ])
         return subscriptions
@@ -862,18 +859,20 @@ class TradingScheduler:
             logger.error("wallet_activity_balance_refresh_failed", venues=venue_names, error=str(e))
 
     async def _broadcast_account_balances(self, balances) -> None:
-        """Broadcast the current account balances in the same shape as the API response."""
+        """Broadcast account balances using AccountBalanceResponse as the canonical shape."""
+        from engine.api.schemas import AccountBalanceResponse
+
         payload = [
-            {
-                "role": b.role,
-                "address": b.address,
-                "chain_id": b.chain_id,
-                "native_balance": float(b.native_balance),
-                "native_symbol": b.native_symbol,
-                "token_balances": {k: float(v) for k, v in b.token_balances.items()},
-                "needs_refill": b.needs_refill,
-                "refill_reasons": b.refill_reasons,
-            }
+            AccountBalanceResponse(
+                role=b.role,
+                address=b.address,
+                chain_id=b.chain_id,
+                native_balance=b.native_balance,
+                native_symbol=b.native_symbol,
+                token_balances=b.token_balances,
+                needs_refill=b.needs_refill,
+                refill_reasons=b.refill_reasons,
+            ).model_dump()
             for b in balances
         ]
 
@@ -882,19 +881,19 @@ class TradingScheduler:
             try:
                 pos = await quidax_adapter.get_position()
                 if pos and pos.balances:
-                    payload.append({
-                        "role": "quidax-exchange",
-                        "address": settings.quidax_deposit_address,
-                        "chain_id": 0,
-                        "native_balance": 0.0,
-                        "native_symbol": "",
-                        "token_balances": {
-                            "cNGN": float(pos.balances.get("cngn", Decimal("0"))),
-                            "USDT": float(pos.balances.get("usdt", Decimal("0"))),
+                    payload.append(AccountBalanceResponse(
+                        role="quidax-exchange",
+                        address=settings.quidax_deposit_address,
+                        chain_id=0,
+                        native_balance=Decimal("0"),
+                        native_symbol="",
+                        token_balances={
+                            "cNGN": pos.balances.get("cngn", Decimal("0")),
+                            "USDT": pos.balances.get("usdt", Decimal("0")),
                         },
-                        "needs_refill": False,
-                        "refill_reasons": [],
-                    })
+                        needs_refill=False,
+                        refill_reasons=[],
+                    ).model_dump())
             except Exception as e:
                 logger.warning("quidax_exchange_balance_broadcast_failed", error=str(e))
 

@@ -29,7 +29,6 @@ class WalletActivitySubscription:
     venue_name: str
     wallet_address: str
     token_address: str
-    token_symbol: str
 
 
 def _normalize_address(value: str | None) -> str | None:
@@ -247,6 +246,10 @@ class ArbitrageWebSocketListener:
                                     raise RuntimeError(f"missing subscription id for {metadata['kind']}: {response}")
                                 break
 
+                            # Events that arrive before the handshake response for *this*
+                            # subscription are dispatched to already-registered subscriptions.
+                            # Events for the current (not-yet-registered) subscription id are
+                            # silently dropped — they can't be handled before metadata is stored.
                             if response.get("method") == "eth_subscription":
                                 subscription_id = response.get("params", {}).get("subscription")
                                 subscription = subscriptions.get(subscription_id)
@@ -371,7 +374,12 @@ class ArbitrageWebSocketListener:
         self._ensure_pending_calculation()
 
     async def _delayed_calculation(self):
-        """Wait for debounce, then recompute once for all accumulated signals."""
+        """Wait for debounce, then recompute once for all accumulated signals.
+
+        Loops so that signals arriving *during* processing are batched into the
+        next wake-up rather than dropped, but exits as soon as both pending
+        sets are empty after processing — draining bursts without busy-waiting.
+        """
         try:
             while self._running:
                 await asyncio.sleep(self._debounce_delay)

@@ -31,8 +31,7 @@ def test_matching_wallet_venues_detects_incoming_transfer():
             venue_name="uni-bsc",
             wallet_address=_WALLET,
             token_address=_TOKEN,
-            token_symbol="USDT",
-        )
+            )
     ]
 
     assert matching_wallet_venues(log, subs) == {"uni-bsc"}
@@ -52,8 +51,7 @@ def test_matching_wallet_venues_ignores_unrelated_transfer():
             venue_name="uni-bsc",
             wallet_address=_WALLET,
             token_address=_TOKEN,
-            token_symbol="USDT",
-        )
+            )
     ]
 
     assert matching_wallet_venues(log, subs) == set()
@@ -65,8 +63,7 @@ def test_build_wallet_transfer_filters_targets_wallet_topics():
             venue_name="uni-bsc",
             wallet_address=_WALLET,
             token_address=_TOKEN,
-            token_symbol="USDT",
-        )
+            )
     ]
 
     filters = build_wallet_transfer_filters(subs)
