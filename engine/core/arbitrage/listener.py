@@ -1,8 +1,11 @@
 import asyncio
 import json
-import websockets
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable
+
 import structlog
-from typing import Callable, Any
+import websockets
 
 from engine.config import settings
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
@@ -16,22 +19,83 @@ from engine.core.arbitrage.dex_volume import (
 from engine.core.arbitrage.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
+ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+@dataclass(frozen=True)
+class WalletActivitySubscription:
+    """Wallet + token pair to watch for executable inventory changes."""
+
+    venue_name: str
+    wallet_address: str
+    token_address: str
+    token_symbol: str
+
+
+def _normalize_address(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.lower().removeprefix("0x")
+
+
+def _topic_address(topic: str | None) -> str | None:
+    if not topic:
+        return None
+    normalized = topic.lower().removeprefix("0x")
+    if len(normalized) < 40:
+        return None
+    return normalized[-40:]
+
+
+def matching_wallet_venues(
+    log: dict,
+    subscriptions: Iterable[WalletActivitySubscription],
+) -> set[str]:
+    """Return affected venue names when a Transfer log touches tracked wallets."""
+    token_address = _normalize_address(log.get("address"))
+    topics = log.get("topics") or []
+    if token_address is None or len(topics) < 3:
+        return set()
+
+    from_address = _topic_address(topics[1])
+    to_address = _topic_address(topics[2])
+    if from_address is None and to_address is None:
+        return set()
+
+    matched: set[str] = set()
+    for sub in subscriptions:
+        if _normalize_address(sub.token_address) != token_address:
+            continue
+        wallet_address = _normalize_address(sub.wallet_address)
+        if wallet_address in (from_address, to_address):
+            matched.add(sub.venue_name)
+    return matched
 
 class ArbitrageWebSocketListener:
     """Listens for DEX Swaps via WebSockets to trigger curve calculations instantly."""
 
-    def __init__(self, broadcast: Callable[[dict], Any], on_update: Callable[[], Any] | None = None, on_dex_event: Callable[[], Any] | None = None):
+    def __init__(
+        self,
+        broadcast: Callable[[dict], Any],
+        on_update: Callable[[], Any] | None = None,
+        on_dex_event: Callable[[], Any] | None = None,
+        on_wallet_event: Callable[[list[str]], Any] | None = None,
+        wallet_subscriptions: dict[str, list[WalletActivitySubscription]] | None = None,
+    ):
         self.broadcast = broadcast
         self.on_update = on_update
         self.on_dex_event = on_dex_event
+        self.on_wallet_event = on_wallet_event
+        self.wallet_subscriptions = wallet_subscriptions or {}
         self._running = False
 
         self._tasks: list[asyncio.Task] = []
 
         # Debounce tracking
-        self._last_trigger_time = 0.0
         self._debounce_delay = 0.25 # seconds to wait before calculating curve
         self._pending_calculation: asyncio.Task | None = None
+        self._pending_market_update = False
+        self._pending_wallet_venues: set[str] = set()
         self.active_connections: set[str] = set()
 
     async def start(self):
@@ -44,12 +108,22 @@ class ArbitrageWebSocketListener:
 
         if settings.base_wss_url:
             self._tasks.append(asyncio.create_task(
-                self._listen_to_chain("base", settings.base_wss_url, UNISWAP_BASE_POOL_READ_CONFIG)
+                self._listen_to_chain(
+                    "base",
+                    settings.base_wss_url,
+                    UNISWAP_BASE_POOL_READ_CONFIG,
+                    self.wallet_subscriptions.get("base", []),
+                )
             ))
 
         if settings.bsc_wss_url:
             self._tasks.append(asyncio.create_task(
-                self._listen_to_chain("bsc", settings.bsc_wss_url, UNISWAP_BSC_POOL_READ_CONFIG)
+                self._listen_to_chain(
+                    "bsc",
+                    settings.bsc_wss_url,
+                    UNISWAP_BSC_POOL_READ_CONFIG,
+                    self.wallet_subscriptions.get("bsc", []),
+                )
             ))
 
     async def stop(self):
@@ -61,7 +135,13 @@ class ArbitrageWebSocketListener:
             self._pending_calculation.cancel()
         logger.info("arbitrage_websocket_listener_stopped")
 
-    async def _listen_to_chain(self, chain_name: str, wss_url: str, pool_config):
+    async def _listen_to_chain(
+        self,
+        chain_name: str,
+        wss_url: str,
+        pool_config,
+        wallet_subscriptions: list[WalletActivitySubscription],
+    ):
         """Persistent wss connection loop for a specific chain."""
         backoff = 1
 
@@ -72,23 +152,83 @@ class ArbitrageWebSocketListener:
                     self.active_connections.add(chain_name)
                     backoff = 1 # Reset backoff
 
-                    payload = {
-                        "id": 1,
-                        "jsonrpc": "2.0",
-                        "method": "eth_subscribe",
-                        "params": [
-                            "logs",
+                    subscriptions: dict[str, dict[str, Any]] = {}
+
+                    def _handle_subscription_event(subscription: dict[str, Any], log: dict) -> None:
+                        if subscription["kind"] == "pool_swap":
+                            self._parse_and_update_state(log, subscription["pool_config"])
+                            self._trigger_market_update(chain_name)
+                            return
+
+                        affected_venues = matching_wallet_venues(log, subscription["wallet_subscriptions"])
+                        if affected_venues:
+                            self._trigger_wallet_update(
+                                chain_name,
+                                affected_venues,
+                                token_address=subscription["token_address"],
+                            )
+
+                    async def _subscribe(filter_params: dict[str, Any], metadata: dict[str, Any], request_id: int) -> None:
+                        payload = {
+                            "id": request_id,
+                            "jsonrpc": "2.0",
+                            "method": "eth_subscribe",
+                            "params": ["logs", filter_params],
+                        }
+                        await ws.send(json.dumps(payload))
+                        while True:
+                            response = json.loads(await ws.recv())
+                            if response.get("id") == request_id:
+                                subscription_id = response.get("result")
+                                if not subscription_id:
+                                    raise RuntimeError(f"missing subscription id for {metadata['kind']}: {response}")
+                                break
+
+                            if response.get("method") == "eth_subscription":
+                                subscription_id = response.get("params", {}).get("subscription")
+                                subscription = subscriptions.get(subscription_id)
+                                if subscription:
+                                    _handle_subscription_event(
+                                        subscription,
+                                        response.get("params", {}).get("result", {}),
+                                    )
+                        subscriptions[subscription_id] = metadata
+                        logger.debug(
+                            "wss_subscribed",
+                            chain=chain_name,
+                            kind=metadata["kind"],
+                            subscription_id=subscription_id,
+                        )
+
+                    await _subscribe(
+                        {
+                            "address": pool_config.pool_manager,
+                            "topics": [V4_SWAP_TOPIC, pool_config.pool_address],
+                        },
+                        {"kind": "pool_swap", "pool_config": pool_config},
+                        request_id=1,
+                    )
+
+                    subs_by_token: dict[str, list[WalletActivitySubscription]] = defaultdict(list)
+                    for sub in wallet_subscriptions:
+                        subs_by_token[sub.token_address.lower()].append(sub)
+
+                    request_id = 2
+                    for token_address, token_subs in subs_by_token.items():
+                        await _subscribe(
                             {
-                                "address": pool_config.pool_manager,
-                                "topics": [V4_SWAP_TOPIC, pool_config.pool_address]
-                            }
-                        ]
-                    }
+                                "address": token_address,
+                                "topics": [ERC20_TRANSFER_TOPIC],
+                            },
+                            {
+                                "kind": "wallet_transfer",
+                                "token_address": token_address,
+                                "wallet_subscriptions": token_subs,
+                            },
+                            request_id=request_id,
+                        )
+                        request_id += 1
 
-                    await ws.send(json.dumps(payload))
-
-                    response = await ws.recv()
-                    logger.debug("wss_subscribed", chain=chain_name, response=response)
                     await sync_pool_volume_24h(pool_config)
 
                     while self._running:
@@ -96,9 +236,12 @@ class ArbitrageWebSocketListener:
                         data = json.loads(msg)
 
                         if data.get("method") == "eth_subscription":
+                            subscription_id = data.get("params", {}).get("subscription")
+                            subscription = subscriptions.get(subscription_id)
+                            if not subscription:
+                                continue
                             log = data.get("params", {}).get("result", {})
-                            self._parse_and_update_state(log, pool_config)
-                            self._trigger_curve_calculation(chain_name)
+                            _handle_subscription_event(subscription, log)
 
             except websockets.exceptions.ConnectionClosed as e:
                 self.active_connections.discard(chain_name)
@@ -144,23 +287,67 @@ class ArbitrageWebSocketListener:
         except Exception as e:
             logger.error("v4_swap_event_parse_failed", error=str(e))
 
-    def _trigger_curve_calculation(self, source_chain: str):
-        """Debounced trigger for the profit curve."""
-        logger.debug("swap_event_detected", chain=source_chain)
-
+    def _ensure_pending_calculation(self) -> None:
         if self._pending_calculation and not self._pending_calculation.done():
             return
-
         self._pending_calculation = asyncio.create_task(self._delayed_calculation())
 
+    def _trigger_market_update(self, source_chain: str) -> None:
+        """Debounced trigger for market-state updates from pool swaps."""
+        logger.debug("swap_event_detected", chain=source_chain)
+        self._pending_market_update = True
+        self._ensure_pending_calculation()
+
+    def _trigger_wallet_update(
+        self,
+        source_chain: str,
+        venue_names: Iterable[str],
+        *,
+        token_address: str,
+    ) -> None:
+        """Debounced trigger for wallet inventory refreshes."""
+        venues = sorted(set(venue_names))
+        if not venues:
+            return
+        logger.debug(
+            "wallet_activity_detected",
+            chain=source_chain,
+            venues=venues,
+            token_address=token_address,
+        )
+        self._pending_wallet_venues.update(venues)
+        self._ensure_pending_calculation()
+
     async def _delayed_calculation(self):
-        """Waits for the debounce window, then triggers price update and DEX arb recalculation."""
-        await asyncio.sleep(self._debounce_delay)
+        """Wait for debounce, then recompute once for all accumulated signals."""
         try:
-            logger.info("executing_event_driven_arb_calc")
-            if self.on_update:
-                await self.on_update()
-            if self.on_dex_event:
-                await self.on_dex_event()
-        except Exception as e:
-            logger.error("event_driven_arb_calc_failed", error=str(e))
+            while self._running:
+                await asyncio.sleep(self._debounce_delay)
+
+                market_update = self._pending_market_update
+                wallet_venues = sorted(self._pending_wallet_venues)
+                self._pending_market_update = False
+                self._pending_wallet_venues.clear()
+
+                if not market_update and not wallet_venues:
+                    break
+
+                try:
+                    logger.info(
+                        "executing_event_driven_arb_calc",
+                        market_update=market_update,
+                        wallet_venues=wallet_venues,
+                    )
+                    if market_update and self.on_update:
+                        await self.on_update()
+                    if wallet_venues and self.on_wallet_event:
+                        await self.on_wallet_event(wallet_venues)
+                    if (market_update or wallet_venues) and self.on_dex_event:
+                        await self.on_dex_event()
+                except Exception as e:
+                    logger.error("event_driven_arb_calc_failed", error=str(e))
+
+                if not self._pending_market_update and not self._pending_wallet_venues:
+                    break
+        finally:
+            self._pending_calculation = None

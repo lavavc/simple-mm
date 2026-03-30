@@ -23,7 +23,6 @@ class TestFindOptimalDexArbNullCases:
         from engine.core.arbitrage import pool_state as _ps
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
-        from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
         import time
 
         fake_cache = {
@@ -34,10 +33,6 @@ class TestFindOptimalDexArbNullCases:
             UNISWAP_BSC_POOL_READ_CONFIG.pool_address: {
                 "tick": 0, "liquidity": Decimal(10**18), "fee": Decimal("0.0005"),
                 "sqrt_p": Decimal(10**20), "timestamp": time.time(),
-            },
-            ASSETCHAIN_POOL_READ_CONFIG.pool_address: {
-                "tick": 0, "liquidity": Decimal(0), "fee": Decimal("0.0003"),
-                "sqrt_p": Decimal(0), "timestamp": time.time(),
             },
         }
         monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)

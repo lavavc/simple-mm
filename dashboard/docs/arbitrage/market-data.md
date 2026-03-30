@@ -30,6 +30,8 @@ V4_SWAP_TOPIC = 0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad711
 
 Each swap event carries the new `sqrtPriceX96` and liquidity values inline, so the pool state cache is updated with zero RPC calls. This is what makes CEX-DEX detection latency sub-second. If the cache is cold at startup, `seed_pool_states()` is called as a background task to perform the initial state fetch.
 
+The listener also subscribes to ERC-20 `Transfer` logs for the tracked `uni-base` / `uni-bsc` trade wallets on their stablecoin and cNGN token contracts. Wallet-affecting swaps and manual transfers both surface as token transfers, so this lets the engine refresh executable inventory when wallet state changes instead of waiting for the next periodic balance sweep.
+
 **AssetChain — WebSocket (display only)**
 
 AssetChain hosts a small cNGN/USDT pool. Its price is included in the dashboard price display but excluded from fair-value calculations — volume is negligible and including it would dilute the VWAP without improving accuracy.

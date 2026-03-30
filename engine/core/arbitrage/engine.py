@@ -511,7 +511,7 @@ class ArbitrageEngine:
 
     async def on_dex_dex_update(self) -> None:
         """
-        Entry point for DEX-DEX arb. Called by scheduler (timer) and listener (swap events).
+        Entry point for DEX-DEX arb. Called by scheduler fallback and WS-driven signals.
         Computes optimal arb, broadcasts, records opportunity, optionally executes.
         Spawns background curve task.
         """
@@ -554,6 +554,17 @@ class ArbitrageEngine:
 
         if not self._dex_curve_task or self._dex_curve_task.done():
             self._dex_curve_task = asyncio.create_task(self._broadcast_dex_curve())
+
+    async def on_wallet_activity(self, venue_names: list[str]) -> None:
+        """Refresh executable wallet inventory for affected DEX venues."""
+        if not venue_names:
+            return
+
+        if not self._inventory_seeded:
+            await self._seed_account_inventory()
+            return
+
+        await self._refresh_inventory_for_venues(*venue_names)
 
     async def _record_dex_opportunity(self, fast: dict) -> str:
         """Persist the DEX-DEX opportunity to DB and broadcast it. Returns opp_id."""
@@ -613,7 +624,7 @@ class ArbitrageEngine:
                 from engine.api.schemas import PriceQuote
                 db = await get_db()
                 now_ms = int(time.time() * 1000)
-                for key in ("uni-bsc", "uni-base", "assetchain"):
+                for key in ("uni-bsc", "uni-base"):
                     price_val = curve_data.get("prices", {}).get(key)
                     if price_val is not None:
                         await db.insert_price_snapshot(PriceQuote(
@@ -1037,6 +1048,64 @@ class ArbitrageEngine:
             self.inventory.reconcile_stables(venue_stables)
         if venue_cngn:
             self.inventory.reconcile_cngn(venue_cngn)
+
+    def _fetch_venue_wallet_snapshot(self, venue_name: str) -> tuple[str, Decimal, Decimal] | None:
+        """Read a venue trade wallet's live stable/cNGN balances."""
+        venue = self.venues.get(venue_name)
+        if not venue:
+            return None
+
+        required_attrs = ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals")
+        if not all(hasattr(venue, attr) for attr in required_attrs):
+            return None
+
+        try:
+            stable_raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
+            cngn_raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
+            stable_amount = Decimal(stable_raw) / Decimal(10 ** venue.stable_decimals)
+            cngn_amount = Decimal(cngn_raw) / Decimal(10 ** venue.cngn_decimals)
+            return venue_name, stable_amount, cngn_amount
+        except Exception as e:
+            logger.warning("wallet_snapshot_refresh_failed", venue=venue_name, error=str(e))
+            return None
+
+    async def _refresh_inventory_for_venues(self, *venue_names: str) -> None:
+        """Refresh live stable/cNGN inventory for the given venues."""
+        names = sorted({name for name in venue_names if name in self.venues})
+        if not names:
+            return
+
+        loop = asyncio.get_running_loop()
+        snapshots = await asyncio.gather(
+            *(loop.run_in_executor(None, self._fetch_venue_wallet_snapshot, name) for name in names),
+            return_exceptions=True,
+        )
+
+        venue_stables: dict[str, Decimal] = {}
+        venue_cngn: dict[str, Decimal] = {}
+        for snapshot in snapshots:
+            if isinstance(snapshot, Exception):
+                logger.warning("wallet_snapshot_refresh_task_failed", error=str(snapshot))
+                continue
+            if snapshot is None:
+                continue
+
+            venue_name, stable_amount, cngn_amount = snapshot
+            venue_stables[venue_name] = stable_amount
+            venue_cngn[venue_name] = cngn_amount
+
+        if venue_stables:
+            self.inventory.reconcile_stables(venue_stables)
+        if venue_cngn:
+            self.inventory.reconcile_cngn(venue_cngn)
+
+        if venue_stables or venue_cngn:
+            logger.info(
+                "wallet_inventory_refreshed",
+                venues=names,
+                stable_balances={k: float(v) for k, v in venue_stables.items()},
+                cngn_balances={k: float(v) for k, v in venue_cngn.items()},
+            )
 
     async def _seed_account_inventory(self):
         """Read trade-account stablecoin and cNGN balances and pre-approve routers at first run."""

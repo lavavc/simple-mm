@@ -16,15 +16,12 @@ interface DexArbData {
     prices: {
         'uni-bsc': number;
         'uni-base': number;
-        assetchain: number;
     };
     stats: {
         uni_bsc_liquidity_cngn_raw: string;
         uni_base_liquidity_cngn_raw: string;
-        assetchain_liquidity_cngn_raw: string;
         uni_bsc_ts?: number;
         uni_base_ts?: number;
-        assetchain_ts?: number;
     };
     curve: CurvePoint[];
     optimal_arb: {
@@ -37,7 +34,6 @@ interface DexArbData {
         slippage_tolerance_bps?: number;
         uni_bsc_fee_bps?: number;
         uni_base_fee_bps?: number;
-        assetchain_fee_bps?: number;
         gas_usd?: number;
     };
 }
@@ -56,13 +52,11 @@ interface DexArbOpp {
     actual_profit_usd?: number;
     uni_bsc_price?: number;
     uni_base_price?: number;
-    assetchain_price?: number;
     buy_tx_hash?: string;
     sell_tx_hash?: string;
     slippage_tolerance_bps?: number;
     uni_bsc_fee_bps?: number;
     uni_base_fee_bps?: number;
-    assetchain_fee_bps?: number;
     gas_usd?: number;
 }
 
@@ -100,10 +94,10 @@ export default function DexArbPage() {
 
     const resolvedCurveData = curveData || {
         timestamp: 0,
-        prices: { 'uni-bsc': 0, 'uni-base': 0, assetchain: 0 },
+        prices: { 'uni-bsc': 0, 'uni-base': 0 },
         stats: {
-            uni_bsc_liquidity_cngn_raw: "0", uni_base_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0",
-            uni_bsc_ts: 0, uni_base_ts: 0, assetchain_ts: 0
+            uni_bsc_liquidity_cngn_raw: "0", uni_base_liquidity_cngn_raw: "0",
+            uni_bsc_ts: 0, uni_base_ts: 0
         },
         curve: [],
         optimal_arb: {
@@ -200,20 +194,17 @@ export default function DexArbPage() {
                                         const getVenuePrice = (v: string) => {
                                             if (v === 'UNI_BSC') return resolvedCurveData.prices['uni-bsc'] || 0;
                                             if (v === 'UNI_BASE') return resolvedCurveData.prices['uni-base'] || 0;
-                                            if (v === 'ASSETCHAIN') return resolvedCurveData.prices.assetchain || 0;
                                             return 0;
                                         };
                                         const getVenueShort = (v: string) => {
                                             if (v === 'UNI_BSC') return 'UBSC';
                                             if (v === 'UNI_BASE') return 'UBAS';
-                                            if (v === 'ASSETCHAIN') return 'ASST';
                                             return v;
                                         };
                                         const getStable = (v: string) => v === 'UNI_BASE' ? 'USDC' : 'USDT';
                                         const getNetworkName = (v: string) => {
                                             if (v === 'UNI_BSC') return 'BSC Inventory';
                                             if (v === 'UNI_BASE') return 'Base Inventory';
-                                            if (v === 'ASSETCHAIN') return 'AssetChain Inv';
                                             return `${v} Inv`;
                                         };
 
@@ -239,7 +230,7 @@ export default function DexArbPage() {
                                                         </div>
                                                         <div className="flex justify-between text-[9px] text-white/40 items-center">
                                                             <span>LP Swap Fee ({(
-                                                                (fromVenue === 'UNI_BSC' ? resolvedCurveData.optimal_arb.uni_bsc_fee_bps : fromVenue === 'UNI_BASE' ? resolvedCurveData.optimal_arb.uni_base_fee_bps : resolvedCurveData.optimal_arb.assetchain_fee_bps) || 0) / 100
+                                                                (fromVenue === 'UNI_BSC' ? resolvedCurveData.optimal_arb.uni_bsc_fee_bps : resolvedCurveData.optimal_arb.uni_base_fee_bps) || 0) / 100
                                                             }%)</span>
                                                             <span className="text-rose-400/80">Factored in AMM</span>
                                                         </div>
@@ -254,7 +245,7 @@ export default function DexArbPage() {
                                                         </div>
                                                         <div className="flex justify-between text-[9px] text-white/40 items-center">
                                                             <span>LP Swap Fee ({(
-                                                                (toVenue === 'UNI_BSC' ? resolvedCurveData.optimal_arb.uni_bsc_fee_bps : toVenue === 'UNI_BASE' ? resolvedCurveData.optimal_arb.uni_base_fee_bps : resolvedCurveData.optimal_arb.assetchain_fee_bps) || 0) / 100
+                                                                (toVenue === 'UNI_BSC' ? resolvedCurveData.optimal_arb.uni_bsc_fee_bps : resolvedCurveData.optimal_arb.uni_base_fee_bps) || 0) / 100
                                                             }%)</span>
                                                             <span className="text-rose-400/80">Factored in AMM</span>
                                                         </div>
@@ -299,36 +290,9 @@ export default function DexArbPage() {
 
                 {/* MIDDLE COLUMN: Prices + Chart */}
                 <div className="lg:col-span-3 space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {isSyncing ? (
                             <>
-                                <Card className="hover:border-emerald-500/50 transition-colors bg-white/[0.02] border-white/[0.05] rounded-sm shadow-none">
-                                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
-                                        <div className="flex items-center gap-2">
-                                            <div className="h-3 w-16 bg-white/10 rounded-sm animate-pulse" />
-                                            <div className="h-3 w-8 bg-white/5 rounded-sm animate-pulse" />
-                                        </div>
-                                        <div className="h-2 w-2 rounded-full bg-white/10 animate-pulse" />
-                                    </CardHeader>
-                                    <CardContent className="px-4 pb-4 pt-2">
-                                        <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <Activity className="h-4 w-4 text-emerald-500/20" />
-                                                <div className="h-6 w-24 bg-white/10 rounded-sm animate-pulse" />
-                                                <div className="h-3 w-10 bg-white/5 rounded-sm animate-pulse ml-1" />
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-2 mt-3 border-t border-white/[0.05] pt-3">
-                                                <div>
-                                                    <div className="h-2 w-16 bg-white/5 rounded-sm mb-2" />
-                                                    <div className="h-3 w-20 bg-emerald-400/20 rounded-sm animate-pulse" />
-                                                </div>
-                                            </div>
-                                            <div className="flex justify-end mt-4">
-                                                <div className="h-2 w-16 bg-white/5 rounded-sm animate-pulse" />
-                                            </div>
-                                        </div>
-                                    </CardContent>
-                                </Card>
                                 <Card className="hover:border-emerald-500/50 transition-colors bg-white/[0.02] border-white/[0.05] rounded-sm shadow-none">
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
                                         <div className="flex items-center gap-2">
@@ -444,34 +408,6 @@ export default function DexArbPage() {
                                     </CardContent>
                                 </Card>
 
-                                <Card className="hover:border-emerald-500/50 transition-colors bg-white/[0.02] border-white/[0.05] rounded-sm shadow-none">
-                                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-4 pt-4">
-                                        <div className="flex items-center gap-2">
-                                            <div className="text-[10px] text-white/90 uppercase tracking-widest font-mono font-bold">ASSETCHAIN</div>
-                                            <Badge variant="outline" className="text-[8px] bg-blue-500/10 border-blue-500/30 text-blue-400 font-mono">OBSERVATIONAL</Badge>
-                                        </div>
-                                        <Circle className="h-2 w-2 fill-blue-500 text-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
-                                    </CardHeader>
-                                    <CardContent className="px-4 pb-4 pt-2">
-                                        <div className="flex items-center gap-2 mb-2">
-                                            <TrendingUp className="h-4 w-4 text-blue-500/50" />
-                                            <span className="text-xl font-bold font-mono tracking-tight text-white">${(resolvedCurveData.prices.assetchain || 0).toFixed(7)}</span>
-                                            <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">USD</span>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono border-t border-white/[0.05] pt-3">
-                                            <div>
-                                                <div className="text-white/30 uppercase tracking-widest mb-1 text-[8px]">IMPLIED RATE</div>
-                                                <div className="flex items-center gap-1.5 text-blue-400">
-                                                    <ArrowRightLeft className="h-3 w-3" />
-                                                    {formatNumber(1 / (resolvedCurveData.prices.assetchain || 1), 2)} cNGN
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <p className="text-[8px] text-white/30 tracking-widest uppercase font-mono mt-4 text-right">
-                                            {resolvedCurveData.stats.assetchain_ts ? Math.max(0, Math.floor(now / 1000 - resolvedCurveData.stats.assetchain_ts)) : timeSinceLastPacket}S AGO
-                                        </p>
-                                    </CardContent>
-                                </Card>
                             </>
                         )}
                     </div>
@@ -572,7 +508,7 @@ export default function DexArbPage() {
                                                 {expandedRow === opp.id && (
                                                     <tr className="bg-black/60 border-b-0">
                                                         <td colSpan={6} className="p-0">
-                                                            <div className="p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-5 border-l-2 border-emerald-500/30 bg-emerald-500/5 text-[10px] font-mono shadow-inner items-start">
+                                                            <div className="p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-5 border-l-2 border-emerald-500/30 bg-emerald-500/5 text-[10px] font-mono shadow-inner items-start">
                                                                 <div>
                                                                     <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">Vector ID</div>
                                                                     <div className="text-white/80">{opp.id.split('-').pop()}</div>
@@ -590,16 +526,12 @@ export default function DexArbPage() {
                                                                     <div className="text-white">{opp.uni_base_price ? `$${Number(opp.uni_base_price).toFixed(7)}` : 'N/A'}</div>
                                                                 </div>
                                                                 <div>
-                                                                    <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">Asset Block Price</div>
-                                                                    <div className="text-white">{opp.assetchain_price ? `$${Number(opp.assetchain_price).toFixed(7)}` : 'N/A'}</div>
-                                                                </div>
-                                                                <div>
                                                                     <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">Slippage / Gas</div>
                                                                     <div className="text-white">{opp.slippage_tolerance_bps ? `${opp.slippage_tolerance_bps / 100}%` : 'N/A'} <span className="text-white/40">|</span> {opp.gas_usd ? `~$${opp.gas_usd}` : 'N/A'}</div>
                                                                 </div>
                                                                 <div>
                                                                     <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">Protocol Fees</div>
-                                                                    <div className="text-white">UBSC: {opp.uni_bsc_fee_bps ? `${(opp.uni_bsc_fee_bps / 100)}%` : 'N/A'} <span className="text-white/40">|</span> UBAS: {opp.uni_base_fee_bps ? `${(opp.uni_base_fee_bps / 100)}%` : 'N/A'} <span className="text-white/40">|</span> ASST: {opp.assetchain_fee_bps ? `${(opp.assetchain_fee_bps / 100)}%` : 'N/A'}</div>
+                                                                    <div className="text-white">UBSC: {opp.uni_bsc_fee_bps ? `${(opp.uni_bsc_fee_bps / 100)}%` : 'N/A'} <span className="text-white/40">|</span> UBAS: {opp.uni_base_fee_bps ? `${(opp.uni_base_fee_bps / 100)}%` : 'N/A'}</div>
                                                                 </div>
                                                                 <div className="col-span-2">
                                                                     <div className="text-emerald-500/70 uppercase tracking-widest mb-1.5 text-[9px]">System Notes</div>

@@ -13,11 +13,17 @@ The engine runs two independent detection pipelines:
 - `QUIDAX_TO_UNI_BASE` — buy cNGN on Quidax, sell on Uniswap Base
 - `UNI_BASE_TO_QUIDAX` — buy cNGN on Uniswap Base, sell on Quidax
 
-**DEX-DEX** — triggered on V4 swap events (plus a timer fallback). Evaluates two directions:
+**DEX-DEX** — triggered on V4 swap events, tracked wallet balance-changing activity, and a slow scheduler fallback. Evaluates two directions:
 - `UNI_BSC_TO_UNI_BASE_DELTA_BALANCE` — buy on BSC, sell from inventory on Base
 - `UNI_BASE_TO_UNI_BSC_DELTA_BALANCE` — buy on Base, sell from inventory on BSC
 
 DEX-DEX is a **delta-balance** trade: there is no bridge. As the cNGN issuer with permanent inventory on both chains, we can buy on one chain and sell from existing inventory on the other. No cross-chain transfer is required — the two legs are fully independent.
+
+That means executable state depends on two things:
+- pool state changing (swap events)
+- wallet state changing (inventory on the buy/sell venues)
+
+If either changes, the route may need to be re-evaluated.
 
 ## Finding the optimal size: ternary search
 

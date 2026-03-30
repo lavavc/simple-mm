@@ -62,6 +62,7 @@ def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingSched
     sched.quidax_lp = None
     sched._started = False
     sched._db = db  # store for patching
+    sched.ws_listener = MagicMock(active_connections=set())
     return sched
 
 
@@ -357,3 +358,32 @@ class TestCreateDexPosition:
 
         assert len(prices_received) == 1
         assert prices_received[0] == 0.000400
+
+
+class TestDexArbCurveStream:
+
+    @pytest.mark.asyncio
+    async def test_skips_dex_recalc_when_ws_healthy(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.ws_listener.active_connections = {"base", "bsc"}
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+
+        await sched._stream_dex_arb_curve()
+
+        sched.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_runs_dex_recalc_when_ws_unhealthy(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.ws_listener.active_connections = {"base"}
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+
+        await sched._stream_dex_arb_curve()
+
+        sched.arbitrage_engine.on_dex_dex_update.assert_awaited_once()

@@ -14,7 +14,7 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.core.arbitrage.listener import ArbitrageWebSocketListener
+from engine.core.arbitrage.listener import ArbitrageWebSocketListener, WalletActivitySubscription
 
 if TYPE_CHECKING:
     from engine.core.arbitrage.engine import ArbitrageEngine
@@ -87,6 +87,8 @@ class TradingScheduler:
             broadcast=self.broadcast,
             on_update=self._update_price,
             on_dex_event=self.arbitrage_engine.on_dex_dex_update if self.arbitrage_engine else None,
+            on_wallet_event=self.arbitrage_engine.on_wallet_activity if self.arbitrage_engine else None,
+            wallet_subscriptions=self._build_wallet_ws_subscriptions(),
         )
 
     @property
@@ -203,17 +205,17 @@ class TradingScheduler:
         import asyncio
         asyncio.create_task(self.ws_listener.start())
 
-        # Poll AssetChain every 10s — it has no WSS endpoint so can't be event-driven.
-        # BSC and Base updates are handled entirely by the WebSocket listener.
+        # DEX-DEX fallback loop. Base/BSC updates are primarily handled by the WS listener;
+        # this only exists to recover if the WS path goes unhealthy.
         self.scheduler.add_job(
             self._stream_dex_arb_curve,
-            IntervalTrigger(seconds=10),
+            IntervalTrigger(seconds=self.config.dex_arb_curve_interval),
             id="dex_arb_curve_stream",
             replace_existing=True,
             max_instances=2,
             misfire_grace_time=30,
         )
-        logger.info("assetchain_poll_job_registered")
+        logger.info("dex_arb_fallback_job_registered")
 
         # Stream Quidax Depth
         self.scheduler.add_job(
@@ -237,6 +239,35 @@ class TradingScheduler:
             self.scheduler.shutdown(wait=False)
             self._started = False
             logger.info("scheduler_stopped")
+
+    def _build_wallet_ws_subscriptions(self) -> dict[str, list[WalletActivitySubscription]]:
+        """Watch DEX trade wallets for token balance changes that affect executability."""
+        subscriptions: dict[str, list[WalletActivitySubscription]] = {}
+        for venue_name in ("uni-base", "uni-bsc"):
+            venue = self.venues.get(venue_name)
+            if not isinstance(venue, V4LPAdapter):
+                continue
+
+            chain_name = getattr(getattr(venue, "config", None), "chain_name", "")
+            if chain_name not in ("base", "bsc"):
+                continue
+
+            stable_symbol = venue.config.token0_symbol if getattr(venue.config, "invert_price", False) else venue.config.token1_symbol
+            subscriptions.setdefault(chain_name, []).extend([
+                WalletActivitySubscription(
+                    venue_name=venue_name,
+                    wallet_address=venue.trade_account.address,
+                    token_address=venue.stable_address,
+                    token_symbol=stable_symbol,
+                ),
+                WalletActivitySubscription(
+                    venue_name=venue_name,
+                    wallet_address=venue.trade_account.address,
+                    token_address=venue.cngn_address,
+                    token_symbol="cNGN",
+                ),
+            ])
+        return subscriptions
 
     async def pause(self):
         self._trading_enabled = False
@@ -702,16 +733,11 @@ class TradingScheduler:
             return False
 
     async def _stream_dex_arb_curve(self):
-        """Polls AssetChain (no WSS endpoint) and triggers DEX-DEX arb update.
-        BSC and Base pool state is updated event-driven via the WebSocket listener.
-        """
+        """Fallback DEX-DEX refresh only when Base/BSC websocket coverage is unhealthy."""
         try:
-            from engine.core.arbitrage.pool_state import update_single_pool_state
-            from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+            ws_healthy = {"base", "bsc"}.issubset(self.ws_listener.active_connections)
 
-            await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, rpc_url_override=settings.assetchain_rpc_url)
-
-            if self.arbitrage_engine:
+            if self.arbitrage_engine and not ws_healthy:
                 await self.arbitrage_engine.on_dex_dex_update()
         except Exception as e:
             logger.error("dex_arb_curve_stream_failed", error=str(e))
