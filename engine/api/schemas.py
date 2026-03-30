@@ -281,6 +281,66 @@ class ArbitrageTrade(BaseModel):
     error: Optional[str] = None
 
 
+class ArbitrageHistoryWalletSnapshot(BaseModel):
+    """Wallet balances captured when a route was selected."""
+
+    stable_symbol: Optional[str] = None
+    stable_balance: Optional[Decimal] = None
+    cngn_balance: Optional[Decimal] = None
+
+
+class ArbitrageHistoryEvent(BaseModel):
+    """Single lifecycle event for a routed arbitrage attempt."""
+
+    id: Optional[int] = None
+    opportunity_id: str
+    pipeline: Literal["cex_dex", "dex_dex"]
+    event_type: Literal["routed", "executed", "failed"]
+    timestamp: int
+    direction: str
+    buy_venue: str
+    sell_venue: str
+    status: str
+    optimal_size_usd: Optional[Decimal] = None
+    routed_size_usd: Optional[Decimal] = None
+    executed_size_usd: Optional[Decimal] = None
+    expected_profit_usd: Optional[Decimal] = None
+    actual_profit_usd: Optional[Decimal] = None
+    net_profit_usd: Optional[Decimal] = None
+    net_spread_bps: Optional[int] = None
+    reason: Optional[str] = None
+    buy_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
+    sell_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
+    buy_tx_hash: Optional[str] = None
+    sell_tx_hash: Optional[str] = None
+
+
+class ArbitrageHistoryItem(BaseModel):
+    """Grouped lifecycle view for a single arbitrage attempt."""
+
+    opportunity_id: str
+    pipeline: Literal["cex_dex", "dex_dex"]
+    direction: str
+    buy_venue: str
+    sell_venue: str
+    latest_status: str
+    latest_event_type: Literal["routed", "executed", "failed"]
+    routed_at: int
+    updated_at: int
+    optimal_size_usd: Optional[Decimal] = None
+    routed_size_usd: Optional[Decimal] = None
+    executed_size_usd: Optional[Decimal] = None
+    expected_profit_usd: Optional[Decimal] = None
+    actual_profit_usd: Optional[Decimal] = None
+    net_profit_usd: Optional[Decimal] = None
+    net_spread_bps: Optional[int] = None
+    reason: Optional[str] = None
+    buy_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
+    sell_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
+    buy_tx_hash: Optional[str] = None
+    sell_tx_hash: Optional[str] = None
+
+
 class ArbitrageStatus(BaseModel):
     """Current status of the arbitrage engine."""
 

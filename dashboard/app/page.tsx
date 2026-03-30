@@ -50,6 +50,7 @@ export default function DashboardPage() {
     queryKey: ['dex_arb_curve'],
     queryFn: async () => null,
     staleTime: Infinity,
+    gcTime: Infinity,
   });
 
   const [now, setNow] = React.useState(Date.now());

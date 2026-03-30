@@ -113,6 +113,7 @@ export function GlobalInventoryBar() {
     queryKey: ['quidax_dex_optimal_arb'],
     queryFn: () => null,
     staleTime: Infinity,
+    gcTime: Infinity,
   });
 
   const uniBscTrade = balances?.find((b) => b.role === 'uni-bsc-trade' || b.role === 'trade_uni_bsc');

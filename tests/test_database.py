@@ -66,7 +66,6 @@ class TestConnection:
         assert "actions" in tables
         assert "venue_config" in tables
         assert "alerts" in tables
-
     @pytest.mark.asyncio
     async def test_connect_idempotent(self, tmp_path):
         """Calling connect twice should not error."""

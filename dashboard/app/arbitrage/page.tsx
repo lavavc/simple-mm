@@ -3,25 +3,27 @@
 import { formatCurrency } from '@/lib/utils';
 import { 
   useArbitrageStatus, 
-  useOpportunities, 
+  useArbHistory,
 } from '@/lib/hooks/useQueries';
 import {
   AlertTriangle,
   Cpu,
   Check,
   BarChart3,
-  LineChart
+  LineChart,
+  History,
 } from 'lucide-react';
 import React, { useState } from 'react';
 import DexArbPage from './dex-arb-tab';
 import { ConvergenceEngine } from '@/components/arbitrage/ConvergenceEngine';
 import { GlobalInventoryBar } from '@/components/arbitrage/GlobalInventoryBar';
+import { ArbHistoryPanel } from '@/components/arbitrage/ArbHistoryPanel';
 
 
 export default function ArbitragePage() {
-  const [activeTab, setActiveTab] = useState<'spot' | 'dex'>('spot');
+  const [activeTab, setActiveTab] = useState<'spot' | 'dex' | 'history'>('spot');
   const { data: status, isLoading: statusLoading } = useArbitrageStatus();
-  const { data: opportunities, isLoading: oppsLoading } = useOpportunities(50);
+  const { data: history, isLoading: historyLoading } = useArbHistory(30);
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-4rem)] bg-[#0B0E14] text-slate-300 animate-in fade-in duration-500 font-sans overflow-hidden relative">
@@ -140,6 +142,16 @@ export default function ArbitragePage() {
               <LineChart className={`h-3.5 w-3.5 transition-colors ${activeTab === 'dex' ? 'text-emerald-500' : 'text-white/30 group-hover:text-white/50'}`} />
               AMM Curves
             </button>
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`group flex items-center gap-2 px-6 py-2.5 rounded-sm text-[11px] font-mono uppercase tracking-widest transition-all ${activeTab === 'history'
+                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.1)]'
+                : 'bg-white/[0.02] text-white/50 border border-white/5 hover:bg-white/[0.05] hover:text-white/80'
+                }`}
+            >
+              <History className={`h-3.5 w-3.5 transition-colors ${activeTab === 'history' ? 'text-emerald-500' : 'text-white/30 group-hover:text-white/50'}`} />
+              Arb History
+            </button>
           </div>
 
           {/* TAB CONTENT */}
@@ -148,9 +160,13 @@ export default function ArbitragePage() {
               <div className="w-full flex-1 flex items-start justify-center overflow-y-auto">
                 <ConvergenceEngine />
               </div>
-            ) : (
+            ) : activeTab === 'dex' ? (
               <div className="w-full h-full min-h-[700px] flex flex-col [&>div]:bg-transparent [&>div]:p-0 [&>div]:min-h-0 [&>div]:h-full">
                 <DexArbPage />
+              </div>
+            ) : (
+              <div className="w-full flex-1 overflow-y-auto p-2 md:p-4">
+                <ArbHistoryPanel items={history} isLoading={historyLoading} />
               </div>
             )}
           </div>

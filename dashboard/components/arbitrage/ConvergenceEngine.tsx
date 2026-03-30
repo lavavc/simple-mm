@@ -210,6 +210,7 @@ export function ConvergenceEngine() {
         queryKey: ['quidax_dex_arb_curve'],
         queryFn: () => null,
         staleTime: Infinity, // updated entirely by websocket
+        gcTime: Infinity,
     });
 
     const isSyncing = !cexDexData;

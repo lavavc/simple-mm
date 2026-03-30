@@ -3,7 +3,7 @@
 import re
 import time
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -14,7 +14,7 @@ from engine.venues.cex.quidax import QuidaxAdapter
 logger = structlog.get_logger()
 
 
-def _clean_revert(err: str | None) -> str | None:
+def _clean_revert(err: Any) -> str | None:
     """Decode or strip Solidity revert data from web3 error strings.
 
     web3 often formats reverts as: "execution reverted: MESSAGE: 0xDATA"
@@ -23,6 +23,19 @@ def _clean_revert(err: str | None) -> str | None:
     """
     if not err:
         return err
+    if isinstance(err, (tuple, list)):
+        parts: list[str] = []
+        for item in err:
+            cleaned_item = _clean_revert(item)
+            if cleaned_item and cleaned_item not in parts:
+                parts.append(cleaned_item)
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return " | ".join(parts)
+    if not isinstance(err, str):
+        err = str(err)
     cleaned = re.sub(r":\s*0x[0-9a-fA-F]{8,}$", "", err).strip()
     if re.fullmatch(r"0x08c379a0[0-9a-fA-F]*", cleaned):
         try:
