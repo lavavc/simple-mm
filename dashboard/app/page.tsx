@@ -41,12 +41,6 @@ interface DexArbData {
   };
 }
 
-const fetchDexCurve = async () => {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/arbitrage/dex-curve`);
-  if (!res.ok) throw new Error('Failed to fetch DEX curve');
-  return res.json() as Promise<DexArbData | null>;
-};
-
 export default function DashboardPage() {
   const { data: status, isLoading: statusLoading } = useStatus();
   const { data: globalPosition, isLoading: positionLoading } = useGlobalPosition();
@@ -54,8 +48,8 @@ export default function DashboardPage() {
 
   const { data: curveData } = useQuery<DexArbData | null>({
     queryKey: ['dex_arb_curve'],
-    queryFn: fetchDexCurve,
-    staleTime: 30000,
+    queryFn: async () => null,
+    staleTime: Infinity,
   });
 
   const [now, setNow] = React.useState(Date.now());

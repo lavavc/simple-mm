@@ -195,11 +195,17 @@ def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick
 async def seed_pool_states():
     """Initializes the memory state manager by fetching all pools once."""
     logger.info("seeding_initial_pool_states")
+    await seed_dex_pool_states()
+    await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
+
+
+async def seed_dex_pool_states():
+    """Initializes only the Base/BSC DEX pool cache used by DEX-DEX arbitrage."""
+    logger.info("seeding_initial_dex_pool_states")
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
     await update_single_v4_pool_state(UNISWAP_BSC_POOL_READ_CONFIG)
     await update_single_v4_pool_state(UNISWAP_BASE_POOL_READ_CONFIG)
-    await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
 
 # ========== CONCENTRATED LIQUIDITY SWAP MATH ==========
 # Identical formula for both V3 and V4 pools (same CFMM invariant).

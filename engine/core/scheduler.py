@@ -1,5 +1,6 @@
 """Trading scheduler and orchestrator using APScheduler."""
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Any, TYPE_CHECKING
@@ -83,6 +84,8 @@ class TradingScheduler:
         self._trading_enabled = True
         self._started = False
         self._quidax_depth_ok = True  # tracks depth availability for alert transitions
+        self._dex_bootstrap_pending = bool(arbitrage_engine)
+        self._dex_bootstrap_task = None
         self.ws_listener = ArbitrageWebSocketListener(
             broadcast=self.broadcast,
             on_update=self._update_price,
@@ -202,8 +205,8 @@ class TradingScheduler:
             logger.info("blockradar_rate_sync_job_registered")
 
         # Start the WebSocket Event-Driven Listener
-        import asyncio
         asyncio.create_task(self.ws_listener.start())
+        self._schedule_dex_bootstrap()
 
         # DEX-DEX fallback loop. Base/BSC updates are primarily handled by the WS listener;
         # this only exists to recover if the WS path goes unhealthy.
@@ -269,6 +272,32 @@ class TradingScheduler:
             ])
         return subscriptions
 
+    def _schedule_dex_bootstrap(self) -> None:
+        """Ensure only one pending initial DEX bootstrap task exists at a time."""
+        if not self.arbitrage_engine or not self._dex_bootstrap_pending:
+            return
+        if self._dex_bootstrap_task and not self._dex_bootstrap_task.done():
+            return
+        self._dex_bootstrap_task = asyncio.create_task(self._bootstrap_dex_arb_curve())
+
+    async def _bootstrap_dex_arb_curve(self):
+        """Run one initial DEX-DEX evaluation on startup before waiting for fresh events."""
+        if not self.arbitrage_engine or not self._dex_bootstrap_pending:
+            return
+        try:
+            from engine.core import gas_oracle
+            from engine.core.arbitrage.pool_state import seed_dex_pool_states
+
+            await seed_dex_pool_states()
+            await self._update_gas_oracle()
+            if gas_oracle.gas_usd_base() is None or gas_oracle.gas_usd_bsc() is None:
+                logger.warning("dex_arb_bootstrap_waiting_for_gas")
+                return
+            await self.arbitrage_engine.on_dex_dex_update()
+            self._dex_bootstrap_pending = False
+        except Exception as e:
+            logger.error("dex_arb_bootstrap_failed", error=str(e))
+
     async def pause(self):
         self._trading_enabled = False
         db = await get_db()
@@ -291,6 +320,7 @@ class TradingScheduler:
         from engine.core import gas_oracle
         try:
             await gas_oracle.update()
+            self._schedule_dex_bootstrap()
         except RuntimeError as e:
             logger.error("gas_oracle_update_failed", error=str(e))
             self.broadcast({

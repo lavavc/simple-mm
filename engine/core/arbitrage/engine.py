@@ -274,10 +274,10 @@ class ArbitrageEngine:
         self._enabled = True
         self._arb_executing = False
         self._inventory_seeded = False
+        self._trade_approvals_seeded = False
         self._cex_curve_task: Optional[asyncio.Task] = None
         self._dex_curve_task: Optional[asyncio.Task] = None
         self._pool_seed_task: Optional[asyncio.Task] = None
-        self._latest_dex_curve: Optional[dict[str, Any]] = None
 
     @property
     def enabled(self) -> bool:
@@ -318,7 +318,7 @@ class ArbitrageEngine:
         """
         from engine.core.arbitrage.cex_dex import find_optimal_arb
         from engine.core.arbitrage.valuation import portfolio_value
-        from engine.core.arbitrage.pool_state import seed_pool_states
+        from engine.core.arbitrage.pool_state import seed_dex_pool_states
 
         self._reconcile_balances(balances)
         loop = asyncio.get_running_loop()
@@ -329,7 +329,7 @@ class ArbitrageEngine:
             # Pool cache is cold — kick off a one-shot seed so the next depth
             # tick (2 s later) has pool state to work with.
             if not self._pool_seed_task or self._pool_seed_task.done():
-                self._pool_seed_task = asyncio.create_task(seed_pool_states())
+                self._pool_seed_task = asyncio.create_task(seed_dex_pool_states())
 
         broadcast_data = signal or {}
         broadcast_data["portfolio_value"] = val
@@ -517,15 +517,15 @@ class ArbitrageEngine:
         Spawns background curve task.
         """
         from engine.core.arbitrage.dex_dex import find_optimal_dex_arb
-        from engine.core.arbitrage.pool_state import seed_pool_states
+        from engine.core.arbitrage.pool_state import seed_dex_pool_states
 
-        if not self._inventory_seeded:
+        if not self._inventory_seeded or not self._trade_approvals_seeded:
             await self._seed_account_inventory()
 
         loop = asyncio.get_running_loop()
         fast = await loop.run_in_executor(None, find_optimal_dex_arb)
         if fast is None:
-            asyncio.create_task(seed_pool_states())
+            asyncio.create_task(seed_dex_pool_states())
             return
 
         opp_id = await self._record_dex_opportunity(fast)
@@ -562,7 +562,7 @@ class ArbitrageEngine:
             return
 
         if not self._inventory_seeded:
-            await self._seed_account_inventory()
+            await self._seed_account_inventory(ensure_approvals=False)
             return
 
         await self._refresh_inventory_for_venues(*venue_names)
@@ -621,7 +621,6 @@ class ArbitrageEngine:
             loop = asyncio.get_running_loop()
             curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
             if curve_data:
-                self._latest_dex_curve = curve_data
                 # Persist pool prices to DB for history charts
                 from engine.api.schemas import PriceQuote
                 db = await get_db()
@@ -639,31 +638,6 @@ class ArbitrageEngine:
                 self.broadcast({"type": "dex_arb_curve", "data": curve_data})
         except Exception as e:
             logger.error("dex_curve_compute_failed", error=str(e))
-
-    async def get_dex_curve_snapshot(self) -> Optional[dict[str, Any]]:
-        """Return the latest DEX-DEX curve, computing it on demand for first page load."""
-        from engine.core.arbitrage.dex_dex import generate_dex_profit_curve
-        from engine.core.arbitrage.pool_state import seed_pool_states
-
-        if self._latest_dex_curve:
-            return self._latest_dex_curve
-
-        if not self._inventory_seeded:
-            await self._seed_account_inventory()
-
-        loop = asyncio.get_running_loop()
-        curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
-        if curve_data:
-            self._latest_dex_curve = curve_data
-            return curve_data
-
-        await seed_pool_states()
-        curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
-        if curve_data:
-            self._latest_dex_curve = curve_data
-            return curve_data
-
-        return None
 
     async def _execute_dex_dex(self, route: SelectedRoute, opp_id: str) -> None:
         """Execute a DEX-DEX delta-balance arbitrage."""
@@ -1134,10 +1108,11 @@ class ArbitrageEngine:
                 cngn_balances={k: float(v) for k, v in venue_cngn.items()},
             )
 
-    async def _seed_account_inventory(self):
-        """Read trade-account stablecoin and cNGN balances and pre-approve routers at first run."""
+    async def _seed_account_inventory(self, *, ensure_approvals: bool = True):
+        """Seed wallet balances, and optionally ensure trade approvals for execution paths."""
         stable_balances: dict[str, Decimal] = {}
         cngn_balances: dict[str, Decimal] = {}
+        approvals_ok = True
         for name, venue in self.venues.items():
             if all(hasattr(venue, attr) for attr in ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals", "ensure_trade_approvals")):
                 try:
@@ -1150,12 +1125,16 @@ class ArbitrageEngine:
                     cngn_balances[name] = Decimal(raw) / Decimal(10 ** venue.cngn_decimals)
                 except Exception as e:
                     logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
-                try:
-                    await venue.ensure_trade_approvals()
-                except Exception as e:
-                    logger.warning("trade_approval_failed", venue=name, error=str(e))
+                if ensure_approvals:
+                    try:
+                        await venue.ensure_trade_approvals()
+                    except Exception as e:
+                        approvals_ok = False
+                        logger.warning("trade_approval_failed", venue=name, error=str(e))
         if stable_balances:
             self.inventory.initialize_account_stable(stable_balances)
         if cngn_balances:
             self.inventory.initialize_account_cngn(cngn_balances)
         self._inventory_seeded = True
+        if ensure_approvals:
+            self._trade_approvals_seeded = approvals_ok

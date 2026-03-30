@@ -47,6 +47,69 @@ def _topic_address(topic: str | None) -> str | None:
     return normalized[-40:]
 
 
+def _topic_filter_address(address: str | None) -> str | None:
+    normalized = _normalize_address(address)
+    if normalized is None:
+        return None
+    return "0x" + ("0" * 24) + normalized
+
+
+def build_wallet_transfer_filters(
+    subscriptions: Iterable[WalletActivitySubscription],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Build wallet-targeted Transfer subscriptions instead of token-wide firehoses."""
+    subs_by_token: dict[str, list[WalletActivitySubscription]] = defaultdict(list)
+    for sub in subscriptions:
+        token_address = _normalize_address(sub.token_address)
+        if token_address is None:
+            continue
+        subs_by_token[token_address].append(sub)
+
+    filters: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for token_address, token_subs in subs_by_token.items():
+        filter_token_address = f"0x{token_address}"
+        wallet_topics = sorted(
+            {
+                topic
+                for sub in token_subs
+                if (topic := _topic_filter_address(sub.wallet_address)) is not None
+            }
+        )
+        if not wallet_topics:
+            continue
+
+        filters.append(
+            (
+                {
+                    "address": filter_token_address,
+                    "topics": [ERC20_TRANSFER_TOPIC, wallet_topics],
+                },
+                {
+                    "kind": "wallet_transfer",
+                    "direction": "outgoing",
+                    "token_address": filter_token_address,
+                    "wallet_subscriptions": token_subs,
+                },
+            )
+        )
+        filters.append(
+            (
+                {
+                    "address": filter_token_address,
+                    "topics": [ERC20_TRANSFER_TOPIC, None, wallet_topics],
+                },
+                {
+                    "kind": "wallet_transfer",
+                    "direction": "incoming",
+                    "token_address": filter_token_address,
+                    "wallet_subscriptions": token_subs,
+                },
+            )
+        )
+
+    return filters
+
+
 def matching_wallet_venues(
     log: dict,
     subscriptions: Iterable[WalletActivitySubscription],
@@ -209,22 +272,11 @@ class ArbitrageWebSocketListener:
                         request_id=1,
                     )
 
-                    subs_by_token: dict[str, list[WalletActivitySubscription]] = defaultdict(list)
-                    for sub in wallet_subscriptions:
-                        subs_by_token[sub.token_address.lower()].append(sub)
-
                     request_id = 2
-                    for token_address, token_subs in subs_by_token.items():
+                    for filter_params, metadata in build_wallet_transfer_filters(wallet_subscriptions):
                         await _subscribe(
-                            {
-                                "address": token_address,
-                                "topics": [ERC20_TRANSFER_TOPIC],
-                            },
-                            {
-                                "kind": "wallet_transfer",
-                                "token_address": token_address,
-                                "wallet_subscriptions": token_subs,
-                            },
+                            filter_params,
+                            metadata,
                             request_id=request_id,
                         )
                         request_id += 1
