@@ -1,5 +1,6 @@
 """Trading scheduler and orchestrator using APScheduler."""
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Any, TYPE_CHECKING
@@ -14,7 +15,7 @@ from engine.core.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.core.arbitrage.listener import ArbitrageWebSocketListener
+from engine.core.arbitrage.listener import ArbitrageWebSocketListener, WalletActivitySubscription
 
 if TYPE_CHECKING:
     from engine.core.arbitrage.engine import ArbitrageEngine
@@ -83,10 +84,14 @@ class TradingScheduler:
         self._trading_enabled = True
         self._started = False
         self._quidax_depth_ok = True  # tracks depth availability for alert transitions
+        self._dex_bootstrap_pending = bool(arbitrage_engine)
+        self._dex_bootstrap_task = None
         self.ws_listener = ArbitrageWebSocketListener(
             broadcast=self.broadcast,
             on_update=self._update_price,
             on_dex_event=self.arbitrage_engine.on_dex_dex_update if self.arbitrage_engine else None,
+            on_wallet_event=self._handle_wallet_activity if (self.arbitrage_engine or self.account_manager) else None,
+            wallet_subscriptions=self._build_wallet_ws_subscriptions(),
         )
 
     @property
@@ -200,20 +205,20 @@ class TradingScheduler:
             logger.info("blockradar_rate_sync_job_registered")
 
         # Start the WebSocket Event-Driven Listener
-        import asyncio
         asyncio.create_task(self.ws_listener.start())
+        self._schedule_dex_bootstrap()
 
-        # Poll AssetChain every 10s — it has no WSS endpoint so can't be event-driven.
-        # BSC and Base updates are handled entirely by the WebSocket listener.
+        # DEX-DEX fallback loop. Base/BSC updates are primarily handled by the WS listener;
+        # this only exists to recover if the WS path goes unhealthy.
         self.scheduler.add_job(
             self._stream_dex_arb_curve,
-            IntervalTrigger(seconds=10),
+            IntervalTrigger(seconds=self.config.dex_arb_curve_interval),
             id="dex_arb_curve_stream",
             replace_existing=True,
             max_instances=2,
             misfire_grace_time=30,
         )
-        logger.info("assetchain_poll_job_registered")
+        logger.info("dex_arb_fallback_job_registered")
 
         # Stream Quidax Depth
         self.scheduler.add_job(
@@ -238,6 +243,58 @@ class TradingScheduler:
             self._started = False
             logger.info("scheduler_stopped")
 
+    def _build_wallet_ws_subscriptions(self) -> dict[str, list[WalletActivitySubscription]]:
+        """Watch DEX trade wallets for token balance changes that affect executability."""
+        subscriptions: dict[str, list[WalletActivitySubscription]] = {}
+        for venue_name in ("uni-base", "uni-bsc"):
+            venue = self.venues.get(venue_name)
+            if not isinstance(venue, V4LPAdapter):
+                continue
+
+            chain_name = getattr(getattr(venue, "config", None), "chain_name", "")
+            if chain_name not in ("base", "bsc"):
+                continue
+
+            subscriptions.setdefault(chain_name, []).extend([
+                WalletActivitySubscription(
+                    venue_name=venue_name,
+                    wallet_address=venue.trade_account.address,
+                    token_address=venue.stable_address,
+                ),
+                WalletActivitySubscription(
+                    venue_name=venue_name,
+                    wallet_address=venue.trade_account.address,
+                    token_address=venue.cngn_address,
+                ),
+            ])
+        return subscriptions
+
+    def _schedule_dex_bootstrap(self) -> None:
+        """Ensure only one pending initial DEX bootstrap task exists at a time."""
+        if not self.arbitrage_engine or not self._dex_bootstrap_pending:
+            return
+        if self._dex_bootstrap_task and not self._dex_bootstrap_task.done():
+            return
+        self._dex_bootstrap_task = asyncio.create_task(self._bootstrap_dex_arb_curve())
+
+    async def _bootstrap_dex_arb_curve(self):
+        """Run one initial DEX-DEX evaluation on startup before waiting for fresh events."""
+        if not self.arbitrage_engine or not self._dex_bootstrap_pending:
+            return
+        try:
+            from engine.core import gas_oracle
+            from engine.core.arbitrage.pool_state import seed_dex_pool_states
+
+            await seed_dex_pool_states()
+            await self._update_gas_oracle()
+            if gas_oracle.gas_usd_base() is None or gas_oracle.gas_usd_bsc() is None:
+                logger.warning("dex_arb_bootstrap_waiting_for_gas")
+                return
+            await self.arbitrage_engine.on_dex_dex_update()
+            self._dex_bootstrap_pending = False
+        except Exception as e:
+            logger.error("dex_arb_bootstrap_failed", error=str(e))
+
     async def pause(self):
         self._trading_enabled = False
         db = await get_db()
@@ -260,6 +317,7 @@ class TradingScheduler:
         from engine.core import gas_oracle
         try:
             await gas_oracle.update()
+            self._schedule_dex_bootstrap()
         except RuntimeError as e:
             logger.error("gas_oracle_update_failed", error=str(e))
             self.broadcast({
@@ -702,16 +760,11 @@ class TradingScheduler:
             return False
 
     async def _stream_dex_arb_curve(self):
-        """Polls AssetChain (no WSS endpoint) and triggers DEX-DEX arb update.
-        BSC and Base pool state is updated event-driven via the WebSocket listener.
-        """
+        """Fallback DEX-DEX refresh only when Base/BSC websocket coverage is unhealthy."""
         try:
-            from engine.core.arbitrage.pool_state import update_single_pool_state
-            from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+            ws_healthy = {"base", "bsc"}.issubset(self.ws_listener.active_connections)
 
-            await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, rpc_url_override=settings.assetchain_rpc_url)
-
-            if self.arbitrage_engine:
+            if self.arbitrage_engine and not ws_healthy:
                 await self.arbitrage_engine.on_dex_dex_update()
         except Exception as e:
             logger.error("dex_arb_curve_stream_failed", error=str(e))
@@ -790,6 +843,65 @@ class TradingScheduler:
     # Account balance monitoring
     # ------------------------------------------------------------------
 
+    async def _handle_wallet_activity(self, venue_names: list[str]) -> None:
+        """Refresh arb inventory and push updated wallet balances to the frontend."""
+        if self.arbitrage_engine:
+            await self.arbitrage_engine.on_wallet_activity(venue_names)
+
+        if not self.account_manager:
+            return
+
+        try:
+            balances = await self.account_manager.check_all_balances(self.token_contracts)
+            self._last_balances = balances
+            await self._broadcast_account_balances(balances)
+        except Exception as e:
+            logger.error("wallet_activity_balance_refresh_failed", venues=venue_names, error=str(e))
+
+    async def _broadcast_account_balances(self, balances) -> None:
+        """Broadcast account balances using AccountBalanceResponse as the canonical shape."""
+        from engine.api.schemas import AccountBalanceResponse
+
+        payload = [
+            AccountBalanceResponse(
+                role=b.role,
+                address=b.address,
+                chain_id=b.chain_id,
+                native_balance=b.native_balance,
+                native_symbol=b.native_symbol,
+                token_balances=b.token_balances,
+                needs_refill=b.needs_refill,
+                refill_reasons=b.refill_reasons,
+            ).model_dump()
+            for b in balances
+        ]
+
+        quidax_adapter = self.venues.get("quidax")
+        if quidax_adapter:
+            try:
+                pos = await quidax_adapter.get_position()
+                if pos and pos.balances:
+                    payload.append(AccountBalanceResponse(
+                        role="quidax-exchange",
+                        address=settings.quidax_deposit_address,
+                        chain_id=0,
+                        native_balance=Decimal("0"),
+                        native_symbol="",
+                        token_balances={
+                            "cNGN": pos.balances.get("cngn", Decimal("0")),
+                            "USDT": pos.balances.get("usdt", Decimal("0")),
+                        },
+                        needs_refill=False,
+                        refill_reasons=[],
+                    ).model_dump())
+            except Exception as e:
+                logger.warning("quidax_exchange_balance_broadcast_failed", error=str(e))
+
+        self.broadcast({
+            "type": "account_balances",
+            "data": payload,
+        })
+
     async def _check_balances(self):
         if not self.account_manager:
             return
@@ -827,21 +939,7 @@ class TradingScheduler:
                         },
                     })
 
-            self.broadcast({
-                "type": "account_balances",
-                "data": [
-                    {
-                        "role": b.role,
-                        "address": b.address,
-                        "chain_id": b.chain_id,
-                        "native_balance": float(b.native_balance),
-                        "native_symbol": b.native_symbol,
-                        "token_balances": {k: float(v) for k, v in b.token_balances.items()},
-                        "needs_refill": b.needs_refill,
-                    }
-                    for b in balances
-                ],
-            })
+            await self._broadcast_account_balances(balances)
 
         except Exception as e:
             logger.error("balance_check_failed", error=str(e))

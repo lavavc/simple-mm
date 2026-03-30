@@ -726,7 +726,6 @@ async def get_dex_arbitrage_opportunities(
     db = await get_db()
     return await db.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
-
 @router.get("/arbitrage/liquidation")
 async def get_liquidation_valuation():
     """

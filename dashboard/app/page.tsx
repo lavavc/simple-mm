@@ -12,7 +12,6 @@ interface CurvePoint {
   size: number;
   cngn_uni_bsc: number;
   cngn_uni_base: number;
-  cngn_assetchain: number;
   profit: number;
   min_acceptable_usd: number;
 }
@@ -22,12 +21,10 @@ interface DexArbData {
   prices: {
     'uni-bsc': number;
     'uni-base': number;
-    assetchain: number;
   };
   stats: {
     uni_bsc_liquidity_cngn_raw: string;
     uni_base_liquidity_cngn_raw: string;
-    assetchain_liquidity_cngn_raw: string;
   };
   curve: CurvePoint[];
   optimal_arb: {
@@ -40,7 +37,6 @@ interface DexArbData {
     slippage_tolerance_bps?: number;
     uni_bsc_fee_bps?: number;
     uni_base_fee_bps?: number;
-    assetchain_fee_bps?: number;
     gas_usd?: number;
   };
 }
@@ -52,7 +48,7 @@ export default function DashboardPage() {
 
   const { data: curveData } = useQuery<DexArbData | null>({
     queryKey: ['dex_arb_curve'],
-    queryFn: () => null,
+    queryFn: async () => null,
     staleTime: Infinity,
   });
 
@@ -67,8 +63,8 @@ export default function DashboardPage() {
 
   const resolvedCurveData = curveData || {
     timestamp: 0,
-    prices: { 'uni-bsc': 0, 'uni-base': 0, assetchain: 0 },
-    stats: { uni_bsc_liquidity_cngn_raw: "0", uni_base_liquidity_cngn_raw: "0", assetchain_liquidity_cngn_raw: "0" },
+    prices: { 'uni-bsc': 0, 'uni-base': 0 },
+    stats: { uni_bsc_liquidity_cngn_raw: "0", uni_base_liquidity_cngn_raw: "0" },
     curve: [],
     optimal_arb: {
       direction: "_____",

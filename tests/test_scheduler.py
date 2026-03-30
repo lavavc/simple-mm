@@ -2,6 +2,7 @@
 
 import pytest
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from engine.api.schemas import DexParams
@@ -61,7 +62,10 @@ def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingSched
     sched.token_contracts = {}
     sched.quidax_lp = None
     sched._started = False
+    sched._dex_bootstrap_pending = True
+    sched._dex_bootstrap_task = None
     sched._db = db  # store for patching
+    sched.ws_listener = MagicMock(active_connections=set())
     return sched
 
 
@@ -357,3 +361,115 @@ class TestCreateDexPosition:
 
         assert len(prices_received) == 1
         assert prices_received[0] == 0.000400
+
+
+class TestDexArbCurveStream:
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_runs_initial_dex_recalc(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.arbitrage_engine = MagicMock()
+        call_order = []
+        sched.arbitrage_engine.on_dex_dex_update = AsyncMock(side_effect=lambda: call_order.append("arb"))
+        sched._update_gas_oracle = AsyncMock(side_effect=lambda: call_order.append("gas"))
+
+        with patch("engine.core.arbitrage.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
+             patch("engine.core.gas_oracle.gas_usd_base", return_value=Decimal("1")), \
+             patch("engine.core.gas_oracle.gas_usd_bsc", return_value=Decimal("1")):
+            await sched._bootstrap_dex_arb_curve()
+
+        seed_mock.assert_awaited_once()
+        sched._update_gas_oracle.assert_awaited_once()
+        sched.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+        assert call_order == ["gas", "arb"]
+        assert sched._dex_bootstrap_pending is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_waits_when_gas_missing(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched._update_gas_oracle = AsyncMock()
+
+        with patch("engine.core.arbitrage.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
+             patch("engine.core.gas_oracle.gas_usd_base", return_value=None), \
+             patch("engine.core.gas_oracle.gas_usd_bsc", return_value=None):
+            await sched._bootstrap_dex_arb_curve()
+
+        seed_mock.assert_awaited_once()
+        sched._update_gas_oracle.assert_awaited_once()
+        sched.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
+        assert sched._dex_bootstrap_pending is True
+
+    @pytest.mark.asyncio
+    async def test_gas_update_schedules_pending_bootstrap(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched._schedule_dex_bootstrap = MagicMock()
+
+        with patch("engine.core.gas_oracle.update", AsyncMock()):
+            await sched._update_gas_oracle()
+
+        sched._schedule_dex_bootstrap.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_dex_recalc_when_ws_healthy(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.ws_listener.active_connections = {"base", "bsc"}
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+
+        await sched._stream_dex_arb_curve()
+
+        sched.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_runs_dex_recalc_when_ws_unhealthy(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.ws_listener.active_connections = {"base"}
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+
+        await sched._stream_dex_arb_curve()
+
+        sched.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_wallet_activity_broadcasts_account_balances(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_wallet_activity = AsyncMock()
+        sched.account_manager = MagicMock()
+        sched.token_contracts = {"USDT": "0x123"}
+        sched.venues = {}
+        sched.account_manager.check_all_balances = AsyncMock(return_value=[
+            SimpleNamespace(
+                role="uni-bsc-trade",
+                address="0xabc",
+                chain_id=56,
+                native_balance=Decimal("0.1"),
+                native_symbol="BNB",
+                token_balances={"USDT": Decimal("4"), "cNGN": Decimal("5")},
+                needs_refill=False,
+                refill_reasons=[],
+            )
+        ])
+
+        await sched._handle_wallet_activity(["uni-bsc"])
+
+        sched.arbitrage_engine.on_wallet_activity.assert_awaited_once_with(["uni-bsc"])
+        sched.account_manager.check_all_balances.assert_awaited_once_with({"USDT": "0x123"})
+        assert broadcasts[-1]["type"] == "account_balances"
+        assert broadcasts[-1]["data"][0]["role"] == "uni-bsc-trade"
+        assert broadcasts[-1]["data"][0]["refill_reasons"] == []

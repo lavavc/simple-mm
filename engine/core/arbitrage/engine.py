@@ -274,6 +274,7 @@ class ArbitrageEngine:
         self._enabled = True
         self._arb_executing = False
         self._inventory_seeded = False
+        self._trade_approvals_seeded = False
         self._cex_curve_task: Optional[asyncio.Task] = None
         self._dex_curve_task: Optional[asyncio.Task] = None
         self._pool_seed_task: Optional[asyncio.Task] = None
@@ -317,7 +318,7 @@ class ArbitrageEngine:
         """
         from engine.core.arbitrage.cex_dex import find_optimal_arb
         from engine.core.arbitrage.valuation import portfolio_value
-        from engine.core.arbitrage.pool_state import seed_pool_states
+        from engine.core.arbitrage.pool_state import seed_dex_pool_states
 
         self._reconcile_balances(balances)
         loop = asyncio.get_running_loop()
@@ -328,7 +329,7 @@ class ArbitrageEngine:
             # Pool cache is cold — kick off a one-shot seed so the next depth
             # tick (2 s later) has pool state to work with.
             if not self._pool_seed_task or self._pool_seed_task.done():
-                self._pool_seed_task = asyncio.create_task(seed_pool_states())
+                self._pool_seed_task = asyncio.create_task(seed_dex_pool_states())
 
         broadcast_data = signal or {}
         broadcast_data["portfolio_value"] = val
@@ -511,20 +512,20 @@ class ArbitrageEngine:
 
     async def on_dex_dex_update(self) -> None:
         """
-        Entry point for DEX-DEX arb. Called by scheduler (timer) and listener (swap events).
+        Entry point for DEX-DEX arb. Called by scheduler fallback and WS-driven signals.
         Computes optimal arb, broadcasts, records opportunity, optionally executes.
         Spawns background curve task.
         """
         from engine.core.arbitrage.dex_dex import find_optimal_dex_arb
-        from engine.core.arbitrage.pool_state import seed_pool_states
+        from engine.core.arbitrage.pool_state import seed_dex_pool_states
 
-        if not self._inventory_seeded:
+        if not self._inventory_seeded or not self._trade_approvals_seeded:
             await self._seed_account_inventory()
 
         loop = asyncio.get_running_loop()
         fast = await loop.run_in_executor(None, find_optimal_dex_arb)
         if fast is None:
-            asyncio.create_task(seed_pool_states())
+            asyncio.create_task(seed_dex_pool_states())
             return
 
         opp_id = await self._record_dex_opportunity(fast)
@@ -554,6 +555,17 @@ class ArbitrageEngine:
 
         if not self._dex_curve_task or self._dex_curve_task.done():
             self._dex_curve_task = asyncio.create_task(self._broadcast_dex_curve())
+
+    async def on_wallet_activity(self, venue_names: list[str]) -> None:
+        """Refresh executable wallet inventory for affected DEX venues."""
+        if not venue_names:
+            return
+
+        if not self._inventory_seeded:
+            await self._seed_account_inventory(ensure_approvals=False)
+            return
+
+        await self._refresh_inventory_for_venues(*venue_names)
 
     async def _record_dex_opportunity(self, fast: dict) -> str:
         """Persist the DEX-DEX opportunity to DB and broadcast it. Returns opp_id."""
@@ -613,7 +625,7 @@ class ArbitrageEngine:
                 from engine.api.schemas import PriceQuote
                 db = await get_db()
                 now_ms = int(time.time() * 1000)
-                for key in ("uni-bsc", "uni-base", "assetchain"):
+                for key in ("uni-bsc", "uni-base"):
                     price_val = curve_data.get("prices", {}).get(key)
                     if price_val is not None:
                         await db.insert_price_snapshot(PriceQuote(
@@ -1038,10 +1050,69 @@ class ArbitrageEngine:
         if venue_cngn:
             self.inventory.reconcile_cngn(venue_cngn)
 
-    async def _seed_account_inventory(self):
-        """Read trade-account stablecoin and cNGN balances and pre-approve routers at first run."""
+    def _fetch_venue_wallet_snapshot(self, venue_name: str) -> tuple[str, Decimal, Decimal] | None:
+        """Read a venue trade wallet's live stable/cNGN balances."""
+        venue = self.venues.get(venue_name)
+        if not venue:
+            return None
+
+        required_attrs = ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals")
+        if not all(hasattr(venue, attr) for attr in required_attrs):
+            return None
+
+        try:
+            stable_raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
+            cngn_raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
+            stable_amount = Decimal(stable_raw) / Decimal(10 ** venue.stable_decimals)
+            cngn_amount = Decimal(cngn_raw) / Decimal(10 ** venue.cngn_decimals)
+            return venue_name, stable_amount, cngn_amount
+        except Exception as e:
+            logger.warning("wallet_snapshot_refresh_failed", venue=venue_name, error=str(e))
+            return None
+
+    async def _refresh_inventory_for_venues(self, *venue_names: str) -> None:
+        """Refresh live stable/cNGN inventory for the given venues."""
+        names = sorted({name for name in venue_names if name in self.venues})
+        if not names:
+            return
+
+        loop = asyncio.get_running_loop()
+        snapshots = await asyncio.gather(
+            *(loop.run_in_executor(None, self._fetch_venue_wallet_snapshot, name) for name in names),
+            return_exceptions=True,
+        )
+
+        venue_stables: dict[str, Decimal] = {}
+        venue_cngn: dict[str, Decimal] = {}
+        for snapshot in snapshots:
+            if isinstance(snapshot, Exception):
+                logger.warning("wallet_snapshot_refresh_task_failed", error=str(snapshot))
+                continue
+            if snapshot is None:
+                continue
+
+            venue_name, stable_amount, cngn_amount = snapshot
+            venue_stables[venue_name] = stable_amount
+            venue_cngn[venue_name] = cngn_amount
+
+        if venue_stables:
+            self.inventory.reconcile_stables(venue_stables)
+        if venue_cngn:
+            self.inventory.reconcile_cngn(venue_cngn)
+
+        if venue_stables or venue_cngn:
+            logger.info(
+                "wallet_inventory_refreshed",
+                venues=names,
+                stable_balances={k: float(v) for k, v in venue_stables.items()},
+                cngn_balances={k: float(v) for k, v in venue_cngn.items()},
+            )
+
+    async def _seed_account_inventory(self, *, ensure_approvals: bool = True):
+        """Seed wallet balances, and optionally ensure trade approvals for execution paths."""
         stable_balances: dict[str, Decimal] = {}
         cngn_balances: dict[str, Decimal] = {}
+        approvals_ok = True
         for name, venue in self.venues.items():
             if all(hasattr(venue, attr) for attr in ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals", "ensure_trade_approvals")):
                 try:
@@ -1054,12 +1125,16 @@ class ArbitrageEngine:
                     cngn_balances[name] = Decimal(raw) / Decimal(10 ** venue.cngn_decimals)
                 except Exception as e:
                     logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
-                try:
-                    await venue.ensure_trade_approvals()
-                except Exception as e:
-                    logger.warning("trade_approval_failed", venue=name, error=str(e))
+                if ensure_approvals:
+                    try:
+                        await venue.ensure_trade_approvals()
+                    except Exception as e:
+                        approvals_ok = False
+                        logger.warning("trade_approval_failed", venue=name, error=str(e))
         if stable_balances:
             self.inventory.initialize_account_stable(stable_balances)
         if cngn_balances:
             self.inventory.initialize_account_cngn(cngn_balances)
         self._inventory_seeded = True
+        if ensure_approvals:
+            self._trade_approvals_seeded = approvals_ok

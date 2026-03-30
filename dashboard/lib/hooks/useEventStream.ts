@@ -19,7 +19,7 @@ const EVENT_TO_KEYS: Record<string, string[][]> = {
   alert: [['alerts']],
   refill_alert: [['alerts']],
   system: [['status'], ['health']],
-  account_balances: [['accountBalances']],
+  account_balances: [],
   arbitrage_opportunity: [['opportunities'], ['arbitrageStatus']],
   arbitrage_completed: [['opportunities'], ['arbitrageStatus']],
   quidax_orderbook_depth: [['quidaxDepth']],
@@ -75,6 +75,10 @@ export function useEventStream() {
 
         if (event.type === 'quidax_orderbook_depth' && event.data) {
           qc.setQueryData(['quidaxDepth'], event.data);
+        }
+
+        if (event.type === 'account_balances' && event.data) {
+          qc.setQueryData(['accountBalances'], event.data);
         }
 
         if (event.type === 'arbitrage_opportunity' && event.data) {

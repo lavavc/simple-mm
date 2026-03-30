@@ -84,7 +84,6 @@ def find_optimal_dex_arb() -> dict | None:
     if _gas_oracle.gas_usd_base() is None or _gas_oracle.gas_usd_bsc() is None:
         return None
 
-    from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
@@ -92,8 +91,6 @@ def find_optimal_dex_arb() -> dict | None:
         get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     uni_base_sqrt, uni_base_liq, uni_base_ts, uni_base_fee = \
         get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
-    asset_sqrt, asset_liq, asset_ts, _ = \
-        get_cached_pool_state(ASSETCHAIN_POOL_READ_CONFIG.pool_address)
 
     if uni_bsc_fee is None or uni_base_fee is None:
         logger.error("dex_arb_blocked_missing_fees")
@@ -106,10 +103,6 @@ def find_optimal_dex_arb() -> dict | None:
     uni_bsc_raw = ((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
     uni_bsc_price_usd = float(Decimal(1) / uni_bsc_raw)
     uni_base_price_usd = float(((uni_base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6)))
-    asset_price_usd = (
-        float(Decimal(1) / (((asset_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))))
-        if asset_sqrt else None
-    )
 
     max_usd_v1 = _ABSOLUTE_MAX_USD
     max_usd_v2 = _ABSOLUTE_MAX_USD
@@ -137,15 +130,12 @@ def find_optimal_dex_arb() -> dict | None:
         "prices": {
             "uni-bsc": uni_bsc_price_usd,
             "uni-base": uni_base_price_usd,
-            "assetchain": asset_price_usd,
         },
         "stats": {
             "uni_bsc_liquidity_cngn_raw": str(uni_bsc_liq),
             "uni_base_liquidity_cngn_raw": str(uni_base_liq),
-            "assetchain_liquidity_cngn_raw": str(asset_liq),
             "uni_bsc_ts": float(uni_bsc_ts or 0),
             "uni_base_ts": float(uni_base_ts or 0),
-            "assetchain_ts": float(asset_ts or 0),
         },
         "optimal_arb": {
             "direction": best_dir,
