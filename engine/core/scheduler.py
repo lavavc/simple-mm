@@ -90,7 +90,7 @@ class TradingScheduler:
             broadcast=self.broadcast,
             on_update=self._update_price,
             on_dex_event=self.arbitrage_engine.on_dex_dex_update if self.arbitrage_engine else None,
-            on_wallet_event=self.arbitrage_engine.on_wallet_activity if self.arbitrage_engine else None,
+            on_wallet_event=self._handle_wallet_activity if (self.arbitrage_engine or self.account_manager) else None,
             wallet_subscriptions=self._build_wallet_ws_subscriptions(),
         )
 
@@ -846,6 +846,63 @@ class TradingScheduler:
     # Account balance monitoring
     # ------------------------------------------------------------------
 
+    async def _handle_wallet_activity(self, venue_names: list[str]) -> None:
+        """Refresh arb inventory and push updated wallet balances to the frontend."""
+        if self.arbitrage_engine:
+            await self.arbitrage_engine.on_wallet_activity(venue_names)
+
+        if not self.account_manager:
+            return
+
+        try:
+            balances = await self.account_manager.check_all_balances(self.token_contracts)
+            self._last_balances = balances
+            await self._broadcast_account_balances(balances)
+        except Exception as e:
+            logger.error("wallet_activity_balance_refresh_failed", venues=venue_names, error=str(e))
+
+    async def _broadcast_account_balances(self, balances) -> None:
+        """Broadcast the current account balances in the same shape as the API response."""
+        payload = [
+            {
+                "role": b.role,
+                "address": b.address,
+                "chain_id": b.chain_id,
+                "native_balance": float(b.native_balance),
+                "native_symbol": b.native_symbol,
+                "token_balances": {k: float(v) for k, v in b.token_balances.items()},
+                "needs_refill": b.needs_refill,
+                "refill_reasons": b.refill_reasons,
+            }
+            for b in balances
+        ]
+
+        quidax_adapter = self.venues.get("quidax")
+        if quidax_adapter:
+            try:
+                pos = await quidax_adapter.get_position()
+                if pos and pos.balances:
+                    payload.append({
+                        "role": "quidax-exchange",
+                        "address": settings.quidax_deposit_address,
+                        "chain_id": 0,
+                        "native_balance": 0.0,
+                        "native_symbol": "",
+                        "token_balances": {
+                            "cNGN": float(pos.balances.get("cngn", Decimal("0"))),
+                            "USDT": float(pos.balances.get("usdt", Decimal("0"))),
+                        },
+                        "needs_refill": False,
+                        "refill_reasons": [],
+                    })
+            except Exception as e:
+                logger.warning("quidax_exchange_balance_broadcast_failed", error=str(e))
+
+        self.broadcast({
+            "type": "account_balances",
+            "data": payload,
+        })
+
     async def _check_balances(self):
         if not self.account_manager:
             return
@@ -883,21 +940,7 @@ class TradingScheduler:
                         },
                     })
 
-            self.broadcast({
-                "type": "account_balances",
-                "data": [
-                    {
-                        "role": b.role,
-                        "address": b.address,
-                        "chain_id": b.chain_id,
-                        "native_balance": float(b.native_balance),
-                        "native_symbol": b.native_symbol,
-                        "token_balances": {k: float(v) for k, v in b.token_balances.items()},
-                        "needs_refill": b.needs_refill,
-                    }
-                    for b in balances
-                ],
-            })
+            await self._broadcast_account_balances(balances)
 
         except Exception as e:
             logger.error("balance_check_failed", error=str(e))

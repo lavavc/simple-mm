@@ -2,6 +2,7 @@
 
 import pytest
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from engine.api.schemas import DexParams
@@ -441,3 +442,34 @@ class TestDexArbCurveStream:
         await sched._stream_dex_arb_curve()
 
         sched.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_wallet_activity_broadcasts_account_balances(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.arbitrage_engine = MagicMock()
+        sched.arbitrage_engine.on_wallet_activity = AsyncMock()
+        sched.account_manager = MagicMock()
+        sched.token_contracts = {"USDT": "0x123"}
+        sched.venues = {}
+        sched.account_manager.check_all_balances = AsyncMock(return_value=[
+            SimpleNamespace(
+                role="uni-bsc-trade",
+                address="0xabc",
+                chain_id=56,
+                native_balance=Decimal("0.1"),
+                native_symbol="BNB",
+                token_balances={"USDT": Decimal("4"), "cNGN": Decimal("5")},
+                needs_refill=False,
+                refill_reasons=[],
+            )
+        ])
+
+        await sched._handle_wallet_activity(["uni-bsc"])
+
+        sched.arbitrage_engine.on_wallet_activity.assert_awaited_once_with(["uni-bsc"])
+        sched.account_manager.check_all_balances.assert_awaited_once_with({"USDT": "0x123"})
+        assert broadcasts[-1]["type"] == "account_balances"
+        assert broadcasts[-1]["data"][0]["role"] == "uni-bsc-trade"
+        assert broadcasts[-1]["data"][0]["refill_reasons"] == []
