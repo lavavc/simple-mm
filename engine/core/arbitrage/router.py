@@ -91,12 +91,16 @@ def select_route(
                 continue
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
         elif c.pipeline == "dex_dex":
-            # Recompute profit at capped size — detection found the unconstrained optimum,
-            # which overstates profit when inventory forces a smaller trade.
-            recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
-            if not recomputed:
-                continue
-            expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
+            cngn_cap_size = Decimal(str(sell_cngn_cap_trade["optimal_size_usd"]))
+            if adjusted_size == cngn_cap_size:
+                # cNGN cap was binding — profit already computed at this size.
+                expected_profit_usd = Decimal(str(sell_cngn_cap_trade["expected_profit_usd"]))
+            else:
+                # Stablecoin cap was tighter — rescore at the reduced size.
+                recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
+                if not recomputed:
+                    continue
+                expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
 
         # Net profit after gas and rebalance friction
         rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)

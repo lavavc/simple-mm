@@ -209,19 +209,15 @@ class TestSelectRouteNetProfit:
         def _fake_exact_cap(direction, wallet_cngn):
             assert direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
             assert wallet_cngn == Decimal("1000000")
-            return {"optimal_size_usd": 100.0}
-
-        def _fake_estimate(direction, investment_usd):
-            assert direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
-            assert investment_usd == Decimal("100")
-            return {"expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
+            return {"optimal_size_usd": 100.0, "expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
 
         monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", _fake_exact_cap)
-        monkeypatch.setattr(_router, "estimate_dex_dex_trade", _fake_estimate)
+        # estimate_dex_dex_trade must NOT be called when the cNGN cap is binding —
+        # profit is already priced inside estimate_max_dex_buy_usd_for_cngn.
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
-        # net = 2.0 (recomputed at $100) - 0.5 (gas) - rebalance_cost
+        # net = 2.0 (from cap trade result) - 0.5 (gas) - rebalance_cost
         assert result.net_profit_usd == Decimal("1.4")
 
     def test_dex_dex_route_blocks_when_exact_sell_cap_unavailable(self, monkeypatch):
