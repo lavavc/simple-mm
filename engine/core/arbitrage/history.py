@@ -157,7 +157,7 @@ class ArbitrageHistoryRecorder:
             )
         )
 
-    async def _record_snapshot(
+    async def _record_raw(
         self,
         *,
         opp_id: str,
@@ -201,7 +201,7 @@ class ArbitrageHistoryRecorder:
             )
         )
 
-    async def record_executed_snapshot(
+    async def record_executed_raw(
         self,
         *,
         opp_id: str,
@@ -220,7 +220,7 @@ class ArbitrageHistoryRecorder:
         buy_tx_hash: Optional[str] = None,
         sell_tx_hash: Optional[str] = None,
     ) -> None:
-        await self._record_snapshot(
+        await self._record_raw(
             opp_id=opp_id,
             event_type="executed",
             pipeline=pipeline,
@@ -240,7 +240,7 @@ class ArbitrageHistoryRecorder:
             sell_tx_hash=sell_tx_hash,
         )
 
-    async def record_failed_snapshot(
+    async def record_failed_raw(
         self,
         *,
         opp_id: str,
@@ -260,7 +260,7 @@ class ArbitrageHistoryRecorder:
         buy_tx_hash: Optional[str] = None,
         sell_tx_hash: Optional[str] = None,
     ) -> None:
-        await self._record_snapshot(
+        await self._record_raw(
             opp_id=opp_id,
             event_type="failed",
             pipeline=pipeline,

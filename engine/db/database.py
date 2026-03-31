@@ -290,22 +290,26 @@ class Database:
         for col, ddl in history_additions.items():
             if col not in history_cols:
                 await self._conn.execute(ddl)
-        await self._conn.execute(
-            """
-            DELETE FROM arbitrage_history_events
-            WHERE id NOT IN (
-                SELECT MAX(id)
-                FROM arbitrage_history_events
-                GROUP BY opportunity_id, event_type
+        cursor = await self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_arb_history_opp_event'"
+        )
+        if not await cursor.fetchone():
+            await self._conn.execute(
+                """
+                DELETE FROM arbitrage_history_events
+                WHERE id NOT IN (
+                    SELECT MAX(id)
+                    FROM arbitrage_history_events
+                    GROUP BY opportunity_id, event_type
+                )
+                """
             )
-            """
-        )
-        await self._conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_arb_history_opp_event
-            ON arbitrage_history_events(opportunity_id, event_type)
-            """
-        )
+            await self._conn.execute(
+                """
+                CREATE UNIQUE INDEX idx_arb_history_opp_event
+                ON arbitrage_history_events(opportunity_id, event_type)
+                """
+            )
 
         cursor = await self._conn.execute("PRAGMA table_info(positions)")
         pos_cols = {row[1] for row in await cursor.fetchall()}
@@ -1110,10 +1114,10 @@ class Database:
             SELECT *
             FROM arbitrage_history_events
             WHERE opportunity_id IN ({placeholders})
-              AND {where_sql}
+              AND event_type IN ('routed', 'executed', 'failed')
             ORDER BY timestamp ASC, id ASC
             """,
-            [*opp_ids, *params],
+            opp_ids,
         )
         rows = await cursor.fetchall()
 

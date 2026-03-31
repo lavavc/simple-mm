@@ -37,7 +37,7 @@ def _cex_dex_direction_for_venues(buy_venue: str, sell_venue: str) -> str:
     for direction, (mapped_buy, _, mapped_sell, _) in _CEX_DEX_DIRECTIONS.items():
         if mapped_buy == buy_venue and mapped_sell == sell_venue:
             return direction
-    return f"{buy_venue.upper()}_TO_{sell_venue.upper()}"
+    return f"{buy_venue.upper().replace('-', '_')}_TO_{sell_venue.upper().replace('-', '_')}"
 
 
 def _coerce_decimal(value: Any) -> Decimal | None:
@@ -1041,7 +1041,7 @@ class ArbitrageEngine:
                     sell_tx_hash=sell_trade.tx_hash, reason="Recovered: retried sell leg",
                     actual_profit_usd=float(actual_profit))
                 self.inventory.record_trade_complete(opp_id, cost_basis, actual_profit, Decimal("0"))
-                await self.history.record_executed_snapshot(
+                await self.history.record_executed_raw(
                     opp_id=opp_id,
                     pipeline="dex_dex",
                     direction=opp.direction,
@@ -1081,7 +1081,7 @@ class ArbitrageEngine:
                 status="half_open",
                 reason=recovery_reason,
             )
-            await self.history.record_failed_snapshot(
+            await self.history.record_failed_raw(
                 opp_id=opp_id,
                 pipeline="dex_dex",
                 direction=opp.direction,
@@ -1107,7 +1107,7 @@ class ArbitrageEngine:
             sell_tx_hash=reverse_trade.tx_hash, reason="Recovered: reversed buy leg",
             actual_profit_usd=float(actual_loss))
         self.inventory.record_trade_complete(opp_id, cost_basis, actual_loss, Decimal("0"))
-        await self.history.record_executed_snapshot(
+        await self.history.record_executed_raw(
             opp_id=opp_id,
             pipeline="dex_dex",
             direction=opp.direction,
@@ -1168,7 +1168,7 @@ class ArbitrageEngine:
                     recovery_reason = f"RECOVERY_FAILED:{err}"
                     await db.update_arbitrage_opportunity(opp_id, status="half_open",
                                                          reason=recovery_reason)
-                    await self.history.record_failed_snapshot(
+                    await self.history.record_failed_raw(
                         opp_id=opp_id,
                         pipeline="cex_dex",
                         direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
@@ -1199,7 +1199,7 @@ class ArbitrageEngine:
                 self.inventory.record_trade_complete(
                     opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
                 )
-                await self.history.record_executed_snapshot(
+                await self.history.record_executed_raw(
                     opp_id=opp_id,
                     pipeline="cex_dex",
                     direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
@@ -1231,7 +1231,7 @@ class ArbitrageEngine:
                     recovery_reason = f"RECOVERY_FAILED:{err}"
                     await db.update_arbitrage_opportunity(opp_id, status="half_open",
                                                          reason=recovery_reason)
-                    await self.history.record_failed_snapshot(
+                    await self.history.record_failed_raw(
                         opp_id=opp_id,
                         pipeline="cex_dex",
                         direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
@@ -1262,7 +1262,7 @@ class ArbitrageEngine:
                 self.inventory.record_trade_complete(
                     opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
                 )
-                await self.history.record_executed_snapshot(
+                await self.history.record_executed_raw(
                     opp_id=opp_id,
                     pipeline="cex_dex",
                     direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),

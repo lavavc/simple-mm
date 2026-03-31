@@ -59,3 +59,18 @@ On sell-leg failure the engine:
 ## Circuit breaker
 
 `consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading. A DEX-DEX half-open trips it immediately regardless of the failure count. Reset via `/reset_breaker` in the Telegram bot.
+
+## WebSocket broadcast
+
+Every signal, opportunity, execution, and alert is broadcast to connected dashboard clients in real time:
+
+| Event type | Trigger |
+|------------|---------|
+| `quidax_dex_optimal_arb` | Every Quidax depth update — fast path result + portfolio valuation |
+| `quidax_dex_arb_curve` | Background slow path — full `$1` to `$5,000` curve |
+| `dex_arb_opportunity` | DEX-DEX fast path result |
+| `dex_arb_curve` | DEX-DEX slow path curve |
+| `arb_executed` | CEX-DEX trade completed |
+| `dex_arb_executed` | DEX-DEX trade completed |
+| `alert` (severity: critical) | Half-open trade detected |
+| `arb_history_updated` | Any history event written — payload contains `opportunity_id` |

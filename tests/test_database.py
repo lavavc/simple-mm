@@ -5,7 +5,10 @@ import time
 from decimal import Decimal
 
 from engine.db.database import Database
-from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity
+from engine.api.schemas import (
+    PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity,
+    ArbitrageHistoryEvent, ArbitrageHistoryWalletSnapshot,
+)
 
 
 # =============================================================================
@@ -338,3 +341,192 @@ class TestActions:
         assert actions[0]["venue"] == "quidax"
         assert actions[0]["action_type"] == "order_placed"
         assert actions[0]["status"] == "completed"
+
+
+# =============================================================================
+# Arbitrage history
+# =============================================================================
+
+
+def _make_history_event(
+    opp_id: str,
+    event_type: str = "routed",
+    status: str = "routed",
+    pipeline: str = "cex_dex",
+    direction: str = "QUIDAX_TO_UNI_BSC",
+    timestamp: int = 1_000_000,
+    reason: str | None = None,
+    actual_profit_usd: Decimal | None = None,
+    executed_size_usd: Decimal | None = None,
+    buy_tx_hash: str | None = None,
+    sell_tx_hash: str | None = None,
+    buy_wallet: ArbitrageHistoryWalletSnapshot | None = None,
+    sell_wallet: ArbitrageHistoryWalletSnapshot | None = None,
+) -> ArbitrageHistoryEvent:
+    return ArbitrageHistoryEvent(
+        opportunity_id=opp_id,
+        pipeline=pipeline,
+        event_type=event_type,
+        timestamp=timestamp,
+        direction=direction,
+        buy_venue="quidax",
+        sell_venue="uni-bsc",
+        status=status,
+        optimal_size_usd=Decimal("500"),
+        routed_size_usd=Decimal("400"),
+        executed_size_usd=executed_size_usd,
+        expected_profit_usd=Decimal("5"),
+        actual_profit_usd=actual_profit_usd,
+        net_profit_usd=Decimal("4"),
+        net_spread_bps=80,
+        reason=reason,
+        buy_wallet=buy_wallet,
+        sell_wallet=sell_wallet,
+        buy_tx_hash=buy_tx_hash,
+        sell_tx_hash=sell_tx_hash,
+    )
+
+
+class TestArbitrageHistory:
+    """Tests for arbitrage lifecycle history storage and retrieval."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_inserts_event(self, db):
+        event = _make_history_event("opp-1")
+        await db.upsert_arbitrage_history_event(event)
+
+        items = await db.get_arbitrage_history()
+        assert len(items) == 1
+        assert items[0].opportunity_id == "opp-1"
+        assert items[0].latest_status == "routed"
+
+    @pytest.mark.asyncio
+    async def test_upsert_updates_on_conflict(self, db):
+        """Second upsert for same (opp_id, event_type) refreshes the record."""
+        await db.upsert_arbitrage_history_event(_make_history_event("opp-1", status="routed"))
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", status="routed", reason="updated")
+        )
+
+        items = await db.get_arbitrage_history()
+        assert len(items) == 1
+        assert items[0].reason == "updated"
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_returns_correct_fields(self, db):
+        """routed + executed events are grouped into one item with correct field sourcing."""
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", event_type="routed", status="routed", timestamp=1000)
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event(
+                "opp-1",
+                event_type="executed",
+                status="completed",
+                timestamp=2000,
+                actual_profit_usd=Decimal("4.50"),
+                executed_size_usd=Decimal("400"),
+                buy_tx_hash="0xabc",
+                sell_tx_hash="0xdef",
+            )
+        )
+
+        items = await db.get_arbitrage_history()
+        assert len(items) == 1
+        item = items[0]
+        assert item.routed_at == 1000
+        assert item.updated_at == 2000
+        assert item.latest_event_type == "executed"
+        assert item.latest_status == "completed"
+        assert item.actual_profit_usd == Decimal("4.50")
+        assert item.buy_tx_hash == "0xabc"
+        assert item.sell_tx_hash == "0xdef"
+
+    @pytest.mark.asyncio
+    async def test_from_ts_includes_routed_event_before_window(self, db):
+        """When from_ts is set, the 'routed' event timestamped before from_ts must still
+        be returned so the item can be built correctly — only the opp selection is filtered."""
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", event_type="routed", status="routed", timestamp=100)
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event(
+                "opp-1",
+                event_type="executed",
+                status="completed",
+                timestamp=300,
+                actual_profit_usd=Decimal("3"),
+                executed_size_usd=Decimal("400"),
+            )
+        )
+
+        # from_ts=200 is after the routed event but before the executed event
+        items = await db.get_arbitrage_history(from_ts=200)
+        assert len(items) == 1
+        item = items[0]
+        # routed_at must come from the actual routed event, not the executed one
+        assert item.routed_at == 100
+        assert item.optimal_size_usd == Decimal("500")  # sourced from routed event
+        assert item.actual_profit_usd == Decimal("3")
+
+    @pytest.mark.asyncio
+    async def test_from_ts_excludes_fully_old_opps(self, db):
+        """An opp whose latest event is before from_ts must not appear."""
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-old", event_type="routed", status="routed", timestamp=50)
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-new", event_type="routed", status="routed", timestamp=500)
+        )
+
+        items = await db.get_arbitrage_history(from_ts=200)
+        assert len(items) == 1
+        assert items[0].opportunity_id == "opp-new"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_filter(self, db):
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("cex-1", pipeline="cex_dex")
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event(
+                "dex-1",
+                pipeline="dex_dex",
+                direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
+            )
+        )
+
+        cex_items = await db.get_arbitrage_history(pipeline="cex_dex")
+        assert len(cex_items) == 1
+        assert cex_items[0].opportunity_id == "cex-1"
+
+        dex_items = await db.get_arbitrage_history(pipeline="dex_dex")
+        assert len(dex_items) == 1
+        assert dex_items[0].opportunity_id == "dex-1"
+
+    @pytest.mark.asyncio
+    async def test_limit(self, db):
+        for i in range(5):
+            await db.upsert_arbitrage_history_event(
+                _make_history_event(f"opp-{i}", timestamp=i * 100)
+            )
+
+        items = await db.get_arbitrage_history(limit=3)
+        assert len(items) == 3
+
+    @pytest.mark.asyncio
+    async def test_wallet_snapshot_roundtrip(self, db):
+        wallet = ArbitrageHistoryWalletSnapshot(
+            stable_symbol="USDT",
+            stable_balance=Decimal("1000"),
+            cngn_balance=Decimal("500000"),
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", buy_wallet=wallet, sell_wallet=wallet)
+        )
+
+        items = await db.get_arbitrage_history()
+        assert items[0].buy_wallet is not None
+        assert items[0].buy_wallet.stable_symbol == "USDT"
+        assert items[0].buy_wallet.stable_balance == Decimal("1000")
+        assert items[0].buy_wallet.cngn_balance == Decimal("500000")
