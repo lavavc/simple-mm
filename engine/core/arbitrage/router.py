@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Optional
 
 from engine.core.arbitrage.cex_dex import estimate_cex_dex_trade, estimate_max_cex_buy_usd_for_cngn
-from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
+from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade, estimate_max_dex_buy_usd_for_cngn
 
 # CEX-DEX directions by their cNGN inventory effect
 _SELLS_CNGN_TO_CEX = frozenset({"UNI_BSC_TO_QUIDAX", "UNI_BASE_TO_QUIDAX"})
@@ -69,6 +69,11 @@ def select_route(
                 adjusted_size,
                 estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal),
             )
+        elif c.pipeline == "dex_dex":
+            sell_cngn_cap_trade = estimate_max_dex_buy_usd_for_cngn(c.direction, cngn_bal)
+            if not sell_cngn_cap_trade:
+                continue
+            adjusted_size = min(adjusted_size, Decimal(str(sell_cngn_cap_trade["optimal_size_usd"])))
         else:
             cngn_price = inventory.state.cngn_price_usd
             if cngn_price > 0:
@@ -86,12 +91,16 @@ def select_route(
                 continue
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
         elif c.pipeline == "dex_dex":
-            # Recompute profit at capped size — detection found the unconstrained optimum,
-            # which overstates profit when inventory forces a smaller trade.
-            recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
-            if not recomputed:
-                continue
-            expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
+            cngn_cap_size = Decimal(str(sell_cngn_cap_trade["optimal_size_usd"]))
+            if adjusted_size == cngn_cap_size:
+                # cNGN cap was binding — profit already computed at this size.
+                expected_profit_usd = Decimal(str(sell_cngn_cap_trade["expected_profit_usd"]))
+            else:
+                # Stablecoin cap was tighter — rescore at the reduced size.
+                recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
+                if not recomputed:
+                    continue
+                expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
 
         # Net profit after gas and rebalance friction
         rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)

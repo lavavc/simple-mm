@@ -206,17 +206,38 @@ class TestSelectRouteNetProfit:
             gas_usd=0.5,
         )
 
-        def _fake_estimate(direction, investment_usd):
+        def _fake_exact_cap(direction, wallet_cngn):
             assert direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
-            assert investment_usd == Decimal("100")
-            return {"expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
+            assert wallet_cngn == Decimal("1000000")
+            return {"optimal_size_usd": 100.0, "expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
 
-        monkeypatch.setattr(_router, "estimate_dex_dex_trade", _fake_estimate)
+        monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", _fake_exact_cap)
+        # estimate_dex_dex_trade must NOT be called when the cNGN cap is binding —
+        # profit is already priced inside estimate_max_dex_buy_usd_for_cngn.
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
-        # net = 2.0 (recomputed at $100) - 0.5 (gas) - rebalance_cost
+        # net = 2.0 (from cap trade result) - 0.5 (gas) - rebalance_cost
         assert result.net_profit_usd == Decimal("1.4")
+
+    def test_dex_dex_route_blocks_when_exact_sell_cap_unavailable(self, monkeypatch):
+        inv = _make_inventory(
+            per_account={"uni-bsc": 100},
+            cngn_per_account={"uni-base": 1000000},
+        )
+        c = _make_candidate(
+            direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
+            pipeline="dex_dex",
+            buy_venue="uni-bsc",
+            sell_venue="uni-base",
+            size_usd=500.0,
+            profit_usd=50.0,
+            gas_usd=0.5,
+        )
+
+        monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: None)
+
+        assert select_route([c], inv) is None
 
     def test_cex_dex_route_recomputes_profit_at_capped_size(self, monkeypatch):
         """For CEX-DEX, the capped route must be rescored at the capped size."""
