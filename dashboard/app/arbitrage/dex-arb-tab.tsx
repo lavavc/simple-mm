@@ -71,6 +71,7 @@ export default function DexArbPage() {
         queryKey: ['dex_arb_curve'],
         queryFn: async () => null,
         staleTime: Infinity,
+        gcTime: Infinity,
     });
 
     const { data, isLoading: isOppsLoading } = useQuery({

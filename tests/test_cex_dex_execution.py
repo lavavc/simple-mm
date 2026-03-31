@@ -239,7 +239,6 @@ class TestCexDexPreflightGate:
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0")
 
-
 # =============================================================================
 # Issue 6: _clean_revert tests
 # =============================================================================
@@ -271,7 +270,6 @@ class TestCleanRevert:
         payload = "0x08c379a0" + encode(["string"], ["INSUFFICIENT_LIQUIDITY"]).hex()
         result = _clean_revert(payload)
         assert result == "execution reverted: INSUFFICIENT_LIQUIDITY"
-
 
 # =============================================================================
 # _classify_preflight_error unit tests

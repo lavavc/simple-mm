@@ -20,6 +20,7 @@ const EVENT_TO_KEYS: Record<string, string[][]> = {
   refill_alert: [['alerts']],
   system: [['status'], ['health']],
   account_balances: [],
+  arb_history_updated: [['arbHistory']],
   arbitrage_opportunity: [['opportunities'], ['arbitrageStatus']],
   arbitrage_completed: [['opportunities'], ['arbitrageStatus']],
   quidax_orderbook_depth: [['quidaxDepth']],

@@ -23,6 +23,7 @@ from engine.api.schemas import (
     Alert,
     GlobalPosition,
     ArbitrageParams,
+    ArbitrageHistoryItem,
     ArbitrageOpportunity,
     ArbitrageStatus,
     AccountInfo,
@@ -725,6 +726,18 @@ async def get_dex_arbitrage_opportunities(
     """Get detected DEX arbitrage opportunities."""
     db = await get_db()
     return await db.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
+
+
+@router.get("/arbitrage/history", response_model=list[ArbitrageHistoryItem])
+async def get_arbitrage_history(
+    pipeline: Optional[str] = Query(None, description="Filter by pipeline"),
+    from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
+    to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
+    limit: int = Query(30, le=200),
+):
+    """Get grouped arbitrage lifecycle history."""
+    db = await get_db()
+    return await db.get_arbitrage_history(pipeline, from_ts, to_ts, limit)
 
 @router.get("/arbitrage/liquidation")
 async def get_liquidation_valuation():

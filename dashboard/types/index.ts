@@ -101,6 +101,36 @@ export interface ArbitrageOpportunity {
   reason?: string;
 }
 
+export interface ArbitrageHistoryWalletSnapshot {
+  stable_symbol?: string;
+  stable_balance?: number;
+  cngn_balance?: number;
+}
+
+export interface ArbitrageHistoryItem {
+  opportunity_id: string;
+  pipeline: 'cex_dex' | 'dex_dex';
+  direction: string;
+  buy_venue: string;
+  sell_venue: string;
+  latest_status: string;
+  latest_event_type: 'routed' | 'executed' | 'failed';
+  routed_at: number;
+  updated_at: number;
+  optimal_size_usd?: number;
+  routed_size_usd?: number;
+  executed_size_usd?: number;
+  expected_profit_usd?: number;
+  actual_profit_usd?: number;
+  net_profit_usd?: number;
+  net_spread_bps?: number;
+  reason?: string;
+  buy_wallet?: ArbitrageHistoryWalletSnapshot;
+  sell_wallet?: ArbitrageHistoryWalletSnapshot;
+  buy_tx_hash?: string;
+  sell_tx_hash?: string;
+}
+
 export interface ArbitrageStatus {
   enabled: boolean;
   execute_cex_dex: boolean;

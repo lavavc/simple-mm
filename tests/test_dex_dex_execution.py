@@ -143,32 +143,42 @@ def _make_engine(venues, test_db):
 
 class TestPreflightGate:
     @pytest.mark.asyncio
-    async def test_sell_preflight_fail_prevents_buy(self):
+    async def test_sell_preflight_fail_prevents_buy(self, test_db):
         """If sell-side simulation fails, the buy leg must never execute."""
         buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
         sell_venue = FakeV4Venue("uni-bsc", sim_result="execution reverted: TRANSFER_FROM_FAILED", swap_ok=False)
         venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, None)
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        opp_id = "opp-preflight-1"
+        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), "opp-preflight-1")
+            await engine._execute_dex_dex(_route(), opp_id)
 
         assert buy_venue.swap_calls == [], "buy swap must not be called when sell preflight fails"
         assert not engine._arb_executing
+        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        assert opp is not None
+        assert opp.status == "abandoned"
 
     @pytest.mark.asyncio
-    async def test_buy_preflight_fail_prevents_buy(self):
+    async def test_buy_preflight_fail_prevents_buy(self, test_db):
         """If buy-side simulation fails, the buy leg must not execute."""
         buy_venue = FakeV4Venue("uni-base", sim_result="execution reverted: INSUFFICIENT_BALANCE")
         sell_venue = FakeV4Venue("uni-bsc", sim_result=None)
         venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, None)
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        opp_id = "opp-preflight-2"
+        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), "opp-preflight-2")
+            await engine._execute_dex_dex(_route(), opp_id)
 
         assert buy_venue.swap_calls == []
         assert not engine._arb_executing
+        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        assert opp is not None
+        assert opp.status == "abandoned"
 
     @pytest.mark.asyncio
     async def test_both_preflights_pass_proceeds_to_buy(self, test_db):
@@ -192,7 +202,6 @@ class TestPreflightGate:
         assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
         # Live sell must use the same sell estimate that the sell-side preflight validated.
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
-
 
 # =============================================================================
 # 2. Half-open detection

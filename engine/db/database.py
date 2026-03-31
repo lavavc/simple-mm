@@ -7,7 +7,17 @@ from pathlib import Path
 from typing import Optional, Any
 from decimal import Decimal
 
-from engine.api.schemas import PriceQuote, Position, Alert, ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity
+from engine.api.schemas import (
+    Alert,
+    ArbitrageHistoryEvent,
+    ArbitrageHistoryItem,
+    ArbitrageHistoryWalletSnapshot,
+    ArbitrageOpportunity,
+    ArbitrageTrade,
+    DexArbOpportunity,
+    Position,
+    PriceQuote,
+)
 
 
 class Database:
@@ -176,6 +186,38 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_time ON dex_arbitrage_opportunities(timestamp);
             CREATE INDEX IF NOT EXISTS idx_dex_arb_opp_status ON dex_arbitrage_opportunities(status);
+
+            -- Arbitrage lifecycle history
+            CREATE TABLE IF NOT EXISTS arbitrage_history_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                opportunity_id TEXT NOT NULL,
+                pipeline TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                buy_venue TEXT NOT NULL,
+                sell_venue TEXT NOT NULL,
+                status TEXT NOT NULL,
+                optimal_size_usd REAL,
+                routed_size_usd REAL,
+                executed_size_usd REAL,
+                expected_profit_usd REAL,
+                actual_profit_usd REAL,
+                net_profit_usd REAL,
+                net_spread_bps INTEGER,
+                reason TEXT,
+                buy_wallet_stable_symbol TEXT,
+                buy_wallet_stable_balance REAL,
+                buy_wallet_cngn_balance REAL,
+                sell_wallet_stable_symbol TEXT,
+                sell_wallet_stable_balance REAL,
+                sell_wallet_cngn_balance REAL,
+                buy_tx_hash TEXT,
+                sell_tx_hash TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_arb_history_opp ON arbitrage_history_events(opportunity_id);
+            CREATE INDEX IF NOT EXISTS idx_arb_history_time ON arbitrage_history_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_arb_history_pipeline ON arbitrage_history_events(pipeline);
             """
         )
         await self._conn.commit()
@@ -223,6 +265,50 @@ class Database:
         if "executed_size_usd" not in cols:
             await self._conn.execute(
                 "ALTER TABLE dex_arbitrage_opportunities ADD COLUMN executed_size_usd REAL"
+            )
+
+        cursor = await self._conn.execute("PRAGMA table_info(arbitrage_history_events)")
+        history_cols = {row[1] for row in await cursor.fetchall()}
+        history_additions = {
+            "optimal_size_usd": "ALTER TABLE arbitrage_history_events ADD COLUMN optimal_size_usd REAL",
+            "routed_size_usd": "ALTER TABLE arbitrage_history_events ADD COLUMN routed_size_usd REAL",
+            "executed_size_usd": "ALTER TABLE arbitrage_history_events ADD COLUMN executed_size_usd REAL",
+            "expected_profit_usd": "ALTER TABLE arbitrage_history_events ADD COLUMN expected_profit_usd REAL",
+            "actual_profit_usd": "ALTER TABLE arbitrage_history_events ADD COLUMN actual_profit_usd REAL",
+            "net_profit_usd": "ALTER TABLE arbitrage_history_events ADD COLUMN net_profit_usd REAL",
+            "net_spread_bps": "ALTER TABLE arbitrage_history_events ADD COLUMN net_spread_bps INTEGER",
+            "reason": "ALTER TABLE arbitrage_history_events ADD COLUMN reason TEXT",
+            "buy_wallet_stable_symbol": "ALTER TABLE arbitrage_history_events ADD COLUMN buy_wallet_stable_symbol TEXT",
+            "buy_wallet_stable_balance": "ALTER TABLE arbitrage_history_events ADD COLUMN buy_wallet_stable_balance REAL",
+            "buy_wallet_cngn_balance": "ALTER TABLE arbitrage_history_events ADD COLUMN buy_wallet_cngn_balance REAL",
+            "sell_wallet_stable_symbol": "ALTER TABLE arbitrage_history_events ADD COLUMN sell_wallet_stable_symbol TEXT",
+            "sell_wallet_stable_balance": "ALTER TABLE arbitrage_history_events ADD COLUMN sell_wallet_stable_balance REAL",
+            "sell_wallet_cngn_balance": "ALTER TABLE arbitrage_history_events ADD COLUMN sell_wallet_cngn_balance REAL",
+            "buy_tx_hash": "ALTER TABLE arbitrage_history_events ADD COLUMN buy_tx_hash TEXT",
+            "sell_tx_hash": "ALTER TABLE arbitrage_history_events ADD COLUMN sell_tx_hash TEXT",
+        }
+        for col, ddl in history_additions.items():
+            if col not in history_cols:
+                await self._conn.execute(ddl)
+        cursor = await self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_arb_history_opp_event'"
+        )
+        if not await cursor.fetchone():
+            await self._conn.execute(
+                """
+                DELETE FROM arbitrage_history_events
+                WHERE id NOT IN (
+                    SELECT MAX(id)
+                    FROM arbitrage_history_events
+                    GROUP BY opportunity_id, event_type
+                )
+                """
+            )
+            await self._conn.execute(
+                """
+                CREATE UNIQUE INDEX idx_arb_history_opp_event
+                ON arbitrage_history_events(opportunity_id, event_type)
+                """
             )
 
         cursor = await self._conn.execute("PRAGMA table_info(positions)")
@@ -872,6 +958,207 @@ class Database:
             gas_usd=Decimal(str(dict(row).get("gas_usd"))) if dict(row).get("gas_usd") is not None else None,
             buy_amount_cngn=Decimal(str(dict(row).get("buy_amount_cngn"))) if dict(row).get("buy_amount_cngn") is not None else None,
         )
+
+    async def upsert_arbitrage_history_event(self, event: ArbitrageHistoryEvent):
+        """Insert or refresh a lifecycle event for an arbitrage attempt."""
+        await self._conn.execute(
+            """
+            INSERT INTO arbitrage_history_events (
+                opportunity_id, pipeline, event_type, timestamp, direction,
+                buy_venue, sell_venue, status, optimal_size_usd, routed_size_usd,
+                executed_size_usd, expected_profit_usd, actual_profit_usd, net_profit_usd,
+                net_spread_bps, reason, buy_wallet_stable_symbol,
+                buy_wallet_stable_balance, buy_wallet_cngn_balance, sell_wallet_stable_symbol,
+                sell_wallet_stable_balance, sell_wallet_cngn_balance, buy_tx_hash, sell_tx_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(opportunity_id, event_type) DO UPDATE SET
+                timestamp = excluded.timestamp,
+                direction = excluded.direction,
+                buy_venue = excluded.buy_venue,
+                sell_venue = excluded.sell_venue,
+                status = excluded.status,
+                optimal_size_usd = excluded.optimal_size_usd,
+                routed_size_usd = excluded.routed_size_usd,
+                executed_size_usd = excluded.executed_size_usd,
+                expected_profit_usd = excluded.expected_profit_usd,
+                actual_profit_usd = excluded.actual_profit_usd,
+                net_profit_usd = excluded.net_profit_usd,
+                net_spread_bps = excluded.net_spread_bps,
+                reason = excluded.reason,
+                buy_wallet_stable_symbol = excluded.buy_wallet_stable_symbol,
+                buy_wallet_stable_balance = excluded.buy_wallet_stable_balance,
+                buy_wallet_cngn_balance = excluded.buy_wallet_cngn_balance,
+                sell_wallet_stable_symbol = excluded.sell_wallet_stable_symbol,
+                sell_wallet_stable_balance = excluded.sell_wallet_stable_balance,
+                sell_wallet_cngn_balance = excluded.sell_wallet_cngn_balance,
+                buy_tx_hash = excluded.buy_tx_hash,
+                sell_tx_hash = excluded.sell_tx_hash
+            """,
+            (
+                event.opportunity_id,
+                event.pipeline,
+                event.event_type,
+                event.timestamp,
+                event.direction,
+                event.buy_venue,
+                event.sell_venue,
+                event.status,
+                float(event.optimal_size_usd) if event.optimal_size_usd is not None else None,
+                float(event.routed_size_usd) if event.routed_size_usd is not None else None,
+                float(event.executed_size_usd) if event.executed_size_usd is not None else None,
+                float(event.expected_profit_usd) if event.expected_profit_usd is not None else None,
+                float(event.actual_profit_usd) if event.actual_profit_usd is not None else None,
+                float(event.net_profit_usd) if event.net_profit_usd is not None else None,
+                event.net_spread_bps,
+                event.reason,
+                event.buy_wallet.stable_symbol if event.buy_wallet else None,
+                float(event.buy_wallet.stable_balance) if event.buy_wallet and event.buy_wallet.stable_balance is not None else None,
+                float(event.buy_wallet.cngn_balance) if event.buy_wallet and event.buy_wallet.cngn_balance is not None else None,
+                event.sell_wallet.stable_symbol if event.sell_wallet else None,
+                float(event.sell_wallet.stable_balance) if event.sell_wallet and event.sell_wallet.stable_balance is not None else None,
+                float(event.sell_wallet.cngn_balance) if event.sell_wallet and event.sell_wallet.cngn_balance is not None else None,
+                event.buy_tx_hash,
+                event.sell_tx_hash,
+            ),
+        )
+        await self._conn.commit()
+
+    def _history_event_from_row(self, row: aiosqlite.Row) -> ArbitrageHistoryEvent:
+        buy_wallet = None
+        if (
+            row["buy_wallet_stable_symbol"] is not None
+            or row["buy_wallet_stable_balance"] is not None
+            or row["buy_wallet_cngn_balance"] is not None
+        ):
+            buy_wallet = ArbitrageHistoryWalletSnapshot(
+                stable_symbol=row["buy_wallet_stable_symbol"],
+                stable_balance=Decimal(str(row["buy_wallet_stable_balance"])) if row["buy_wallet_stable_balance"] is not None else None,
+                cngn_balance=Decimal(str(row["buy_wallet_cngn_balance"])) if row["buy_wallet_cngn_balance"] is not None else None,
+            )
+
+        sell_wallet = None
+        if (
+            row["sell_wallet_stable_symbol"] is not None
+            or row["sell_wallet_stable_balance"] is not None
+            or row["sell_wallet_cngn_balance"] is not None
+        ):
+            sell_wallet = ArbitrageHistoryWalletSnapshot(
+                stable_symbol=row["sell_wallet_stable_symbol"],
+                stable_balance=Decimal(str(row["sell_wallet_stable_balance"])) if row["sell_wallet_stable_balance"] is not None else None,
+                cngn_balance=Decimal(str(row["sell_wallet_cngn_balance"])) if row["sell_wallet_cngn_balance"] is not None else None,
+            )
+
+        return ArbitrageHistoryEvent(
+            id=row["id"],
+            opportunity_id=row["opportunity_id"],
+            pipeline=row["pipeline"],
+            event_type=row["event_type"],
+            timestamp=row["timestamp"],
+            direction=row["direction"],
+            buy_venue=row["buy_venue"],
+            sell_venue=row["sell_venue"],
+            status=row["status"],
+            optimal_size_usd=Decimal(str(row["optimal_size_usd"])) if row["optimal_size_usd"] is not None else None,
+            routed_size_usd=Decimal(str(row["routed_size_usd"])) if row["routed_size_usd"] is not None else None,
+            executed_size_usd=Decimal(str(row["executed_size_usd"])) if row["executed_size_usd"] is not None else None,
+            expected_profit_usd=Decimal(str(row["expected_profit_usd"])) if row["expected_profit_usd"] is not None else None,
+            actual_profit_usd=Decimal(str(row["actual_profit_usd"])) if row["actual_profit_usd"] is not None else None,
+            net_profit_usd=Decimal(str(row["net_profit_usd"])) if row["net_profit_usd"] is not None else None,
+            net_spread_bps=row["net_spread_bps"],
+            reason=row["reason"],
+            buy_wallet=buy_wallet,
+            sell_wallet=sell_wallet,
+            buy_tx_hash=row["buy_tx_hash"],
+            sell_tx_hash=row["sell_tx_hash"],
+        )
+
+    async def get_arbitrage_history(
+        self,
+        pipeline: Optional[str] = None,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+        limit: int = 50,
+    ) -> list[ArbitrageHistoryItem]:
+        """Return grouped lifecycle history for routed arbitrage attempts."""
+        filters = ["event_type IN ('routed', 'executed', 'failed')"]
+        params: list[Any] = []
+        if pipeline:
+            filters.append("pipeline = ?")
+            params.append(pipeline)
+        if from_ts:
+            filters.append("timestamp >= ?")
+            params.append(from_ts)
+        if to_ts:
+            filters.append("timestamp <= ?")
+            params.append(to_ts)
+        where_sql = " AND ".join(filters)
+
+        latest_query = (
+            "SELECT opportunity_id, MAX(timestamp) AS latest_ts "
+            "FROM arbitrage_history_events "
+            f"WHERE {where_sql} "
+            "GROUP BY opportunity_id "
+            "ORDER BY latest_ts DESC "
+            "LIMIT ?"
+        )
+        cursor = await self._conn.execute(latest_query, [*params, limit])
+        latest_rows = await cursor.fetchall()
+        if not latest_rows:
+            return []
+
+        opp_ids = [row["opportunity_id"] for row in latest_rows]
+        ordering = {row["opportunity_id"]: idx for idx, row in enumerate(latest_rows)}
+        placeholders = ", ".join("?" for _ in opp_ids)
+        cursor = await self._conn.execute(
+            f"""
+            SELECT *
+            FROM arbitrage_history_events
+            WHERE opportunity_id IN ({placeholders})
+              AND event_type IN ('routed', 'executed', 'failed')
+            ORDER BY timestamp ASC, id ASC
+            """,
+            opp_ids,
+        )
+        rows = await cursor.fetchall()
+
+        grouped: dict[str, list[ArbitrageHistoryEvent]] = {}
+        for row in rows:
+            event = self._history_event_from_row(row)
+            grouped.setdefault(event.opportunity_id, []).append(event)
+
+        items: list[ArbitrageHistoryItem] = []
+        for opp_id in sorted(grouped, key=lambda key: ordering[key]):
+            events = grouped[opp_id]
+            routed = next((event for event in events if event.event_type == "routed"), events[0])
+            latest = events[-1]
+            final = next((event for event in reversed(events) if event.event_type in {"executed", "failed"}), None)
+            items.append(
+                ArbitrageHistoryItem(
+                    opportunity_id=opp_id,
+                    pipeline=latest.pipeline,
+                    direction=latest.direction,
+                    buy_venue=latest.buy_venue,
+                    sell_venue=latest.sell_venue,
+                    latest_status=latest.status,
+                    latest_event_type=latest.event_type,
+                    routed_at=routed.timestamp,
+                    updated_at=latest.timestamp,
+                    optimal_size_usd=routed.optimal_size_usd,
+                    routed_size_usd=routed.routed_size_usd,
+                    executed_size_usd=final.executed_size_usd if final else None,
+                    expected_profit_usd=routed.expected_profit_usd,
+                    actual_profit_usd=final.actual_profit_usd if final else None,
+                    net_profit_usd=routed.net_profit_usd,
+                    net_spread_bps=routed.net_spread_bps,
+                    reason=latest.reason,
+                    buy_wallet=routed.buy_wallet,
+                    sell_wallet=routed.sell_wallet,
+                    buy_tx_hash=latest.buy_tx_hash,
+                    sell_tx_hash=latest.sell_tx_hash,
+                )
+            )
+
+        return items
 
     async def get_arbitrage_stats(
         self,
