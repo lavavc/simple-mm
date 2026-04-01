@@ -29,6 +29,7 @@ def _make_candidate(
     profit_usd: float = 5.0,
     gas_usd: float = 0.07,
     signal: dict | None = None,
+    cngn_effect: str = "buys_cngn_from_cex",
 ) -> RouteCandidate:
     if signal is None:
         signal = {"depth": _default_depth()} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
@@ -41,6 +42,7 @@ def _make_candidate(
         expected_profit_usd=Decimal(str(profit_usd)),
         gas_usd=Decimal(str(gas_usd)),
         signal=signal,
+        cngn_effect=cngn_effect,
     )
 
 
@@ -204,6 +206,7 @@ class TestSelectRouteNetProfit:
             size_usd=500.0,
             profit_usd=50.0,  # unconstrained optimal — overstates profit at capped size
             gas_usd=0.5,
+            cngn_effect="neutral",
         )
 
         def _fake_exact_cap(direction, wallet_cngn):
@@ -233,6 +236,7 @@ class TestSelectRouteNetProfit:
             size_usd=500.0,
             profit_usd=50.0,
             gas_usd=0.5,
+            cngn_effect="neutral",
         )
 
         monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: None)

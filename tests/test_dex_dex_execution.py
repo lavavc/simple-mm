@@ -20,11 +20,12 @@ _FAKE_ESTIMATE = {"cngn_transferred": 140000.0, "expected_profit_usd": 1.2}
 
 @pytest.fixture(autouse=True)
 def mock_dex_dex_estimate(monkeypatch):
-    """Seed pool estimate so _execute_dex_dex doesn't abort on cold cache in unit tests."""
+    """Seed pool estimate so _execute_route doesn't abort on cold cache in unit tests."""
     monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: _FAKE_ESTIMATE)
 
 from engine.api.schemas import ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
 from engine.core.arbitrage.engine import ArbitrageEngine
+from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
 from engine.db.database import Database
 
@@ -88,6 +89,7 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
             },
             "prices": {"uni-bsc": "0.00061", "uni-base": "0.00061"},
         },
+        cngn_effect="neutral",
     )
     return SelectedRoute(
         candidate=candidate,
@@ -153,7 +155,7 @@ class TestPreflightGate:
         opp_id = "opp-preflight-1"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), opp_id)
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert buy_venue.swap_calls == [], "buy swap must not be called when sell preflight fails"
         assert not engine._arb_executing
@@ -172,7 +174,7 @@ class TestPreflightGate:
         opp_id = "opp-preflight-2"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), opp_id)
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert buy_venue.swap_calls == []
         assert not engine._arb_executing
@@ -190,17 +192,17 @@ class TestPreflightGate:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         await test_db.insert_dex_arbitrage_opportunity(_make_opp("opp-preflight-3", status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), "opp-preflight-3")
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), "opp-preflight-3")
 
         assert len(buy_venue.swap_calls) == 1
         opp = await test_db.get_dex_arbitrage_opportunity("opp-preflight-3")
         assert opp.status == "completed"
         assert opp.actual_profit_usd is not None
         assert opp.sell_tx_hash is not None
-        # Preflight happened (amount is from pool estimate, may be 0 in test with cold cache).
+        # Preflight used the pool estimate amount.
         assert len(sell_venue.sim_calls) == 1
         assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
-        # Live sell must use the same sell estimate that the sell-side preflight validated.
+        # Live sell uses the same estimate that the sell-side preflight validated.
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
 
 # =============================================================================
@@ -219,7 +221,7 @@ class TestHalfOpenDetection:
         opp_id = "opp-halfopen-1"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), opp_id)
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
         assert opp.status == "half_open"
@@ -236,7 +238,7 @@ class TestHalfOpenDetection:
         opp_id = "opp-halfopen-2"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), opp_id)
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert engine.inventory._state.circuit_breaker_active
 
@@ -251,7 +253,7 @@ class TestHalfOpenDetection:
         opp_id = "opp-halfopen-3"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), opp_id)
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         critical = [a for a in alerts if a.get("severity") == "critical"]
         assert len(critical) == 1
@@ -271,7 +273,7 @@ class TestHalfOpenDetection:
         opp_id = "opp-halfopen-4"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_dex_dex(_route(), opp_id)
+            await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
         assert opp.reason is not None
