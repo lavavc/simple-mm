@@ -12,223 +12,13 @@ from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportuni
 from engine.core.arbitrage.executor import ArbitrageExecutor
 from engine.core.arbitrage.history import ArbitrageHistoryRecorder
 from engine.core.arbitrage.inventory import InventoryTracker
+from engine.core.arbitrage.preflight import _coerce_decimal, _handle_preflight_error
 from engine.core.arbitrage.route_registry import ROUTES, ROUTES_BY_DIRECTION, TradeRoute
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
-
-
-def _coerce_decimal(value: Any) -> Decimal | None:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return None
-
-
-def _fmt_decimal(value: Decimal | None, places: int = 2) -> str | None:
-    if value is None:
-        return None
-    return f"{value:,.{places}f}"
-
-
-def _fmt_usd(value: Decimal | None) -> str | None:
-    formatted = _fmt_decimal(value, places=2)
-    return f"${formatted}" if formatted is not None else None
-
-
-def _short_address(address: str | None) -> str | None:
-    if not address:
-        return None
-    if len(address) <= 10:
-        return address
-    return f"{address[:6]}...{address[-6:]}"
-
-
-def _infer_wallet_symbol(venue: Any, wallet_asset: str) -> str:
-    if wallet_asset == "stable":
-        config = getattr(venue, "config", None)
-        if config:
-            return config.token0_symbol if getattr(config, "invert_price", False) else config.token1_symbol
-        return "stable"
-    return "cNGN"
-
-
-def _build_preflight_context(engine, venue_name: str, log_ctx: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    details: dict[str, Any] = {}
-    lines: list[str] = []
-
-    direction = log_ctx.get("direction")
-    if direction:
-        details["direction"] = direction
-        lines.append(f"Direction: {direction}")
-
-    size_usd = _coerce_decimal(log_ctx.get("size_usd"))
-    if size_usd is not None:
-        details["size_usd"] = float(size_usd)
-        lines.append(f"Trade size: {_fmt_usd(size_usd)}")
-
-    sell_cngn_est = _coerce_decimal(log_ctx.get("sell_cngn_est"))
-    if sell_cngn_est is not None:
-        details["sell_cngn_est"] = float(sell_cngn_est)
-        lines.append(f"Estimated sell: {_fmt_decimal(sell_cngn_est)} cNGN")
-
-    min_out_usd = _coerce_decimal(log_ctx.get("min_out_usd"))
-    if min_out_usd is not None:
-        details["min_out_usd"] = float(min_out_usd)
-        lines.append(f"Min out: {_fmt_usd(min_out_usd)}")
-
-    wallet_asset = str(log_ctx.get("wallet_asset") or "cngn")
-    details["wallet_asset"] = wallet_asset
-
-    venue = getattr(engine, "venues", {}).get(venue_name)
-    wallet_symbol = log_ctx.get("wallet_symbol") or _infer_wallet_symbol(venue, wallet_asset)
-    details["wallet_symbol"] = wallet_symbol
-
-    wallet_amount = _coerce_decimal(log_ctx.get("wallet_amount"))
-    if wallet_amount is None:
-        if wallet_asset == "stable":
-            wallet_amount = engine.inventory.state.per_account_stable.get(venue_name)
-        else:
-            wallet_amount = engine.inventory.state.per_account_cngn.get(venue_name)
-    if wallet_amount is not None:
-        details["wallet_amount"] = float(wallet_amount)
-
-    sell_price_usd = _coerce_decimal(log_ctx.get("sell_price_usd"))
-    if sell_price_usd is None or sell_price_usd <= 0:
-        snapshot_price = engine.inventory.state.cngn_price_usd
-        if snapshot_price > 0:
-            sell_price_usd = snapshot_price
-    if sell_price_usd is not None and sell_price_usd > 0:
-        details["sell_price_usd"] = float(sell_price_usd)
-
-    wallet_usd = _coerce_decimal(log_ctx.get("wallet_amount_usd"))
-    if wallet_usd is None and wallet_amount is not None:
-        if wallet_asset == "stable":
-            wallet_usd = wallet_amount
-        elif sell_price_usd is not None and sell_price_usd > 0:
-            wallet_usd = wallet_amount * sell_price_usd
-    if wallet_usd is not None:
-        details["wallet_usd"] = float(wallet_usd)
-
-    wallet_address = getattr(getattr(venue, "trade_account", None), "address", None)
-    if wallet_address:
-        details["wallet_address"] = wallet_address
-
-    if wallet_amount is not None or wallet_address:
-        wallet_bits = []
-        short_wallet = _short_address(wallet_address)
-        if short_wallet:
-            wallet_bits.append(short_wallet)
-        if wallet_amount is not None:
-            wallet_bits.append(f"{_fmt_decimal(wallet_amount)} {wallet_symbol}")
-        if wallet_usd is not None:
-            wallet_bits.append(f"~{_fmt_usd(wallet_usd)}")
-        lines.append(f"Wallet: {' | '.join(wallet_bits)}")
-
-    required_amount = _coerce_decimal(log_ctx.get("required_amount"))
-    required_symbol = str(log_ctx.get("required_symbol") or wallet_symbol)
-    if required_amount is None and sell_cngn_est is not None and wallet_asset == "cngn":
-        required_amount = sell_cngn_est
-        required_symbol = wallet_symbol
-    if required_amount is not None:
-        details["required_amount"] = float(required_amount)
-        details["required_symbol"] = required_symbol
-
-    if required_amount is not None and wallet_amount is not None and required_amount > wallet_amount:
-        shortfall = required_amount - wallet_amount
-        details["wallet_shortfall_amount"] = float(shortfall)
-        details["wallet_shortfall_symbol"] = required_symbol
-        lines.append(f"Shortfall: {_fmt_decimal(shortfall)} {required_symbol}")
-
-    if not lines:
-        return "", details
-    return "\n" + "\n".join(lines), details
-
-
-def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: str, **log_ctx) -> None:
-    """Classify a simulate_swap failure and take the appropriate action.
-
-    Only a confirmed balance revert zeros the venue's cNGN inventory.
-    All other categories leave inventory intact and either broadcast a warning
-    (rpc, unknown) or trip the circuit breaker (pool_paused, permit2).
-    """
-    from engine.core.arbitrage.executor import _classify_preflight_error
-    category = _classify_preflight_error(err)
-    context_text, context_fields = _build_preflight_context(engine, venue_name, log_ctx)
-    event_base = {
-        "type": "alert",
-        "cooldown_s": 60,
-    }
-    log_data = {**log_ctx, **context_fields}
-
-    if category == "balance":
-        from decimal import Decimal
-        wallet_asset = str(context_fields.get("wallet_asset") or "cngn")
-        wallet_symbol = str(context_fields.get("wallet_symbol") or ("stable" if wallet_asset == "stable" else "cNGN"))
-        if wallet_asset == "stable":
-            engine.inventory.reconcile_stables({venue_name: Decimal("0")})
-            balance_message = (
-                f"{wallet_symbol} balance on {venue_name} is zero or below required amount — "
-                "stable inventory zeroed, venue excluded from sizing. "
-            )
-        else:
-            engine.inventory.reconcile_cngn({venue_name: Decimal("0")})
-            balance_message = (
-                f"{wallet_symbol} balance on {venue_name} is zero or below required amount — "
-                "inventory zeroed, venue excluded from sizing. "
-            )
-        logger.warning(log_key, venue=venue_name, category=category, error=err, **log_data)
-        engine.broadcast({**event_base, "severity": "warning",
-                          "message": (
-                              balance_message
-                              + f"Error: {err}"
-                              + f"{context_text}"
-                          )})
-
-    elif category == "rpc":
-        logger.warning(log_key, venue=venue_name, category=category, error=err, **log_data)
-        engine.broadcast({**event_base, "severity": "warning",
-                          "message": (
-                              f"RPC error on {venue_name} during preflight — trading skipped this cycle. "
-                              f"Check node connectivity. Error: {err}"
-                              f"{context_text}"
-                          )})
-
-    elif category == "permit2":
-        logger.error(log_key, venue=venue_name, category=category, error=err, **log_data)
-        engine.broadcast({**event_base, "severity": "critical",
-                          "message": (
-                              f"Permit2 approval missing or expired on {venue_name}. "
-                              "Approvals run automatically before each swap — reset the circuit breaker to retry. "
-                              f"Error: {err}"
-                              f"{context_text}"
-                          )})
-
-    elif category == "pool_paused":
-        engine.inventory.trip_circuit_breaker(f"Pool paused/locked on {venue_name}")
-        logger.error(log_key, venue=venue_name, category=category, error=err, **log_data)
-        engine.broadcast({**event_base, "severity": "critical",
-                          "message": (
-                              f"Pool paused or locked on {venue_name} — circuit breaker tripped. "
-                              "Investigate pool state before resetting. "
-                              f"Error: {err}"
-                              f"{context_text}"
-                          )})
-
-    else:  # unknown
-        logger.error(log_key, venue=venue_name, category=category, error=err, **log_data)
-        engine.broadcast({**event_base, "severity": "warning",
-                          "message": (
-                              f"Unrecognised preflight revert on {venue_name} — trading skipped. "
-                              f"Error: {err}"
-                              f"{context_text}"
-                          )})
 
 
 class ArbitrageEngine:
@@ -280,21 +70,14 @@ class ArbitrageEngine:
         self._enabled = False
         logger.info("arbitrage_engine_disabled")
 
-    def enable_execute_cex_dex(self):
-        self.execute_cex_dex_enabled = True
-        logger.info("execution_cex_dex_enabled")
-
-    def disable_execute_cex_dex(self):
-        self.execute_cex_dex_enabled = False
-        logger.info("execution_cex_dex_disabled")
-
-    def enable_execute_dex_dex(self):
-        self.execute_dex_dex_enabled = True
-        logger.info("execution_dex_dex_enabled")
-
-    def disable_execute_dex_dex(self):
-        self.execute_dex_dex_enabled = False
-        logger.info("execution_dex_dex_disabled")
+    def set_execution_enabled(self, pipeline: str, enabled: bool) -> None:
+        if pipeline == "cex_dex":
+            self.execute_cex_dex_enabled = enabled
+        elif pipeline == "dex_dex":
+            self.execute_dex_dex_enabled = enabled
+        else:
+            raise ValueError(f"Unknown pipeline: {pipeline}")
+        logger.info("execution_pipeline_updated", pipeline=pipeline, enabled=enabled)
 
     # ------------------------------------------------------------------
     # CEX-DEX pipeline
@@ -722,16 +505,9 @@ class ArbitrageEngine:
         await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
 
         direction = optimal["direction"]
-        existing = await db._conn.execute(
-            "SELECT id FROM dex_arbitrage_opportunities "
-            "WHERE status IN ('detected', 'executing') AND direction = ? "
-            "ORDER BY timestamp DESC LIMIT 1",
-            (direction,)
-        )
-        row = await existing.fetchone()
-
-        if row:
-            opp_id = row["id"]
+        existing_id = await db.get_active_dex_opportunity(direction)
+        if existing_id:
+            opp_id = existing_id
         else:
             opp_id = f"dex-arb-{uuid.uuid4()}"
             opportunity = DexArbOpportunity(
@@ -1004,134 +780,79 @@ class ArbitrageEngine:
                     f"(old record — check buy tx {opp.buy_tx_hash} manually)"
                 )
 
-            if buy_is_cex:
-                # Case A: Quidax buy succeeded, DEX sell failed → sell cNGN back on Quidax.
-                logger.warning("cex_dex_recovery_reversing_cex_buy", opp_id=opp_id,
-                               buy_venue=buy_venue_name, amount_cngn=float(buy_amount_cngn))
-                reverse_trade = await self.executor.execute_cex_sell(
-                    buy_venue_name, buy_amount_cngn, opp.buy_price, opp_id
-                )
-                if not reverse_trade or reverse_trade.status == "failed":
-                    err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
-                    recovery_reason = f"RECOVERY_FAILED:{err}"
-                    await db.update_arbitrage_opportunity(opp_id, status="half_open",
-                                                         reason=recovery_reason)
-                    await self.history.record_failed_raw(
-                        opp_id=opp_id,
-                        pipeline="cex_dex",
-                        direction=cex_direction,
-                        buy_venue=opp.buy_venue,
-                        sell_venue=opp.sell_venue,
-                        status="half_open",
-                        optimal_size_usd=opp.recommended_size_usd,
-                        routed_size_usd=opp.recommended_size_usd,
-                        executed_size_usd=opp.recommended_size_usd,
-                        expected_profit_usd=opp.expected_profit_usd,
-                        net_spread_bps=opp.net_spread_bps,
-                        reason=recovery_reason,
-                        buy_tx_hash=opp.buy_tx_hash,
-                    )
-                    self.broadcast({"type": "alert", "severity": "critical",
-                                   "message": (
-                                       f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
-                                       "Manual intervention required."
-                                   )})
-                    raise ValueError(err)
-                actual_loss = (
-                    reverse_trade.amount * (reverse_trade.price or opp.buy_price)
-                    - opp.recommended_size_usd
-                )
-                await db.update_arbitrage_opportunity(opp_id, status="completed",
-                    actual_profit_usd=float(actual_loss),
-                    reason="Recovered: reversed CEX buy leg")
-                self.inventory.record_trade_complete(
-                    opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
-                )
-                await self.history.record_executed_raw(
-                    opp_id=opp_id,
-                    pipeline="cex_dex",
-                    direction=cex_direction,
-                    buy_venue=opp.buy_venue,
-                    sell_venue=opp.sell_venue,
-                    optimal_size_usd=opp.recommended_size_usd,
-                    routed_size_usd=opp.recommended_size_usd,
-                    executed_size_usd=opp.recommended_size_usd,
-                    expected_profit_usd=opp.expected_profit_usd,
-                    net_spread_bps=opp.net_spread_bps,
-                    actual_profit_usd=actual_loss,
-                    reason="Recovered: reversed CEX buy leg",
-                    buy_tx_hash=opp.buy_tx_hash,
-                )
-                logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="reverse_cex_buy",
-                            profit_usd=float(actual_loss))
-                return {"status": "completed", "method": "reverse_cex_buy", "opp_id": opp_id,
-                        "profit_usd": float(actual_loss)}
-            else:
-                # Case B: DEX buy succeeded, Quidax sell already exhausted 5 retries internally.
-                # Reverse: sell the cNGN back on the DEX buy venue to recover capital at a small loss.
-                logger.warning("cex_dex_recovery_reversing_dex_buy", opp_id=opp_id,
-                               buy_venue=buy_venue_name, amount_cngn=float(buy_amount_cngn))
-                reverse_trade = await self.executor.execute_dex_sell(
-                    buy_venue_name, buy_amount_cngn, Decimal("0"), opp_id
-                )
-                if not reverse_trade or reverse_trade.status == "failed":
-                    err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
-                    recovery_reason = f"RECOVERY_FAILED:{err}"
-                    await db.update_arbitrage_opportunity(opp_id, status="half_open",
-                                                         reason=recovery_reason)
-                    await self.history.record_failed_raw(
-                        opp_id=opp_id,
-                        pipeline="cex_dex",
-                        direction=cex_direction,
-                        buy_venue=opp.buy_venue,
-                        sell_venue=opp.sell_venue,
-                        status="half_open",
-                        optimal_size_usd=opp.recommended_size_usd,
-                        routed_size_usd=opp.recommended_size_usd,
-                        executed_size_usd=opp.recommended_size_usd,
-                        expected_profit_usd=opp.expected_profit_usd,
-                        net_spread_bps=opp.net_spread_bps,
-                        reason=recovery_reason,
-                        buy_tx_hash=opp.buy_tx_hash,
-                    )
-                    self.broadcast({"type": "alert", "severity": "critical",
-                                   "message": (
-                                       f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
-                                       "Manual intervention required."
-                                   )})
-                    raise ValueError(err)
-                actual_loss = (
-                    reverse_trade.amount * (reverse_trade.price or Decimal("0"))
-                    - opp.recommended_size_usd
-                )
-                await db.update_arbitrage_opportunity(opp_id, status="completed",
-                    actual_profit_usd=float(actual_loss),
-                    reason="Recovered: reversed DEX buy leg")
-                self.inventory.record_trade_complete(
-                    opp_id, opp.recommended_size_usd, actual_loss, Decimal("0")
-                )
-                await self.history.record_executed_raw(
-                    opp_id=opp_id,
-                    pipeline="cex_dex",
-                    direction=cex_direction,
-                    buy_venue=opp.buy_venue,
-                    sell_venue=opp.sell_venue,
-                    optimal_size_usd=opp.recommended_size_usd,
-                    routed_size_usd=opp.recommended_size_usd,
-                    executed_size_usd=opp.recommended_size_usd,
-                    expected_profit_usd=opp.expected_profit_usd,
-                    net_spread_bps=opp.net_spread_bps,
-                    actual_profit_usd=actual_loss,
-                    reason="Recovered: reversed DEX buy leg",
-                    buy_tx_hash=opp.buy_tx_hash,
-                    sell_tx_hash=reverse_trade.tx_hash,
-                )
-                logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="reverse_dex_buy",
-                            profit_usd=float(actual_loss))
-                return {"status": "completed", "method": "reverse_dex_buy", "opp_id": opp_id,
-                        "profit_usd": float(actual_loss)}
+            return await self._reverse_cex_recovery(db, opp_id, opp, cex_direction, buy_is_cex, buy_amount_cngn)
         finally:
             self._arb_executing = False
+
+    async def _reverse_cex_recovery(self, db, opp_id: str, opp, cex_direction: str, buy_is_cex: bool, buy_amount_cngn: Decimal) -> dict:
+        """Execute a reversal trade to recover a half-open CEX arb and record the outcome."""
+        buy_venue_name = opp.buy_venue
+        if buy_is_cex:
+            method = "reverse_cex_buy"
+            logger.warning("cex_dex_recovery_reversing_cex_buy", opp_id=opp_id,
+                           buy_venue=buy_venue_name, amount_cngn=float(buy_amount_cngn))
+            reverse_trade = await self.executor.execute_cex_sell(
+                buy_venue_name, buy_amount_cngn, opp.buy_price, opp_id
+            )
+            fallback_price = opp.buy_price
+        else:
+            method = "reverse_dex_buy"
+            logger.warning("cex_dex_recovery_reversing_dex_buy", opp_id=opp_id,
+                           buy_venue=buy_venue_name, amount_cngn=float(buy_amount_cngn))
+            reverse_trade = await self.executor.execute_dex_sell(
+                buy_venue_name, buy_amount_cngn, Decimal("0"), opp_id
+            )
+            fallback_price = Decimal("0")
+
+        if not reverse_trade or reverse_trade.status == "failed":
+            err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
+            recovery_reason = f"RECOVERY_FAILED:{err}"
+            await db.update_arbitrage_opportunity(opp_id, status="half_open", reason=recovery_reason)
+            await self.history.record_failed_raw(
+                opp_id=opp_id,
+                pipeline="cex_dex",
+                direction=cex_direction,
+                buy_venue=opp.buy_venue,
+                sell_venue=opp.sell_venue,
+                status="half_open",
+                optimal_size_usd=opp.recommended_size_usd,
+                routed_size_usd=opp.recommended_size_usd,
+                executed_size_usd=opp.recommended_size_usd,
+                expected_profit_usd=opp.expected_profit_usd,
+                net_spread_bps=opp.net_spread_bps,
+                reason=recovery_reason,
+                buy_tx_hash=opp.buy_tx_hash,
+            )
+            self.broadcast({"type": "alert", "severity": "critical",
+                           "message": (
+                               f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
+                               "Manual intervention required."
+                           )})
+            raise ValueError(err)
+
+        reason = f"Recovered: reversed {'CEX' if buy_is_cex else 'DEX'} buy leg"
+        actual_loss = reverse_trade.amount * (reverse_trade.price or fallback_price) - opp.recommended_size_usd
+        await db.update_arbitrage_opportunity(opp_id, status="completed",
+            actual_profit_usd=float(actual_loss), reason=reason)
+        self.inventory.record_trade_complete(opp_id, opp.recommended_size_usd, actual_loss, Decimal("0"))
+        await self.history.record_executed_raw(
+            opp_id=opp_id,
+            pipeline="cex_dex",
+            direction=cex_direction,
+            buy_venue=opp.buy_venue,
+            sell_venue=opp.sell_venue,
+            optimal_size_usd=opp.recommended_size_usd,
+            routed_size_usd=opp.recommended_size_usd,
+            executed_size_usd=opp.recommended_size_usd,
+            expected_profit_usd=opp.expected_profit_usd,
+            net_spread_bps=opp.net_spread_bps,
+            actual_profit_usd=actual_loss,
+            reason=reason,
+            buy_tx_hash=opp.buy_tx_hash,
+            sell_tx_hash=reverse_trade.tx_hash if not buy_is_cex else None,
+        )
+        logger.info("cex_dex_recovery_completed", opp_id=opp_id, method=method, profit_usd=float(actual_loss))
+        return {"status": "completed", "method": method, "opp_id": opp_id, "profit_usd": float(actual_loss)}
 
     def _reconcile_balances(self, balances: list) -> None:
         """Refresh per-account stablecoin and cNGN from the scheduler's periodic balance fetch."""
@@ -1214,31 +935,60 @@ class ArbitrageEngine:
 
     async def _seed_account_inventory(self, *, ensure_approvals: bool = True):
         """Seed wallet balances, and optionally ensure trade approvals for execution paths."""
+        tradeable = {
+            name: venue for name, venue in self.venues.items()
+            if all(hasattr(venue, attr) for attr in (
+                "stable_token", "cngn_token", "trade_account",
+                "stable_decimals", "cngn_decimals", "ensure_trade_approvals",
+            ))
+        }
+
+        loop = asyncio.get_running_loop()
+
+        def _read_balances(name: str, venue) -> tuple[str, Decimal | None, Decimal | None]:
+            try:
+                raw_s = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
+                stable = Decimal(raw_s) / Decimal(10 ** venue.stable_decimals)
+            except Exception as e:
+                logger.warning("account_stable_seed_failed", venue=name, error=str(e))
+                stable = None
+            try:
+                raw_c = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
+                cngn = Decimal(raw_c) / Decimal(10 ** venue.cngn_decimals)
+            except Exception as e:
+                logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
+                cngn = None
+            return name, stable, cngn
+
+        balance_results = await asyncio.gather(
+            *(loop.run_in_executor(None, _read_balances, name, venue) for name, venue in tradeable.items()),
+            return_exceptions=True,
+        )
+
         stable_balances: dict[str, Decimal] = {}
         cngn_balances: dict[str, Decimal] = {}
-        approvals_ok = True
-        for name, venue in self.venues.items():
-            if all(hasattr(venue, attr) for attr in ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals", "ensure_trade_approvals")):
-                try:
-                    raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
-                    stable_balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)
-                except Exception as e:
-                    logger.warning("account_stable_seed_failed", venue=name, error=str(e))
-                try:
-                    raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
-                    cngn_balances[name] = Decimal(raw) / Decimal(10 ** venue.cngn_decimals)
-                except Exception as e:
-                    logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
-                if ensure_approvals:
-                    try:
-                        await venue.ensure_trade_approvals()
-                    except Exception as e:
-                        approvals_ok = False
-                        logger.warning("trade_approval_failed", venue=name, error=str(e))
+        for result in balance_results:
+            if isinstance(result, Exception):
+                logger.warning("account_balance_seed_task_failed", error=str(result))
+                continue
+            name, stable, cngn = result
+            if stable is not None:
+                stable_balances[name] = stable
+            if cngn is not None:
+                cngn_balances[name] = cngn
+
         if stable_balances:
             self.inventory.initialize_account_stable(stable_balances)
         if cngn_balances:
             self.inventory.initialize_account_cngn(cngn_balances)
         self._inventory_seeded = True
+
         if ensure_approvals:
+            approvals_ok = True
+            for name, venue in tradeable.items():
+                try:
+                    await venue.ensure_trade_approvals()
+                except Exception as e:
+                    approvals_ok = False
+                    logger.warning("trade_approval_failed", venue=name, error=str(e))
             self._trade_approvals_seeded = approvals_ok

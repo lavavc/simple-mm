@@ -857,9 +857,7 @@ async def enable_execute_cex_dex():
     """Enable execution for CEX-DEX arbitrage."""
     if not _arbitrage_engine:
         raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
-
-    _arbitrage_engine.enable_execute_cex_dex()
-    logger.info("execution_cex_dex_enabled_via_api")
+    _arbitrage_engine.set_execution_enabled("cex_dex", True)
     return {"status": "enabled"}
 
 
@@ -868,9 +866,7 @@ async def disable_execute_cex_dex():
     """Disable execution for CEX-DEX arbitrage."""
     if not _arbitrage_engine:
         raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
-
-    _arbitrage_engine.disable_execute_cex_dex()
-    logger.info("execution_cex_dex_disabled_via_api")
+    _arbitrage_engine.set_execution_enabled("cex_dex", False)
     return {"status": "disabled"}
 
 
@@ -879,9 +875,7 @@ async def enable_execute_dex_dex():
     """Enable execution for DEX-DEX arbitrage."""
     if not _arbitrage_engine:
         raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
-
-    _arbitrage_engine.enable_execute_dex_dex()
-    logger.info("execution_dex_dex_enabled_via_api")
+    _arbitrage_engine.set_execution_enabled("dex_dex", True)
     return {"status": "enabled"}
 
 
@@ -890,9 +884,7 @@ async def disable_execute_dex_dex():
     """Disable execution for DEX-DEX arbitrage."""
     if not _arbitrage_engine:
         raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
-
-    _arbitrage_engine.disable_execute_dex_dex()
-    logger.info("execution_dex_dex_disabled_via_api")
+    _arbitrage_engine.set_execution_enabled("dex_dex", False)
     return {"status": "disabled"}
 
 

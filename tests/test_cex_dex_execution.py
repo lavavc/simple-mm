@@ -366,7 +366,7 @@ class TestHandlePreflightError:
         return engine.inventory.get_status_dict()["circuit_breaker_active"]
 
     def test_balance_zeroes_inventory_and_broadcasts_warning(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
@@ -376,7 +376,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "warning" and "uni-base" in a.get("message", "") for a in alerts)
 
     def test_stable_balance_zeroes_stable_only_and_broadcasts_warning(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         engine.inventory.reconcile_stables({"uni-base": Decimal("167.07")})
@@ -397,7 +397,7 @@ class TestHandlePreflightError:
         )
 
     def test_rpc_does_not_zero_inventory_and_broadcasts_warning(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-bsc": Decimal("500")})
         _handle_preflight_error(engine, "uni-bsc", "Read timed out.", "test_preflight")
@@ -405,7 +405,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "warning" and "uni-bsc" in a.get("message", "") for a in alerts)
 
     def test_permit2_does_not_zero_inventory_and_broadcasts_critical(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
@@ -414,7 +414,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "critical" for a in alerts)
 
     def test_pool_paused_trips_circuit_breaker_and_does_not_zero_inventory(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-bsc": Decimal("500")})
         _handle_preflight_error(engine, "uni-bsc",
@@ -424,7 +424,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "critical" and "uni-bsc" in a.get("message", "") for a in alerts)
 
     def test_unknown_does_not_zero_inventory_and_does_not_trip_breaker(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
@@ -434,7 +434,7 @@ class TestHandlePreflightError:
         assert any(a.get("type") == "alert" for a in alerts)
 
     def test_buy_preflight_context_uses_stable_wallet(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.venues["uni-base"] = SimpleNamespace(
             trade_account=SimpleNamespace(address="0x23DF63FAKE0000000000000000000000002e14E4"),
@@ -459,7 +459,7 @@ class TestHandlePreflightError:
         assert "Shortfall: 82.93 USDC" in message
 
     def test_message_changes_when_trade_size_changes(self):
-        from engine.core.arbitrage.engine import _handle_preflight_error
+        from engine.core.arbitrage.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("26999")})
 
