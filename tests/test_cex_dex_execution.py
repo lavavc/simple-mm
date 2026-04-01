@@ -95,7 +95,7 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
                 "net_spread_bps": 30,
             },
             "prices": {"quidax": "0.00061", "uni-base": "0.00071"},
-            "depth": depth,
+            "depth": {"quidax": depth},
         },
     )
     return SelectedRoute(

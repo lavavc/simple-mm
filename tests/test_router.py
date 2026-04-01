@@ -30,7 +30,7 @@ def _make_candidate(
     signal: dict | None = None,
 ) -> RouteCandidate:
     if signal is None:
-        signal = {"depth": _default_depth()} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
+        signal = {"depth": {buy_venue: _default_depth()}} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
     return RouteCandidate(
         direction=direction,
         buy_venue=buy_venue,
@@ -127,7 +127,7 @@ class TestSelectRouteEdgeCases:
         c = _make_candidate(
             size_usd=500.0,
             profit_usd=10.0,
-            signal={"depth": _default_depth()},
+            signal={"depth": {"quidax": _default_depth()}},
         )
 
         result = select_route([c], inv)
@@ -252,7 +252,7 @@ class TestSelectRouteNetProfit:
 
         def _fake_estimate(direction, depth, investment_usd):
             assert direction == "QUIDAX_TO_UNI_BASE"
-            assert depth == c.signal["depth"]
+            assert depth == c.signal["depth"]["quidax"]
             assert investment_usd == Decimal("100")
             return {"expected_profit_usd": Decimal("0.05")}
 

@@ -342,7 +342,7 @@ class ArbitrageEngine:
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
-                    signal={"prices": signal["prices"], "optimal_arb": arb, "depth": depth},
+                    signal={"prices": signal["prices"], "optimal_arb": arb, "depth": {depth.venue: depth}},
                 ))
             route = select_route(candidates, self.inventory)
             if route:
@@ -388,50 +388,31 @@ class ArbitrageEngine:
         try:
             slippage_bps = c.signal.get("optimal_arb", {}).get("slippage_tolerance_bps", 10)
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
-            loop = asyncio.get_running_loop()
+            quidax_price = Decimal(str(c.signal["prices"][buy_venue_name]))
+            net_spread_bps = c.signal["optimal_arb"].get("net_spread_bps", 0)
             await self.history.record_routed(opp_id, route)
 
             # Preflight sell leg if it's a DEX sell — before committing to buy.
             if not sell_is_cex:
                 from engine.core.arbitrage.executor import _clean_revert
                 sell_venue = self.venues[sell_venue_name]
-
-                if buy_is_cex:
-                    from engine.core.arbitrage.cex_dex import estimate_cex_buy_cngn
-                    cngn_estimate_amount = estimate_cex_buy_cngn(c.signal.get("depth"), size_usd)
-                    if cngn_estimate_amount <= 0:
-                        logger.warning(
-                            "cex_dex_preflight_missing_depth_or_zero_estimate",
-                            direction=direction, size_usd=float(size_usd), sell_venue=sell_venue_name,
-                        )
-                        await self.history.record_failed(
-                            opp_id, route, status="sell_quote_unavailable",
-                            reason="Missing Quidax depth or zero cNGN estimate",
-                        )
-                        return
-                    sim_min_out_raw = 0
-                else:
-                    from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
-                    _est = estimate_dex_dex_trade(direction, size_usd)
-                    if not _est:
-                        logger.warning(
-                            "dex_dex_pool_cache_cold_at_execution",
-                            direction=direction, size_usd=float(size_usd),
-                        )
-                        await db.update_dex_arbitrage_execution_state(
-                            opp_id, status="abandoned",
-                            reason="Execution estimate missing from pool cache",
-                        )
-                        await self.history.record_failed(
-                            opp_id, route, status="pool_cache_cold",
-                            reason="Execution estimate missing from pool cache",
-                        )
-                        return
-                    cngn_estimate_amount = Decimal(str(_est["cngn_transferred"]))
-                    sim_min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
-
-                sell_cngn_amount = cngn_estimate_amount
-                cngn_estimate_raw = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
+                quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
+                cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
+                if cngn_estimate_amount <= 0:
+                    logger.warning(
+                        "cex_dex_preflight_missing_depth_or_zero_estimate",
+                        direction=direction,
+                        size_usd=float(size_usd),
+                        sell_venue=sell_venue_name,
+                    )
+                    await self.history.record_failed(
+                        opp_id,
+                        route,
+                        status="sell_quote_unavailable",
+                        reason="Missing Quidax depth or zero cNGN estimate",
+                    )
+                    return
+                cngn_estimate = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
                 sell_err = await loop.run_in_executor(
                     None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate_raw, sim_min_out_raw
                 )
