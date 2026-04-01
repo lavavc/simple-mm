@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # Arbitrage settings
     arb_detection_enabled: bool = True       # master toggle for detection
     arb_execute_cex_dex_enabled: bool = True
-    arb_execute_dex_dex_enabled: bool = False
+    arb_execute_dex_dex_enabled: bool = True
     arbitrage_scan_interval: int = 10  # seconds
 
     # Arbitrage thresholds — all ArbitrageParams defaults live here, nowhere else
