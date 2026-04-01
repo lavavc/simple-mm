@@ -1128,8 +1128,11 @@ class Database:
         if pipeline:
             event_filters.append("pipeline = ?")
             event_params.append(pipeline)
-        # Keep the original routed snapshot even if it predates from_ts, but do not
-        # leak later events beyond the requested upper bound.
+        # from_ts is intentionally NOT applied here: the latest_query above excluded
+        # opps whose last event falls before from_ts, so every opp_id here had at least
+        # one event in the requested window. We still fetch earlier events (e.g. the
+        # routed snapshot) so callers get the full lifecycle even when it started before
+        # from_ts. to_ts IS applied to prevent terminal events past the upper bound leaking in.
         if to_ts:
             event_filters.append("timestamp <= ?")
             event_params.append(to_ts)

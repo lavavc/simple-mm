@@ -349,7 +349,7 @@ class BaseV4DexAdapter(VenueAdapter):
         estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
         tx["gas"] = int(estimated * 1.2)
         logger.info("v4_swap_gas_estimated", venue=self.name, estimated=estimated, gas_limit=tx["gas"])
-        return await self._send_transaction(tx, self.trade_account)
+        return await self._send_transaction(tx, self.trade_account, output_token=token_out)
 
     def _resolve_pool_key(self) -> tuple[str, str, int, int, str]:
         if self._pool_key is not None:
@@ -428,7 +428,32 @@ class BaseV4DexAdapter(VenueAdapter):
             "chainId": self.config.chain_id,
         }
 
-    async def _send_transaction(self, tx: dict, account) -> TxResult:
+    def _parse_swap_output_raw(self, receipt: TxReceipt, token_out: str) -> Optional[int]:
+        """Extract actual output token amount from a V4 Swap event in the receipt logs."""
+        from engine.core.arbitrage.dex_volume import V4_SWAP_TOPIC
+        for log in receipt.get("logs", []):
+            topics = log.get("topics", [])
+            if not topics:
+                continue
+            t0 = topics[0]
+            t0_hex = (t0.hex() if isinstance(t0, bytes) else t0).lower()
+            if not t0_hex.startswith("0x"):
+                t0_hex = "0x" + t0_hex
+            if t0_hex != V4_SWAP_TOPIC.lower():
+                continue
+            raw = log.get("data", "0x")
+            data = bytes.fromhex(raw[2:] if raw.startswith("0x") else raw)
+            if len(data) < 64:
+                continue
+            amount0 = int.from_bytes(data[0:32], "big", signed=True)
+            amount1 = int.from_bytes(data[32:64], "big", signed=True)
+            # The output token has a negative delta (pool paid it out).
+            if token_out.lower() == self.config.token0_address.lower():
+                return abs(amount0) if amount0 < 0 else None
+            return abs(amount1) if amount1 < 0 else None
+        return None
+
+    async def _send_transaction(self, tx: dict, account, *, output_token: str | None = None) -> TxResult:
         try:
             if account.address not in self._nonce_locks:
                 self._nonce_locks[account.address] = asyncio.Lock()
@@ -449,10 +474,12 @@ class BaseV4DexAdapter(VenueAdapter):
                 status=status,
                 gas_used=receipt["gasUsed"],
             )
+            output_raw = self._parse_swap_output_raw(receipt, output_token) if output_token and status == "confirmed" else None
             return TxResult(
                 hash=tx_hash.hex(),
                 status=status,
                 gas_used=receipt["gasUsed"],
+                output_raw=output_raw,
             )
         except Exception as e:
             logger.error("transaction_failed", venue=self.name, account=account.address, error=str(e))

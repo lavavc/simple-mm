@@ -518,6 +518,33 @@ class TestArbitrageHistory:
         assert item.reason is None
 
     @pytest.mark.asyncio
+    async def test_pipeline_and_to_ts_combined(self, db):
+        """pipeline filter on the detail query must not drop lifecycle events for matched opps."""
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("cex-1", pipeline="cex_dex", event_type="routed", status="routed", timestamp=100)
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event(
+                "cex-1", pipeline="cex_dex", event_type="executed", status="completed",
+                timestamp=200, actual_profit_usd=Decimal("2"), executed_size_usd=Decimal("400"),
+            )
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("cex-1", pipeline="cex_dex", event_type="failed", status="execution_error", timestamp=500)
+        )
+        # Unrelated opp on a different pipeline — must not appear.
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("dex-1", pipeline="dex_dex", direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE")
+        )
+
+        items = await db.get_arbitrage_history(pipeline="cex_dex", to_ts=300)
+        assert len(items) == 1
+        item = items[0]
+        assert item.opportunity_id == "cex-1"
+        assert item.latest_status == "completed"
+        assert item.actual_profit_usd == Decimal("2")
+
+    @pytest.mark.asyncio
     async def test_pipeline_filter(self, db):
         await db.upsert_arbitrage_history_event(
             _make_history_event("cex-1", pipeline="cex_dex")

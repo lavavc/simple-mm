@@ -34,8 +34,23 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
         loop = asyncio.get_running_loop()
         slippage_bps = c.signal.get("optimal_arb", {}).get("slippage_tolerance_bps", 10)
         min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
-        buy_signal_price = Decimal(str(c.signal["prices"][buy_venue_name]))
-        sell_signal_price = Decimal(str(c.signal["prices"][sell_venue_name]))
+        prices = c.signal.get("prices", {})
+        _buy_p = prices.get(buy_venue_name)
+        _sell_p = prices.get(sell_venue_name)
+        if _buy_p is None or _sell_p is None:
+            logger.warning(
+                "arb_signal_missing_venue_price",
+                direction=direction,
+                buy_venue=buy_venue_name,
+                sell_venue=sell_venue_name,
+                available_prices=list(prices.keys()),
+            )
+            await engine.history.record_failed(
+                opp_id, route, status="abandoned", reason="Signal missing venue price",
+            )
+            return
+        buy_signal_price = Decimal(str(_buy_p))
+        sell_signal_price = Decimal(str(_sell_p))
         net_spread_bps = c.signal["optimal_arb"].get("net_spread_bps", 0)
         await engine.history.record_routed(opp_id, route)
 

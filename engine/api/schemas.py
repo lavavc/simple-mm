@@ -137,7 +137,7 @@ class TxResult(BaseModel):
     status: Literal["pending", "confirmed", "failed"]
     gas_used: Optional[int] = None
     error: Optional[str] = None
-    output_raw: Optional[int] = None  # Raw token output units from Swap event (buys only)
+    output_raw: Optional[int] = None  # Raw token output units parsed from the V4 Swap event
 
 
 class GlobalPosition(BaseModel):
