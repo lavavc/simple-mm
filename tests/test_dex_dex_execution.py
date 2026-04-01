@@ -76,7 +76,6 @@ class FakeV4Venue:
 def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
     candidate = RouteCandidate(
         direction=direction,
-        pipeline="dex_dex",
         buy_venue="uni-base",
         sell_venue="uni-bsc",
         optimal_size_usd=size,
@@ -89,7 +88,6 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):
             },
             "prices": {"uni-bsc": "0.00061", "uni-base": "0.00061"},
         },
-        cngn_effect="neutral",
     )
     return SelectedRoute(
         candidate=candidate,

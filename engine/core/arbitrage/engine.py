@@ -337,14 +337,12 @@ class ArbitrageEngine:
                     continue
                 candidates.append(RouteCandidate(
                     direction=direction,
-                    pipeline=route_def.pipeline,
                     buy_venue=route_def.buy_leg.venue,
                     sell_venue=route_def.sell_leg.venue,
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
                     signal={"prices": signal["prices"], "optimal_arb": arb, "depth": depth},
-                    cngn_effect=route_def.cngn_effect,
                 ))
             route = select_route(candidates, self.inventory)
             if route:
@@ -378,6 +376,7 @@ class ArbitrageEngine:
         self._arb_executing = True
         db = await get_db()
         buy_trade = None
+        sell_tx_hash = None       # captured on sell failure; surfaced in except handler
         sell_cngn_amount = None   # set during sell preflight; used for DEX sell execution
         buy_venue_name = route_def.buy_leg.venue
         sell_venue_name = route_def.sell_leg.venue
@@ -389,12 +388,12 @@ class ArbitrageEngine:
         try:
             slippage_bps = c.signal.get("optimal_arb", {}).get("slippage_tolerance_bps", 10)
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
+            loop = asyncio.get_running_loop()
             await self.history.record_routed(opp_id, route)
 
             # Preflight sell leg if it's a DEX sell — before committing to buy.
             if not sell_is_cex:
                 from engine.core.arbitrage.executor import _clean_revert
-                loop = asyncio.get_running_loop()
                 sell_venue = self.venues[sell_venue_name]
 
                 if buy_is_cex:
@@ -458,7 +457,6 @@ class ArbitrageEngine:
 
             # DEX-DEX also preflights the buy leg.
             if not buy_is_cex:
-                loop = asyncio.get_running_loop()
                 buy_venue = self.venues[buy_venue_name]
                 buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
                 buy_err = await loop.run_in_executor(
@@ -545,49 +543,8 @@ class ArbitrageEngine:
                 )
 
             if not sell_trade or sell_trade.status == "failed":
-                err = (sell_trade.error if sell_trade else None) or "sell failed"
-                buy_tx = buy_trade.tx_hash or ""
-                if buy_is_cex or sell_is_cex:
-                    await db.update_arbitrage_opportunity(
-                        opp_id, status="half_open", reason=f"HALF_OPEN:{buy_tx}:{err}",
-                        buy_amount_cngn=float(buy_trade.amount),
-                        buy_tx_hash=buy_tx or None,
-                    )
-                    alert_msg = (
-                        f"Half-open CEX-DEX arb {opp_id} ({direction}): "
-                        f"buy on {buy_venue_name} ok (tx {buy_tx}), "
-                        f"sell on {sell_venue_name} failed: {err}. "
-                        f"Recover: /recover {opp_id}"
-                    )
-                else:
-                    sell_account = getattr(
-                        getattr(self.venues.get(sell_venue_name), "trade_account", None),
-                        "address", "unknown",
-                    )
-                    await db.update_dex_arbitrage_execution_state(
-                        opp_id, status="half_open",
-                        buy_tx_hash=buy_tx or None,
-                        sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                        reason=err,
-                    )
-                    alert_msg = (
-                        f"Half-open DEX-DEX arb {opp_id} ({direction}): "
-                        f"buy on {buy_venue_name} ok (tx {buy_tx}), "
-                        f"sell on {sell_venue_name} failed: {err}. "
-                        f"Sell account: {sell_account}. "
-                        f"Recover: /recover {opp_id}"
-                    )
-                logger.error("arb_half_open", direction=direction, buy_tx=buy_tx, sell_error=err)
-                self.inventory.trip_circuit_breaker(f"Half-open arb: {opp_id}")
-                self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
-                await self.history.record_failed(
-                    opp_id, route, status="half_open", reason=err,
-                    executed_size_usd=size_usd,
-                    buy_tx_hash=buy_tx or None,
-                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                )
-                self.broadcast({"type": "alert", "severity": "critical", "message": alert_msg})
-                return
+                sell_tx_hash = sell_trade.tx_hash if sell_trade else None
+                raise RuntimeError((sell_trade.error if sell_trade else None) or "sell failed")
 
             # Compute profit and record completion.
             if buy_is_cex or sell_is_cex:
@@ -649,7 +606,8 @@ class ArbitrageEngine:
                     )
                     alert_msg = (
                         f"Half-open DEX-DEX arb {opp_id} ({direction}): "
-                        f"buy on {buy_venue_name} ok (tx {buy_tx}), sell failed: {err}. "
+                        f"buy on {buy_venue_name} ok (tx {buy_tx}), "
+                        f"sell on {sell_venue_name} failed: {err}. "
                         f"Sell account: {sell_account}. "
                         f"Recover: /recover {opp_id}"
                     )
@@ -660,6 +618,7 @@ class ArbitrageEngine:
                     opp_id, route, status="half_open", reason=err,
                     executed_size_usd=size_usd,
                     buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_tx_hash,
                 )
                 self.broadcast({"type": "alert", "severity": "critical", "message": alert_msg})
             else:
@@ -708,14 +667,12 @@ class ArbitrageEngine:
                     return
                 candidate = RouteCandidate(
                     direction=direction,
-                    pipeline="dex_dex",
                     buy_venue=route_def.buy_leg.venue,
                     sell_venue=route_def.sell_leg.venue,
                     optimal_size_usd=Decimal(str(optimal["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(optimal["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
                     signal=fast,
-                    cngn_effect=route_def.cngn_effect,
                 )
                 route = select_route([candidate], self.inventory)
                 if route:
@@ -1018,8 +975,10 @@ class ArbitrageEngine:
                 (r for r in ROUTES if r.buy_leg.venue == buy_venue_name and r.sell_leg.venue == sell_venue_name),
                 None,
             )
-            cex_direction = cex_route_def.direction if cex_route_def else f"{buy_venue_name.upper().replace('-', '_')}_TO_{sell_venue_name.upper().replace('-', '_')}"
-            buy_is_cex = cex_route_def.buy_leg.leg_type == "api" if cex_route_def else buy_venue_name == "quidax"
+            if cex_route_def is None:
+                raise ValueError(f"Unknown CEX route: {buy_venue_name} → {sell_venue_name}")
+            cex_direction = cex_route_def.direction
+            buy_is_cex = cex_route_def.buy_leg.leg_type == "api"
             buy_amount_cngn = opp.buy_amount_cngn
             if not buy_amount_cngn:
                 raise ValueError(

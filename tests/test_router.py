@@ -22,27 +22,23 @@ def _default_depth() -> OrderBookDepth:
 
 def _make_candidate(
     direction: str = "QUIDAX_TO_UNI_BASE",
-    pipeline: str = "cex_dex",
     buy_venue: str = "quidax",
     sell_venue: str = "uni-base",
     size_usd: float = 500.0,
     profit_usd: float = 5.0,
     gas_usd: float = 0.07,
     signal: dict | None = None,
-    cngn_effect: str = "buys_cngn_from_cex",
 ) -> RouteCandidate:
     if signal is None:
         signal = {"depth": _default_depth()} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
     return RouteCandidate(
         direction=direction,
-        pipeline=pipeline,
         buy_venue=buy_venue,
         sell_venue=sell_venue,
         optimal_size_usd=Decimal(str(size_usd)),
         expected_profit_usd=Decimal(str(profit_usd)),
         gas_usd=Decimal(str(gas_usd)),
         signal=signal,
-        cngn_effect=cngn_effect,
     )
 
 
@@ -200,13 +196,11 @@ class TestSelectRouteNetProfit:
         )
         c = _make_candidate(
             direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
-            pipeline="dex_dex",
             buy_venue="uni-bsc",
             sell_venue="uni-base",
             size_usd=500.0,
             profit_usd=50.0,  # unconstrained optimal — overstates profit at capped size
             gas_usd=0.5,
-            cngn_effect="neutral",
         )
 
         def _fake_exact_cap(direction, wallet_cngn):
@@ -230,13 +224,11 @@ class TestSelectRouteNetProfit:
         )
         c = _make_candidate(
             direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
-            pipeline="dex_dex",
             buy_venue="uni-bsc",
             sell_venue="uni-base",
             size_usd=500.0,
             profit_usd=50.0,
             gas_usd=0.5,
-            cngn_effect="neutral",
         )
 
         monkeypatch.setattr(_router, "estimate_max_dex_buy_usd_for_cngn", lambda direction, wallet_cngn: None)
@@ -251,7 +243,6 @@ class TestSelectRouteNetProfit:
         )
         c = _make_candidate(
             direction="QUIDAX_TO_UNI_BASE",
-            pipeline="cex_dex",
             buy_venue="quidax",
             sell_venue="uni-base",
             size_usd=500.0,

@@ -84,7 +84,6 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
     )
     candidate = RouteCandidate(
         direction=direction,
-        pipeline="cex_dex",
         buy_venue="quidax",
         sell_venue="uni-base",
         optimal_size_usd=size,
@@ -98,7 +97,6 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
             "prices": {"quidax": "0.00061", "uni-base": "0.00071"},
             "depth": depth,
         },
-        cngn_effect="buys_cngn_from_cex",
     )
     return SelectedRoute(
         candidate=candidate,
