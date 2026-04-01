@@ -386,35 +386,71 @@ class ArbitrageEngine:
         direction = c.direction
         size_usd = route.adjusted_size_usd
         try:
+            loop = asyncio.get_running_loop()
             slippage_bps = c.signal.get("optimal_arb", {}).get("slippage_tolerance_bps", 10)
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
-            quidax_price = Decimal(str(c.signal["prices"][buy_venue_name]))
+            buy_signal_price = Decimal(str(c.signal["prices"][buy_venue_name]))
+            sell_signal_price = Decimal(str(c.signal["prices"][sell_venue_name]))
             net_spread_bps = c.signal["optimal_arb"].get("net_spread_bps", 0)
             await self.history.record_routed(opp_id, route)
 
             # Preflight sell leg if it's a DEX sell — before committing to buy.
             if not sell_is_cex:
                 from engine.core.arbitrage.executor import _clean_revert
+
                 sell_venue = self.venues[sell_venue_name]
-                quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
-                cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
-                if cngn_estimate_amount <= 0:
-                    logger.warning(
-                        "cex_dex_preflight_missing_depth_or_zero_estimate",
-                        direction=direction,
-                        size_usd=float(size_usd),
-                        sell_venue=sell_venue_name,
-                    )
-                    await self.history.record_failed(
-                        opp_id,
-                        route,
-                        status="sell_quote_unavailable",
-                        reason="Missing Quidax depth or zero cNGN estimate",
-                    )
-                    return
-                cngn_estimate = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
+                sim_min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
+
+                if buy_is_cex:
+                    from engine.core.arbitrage.cex_dex import estimate_cex_buy_cngn
+
+                    quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
+                    sell_cngn_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
+                    if sell_cngn_amount <= 0:
+                        logger.warning(
+                            "cex_dex_preflight_missing_depth_or_zero_estimate",
+                            direction=direction,
+                            size_usd=float(size_usd),
+                            sell_venue=sell_venue_name,
+                        )
+                        await self.history.record_failed(
+                            opp_id,
+                            route,
+                            status="sell_quote_unavailable",
+                            reason="Missing Quidax depth or zero cNGN estimate",
+                        )
+                        return
+                else:
+                    from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
+
+                    sell_estimate = estimate_dex_dex_trade(direction, size_usd)
+                    if not sell_estimate:
+                        logger.warning(
+                            "dex_dex_pool_cache_cold_at_execution",
+                            direction=direction,
+                            size_usd=float(size_usd),
+                        )
+                        await db.update_dex_arbitrage_execution_state(
+                            opp_id,
+                            status="abandoned",
+                            reason="Pool cache cold at execution",
+                        )
+                        await self.history.record_failed(
+                            opp_id,
+                            route,
+                            status="pool_cache_cold",
+                            reason="Pool cache cold at execution",
+                        )
+                        return
+                    sell_cngn_amount = Decimal(str(sell_estimate["cngn_transferred"]))
+
+                cngn_estimate_raw = int(sell_cngn_amount * Decimal(10 ** sell_venue.cngn_decimals))
                 sell_err = await loop.run_in_executor(
-                    None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate_raw, sim_min_out_raw
+                    None,
+                    sell_venue.simulate_swap,
+                    sell_venue.cngn_address,
+                    cngn_estimate_raw,
+                    sim_min_out_raw,
                 )
                 if sell_err:
                     clean_sell_err = _clean_revert(sell_err)
@@ -423,7 +459,7 @@ class ArbitrageEngine:
                         self, sell_venue_name, clean_sell_err,
                         "arb_sell_preflight_failed",
                         direction=direction, size_usd=float(size_usd),
-                        sell_cngn_est=float(cngn_estimate_amount),
+                        sell_cngn_est=float(sell_cngn_amount),
                         sell_price_usd=float(sell_price_usd) if sell_price_usd is not None else None,
                         wallet_asset="cngn",
                     )
@@ -465,7 +501,6 @@ class ArbitrageEngine:
 
             # Record execution start.
             if buy_is_cex or sell_is_cex:
-                quidax_price = Decimal(str(c.signal["prices"]["quidax"]))
                 net_spread_bps = c.signal.get("optimal_arb", {}).get("net_spread_bps", 0)
                 from engine.api.schemas import ArbitrageOpportunity as ArbOpp
                 await db.insert_arbitrage_opportunity(ArbOpp(
@@ -473,8 +508,8 @@ class ArbitrageEngine:
                     timestamp=int(time.time() * 1000),
                     buy_venue=buy_venue_name,
                     sell_venue=sell_venue_name,
-                    buy_price=quidax_price,
-                    sell_price=quidax_price,
+                    buy_price=buy_signal_price,
+                    sell_price=sell_signal_price,
                     gross_spread_bps=net_spread_bps,
                     net_spread_bps=net_spread_bps,
                     recommended_size_usd=size_usd,
@@ -488,7 +523,7 @@ class ArbitrageEngine:
 
             # Execute buy leg.
             if buy_is_cex:
-                buy_trade = await self.executor.execute_cex_buy(buy_venue_name, size_usd, quidax_price, opp_id)
+                buy_trade = await self.executor.execute_cex_buy(buy_venue_name, size_usd, buy_signal_price, opp_id)
             else:
                 buy_trade = await self.executor.execute_dex_buy(buy_venue_name, size_usd, opp_id)
 
@@ -516,7 +551,7 @@ class ArbitrageEngine:
             # CEX sell: use actual cNGN received from the buy leg.
             if sell_is_cex:
                 sell_trade = await self.executor.execute_cex_sell(
-                    sell_venue_name, buy_trade.amount, quidax_price, opp_id
+                    sell_venue_name, buy_trade.amount, sell_signal_price, opp_id
                 )
             else:
                 sell_trade = await self.executor.execute_dex_sell(
@@ -529,9 +564,11 @@ class ArbitrageEngine:
 
             # Compute profit and record completion.
             if buy_is_cex or sell_is_cex:
+                actual_buy_price = buy_trade.price or buy_signal_price
+                actual_sell_price = sell_trade.price or sell_signal_price
                 actual_profit = (
-                    sell_trade.amount * (sell_trade.price or quidax_price)
-                    - buy_trade.amount * (buy_trade.price or quidax_price)
+                    sell_trade.amount * actual_sell_price
+                    - buy_trade.amount * actual_buy_price
                 )
                 await db.update_arbitrage_opportunity(
                     opp_id, status="completed", actual_profit_usd=float(actual_profit)

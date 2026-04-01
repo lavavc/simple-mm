@@ -1109,15 +1109,27 @@ class Database:
         opp_ids = [row["opportunity_id"] for row in latest_rows]
         ordering = {row["opportunity_id"]: idx for idx, row in enumerate(latest_rows)}
         placeholders = ", ".join("?" for _ in opp_ids)
+        event_filters = [
+            f"opportunity_id IN ({placeholders})",
+            "event_type IN ('routed', 'executed', 'failed')",
+        ]
+        event_params: list[Any] = [*opp_ids]
+        if pipeline:
+            event_filters.append("pipeline = ?")
+            event_params.append(pipeline)
+        # Keep the original routed snapshot even if it predates from_ts, but do not
+        # leak later events beyond the requested upper bound.
+        if to_ts:
+            event_filters.append("timestamp <= ?")
+            event_params.append(to_ts)
         cursor = await self._conn.execute(
             f"""
             SELECT *
             FROM arbitrage_history_events
-            WHERE opportunity_id IN ({placeholders})
-              AND event_type IN ('routed', 'executed', 'failed')
+            WHERE {' AND '.join(event_filters)}
             ORDER BY timestamp ASC, id ASC
             """,
-            opp_ids,
+            event_params,
         )
         rows = await cursor.fetchall()
 

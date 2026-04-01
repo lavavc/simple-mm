@@ -484,6 +484,40 @@ class TestArbitrageHistory:
         assert items[0].opportunity_id == "opp-new"
 
     @pytest.mark.asyncio
+    async def test_to_ts_does_not_leak_later_terminal_events(self, db):
+        """Grouped results should not pull in later events beyond the requested upper bound."""
+        await db.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", event_type="routed", status="routed", timestamp=100)
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event(
+                "opp-1",
+                event_type="executed",
+                status="completed",
+                timestamp=200,
+                actual_profit_usd=Decimal("3"),
+                executed_size_usd=Decimal("400"),
+            )
+        )
+        await db.upsert_arbitrage_history_event(
+            _make_history_event(
+                "opp-1",
+                event_type="failed",
+                status="execution_error",
+                timestamp=400,
+                reason="late failure",
+            )
+        )
+
+        items = await db.get_arbitrage_history(to_ts=250)
+        assert len(items) == 1
+        item = items[0]
+        assert item.latest_status == "completed"
+        assert item.updated_at == 200
+        assert item.actual_profit_usd == Decimal("3")
+        assert item.reason is None
+
+    @pytest.mark.asyncio
     async def test_pipeline_filter(self, db):
         await db.upsert_arbitrage_history_event(
             _make_history_event("cex-1", pipeline="cex_dex")

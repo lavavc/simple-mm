@@ -43,9 +43,11 @@ class FakeV4Venue:
         self.trade_account = SimpleNamespace(address="0x23DF63FAKE0000000000000000000000002e14E4")
         self._sim_result = sim_result
         self._swap_ok = swap_ok
+        self.sim_calls = []
         self.swap_calls = []
 
     def simulate_swap(self, token_in, amount_in, min_out):
+        self.sim_calls.append((token_in, amount_in, min_out))
         return self._sim_result
 
     async def swap(self, token_in, amount_in, min_out):
@@ -204,6 +206,28 @@ class TestCexDexPreflightGate:
 
         assert len(cex_venue.buy_calls) == 1, "CEX buy must be called when sell preflight passes"
         assert not engine._arb_executing
+
+    @pytest.mark.asyncio
+    async def test_dex_sell_uses_the_same_amount_preflight_validated(self, test_db):
+        """CEX->DEX should carry the validated cNGN sell amount into live execution."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+            route = _cex_dex_route()
+            await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-sell-alignment")
+
+        assert len(sell_venue.sim_calls) == 1
+        assert len(sell_venue.swap_calls) == 1
+        _, sim_amount_raw, sim_min_out_raw = sell_venue.sim_calls[0]
+        assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, sim_amount_raw, sim_min_out_raw)
+
+        opp = await test_db.get_arbitrage_opportunity("opp-cex-sell-alignment")
+        assert opp is not None
+        assert opp.buy_price == Decimal("0.00061")
+        assert opp.sell_price == Decimal("0.00071")
 
     @pytest.mark.asyncio
     async def test_execution_persists_route_expected_profit(self, test_db):
