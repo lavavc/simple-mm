@@ -175,13 +175,21 @@ class ArbitrageExecutor:
 
         result = await venue.swap(venue.cngn_address, amount_in_raw, min_out_raw)
 
+        # Use actual stablecoin output from the Swap event if available so that
+        # amount × price = actual USD received. Falls back to pool mid-price estimate.
+        if result.output_raw and amount_cngn > 0:
+            actual_stable_out = Decimal(result.output_raw) / Decimal(10 ** venue.stable_decimals)
+            fill_price = actual_stable_out / amount_cngn
+        else:
+            fill_price = current_price
+
         return ArbitrageTrade(
             id=0,
             opportunity_id=opportunity_id,
             venue=venue_name,
             side="sell",
             amount=amount_cngn,
-            price=current_price,
+            price=fill_price,
             tx_hash=result.hash or None,
             status="confirmed" if result.status == "confirmed" else "failed",
             timestamp=_now_ms(),
