@@ -1,13 +1,8 @@
-"""Preflight formatting, context, and alert helpers for arbitrage execution."""
-
-from __future__ import annotations
+"""Preflight helpers shared by arbitrage execution paths."""
 
 from decimal import Decimal
 from typing import Any
-
 import structlog
-
-
 logger = structlog.get_logger()
 
 
@@ -143,9 +138,13 @@ def _build_preflight_context(engine, venue_name: str, log_ctx: dict[str, Any]) -
 
 
 def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: str, **log_ctx) -> None:
-    """Classify a simulate_swap failure and take the appropriate action."""
-    from engine.core.arbitrage.executor import _classify_preflight_error
+    """Classify a simulate_swap failure and take the appropriate action.
 
+    Only a confirmed balance revert zeros the venue's cNGN inventory.
+    All other categories leave inventory intact and either broadcast a warning
+    (rpc, unknown) or trip the circuit breaker (pool_paused, permit2).
+    """
+    from engine.core.arbitrage.executor import _classify_preflight_error
     category = _classify_preflight_error(err)
     context_text, context_fields = _build_preflight_context(engine, venue_name, log_ctx)
     event_base = {
@@ -207,7 +206,7 @@ def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: s
                               f"{context_text}"
                           )})
 
-    else:
+    else:  # unknown
         logger.error(log_key, venue=venue_name, category=category, error=err, **log_data)
         engine.broadcast({**event_base, "severity": "warning",
                           "message": (

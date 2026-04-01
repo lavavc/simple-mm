@@ -95,39 +95,60 @@ async def refresh_inventory_for_venues(engine, *venue_names: str) -> None:
 
 async def seed_account_inventory(engine, *, ensure_approvals: bool = True) -> None:
     """Seed wallet balances, and optionally ensure trade approvals for execution paths."""
+    tradeable = {
+        name: venue for name, venue in engine.venues.items()
+        if all(hasattr(venue, attr) for attr in (
+            "stable_token", "cngn_token", "trade_account",
+            "stable_decimals", "cngn_decimals", "ensure_trade_approvals",
+        ))
+    }
+
+    loop = asyncio.get_running_loop()
+
+    def _read_balances(name: str, venue) -> tuple[str, Decimal | None, Decimal | None]:
+        try:
+            raw_s = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
+            stable = Decimal(raw_s) / Decimal(10 ** venue.stable_decimals)
+        except Exception as e:
+            logger.warning("account_stable_seed_failed", venue=name, error=str(e))
+            stable = None
+        try:
+            raw_c = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
+            cngn = Decimal(raw_c) / Decimal(10 ** venue.cngn_decimals)
+        except Exception as e:
+            logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
+            cngn = None
+        return name, stable, cngn
+
+    balance_results = await asyncio.gather(
+        *(loop.run_in_executor(None, _read_balances, name, venue) for name, venue in tradeable.items()),
+        return_exceptions=True,
+    )
+
     stable_balances: dict[str, Decimal] = {}
     cngn_balances: dict[str, Decimal] = {}
-    approvals_ok = True
-    for name, venue in engine.venues.items():
-        required_attrs = (
-            "stable_token",
-            "cngn_token",
-            "trade_account",
-            "stable_decimals",
-            "cngn_decimals",
-            "ensure_trade_approvals",
-        )
-        if all(hasattr(venue, attr) for attr in required_attrs):
-            try:
-                raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
-                stable_balances[name] = Decimal(raw) / Decimal(10 ** venue.stable_decimals)
-            except Exception as e:
-                logger.warning("account_stable_seed_failed", venue=name, error=str(e))
-            try:
-                raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
-                cngn_balances[name] = Decimal(raw) / Decimal(10 ** venue.cngn_decimals)
-            except Exception as e:
-                logger.warning("account_cngn_seed_failed", venue=name, error=str(e))
-            if ensure_approvals:
-                try:
-                    await venue.ensure_trade_approvals()
-                except Exception as e:
-                    approvals_ok = False
-                    logger.warning("trade_approval_failed", venue=name, error=str(e))
+    for result in balance_results:
+        if isinstance(result, Exception):
+            logger.warning("account_balance_seed_task_failed", error=str(result))
+            continue
+        name, stable, cngn = result
+        if stable is not None:
+            stable_balances[name] = stable
+        if cngn is not None:
+            cngn_balances[name] = cngn
+
     if stable_balances:
         engine.inventory.initialize_account_stable(stable_balances)
     if cngn_balances:
         engine.inventory.initialize_account_cngn(cngn_balances)
     engine._inventory_seeded = True
+
     if ensure_approvals:
+        approvals_ok = True
+        for name, venue in tradeable.items():
+            try:
+                await venue.ensure_trade_approvals()
+            except Exception as e:
+                approvals_ok = False
+                logger.warning("trade_approval_failed", venue=name, error=str(e))
         engine._trade_approvals_seeded = approvals_ok

@@ -221,75 +221,31 @@ async def recover_cex_half_open(engine, opp_id: str) -> dict:
                 f"(old record — check buy tx {opp.buy_tx_hash} manually)"
             )
 
-        if buy_is_cex:
-            logger.warning(
-                "cex_dex_recovery_reversing_cex_buy",
-                opp_id=opp_id,
-                buy_venue=buy_venue_name,
-                amount_cngn=float(buy_amount_cngn),
-            )
-            reverse_trade = await engine.executor.execute_cex_sell(
-                buy_venue_name,
-                buy_amount_cngn,
-                opp.buy_price,
-                opp_id,
-            )
-            if not reverse_trade or reverse_trade.status == "failed":
-                err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
-                recovery_reason = f"RECOVERY_FAILED:{err}"
-                await db.update_arbitrage_opportunity(opp_id, status="half_open", reason=recovery_reason)
-                await engine.history.record_failed_raw(
-                    opp_id=opp_id,
-                    pipeline="cex_dex",
-                    direction=cex_direction,
-                    buy_venue=opp.buy_venue,
-                    sell_venue=opp.sell_venue,
-                    status="half_open",
-                    optimal_size_usd=opp.recommended_size_usd,
-                    routed_size_usd=opp.recommended_size_usd,
-                    executed_size_usd=opp.recommended_size_usd,
-                    expected_profit_usd=opp.expected_profit_usd,
-                    net_spread_bps=opp.net_spread_bps,
-                    reason=recovery_reason,
-                    buy_tx_hash=opp.buy_tx_hash,
-                )
-                engine.broadcast({"type": "alert", "severity": "critical",
-                                  "message": (
-                                      f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
-                                      "Manual intervention required."
-                                  )})
-                raise ValueError(err)
-            actual_loss = reverse_trade.amount * (reverse_trade.price or opp.buy_price) - opp.recommended_size_usd
-            await db.update_arbitrage_opportunity(
-                opp_id,
-                status="completed",
-                actual_profit_usd=float(actual_loss),
-                reason="Recovered: reversed CEX buy leg",
-            )
-            engine.inventory.record_trade_complete(opp_id, opp.recommended_size_usd, actual_loss, Decimal("0"))
-            await engine.history.record_executed_raw(
-                opp_id=opp_id,
-                pipeline="cex_dex",
-                direction=cex_direction,
-                buy_venue=opp.buy_venue,
-                sell_venue=opp.sell_venue,
-                optimal_size_usd=opp.recommended_size_usd,
-                routed_size_usd=opp.recommended_size_usd,
-                executed_size_usd=opp.recommended_size_usd,
-                expected_profit_usd=opp.expected_profit_usd,
-                net_spread_bps=opp.net_spread_bps,
-                actual_profit_usd=actual_loss,
-                reason="Recovered: reversed CEX buy leg",
-                buy_tx_hash=opp.buy_tx_hash,
-            )
-            logger.info(
-                "cex_dex_recovery_completed",
-                opp_id=opp_id,
-                method="reverse_cex_buy",
-                profit_usd=float(actual_loss),
-            )
-            return {"status": "completed", "method": "reverse_cex_buy", "opp_id": opp_id, "profit_usd": float(actual_loss)}
+        return await _reverse_cex_recovery(engine, db, opp_id, opp, cex_direction, buy_is_cex, buy_amount_cngn)
+    finally:
+        engine._arb_executing = False
 
+
+async def _reverse_cex_recovery(engine, db, opp_id: str, opp, cex_direction: str, buy_is_cex: bool, buy_amount_cngn: Decimal) -> dict:
+    """Execute a reversal trade to recover a half-open CEX arb and record the outcome."""
+    buy_venue_name = opp.buy_venue
+    if buy_is_cex:
+        method = "reverse_cex_buy"
+        logger.warning(
+            "cex_dex_recovery_reversing_cex_buy",
+            opp_id=opp_id,
+            buy_venue=buy_venue_name,
+            amount_cngn=float(buy_amount_cngn),
+        )
+        reverse_trade = await engine.executor.execute_cex_sell(
+            buy_venue_name,
+            buy_amount_cngn,
+            opp.buy_price,
+            opp_id,
+        )
+        fallback_price = opp.buy_price
+    else:
+        method = "reverse_dex_buy"
         logger.warning(
             "cex_dex_recovery_reversing_dex_buy",
             opp_id=opp_id,
@@ -302,61 +258,58 @@ async def recover_cex_half_open(engine, opp_id: str) -> dict:
             Decimal("0"),
             opp_id,
         )
-        if not reverse_trade or reverse_trade.status == "failed":
-            err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
-            recovery_reason = f"RECOVERY_FAILED:{err}"
-            await db.update_arbitrage_opportunity(opp_id, status="half_open", reason=recovery_reason)
-            await engine.history.record_failed_raw(
-                opp_id=opp_id,
-                pipeline="cex_dex",
-                direction=cex_direction,
-                buy_venue=opp.buy_venue,
-                sell_venue=opp.sell_venue,
-                status="half_open",
-                optimal_size_usd=opp.recommended_size_usd,
-                routed_size_usd=opp.recommended_size_usd,
-                executed_size_usd=opp.recommended_size_usd,
-                expected_profit_usd=opp.expected_profit_usd,
-                net_spread_bps=opp.net_spread_bps,
-                reason=recovery_reason,
-                buy_tx_hash=opp.buy_tx_hash,
-            )
-            engine.broadcast({"type": "alert", "severity": "critical",
-                              "message": (
-                                  f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
-                                  "Manual intervention required."
-                              )})
-            raise ValueError(err)
-        actual_loss = reverse_trade.amount * (reverse_trade.price or Decimal("0")) - opp.recommended_size_usd
-        await db.update_arbitrage_opportunity(
-            opp_id,
-            status="completed",
-            actual_profit_usd=float(actual_loss),
-            reason="Recovered: reversed DEX buy leg",
-        )
-        engine.inventory.record_trade_complete(opp_id, opp.recommended_size_usd, actual_loss, Decimal("0"))
-        await engine.history.record_executed_raw(
+        fallback_price = Decimal("0")
+
+    if not reverse_trade or reverse_trade.status == "failed":
+        err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
+        recovery_reason = f"RECOVERY_FAILED:{err}"
+        await db.update_arbitrage_opportunity(opp_id, status="half_open", reason=recovery_reason)
+        await engine.history.record_failed_raw(
             opp_id=opp_id,
             pipeline="cex_dex",
             direction=cex_direction,
             buy_venue=opp.buy_venue,
             sell_venue=opp.sell_venue,
+            status="half_open",
             optimal_size_usd=opp.recommended_size_usd,
             routed_size_usd=opp.recommended_size_usd,
             executed_size_usd=opp.recommended_size_usd,
             expected_profit_usd=opp.expected_profit_usd,
             net_spread_bps=opp.net_spread_bps,
-            actual_profit_usd=actual_loss,
-            reason="Recovered: reversed DEX buy leg",
+            reason=recovery_reason,
             buy_tx_hash=opp.buy_tx_hash,
-            sell_tx_hash=reverse_trade.tx_hash,
         )
-        logger.info(
-            "cex_dex_recovery_completed",
-            opp_id=opp_id,
-            method="reverse_dex_buy",
-            profit_usd=float(actual_loss),
-        )
-        return {"status": "completed", "method": "reverse_dex_buy", "opp_id": opp_id, "profit_usd": float(actual_loss)}
-    finally:
-        engine._arb_executing = False
+        engine.broadcast({"type": "alert", "severity": "critical",
+                          "message": (
+                              f"CEX-DEX recovery reversal failed for {opp_id}: {err}. "
+                              "Manual intervention required."
+                          )})
+        raise ValueError(err)
+
+    reason = f"Recovered: reversed {'CEX' if buy_is_cex else 'DEX'} buy leg"
+    actual_loss = reverse_trade.amount * (reverse_trade.price or fallback_price) - opp.recommended_size_usd
+    await db.update_arbitrage_opportunity(
+        opp_id,
+        status="completed",
+        actual_profit_usd=float(actual_loss),
+        reason=reason,
+    )
+    engine.inventory.record_trade_complete(opp_id, opp.recommended_size_usd, actual_loss, Decimal("0"))
+    await engine.history.record_executed_raw(
+        opp_id=opp_id,
+        pipeline="cex_dex",
+        direction=cex_direction,
+        buy_venue=opp.buy_venue,
+        sell_venue=opp.sell_venue,
+        optimal_size_usd=opp.recommended_size_usd,
+        routed_size_usd=opp.recommended_size_usd,
+        executed_size_usd=opp.recommended_size_usd,
+        expected_profit_usd=opp.expected_profit_usd,
+        net_spread_bps=opp.net_spread_bps,
+        actual_profit_usd=actual_loss,
+        reason=reason,
+        buy_tx_hash=opp.buy_tx_hash,
+        sell_tx_hash=reverse_trade.tx_hash if not buy_is_cex else None,
+    )
+    logger.info("cex_dex_recovery_completed", opp_id=opp_id, method=method, profit_usd=float(actual_loss))
+    return {"status": "completed", "method": method, "opp_id": opp_id, "profit_usd": float(actual_loss)}

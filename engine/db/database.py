@@ -959,6 +959,17 @@ class Database:
             buy_amount_cngn=Decimal(str(dict(row).get("buy_amount_cngn"))) if dict(row).get("buy_amount_cngn") is not None else None,
         )
 
+    async def get_active_dex_opportunity(self, direction: str) -> "Optional[str]":
+        """Return the id of the most recent active opportunity for direction, or None."""
+        cursor = await self._conn.execute(
+            "SELECT id FROM dex_arbitrage_opportunities "
+            "WHERE status IN ('detected', 'executing') AND direction = ? "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (direction,),
+        )
+        row = await cursor.fetchone()
+        return row["id"] if row else None
+
     async def upsert_arbitrage_history_event(self, event: ArbitrageHistoryEvent):
         """Insert or refresh a lifecycle event for an arbitrage attempt."""
         await self._conn.execute(

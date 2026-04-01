@@ -12,14 +12,13 @@ from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportuni
 from engine.core.arbitrage.executor import ArbitrageExecutor
 from engine.core.arbitrage.history import ArbitrageHistoryRecorder
 from engine.core.arbitrage.inventory import InventoryTracker
-from engine.core.arbitrage.preflight import _coerce_decimal, _handle_preflight_error
 from engine.core.arbitrage.recovery import (
     _recover_dex_half_open_inner as _recover_dex_half_open_inner_impl,
     recover_cex_half_open as _recover_cex_half_open_impl,
     recover_dex_half_open as _recover_dex_half_open_impl,
 )
 from engine.core.arbitrage.route_execution import execute_route as _execute_route_impl
-from engine.core.arbitrage.route_registry import ROUTES, ROUTES_BY_DIRECTION, TradeRoute
+from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION, TradeRoute
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
 from engine.core.arbitrage.wallet_state import (
     fetch_venue_wallet_snapshot as _fetch_venue_wallet_snapshot_impl,
@@ -82,21 +81,14 @@ class ArbitrageEngine:
         self._enabled = False
         logger.info("arbitrage_engine_disabled")
 
-    def enable_execute_cex_dex(self):
-        self.execute_cex_dex_enabled = True
-        logger.info("execution_cex_dex_enabled")
-
-    def disable_execute_cex_dex(self):
-        self.execute_cex_dex_enabled = False
-        logger.info("execution_cex_dex_disabled")
-
-    def enable_execute_dex_dex(self):
-        self.execute_dex_dex_enabled = True
-        logger.info("execution_dex_dex_enabled")
-
-    def disable_execute_dex_dex(self):
-        self.execute_dex_dex_enabled = False
-        logger.info("execution_dex_dex_disabled")
+    def set_execution_enabled(self, pipeline: str, enabled: bool) -> None:
+        if pipeline == "cex_dex":
+            self.execute_cex_dex_enabled = enabled
+        elif pipeline == "dex_dex":
+            self.execute_dex_dex_enabled = enabled
+        else:
+            raise ValueError(f"Unknown pipeline: {pipeline}")
+        logger.info("execution_pipeline_updated", pipeline=pipeline, enabled=enabled)
 
     # ------------------------------------------------------------------
     # CEX-DEX pipeline
@@ -248,16 +240,9 @@ class ArbitrageEngine:
         await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
 
         direction = optimal["direction"]
-        existing = await db._conn.execute(
-            "SELECT id FROM dex_arbitrage_opportunities "
-            "WHERE status IN ('detected', 'executing') AND direction = ? "
-            "ORDER BY timestamp DESC LIMIT 1",
-            (direction,)
-        )
-        row = await existing.fetchone()
-
-        if row:
-            opp_id = row["id"]
+        existing_id = await db.get_active_dex_opportunity(direction)
+        if existing_id:
+            opp_id = existing_id
         else:
             opp_id = f"dex-arb-{uuid.uuid4()}"
             opportunity = DexArbOpportunity(
