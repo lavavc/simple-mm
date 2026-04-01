@@ -11,6 +11,7 @@ from eth_abi import encode
 
 from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.engine import ArbitrageEngine
+from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
 from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
 from engine.db.database import Database
@@ -83,7 +84,6 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
     )
     candidate = RouteCandidate(
         direction=direction,
-        pipeline="cex_dex",
         buy_venue="quidax",
         sell_venue="uni-base",
         optimal_size_usd=size,
@@ -150,7 +150,8 @@ class TestCexDexPreflightGate:
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_cex_dex(_cex_dex_route_no_depth(), "opp-cex-preflight-missing-depth")
+            r = _cex_dex_route_no_depth()
+            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-missing-depth")
 
         assert cex_venue.buy_calls == [], "CEX buy must not be called when Quidax depth is missing"
         assert not engine._arb_executing
@@ -164,7 +165,8 @@ class TestCexDexPreflightGate:
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_cex_dex(_cex_dex_route(), "opp-cex-preflight-1")
+            r = _cex_dex_route()
+            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-1")
 
         assert cex_venue.buy_calls == [], "CEX buy must not be called when sell preflight fails"
         assert not engine._arb_executing
@@ -179,7 +181,8 @@ class TestCexDexPreflightGate:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         engine.inventory.reconcile_cngn({"uni-base": Decimal("26999")})
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_cex_dex(_cex_dex_route(size=Decimal("500")), "opp-cex-preflight-debug")
+            r = _cex_dex_route(size=Decimal("500"))
+            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-debug")
 
         message = next(a["message"] for a in alerts if a.get("type") == "alert")
         assert "Trade size: $500.00" in message
@@ -196,7 +199,8 @@ class TestCexDexPreflightGate:
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_cex_dex(_cex_dex_route(), "opp-cex-preflight-2")
+            r = _cex_dex_route()
+            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-2")
 
         assert len(cex_venue.buy_calls) == 1, "CEX buy must be called when sell preflight passes"
         assert not engine._arb_executing
@@ -214,7 +218,7 @@ class TestCexDexPreflightGate:
         route.candidate.expected_profit_usd = Decimal("1.50")
 
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_cex_dex(route, "opp-cex-profit-persist")
+            await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-persist")
 
         opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-persist")
         assert opp is not None
@@ -233,7 +237,7 @@ class TestCexDexPreflightGate:
         route.candidate.expected_profit_usd = Decimal("1.50")
 
         with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
-            await engine._execute_cex_dex(route, "opp-cex-profit-zero")
+            await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-zero")
 
         opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-zero")
         assert opp is not None

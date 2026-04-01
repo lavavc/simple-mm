@@ -12,6 +12,7 @@ from engine.api.schemas import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryWalletSnapshot,
 )
+from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
 from engine.core.arbitrage.router import SelectedRoute
 
 
@@ -72,9 +73,10 @@ class ArbitrageHistoryRecorder:
         sell_tx_hash: Optional[str] = None,
     ) -> ArbitrageHistoryEvent:
         optimal = route.candidate.signal.get("optimal_arb", {})
+        route_def = ROUTES_BY_DIRECTION.get(route.candidate.direction)
         return ArbitrageHistoryEvent(
             opportunity_id=opp_id,
-            pipeline=route.candidate.pipeline,
+            pipeline=route_def.pipeline if route_def else "unknown",
             event_type=event_type,
             timestamp=int(time.time() * 1000),
             direction=route.candidate.direction,

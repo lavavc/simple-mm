@@ -22,7 +22,6 @@ def _default_depth() -> OrderBookDepth:
 
 def _make_candidate(
     direction: str = "QUIDAX_TO_UNI_BASE",
-    pipeline: str = "cex_dex",
     buy_venue: str = "quidax",
     sell_venue: str = "uni-base",
     size_usd: float = 500.0,
@@ -34,7 +33,6 @@ def _make_candidate(
         signal = {"depth": {buy_venue: _default_depth()}} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
     return RouteCandidate(
         direction=direction,
-        pipeline=pipeline,
         buy_venue=buy_venue,
         sell_venue=sell_venue,
         optimal_size_usd=Decimal(str(size_usd)),
@@ -198,7 +196,6 @@ class TestSelectRouteNetProfit:
         )
         c = _make_candidate(
             direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
-            pipeline="dex_dex",
             buy_venue="uni-bsc",
             sell_venue="uni-base",
             size_usd=500.0,
@@ -227,7 +224,6 @@ class TestSelectRouteNetProfit:
         )
         c = _make_candidate(
             direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE",
-            pipeline="dex_dex",
             buy_venue="uni-bsc",
             sell_venue="uni-base",
             size_usd=500.0,
@@ -247,7 +243,6 @@ class TestSelectRouteNetProfit:
         )
         c = _make_candidate(
             direction="QUIDAX_TO_UNI_BASE",
-            pipeline="cex_dex",
             buy_venue="quidax",
             sell_venue="uni-base",
             size_usd=500.0,

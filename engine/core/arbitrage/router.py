@@ -10,17 +10,14 @@ from typing import Optional
 
 from engine.core.arbitrage.cex_dex import estimate_cex_dex_trade, estimate_max_cex_buy_usd_for_cngn
 from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade, estimate_max_dex_buy_usd_for_cngn
+from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
 
-# CEX-DEX directions by their cNGN inventory effect
-_SELLS_CNGN_TO_CEX = frozenset({"UNI_BSC_TO_QUIDAX", "UNI_BASE_TO_QUIDAX"})
-_BUYS_CNGN_FROM_CEX = frozenset({"QUIDAX_TO_UNI_BSC", "QUIDAX_TO_UNI_BASE"})
 _IMBALANCE_THRESHOLD_USD = Decimal("10")
 
 
 @dataclass
 class RouteCandidate:
     direction: str
-    pipeline: str            # "cex_dex" or "dex_dex"
     buy_venue: str
     sell_venue: str
     optimal_size_usd: Decimal
@@ -34,7 +31,7 @@ class SelectedRoute:
     candidate: RouteCandidate
     adjusted_size_usd: Decimal   # capped to available stablecoin
     net_profit_usd: Decimal      # after gas and rebalance penalty
-    expected_profit_usd: Decimal                     # recomputed at adjusted size when needed
+    expected_profit_usd: Decimal  # recomputed at adjusted size when needed
 
 
 def select_route(
@@ -46,12 +43,16 @@ def select_route(
 
     Filters: adjusted_size > 0, net_profit >= min_profit_usd, inventory.can_trade() passes.
     Score: net_profit = expected_profit - gas - rebalance_cost_penalty.
-    Tiebreak: prefer routes that reduce current inventory imbalance.
+    Tiebreak: prefer routes that reduce current inventory imbalance (2=reduces, 1=neutral, 0=worsens).
     """
-    scored: list[tuple[Decimal, bool, SelectedRoute]] = []
+    scored: list[tuple[Decimal, int, SelectedRoute]] = []
     imbalance = inventory.state.cngn_imbalance_usd
 
     for c in candidates:
+        route_def = ROUTES_BY_DIRECTION.get(c.direction)
+        if not route_def:
+            continue
+
         # Block if buy-side stablecoin balance is unknown or zero — mirrors cNGN check below.
         stable_bal = inventory.state.per_account_stable.get(c.buy_venue)
         if not stable_bal:
@@ -64,17 +65,20 @@ def select_route(
         if not cngn_bal:
             continue
 
-        if c.pipeline == "cex_dex" and c.direction in _BUYS_CNGN_FROM_CEX:
+        if route_def.cngn_effect == "buys_cngn_from_cex":
+            # CEX buy → DEX sell: cap against what the CEX orderbook can absorb for our cNGN
             adjusted_size = min(
                 adjusted_size,
                 estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth", {}).get(c.buy_venue), cngn_bal),
             )
-        elif c.pipeline == "dex_dex":
+        elif route_def.cngn_effect == "neutral":
+            # DEX → DEX: binary-search the exact buy-side USD that exhausts sell-side cNGN
             sell_cngn_cap_trade = estimate_max_dex_buy_usd_for_cngn(c.direction, cngn_bal)
             if not sell_cngn_cap_trade:
                 continue
             adjusted_size = min(adjusted_size, Decimal(str(sell_cngn_cap_trade["optimal_size_usd"])))
         else:
+            # DEX buy → CEX sell: cap against cNGN USD value at current price
             cngn_price = inventory.state.cngn_price_usd
             if cngn_price > 0:
                 adjusted_size = min(adjusted_size, cngn_bal * cngn_price)
@@ -83,14 +87,14 @@ def select_route(
             continue
 
         expected_profit_usd = c.expected_profit_usd
-        if c.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
+        if route_def.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
             # Detection already priced the unconstrained optimum. Only rescore when
             # inventory/depth caps force us onto a smaller trade size.
             recomputed = estimate_cex_dex_trade(c.direction, c.signal.get("depth", {}).get(c.buy_venue), adjusted_size)
             if not recomputed:
                 continue
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
-        elif c.pipeline == "dex_dex":
+        elif route_def.cngn_effect == "neutral":
             cngn_cap_size = Decimal(str(sell_cngn_cap_trade["optimal_size_usd"]))
             if adjusted_size == cngn_cap_size:
                 # cNGN cap was binding — profit already computed at this size.
@@ -115,15 +119,15 @@ def select_route(
         if not can:
             continue
 
-        # Inventory alignment tiebreak
+        # Inventory alignment score: 2=reduces imbalance, 1=neutral, 0=worsens.
         if imbalance > _IMBALANCE_THRESHOLD_USD:
-            aligned = c.direction in _SELLS_CNGN_TO_CEX
+            alignment = 2 if route_def.cngn_effect == "sells_cngn_to_cex" else (1 if route_def.cngn_effect == "neutral" else 0)
         elif imbalance < -_IMBALANCE_THRESHOLD_USD:
-            aligned = c.direction in _BUYS_CNGN_FROM_CEX
+            alignment = 2 if route_def.cngn_effect == "buys_cngn_from_cex" else (1 if route_def.cngn_effect == "neutral" else 0)
         else:
-            aligned = True
+            alignment = 1
 
-        scored.append((net_profit, aligned, SelectedRoute(c, adjusted_size, net_profit, expected_profit_usd)))
+        scored.append((net_profit, alignment, SelectedRoute(c, adjusted_size, net_profit, expected_profit_usd)))
 
     if not scored:
         return None

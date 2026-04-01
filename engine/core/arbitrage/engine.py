@@ -12,32 +12,12 @@ from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportuni
 from engine.core.arbitrage.executor import ArbitrageExecutor
 from engine.core.arbitrage.history import ArbitrageHistoryRecorder
 from engine.core.arbitrage.inventory import InventoryTracker
+from engine.core.arbitrage.route_registry import ROUTES, ROUTES_BY_DIRECTION, TradeRoute
 from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
 from engine.db import get_db
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
-
-# Direction → (buy_venue, buy_is_cex, sell_venue, sell_is_cex)
-_CEX_DEX_DIRECTIONS = {
-    "QUIDAX_TO_UNI_BSC":  ("quidax",    True,  "uni-bsc",  False),
-    "UNI_BSC_TO_QUIDAX":  ("uni-bsc",   False, "quidax",   True),
-    "QUIDAX_TO_UNI_BASE": ("quidax",    True,  "uni-base", False),
-    "UNI_BASE_TO_QUIDAX": ("uni-base",  False, "quidax",   True),
-}
-
-# Direction → (buy_venue, sell_venue)
-_DEX_DEX_DIRECTIONS = {
-    "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE": ("uni-bsc", "uni-base"),
-    "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE": ("uni-base", "uni-bsc"),
-}
-
-
-def _cex_dex_direction_for_venues(buy_venue: str, sell_venue: str) -> str:
-    for direction, (mapped_buy, _, mapped_sell, _) in _CEX_DEX_DIRECTIONS.items():
-        if mapped_buy == buy_venue and mapped_sell == sell_venue:
-            return direction
-    return f"{buy_venue.upper().replace('-', '_')}_TO_{sell_venue.upper().replace('-', '_')}"
 
 
 def _coerce_decimal(value: Any) -> Decimal | None:
@@ -348,18 +328,17 @@ class ArbitrageEngine:
             candidates = []
             for arb in signal.get("all_arbs", []):
                 direction = arb.get("direction")
-                if direction not in _CEX_DEX_DIRECTIONS:
+                route_def = ROUTES_BY_DIRECTION.get(direction)
+                if not route_def:
                     continue
-                buy_venue, _, sell_venue, _ = _CEX_DEX_DIRECTIONS[direction]
                 gas_usd_raw = arb.get("gas_usd")
                 if not gas_usd_raw:
                     logger.warning("cex_dex_candidate_skipped_missing_gas", direction=direction)
                     continue
                 candidates.append(RouteCandidate(
                     direction=direction,
-                    pipeline="cex_dex",
-                    buy_venue=buy_venue,
-                    sell_venue=sell_venue,
+                    buy_venue=route_def.buy_leg.venue,
+                    sell_venue=route_def.sell_leg.venue,
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
@@ -368,7 +347,7 @@ class ArbitrageEngine:
             route = select_route(candidates, self.inventory)
             if route:
                 opp_id = f"cex-dex-{uuid.uuid4()}"
-                asyncio.create_task(self._execute_cex_dex(route, opp_id))
+                asyncio.create_task(self._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id))
 
         if not self._cex_curve_task or self._cex_curve_task.done():
             self._cex_curve_task = asyncio.create_task(self._broadcast_cex_curve(depth, signal))
@@ -392,28 +371,30 @@ class ArbitrageEngine:
         except Exception as e:
             logger.error("cex_dex_curve_compute_failed", error=str(e))
 
-    async def _execute_cex_dex(self, route: SelectedRoute, opp_id: str) -> None:
-        """Execute a CEX-DEX arbitrage."""
+    async def _execute_route(self, route_def: TradeRoute, route: SelectedRoute, opp_id: str) -> None:
+        """Execute a routed arbitrage trade (CEX-DEX or DEX-DEX)."""
         self._arb_executing = True
         db = await get_db()
         buy_trade = None
+        sell_tx_hash = None       # captured on sell failure; surfaced in except handler
+        sell_cngn_amount = None   # set during sell preflight; used for DEX sell execution
+        buy_venue_name = route_def.buy_leg.venue
+        sell_venue_name = route_def.sell_leg.venue
+        buy_is_cex = route_def.buy_leg.leg_type == "api"
+        sell_is_cex = route_def.sell_leg.leg_type == "api"
+        c = route.candidate
+        direction = c.direction
+        size_usd = route.adjusted_size_usd
         try:
-            c = route.candidate
-            direction = c.direction
-            buy_venue_name, buy_is_cex, sell_venue_name, sell_is_cex = _CEX_DEX_DIRECTIONS[direction]
-            size_usd = route.adjusted_size_usd
-            slippage_bps = c.signal["optimal_arb"].get("slippage_tolerance_bps", 10)
+            slippage_bps = c.signal.get("optimal_arb", {}).get("slippage_tolerance_bps", 10)
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
             quidax_price = Decimal(str(c.signal["prices"][buy_venue_name]))
             net_spread_bps = c.signal["optimal_arb"].get("net_spread_bps", 0)
             await self.history.record_routed(opp_id, route)
 
-            # If the sell leg is a DEX, simulate it before placing the CEX buy.
-            # A failed DEX sell after a confirmed CEX buy would leave us half-open with no recovery path.
+            # Preflight sell leg if it's a DEX sell — before committing to buy.
             if not sell_is_cex:
-                from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
-                from engine.core.arbitrage.cex_dex import estimate_cex_buy_cngn
-                loop = asyncio.get_running_loop()
+                from engine.core.arbitrage.executor import _clean_revert
                 sell_venue = self.venues[sell_venue_name]
                 quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
                 cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
@@ -433,142 +414,202 @@ class ArbitrageEngine:
                     return
                 cngn_estimate = int(cngn_estimate_amount * Decimal(10 ** sell_venue.cngn_decimals))
                 sell_err = await loop.run_in_executor(
-                    None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate, 0
+                    None, sell_venue.simulate_swap, sell_venue.cngn_address, cngn_estimate_raw, sim_min_out_raw
                 )
                 if sell_err:
                     clean_sell_err = _clean_revert(sell_err)
                     sell_price_usd = _coerce_decimal(c.signal.get("prices", {}).get(sell_venue_name))
                     _handle_preflight_error(
                         self, sell_venue_name, clean_sell_err,
-                        "cex_dex_sell_preflight_failed",
-                        direction=direction,
-                        size_usd=float(size_usd),
+                        "arb_sell_preflight_failed",
+                        direction=direction, size_usd=float(size_usd),
                         sell_cngn_est=float(cngn_estimate_amount),
                         sell_price_usd=float(sell_price_usd) if sell_price_usd is not None else None,
                         wallet_asset="cngn",
                     )
+                    if not buy_is_cex:
+                        await db.update_dex_arbitrage_execution_state(
+                            opp_id, status="abandoned", reason=clean_sell_err,
+                        )
                     await self.history.record_failed(
-                        opp_id,
-                        route,
-                        status="sell_preflight_failed",
-                        reason=clean_sell_err,
+                        opp_id, route, status="sell_preflight_failed", reason=clean_sell_err,
                     )
                     return
 
-            from engine.api.schemas import ArbitrageOpportunity as ArbOpp
-            await db.insert_arbitrage_opportunity(ArbOpp(
-                id=opp_id,
-                timestamp=int(time.time() * 1000),
-                buy_venue=buy_venue_name,
-                sell_venue=sell_venue_name,
-                buy_price=quidax_price,
-                sell_price=quidax_price,
-                gross_spread_bps=net_spread_bps,
-                net_spread_bps=net_spread_bps,
-                recommended_size_usd=size_usd,
-                expected_profit_usd=route.expected_profit_usd,
-                status="executing",
-            ))
+            # DEX-DEX also preflights the buy leg.
+            if not buy_is_cex:
+                buy_venue = self.venues[buy_venue_name]
+                buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
+                buy_err = await loop.run_in_executor(
+                    None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
+                )
+                if buy_err:
+                    clean_buy_err = _clean_revert(buy_err)
+                    _handle_preflight_error(
+                        self, buy_venue_name, clean_buy_err,
+                        "dex_dex_buy_preflight_failed",
+                        direction=direction, size_usd=float(size_usd),
+                        wallet_asset="stable",
+                        wallet_symbol=getattr(getattr(buy_venue, "config", None), "token0_symbol", None)
+                        if getattr(getattr(buy_venue, "config", None), "invert_price", False)
+                        else getattr(getattr(buy_venue, "config", None), "token1_symbol", None),
+                        required_amount=float(size_usd),
+                    )
+                    await db.update_dex_arbitrage_execution_state(
+                        opp_id, status="abandoned", reason=clean_buy_err,
+                    )
+                    await self.history.record_failed(
+                        opp_id, route, status="buy_preflight_failed", reason=clean_buy_err,
+                    )
+                    return
+
+            # Record execution start.
+            if buy_is_cex or sell_is_cex:
+                quidax_price = Decimal(str(c.signal["prices"]["quidax"]))
+                net_spread_bps = c.signal.get("optimal_arb", {}).get("net_spread_bps", 0)
+                from engine.api.schemas import ArbitrageOpportunity as ArbOpp
+                await db.insert_arbitrage_opportunity(ArbOpp(
+                    id=opp_id,
+                    timestamp=int(time.time() * 1000),
+                    buy_venue=buy_venue_name,
+                    sell_venue=sell_venue_name,
+                    buy_price=quidax_price,
+                    sell_price=quidax_price,
+                    gross_spread_bps=net_spread_bps,
+                    net_spread_bps=net_spread_bps,
+                    recommended_size_usd=size_usd,
+                    expected_profit_usd=route.expected_profit_usd,
+                    status="executing",
+                ))
+            else:
+                await db.update_dex_arbitrage_execution_state(opp_id, status="executing")
 
             self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
-            buy_trade = (
-                await self.executor.execute_cex_buy(buy_venue_name, size_usd, quidax_price, opp_id)
-                if buy_is_cex else
-                await self.executor.execute_dex_buy(buy_venue_name, size_usd, opp_id)
-            )
+            # Execute buy leg.
+            if buy_is_cex:
+                buy_trade = await self.executor.execute_cex_buy(buy_venue_name, size_usd, quidax_price, opp_id)
+            else:
+                buy_trade = await self.executor.execute_dex_buy(buy_venue_name, size_usd, opp_id)
 
             if not buy_trade or buy_trade.status == "failed":
                 err = (buy_trade.error if buy_trade else None) or "buy failed"
-                logger.error("cex_dex_buy_failed", direction=direction, error=err)
+                logger.error("arb_buy_failed", direction=direction, error=err)
                 self.inventory.record_trade_failure(opp_id, err)
-                await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
+                if buy_is_cex or sell_is_cex:
+                    await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
+                else:
+                    await db.expire_old_dex_arbitrage_opportunities(0)
                 await self.history.record_failed(opp_id, route, status="buy_failed", reason=err)
                 return
 
-            sell_trade = (
-                await self.executor.execute_cex_sell(sell_venue_name, buy_trade.amount, quidax_price, opp_id)
-                if sell_is_cex else
-                await self.executor.execute_dex_sell(sell_venue_name, buy_trade.amount, min_out_usd, opp_id)
-            )
-
-            if not sell_trade or sell_trade.status == "failed":
-                err = (sell_trade.error if sell_trade else None) or "sell failed"
-                buy_tx = buy_trade.tx_hash or ""
-                logger.error("cex_dex_half_open", direction=direction, buy_tx=buy_tx, sell_error=err)
-                await db.update_arbitrage_opportunity(
-                    opp_id, status="half_open", reason=f"HALF_OPEN:{buy_tx}:{err}",
-                    buy_amount_cngn=float(buy_trade.amount),
-                    buy_tx_hash=buy_tx or None,
+            if not (buy_is_cex or sell_is_cex):
+                await db.update_dex_arbitrage_execution_state(
+                    opp_id, status="buy_filled",
+                    buy_tx_hash=buy_trade.tx_hash,
+                    buy_amount_cngn=buy_trade.amount,
+                    executed_size_usd=float(size_usd),
                 )
-                self.inventory.trip_circuit_breaker(f"CEX-DEX half-open: {opp_id}")
-                self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="half_open",
-                    reason=err,
-                    executed_size_usd=size_usd,
-                    buy_tx_hash=buy_tx or None,
-                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                )
-                self.broadcast({"type": "alert", "severity": "critical",
-                               "message": (
-                                   f"Half-open CEX-DEX arb {opp_id} ({direction}): "
-                                   f"buy on {buy_venue_name} ok (tx {buy_tx}), "
-                                   f"sell on {sell_venue_name} failed: {err}. "
-                                   f"Recover: /recover {opp_id}"
-                               )})
-                return
 
-            actual_profit = (
-                sell_trade.amount * (sell_trade.price or quidax_price)
-                - buy_trade.amount * (buy_trade.price or quidax_price)
-            )
-            await db.update_arbitrage_opportunity(opp_id, status="completed",
-                                                  actual_profit_usd=float(actual_profit))
-            self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
-            await self.history.record_executed(
-                opp_id,
-                route,
-                actual_profit_usd=actual_profit,
-                buy_tx_hash=buy_trade.tx_hash if buy_trade else None,
-                sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-            )
-            self.broadcast({"type": "arb_executed", "data": {
-                "id": opp_id, "direction": direction, "profit_usd": float(actual_profit),
-            }})
-            logger.info("cex_dex_arb_executed", opp_id=opp_id, direction=direction,
-                        profit_usd=float(actual_profit))
-
-        except Exception as e:
-            logger.error("cex_dex_execution_error", opp_id=opp_id, error=str(e))
-            self.inventory.record_trade_failure(opp_id, str(e))
-            if buy_trade and buy_trade.status != "failed":
-                buy_tx = buy_trade.tx_hash or None
-                await db.update_arbitrage_opportunity(
-                    opp_id,
-                    status="half_open",
-                    reason=f"HALF_OPEN:{buy_tx or ''}:{e}",
-                    buy_amount_cngn=float(buy_trade.amount),
-                    buy_tx_hash=buy_tx,
-                )
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="half_open",
-                    reason=str(e),
-                    executed_size_usd=size_usd,
-                    buy_tx_hash=buy_tx,
+            # Execute sell leg.
+            # DEX sell: use the preflight estimate (validated against current pool state).
+            # CEX sell: use actual cNGN received from the buy leg.
+            if sell_is_cex:
+                sell_trade = await self.executor.execute_cex_sell(
+                    sell_venue_name, buy_trade.amount, quidax_price, opp_id
                 )
             else:
-                await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=str(e))
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="execution_error",
-                    reason=str(e),
+                sell_trade = await self.executor.execute_dex_sell(
+                    sell_venue_name, sell_cngn_amount, min_out_usd, opp_id
                 )
+
+            if not sell_trade or sell_trade.status == "failed":
+                sell_tx_hash = sell_trade.tx_hash if sell_trade else None
+                raise RuntimeError((sell_trade.error if sell_trade else None) or "sell failed")
+
+            # Compute profit and record completion.
+            if buy_is_cex or sell_is_cex:
+                actual_profit = (
+                    sell_trade.amount * (sell_trade.price or quidax_price)
+                    - buy_trade.amount * (buy_trade.price or quidax_price)
+                )
+                await db.update_arbitrage_opportunity(
+                    opp_id, status="completed", actual_profit_usd=float(actual_profit)
+                )
+                broadcast_type = "arb_executed"
+            else:
+                cngn_price = Decimal(str(c.signal.get("prices", {}).get(sell_venue_name, "0")))
+                actual_profit = sell_trade.amount * (sell_trade.price or cngn_price) - size_usd
+                await db.update_dex_arbitrage_execution_state(
+                    opp_id, status="completed",
+                    buy_tx_hash=buy_trade.tx_hash,
+                    sell_tx_hash=sell_trade.tx_hash,
+                    actual_profit_usd=float(actual_profit),
+                )
+                broadcast_type = "dex_arb_executed"
+
+            self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
+            await self.history.record_executed(
+                opp_id, route,
+                actual_profit_usd=actual_profit,
+                buy_tx_hash=buy_trade.tx_hash,
+                sell_tx_hash=sell_trade.tx_hash,
+            )
+            self.broadcast({"type": broadcast_type, "data": {
+                "id": opp_id, "direction": direction, "profit_usd": float(actual_profit),
+            }})
+            logger.info("arb_executed", opp_id=opp_id, direction=direction, profit_usd=float(actual_profit))
+
+        except Exception as e:
+            err = str(e)
+            if buy_trade and buy_trade.status != "failed":
+                buy_tx = buy_trade.tx_hash or ""
+                if buy_is_cex or sell_is_cex:
+                    await db.update_arbitrage_opportunity(
+                        opp_id, status="half_open",
+                        reason=f"HALF_OPEN:{buy_tx}:{e}",
+                        buy_amount_cngn=float(buy_trade.amount),
+                        buy_tx_hash=buy_tx or None,
+                    )
+                    alert_msg = (
+                        f"Half-open CEX-DEX arb {opp_id} ({direction}): "
+                        f"buy on {buy_venue_name} ok (tx {buy_tx}), sell failed: {err}. "
+                        f"Recover: /recover {opp_id}"
+                    )
+                else:
+                    sell_account = getattr(
+                        getattr(self.venues.get(sell_venue_name), "trade_account", None),
+                        "address", "unknown",
+                    )
+                    await db.update_dex_arbitrage_execution_state(
+                        opp_id, status="half_open",
+                        buy_tx_hash=buy_tx or None, reason=err,
+                    )
+                    alert_msg = (
+                        f"Half-open DEX-DEX arb {opp_id} ({direction}): "
+                        f"buy on {buy_venue_name} ok (tx {buy_tx}), "
+                        f"sell on {sell_venue_name} failed: {err}. "
+                        f"Sell account: {sell_account}. "
+                        f"Recover: /recover {opp_id}"
+                    )
+                logger.error("arb_half_open", direction=direction, buy_tx=buy_tx, sell_error=err)
+                self.inventory.trip_circuit_breaker(f"Half-open arb: {opp_id}")
+                self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
+                await self.history.record_failed(
+                    opp_id, route, status="half_open", reason=err,
+                    executed_size_usd=size_usd,
+                    buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_tx_hash,
+                )
+                self.broadcast({"type": "alert", "severity": "critical", "message": alert_msg})
+            else:
+                logger.error("arb_execution_error", opp_id=opp_id, error=err)
+                self.inventory.record_trade_failure(opp_id, err)
+                if buy_is_cex or sell_is_cex:
+                    await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
+                else:
+                    await db.update_dex_arbitrage_execution_state(opp_id, status="abandoned", reason=err)
+                await self.history.record_failed(opp_id, route, status="execution_error", reason=err)
         finally:
             self._arb_executing = False
 
@@ -599,17 +640,16 @@ class ArbitrageEngine:
         if self._enabled and self.execute_dex_dex_enabled and not self._arb_executing:
             optimal = fast.get("optimal_arb", {})
             direction = optimal.get("direction")
-            if direction in _DEX_DEX_DIRECTIONS and optimal.get("expected_profit_usd", 0) > 0:
-                buy_venue, sell_venue = _DEX_DEX_DIRECTIONS[direction]
+            route_def = ROUTES_BY_DIRECTION.get(direction)
+            if route_def and optimal.get("expected_profit_usd", 0) > 0:
                 gas_usd_raw = optimal.get("gas_usd")
                 if not gas_usd_raw:
                     logger.warning("dex_dex_candidate_skipped_missing_gas", direction=direction)
                     return
                 candidate = RouteCandidate(
                     direction=direction,
-                    pipeline="dex_dex",
-                    buy_venue=buy_venue,
-                    sell_venue=sell_venue,
+                    buy_venue=route_def.buy_leg.venue,
+                    sell_venue=route_def.sell_leg.venue,
                     optimal_size_usd=Decimal(str(optimal["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(optimal["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
@@ -617,7 +657,7 @@ class ArbitrageEngine:
                 )
                 route = select_route([candidate], self.inventory)
                 if route:
-                    asyncio.create_task(self._execute_dex_dex(route, opp_id))
+                    asyncio.create_task(self._execute_route(route_def, route, opp_id))
 
         if not self._dex_curve_task or self._dex_curve_task.done():
             self._dex_curve_task = asyncio.create_task(self._broadcast_dex_curve())
@@ -705,244 +745,6 @@ class ArbitrageEngine:
         except Exception as e:
             logger.error("dex_curve_compute_failed", error=str(e))
 
-    async def _execute_dex_dex(self, route: SelectedRoute, opp_id: str) -> None:
-        """Execute a DEX-DEX delta-balance arbitrage."""
-        self._arb_executing = True
-        buy_trade = None
-        direction = route.candidate.direction
-        db = await get_db()
-        try:
-            c = route.candidate
-            optimal = c.signal["optimal_arb"]
-            buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
-            size_usd = route.adjusted_size_usd
-            slippage_bps = optimal.get("slippage_tolerance_bps", 10)
-            min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
-            await self.history.record_routed(opp_id, route)
-
-            # Simulate both legs via eth_call before executing either.
-            # Buy (chain A) and sell (chain B) are on different chains — sell-side state is
-            # independent of the buy, so the simulation is valid through execution.
-            # Catches insufficient balance, missing approvals, and any other revert before
-            # we commit to the buy leg.
-            from engine.core.arbitrage.executor import _clean_revert
-            from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
-            loop = asyncio.get_running_loop()
-            buy_venue = self.venues[buy_venue_name]
-            sell_venue = self.venues[sell_venue_name]
-            # Derive sell estimate from current pool state (same cache routing used).
-            # If the cache is cold here the route would have been rejected at routing time,
-            # so None means something unexpected happened — abort rather than preflight with 0.
-            _est = estimate_dex_dex_trade(direction, size_usd)
-            if not _est:
-                logger.warning("dex_dex_pool_cache_cold_at_execution", direction=direction, size_usd=float(size_usd))
-                await db.update_dex_arbitrage_execution_state(
-                    opp_id,
-                    status="abandoned",
-                    reason="Execution estimate missing from pool cache",
-                )
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="pool_cache_cold",
-                    reason="Execution estimate missing from pool cache",
-                )
-                return
-            sell_cngn_est = Decimal(str(_est["cngn_transferred"]))
-            sell_amount_raw = int(sell_cngn_est * Decimal(10 ** sell_venue.cngn_decimals))
-            buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
-            min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
-
-            sell_err = await loop.run_in_executor(
-                None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, min_out_raw
-            )
-            if sell_err:
-                clean_sell_err = _clean_revert(sell_err)
-                _handle_preflight_error(
-                    self, sell_venue_name, clean_sell_err,
-                    "dex_dex_sell_preflight_failed",
-                    direction=direction,
-                    size_usd=float(size_usd),
-                    sell_cngn_est=float(sell_cngn_est),
-                    min_out_usd=float(min_out_usd),
-                    wallet_asset="cngn",
-                )
-                await db.update_dex_arbitrage_execution_state(
-                    opp_id,
-                    status="abandoned",
-                    reason=clean_sell_err,
-                )
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="sell_preflight_failed",
-                    reason=clean_sell_err,
-                )
-                return
-
-            buy_err = await loop.run_in_executor(
-                None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
-            )
-            if buy_err:
-                clean_buy_err = _clean_revert(buy_err)
-                _handle_preflight_error(
-                    self, buy_venue_name, clean_buy_err,
-                    "dex_dex_buy_preflight_failed",
-                    direction=direction,
-                    size_usd=float(size_usd),
-                    wallet_asset="stable",
-                    wallet_symbol=getattr(getattr(buy_venue, "config", None), "token0_symbol", None)
-                    if getattr(getattr(buy_venue, "config", None), "invert_price", False)
-                    else getattr(getattr(buy_venue, "config", None), "token1_symbol", None),
-                    required_amount=float(size_usd),
-                )
-                await db.update_dex_arbitrage_execution_state(
-                    opp_id,
-                    status="abandoned",
-                    reason=clean_buy_err,
-                )
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="buy_preflight_failed",
-                    reason=clean_buy_err,
-                )
-                return
-
-            self.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
-
-            await db.update_dex_arbitrage_execution_state(opp_id, status="executing")
-
-            buy_trade = await self.executor.execute_dex_buy(buy_venue_name, size_usd, opp_id)
-
-            if not buy_trade or buy_trade.status == "failed":
-                err = (buy_trade.error if buy_trade else None) or "buy failed"
-                logger.error("dex_dex_buy_failed", direction=direction, error=err)
-                self.inventory.record_trade_failure(opp_id, err)
-                await db.expire_old_dex_arbitrage_opportunities(0)  # mark abandoned via expiry
-                await self.history.record_failed(opp_id, route, status="buy_failed", reason=err)
-                return
-
-            await db.update_dex_arbitrage_execution_state(
-                opp_id,
-                status="buy_filled",
-                buy_tx_hash=buy_trade.tx_hash,
-                buy_amount_cngn=buy_trade.amount,
-                executed_size_usd=float(size_usd),
-            )
-
-            # Sell the same cNGN amount that preflight validated on the sell venue.
-            sell_trade = await self.executor.execute_dex_sell(
-                sell_venue_name, sell_cngn_est, min_out_usd, opp_id
-            )
-
-            if not sell_trade or sell_trade.status == "failed":
-                err = (sell_trade.error if sell_trade else None) or "sell failed"
-                buy_tx = buy_trade.tx_hash or ""
-                sell_account = getattr(getattr(self.venues.get(sell_venue_name), "trade_account", None), "address", "unknown")
-                logger.error("dex_dex_half_open", direction=direction, buy_tx=buy_tx, sell_error=err,
-                             sell_venue=sell_venue_name, sell_account=sell_account)
-                await db.update_dex_arbitrage_execution_state(
-                    opp_id,
-                    status="half_open",
-                    buy_tx_hash=buy_tx or None,
-                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                    reason=err,
-                )
-                self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
-                self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="half_open",
-                    reason=err,
-                    executed_size_usd=size_usd,
-                    buy_tx_hash=buy_tx or None,
-                    sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-                )
-                self.broadcast({"type": "alert", "severity": "critical",
-                               "message": (
-                                   f"Half-open DEX-DEX arb {opp_id} ({direction}): "
-                                   f"buy on {buy_venue_name} ok (tx {buy_tx}), "
-                                   f"sell on {sell_venue_name} failed: {err}. "
-                                   f"Sell account: {sell_account}. "
-                                   f"Recover: /recover {opp_id}"
-                               )})
-                return
-
-            cngn_price = Decimal(str(c.signal.get("prices", {}).get(sell_venue_name, "0")))
-            actual_profit = sell_trade.amount * (sell_trade.price or cngn_price) - size_usd
-            await db.update_dex_arbitrage_execution_state(
-                opp_id,
-                status="completed",
-                buy_tx_hash=buy_trade.tx_hash,
-                sell_tx_hash=sell_trade.tx_hash,
-                actual_profit_usd=float(actual_profit),
-            )
-            self.inventory.record_trade_complete(opp_id, size_usd, actual_profit, Decimal("0"))
-            await self.history.record_executed(
-                opp_id,
-                route,
-                actual_profit_usd=actual_profit,
-                buy_tx_hash=buy_trade.tx_hash if buy_trade else None,
-                sell_tx_hash=sell_trade.tx_hash if sell_trade else None,
-            )
-            self.broadcast({"type": "dex_arb_executed", "data": {
-                "id": opp_id, "direction": direction, "profit_usd": float(actual_profit),
-            }})
-            logger.info("dex_dex_arb_executed", opp_id=opp_id, direction=direction,
-                        profit_usd=float(actual_profit))
-
-        except Exception as e:
-            err = str(e)
-            if buy_trade and buy_trade.status != "failed":
-                buy_tx = buy_trade.tx_hash or ""
-                buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
-                sell_account = getattr(getattr(self.venues.get(sell_venue_name), "trade_account", None), "address", "unknown")
-                logger.error("dex_dex_half_open", direction=direction, buy_tx=buy_tx, sell_error=err,
-                             sell_venue=sell_venue_name, sell_account=sell_account)
-                db = await get_db()
-                await db.update_dex_arbitrage_execution_state(
-                    opp_id,
-                    status="half_open",
-                    buy_tx_hash=buy_tx or None,
-                    reason=err,
-                )
-                self.inventory.trip_circuit_breaker(f"Half-open DEX-DEX arb: {opp_id}")
-                self.inventory.record_trade_failure(opp_id, f"HALF_OPEN:{buy_tx}:{err}")
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="half_open",
-                    reason=err,
-                    executed_size_usd=size_usd,
-                    buy_tx_hash=buy_tx or None,
-                )
-                self.broadcast({"type": "alert", "severity": "critical",
-                               "message": (
-                                   f"Half-open DEX-DEX arb {opp_id} ({direction}): "
-                                   f"buy on {buy_venue_name} ok (tx {buy_tx}), "
-                                   f"sell on {sell_venue_name} failed: {err}. "
-                                   f"Sell account: {sell_account}. "
-                                   f"Recover: /recover {opp_id}"
-                               )})
-            else:
-                logger.error("dex_dex_execution_error", opp_id=opp_id, error=err)
-                self.inventory.record_trade_failure(opp_id, err)
-                await db.update_dex_arbitrage_execution_state(
-                    opp_id,
-                    status="abandoned",
-                    reason=err,
-                )
-                await self.history.record_failed(
-                    opp_id,
-                    route,
-                    status="execution_error",
-                    reason=err,
-                )
-        finally:
-            self._arb_executing = False
-
     # ------------------------------------------------------------------
     # Status, params, risk
     # ------------------------------------------------------------------
@@ -1007,7 +809,9 @@ class ArbitrageEngine:
             raise ValueError(f"Opportunity {opp_id} is not recoverable from status {opp.status}")
 
         direction = opp.direction
-        buy_venue_name, sell_venue_name = _DEX_DEX_DIRECTIONS[direction]
+        route_def = ROUTES_BY_DIRECTION[direction]
+        buy_venue_name = route_def.buy_leg.venue
+        sell_venue_name = route_def.sell_leg.venue
         buy_venue = self.venues[buy_venue_name]
         sell_venue = self.venues[sell_venue_name]
         from engine.core.arbitrage.executor import _clean_revert
@@ -1148,7 +952,14 @@ class ArbitrageEngine:
                 raise ValueError(f"Opportunity {opp_id} is not recoverable from status {opp.status}")
             buy_venue_name = opp.buy_venue
             sell_venue_name = opp.sell_venue
-            buy_is_cex = buy_venue_name == "quidax"
+            cex_route_def = next(
+                (r for r in ROUTES if r.buy_leg.venue == buy_venue_name and r.sell_leg.venue == sell_venue_name),
+                None,
+            )
+            if cex_route_def is None:
+                raise ValueError(f"Unknown CEX route: {buy_venue_name} → {sell_venue_name}")
+            cex_direction = cex_route_def.direction
+            buy_is_cex = cex_route_def.buy_leg.leg_type == "api"
             buy_amount_cngn = opp.buy_amount_cngn
             if not buy_amount_cngn:
                 raise ValueError(
@@ -1171,7 +982,7 @@ class ArbitrageEngine:
                     await self.history.record_failed_raw(
                         opp_id=opp_id,
                         pipeline="cex_dex",
-                        direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
+                        direction=cex_direction,
                         buy_venue=opp.buy_venue,
                         sell_venue=opp.sell_venue,
                         status="half_open",
@@ -1202,7 +1013,7 @@ class ArbitrageEngine:
                 await self.history.record_executed_raw(
                     opp_id=opp_id,
                     pipeline="cex_dex",
-                    direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
+                    direction=cex_direction,
                     buy_venue=opp.buy_venue,
                     sell_venue=opp.sell_venue,
                     optimal_size_usd=opp.recommended_size_usd,
@@ -1234,7 +1045,7 @@ class ArbitrageEngine:
                     await self.history.record_failed_raw(
                         opp_id=opp_id,
                         pipeline="cex_dex",
-                        direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
+                        direction=cex_direction,
                         buy_venue=opp.buy_venue,
                         sell_venue=opp.sell_venue,
                         status="half_open",
@@ -1265,7 +1076,7 @@ class ArbitrageEngine:
                 await self.history.record_executed_raw(
                     opp_id=opp_id,
                     pipeline="cex_dex",
-                    direction=_cex_dex_direction_for_venues(opp.buy_venue, opp.sell_venue),
+                    direction=cex_direction,
                     buy_venue=opp.buy_venue,
                     sell_venue=opp.sell_venue,
                     optimal_size_usd=opp.recommended_size_usd,
