@@ -62,7 +62,7 @@ async def refresh_inventory_for_venues(engine, *venue_names: str) -> None:
 
     loop = asyncio.get_running_loop()
     snapshots = await asyncio.gather(
-        *(loop.run_in_executor(None, fetch_venue_wallet_snapshot, engine, name) for name in names),
+        *(loop.run_in_executor(None, engine._fetch_venue_wallet_snapshot, name) for name in names),
         return_exceptions=True,
     )
 
