@@ -363,7 +363,7 @@ class ArbitrageEngine:
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
-                    signal={"prices": signal["prices"], "optimal_arb": arb, "depth": depth},
+                    signal={"prices": signal["prices"], "optimal_arb": arb, "depth": {depth.venue: depth}},
                 ))
             route = select_route(candidates, self.inventory)
             if route:
@@ -404,7 +404,7 @@ class ArbitrageEngine:
             size_usd = route.adjusted_size_usd
             slippage_bps = c.signal["optimal_arb"].get("slippage_tolerance_bps", 10)
             min_out_usd = size_usd * (1 - Decimal(str(slippage_bps)) / 10000)
-            quidax_price = Decimal(str(c.signal["prices"]["quidax"]))
+            quidax_price = Decimal(str(c.signal["prices"][buy_venue_name]))
             net_spread_bps = c.signal["optimal_arb"].get("net_spread_bps", 0)
             await self.history.record_routed(opp_id, route)
 
@@ -415,7 +415,7 @@ class ArbitrageEngine:
                 from engine.core.arbitrage.cex_dex import estimate_cex_buy_cngn
                 loop = asyncio.get_running_loop()
                 sell_venue = self.venues[sell_venue_name]
-                quidax_depth = c.signal.get("depth")
+                quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
                 cngn_estimate_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
                 if cngn_estimate_amount <= 0:
                     logger.warning(

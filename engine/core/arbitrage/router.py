@@ -67,7 +67,7 @@ def select_route(
         if c.pipeline == "cex_dex" and c.direction in _BUYS_CNGN_FROM_CEX:
             adjusted_size = min(
                 adjusted_size,
-                estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth"), cngn_bal),
+                estimate_max_cex_buy_usd_for_cngn(c.signal.get("depth", {}).get(c.buy_venue), cngn_bal),
             )
         elif c.pipeline == "dex_dex":
             sell_cngn_cap_trade = estimate_max_dex_buy_usd_for_cngn(c.direction, cngn_bal)
@@ -86,7 +86,7 @@ def select_route(
         if c.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
             # Detection already priced the unconstrained optimum. Only rescore when
             # inventory/depth caps force us onto a smaller trade size.
-            recomputed = estimate_cex_dex_trade(c.direction, c.signal.get("depth"), adjusted_size)
+            recomputed = estimate_cex_dex_trade(c.direction, c.signal.get("depth", {}).get(c.buy_venue), adjusted_size)
             if not recomputed:
                 continue
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))

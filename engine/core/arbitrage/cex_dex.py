@@ -282,7 +282,7 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     return {
         "timestamp": int(time.time() * 1000),
         "prices": {
-            "quidax": float(quidax_mid),
+            quidax_depth.venue: float(quidax_mid),
             "uni-bsc": uni_bsc_price_usd,
             "uni-base": uni_base_price_usd,
         },
@@ -386,7 +386,7 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
     return {
         "timestamp": int(time.time() * 1000),
         "prices": {
-            "quidax": float(quidax_mid),
+            quidax_depth.venue: float(quidax_mid),
             "uni-bsc": uni_bsc_price_usd,
             "uni-base": uni_base_price_usd,
             "assetchain": 0.0,
