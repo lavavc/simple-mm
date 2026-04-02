@@ -9,6 +9,7 @@ from engine.core.arbitrage.cex_dex import (
     compute_arb_curve,
     estimate_cex_buy_cngn,
     estimate_cex_dex_trade,
+    estimate_max_cex_dex_buy_usd_for_cngn,
     estimate_max_cex_buy_usd_for_cngn,
     find_optimal_arb,
 )
@@ -137,6 +138,24 @@ class TestOrderbookHelpers:
         assert result["cngn_transferred"] > 0
         assert result["expected_usd_out"] > 0
         assert result["expected_profit_usd"] == result["expected_usd_out"] - Decimal("10")
+
+    def test_estimate_max_cex_dex_buy_usd_for_cngn_inverts_dex_buy_path(self, seeded_pool_cache):
+        trade = estimate_cex_dex_trade("UNI_BASE_TO_QUIDAX", _TIGHT_DEPTH, Decimal("10"))
+        assert trade is not None
+
+        wallet_cngn = Decimal(str(trade["cngn_transferred"]))
+        capped = estimate_max_cex_dex_buy_usd_for_cngn("UNI_BASE_TO_QUIDAX", _TIGHT_DEPTH, wallet_cngn)
+
+        assert capped is not None
+        assert Decimal(str(capped["cngn_transferred"])) <= wallet_cngn
+
+        larger = estimate_cex_dex_trade(
+            "UNI_BASE_TO_QUIDAX",
+            _TIGHT_DEPTH,
+            Decimal(str(capped["optimal_size_usd"])) + Decimal("0.01"),
+        )
+        assert larger is not None
+        assert Decimal(str(larger["cngn_transferred"])) > wallet_cngn
 
 
 class TestComputeArbCurve:

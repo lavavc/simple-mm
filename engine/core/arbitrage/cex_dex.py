@@ -33,6 +33,8 @@ _CEX_DEX_GAS_FN = {
 # so skipping the ~114-eval ternary search keeps the event loop unblocked on dead routes.
 _SPREAD_CHECK_SIZE = Decimal("5")
 _SPREAD_CHECK_MIN_PROFIT = Decimal("0")
+_ABSOLUTE_MAX_USD = Decimal("5000")
+_REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
 
 def walk_orderbook_asks(asks: list, cngn_amount: Decimal, fee: Decimal) -> tuple[Decimal, list[dict]]:
@@ -165,6 +167,46 @@ def estimate_cex_dex_trade(
         "expected_usd_out": usd_out,
         "cngn_transferred": cngn,
     }
+
+
+def estimate_max_cex_dex_buy_usd_for_cngn(
+    direction: str,
+    quidax_depth: OrderBookDepth | None,
+    wallet_cngn: Decimal,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> dict[str, Decimal] | None:
+    """Invert the DEX->QUIDAX buy path so sell-side cNGN caps the buy-side USD size exactly."""
+    def _trade_at(investment_usd: Decimal) -> dict[str, Decimal] | None:
+        trade = estimate_cex_dex_trade(direction, quidax_depth, investment_usd, cex_fee)
+        if trade is None:
+            return None
+        return {**trade, "optimal_size_usd": float(investment_usd)}
+
+    if wallet_cngn <= 0:
+        return None
+
+    max_trade = _trade_at(_ABSOLUTE_MAX_USD)
+    if max_trade is None:
+        return None
+
+    max_required = Decimal(str(max_trade["cngn_transferred"]))
+    if max_required <= wallet_cngn:
+        return max_trade
+
+    low = Decimal("0")
+    high = _ABSOLUTE_MAX_USD
+    while high - low > _REVERSE_SEARCH_TOL_USD:
+        mid = (low + high) / Decimal("2")
+        trade = _trade_at(mid)
+        if trade is None:
+            return None
+        required = Decimal(str(trade["cngn_transferred"]))
+        if required <= wallet_cngn:
+            low = mid
+        else:
+            high = mid
+
+    return _trade_at(low)
 
 
 
