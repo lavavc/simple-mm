@@ -261,6 +261,61 @@ class TestSelectRouteNetProfit:
 
         assert result is None
 
+    def test_dex_to_cex_route_uses_exact_sell_side_cngn_cap(self, monkeypatch):
+        inv = _make_inventory(
+            per_account={"uni-base": 500},
+            cngn_per_account={"quidax": 1_000_000},
+        )
+        c = _make_candidate(
+            direction="UNI_BASE_TO_QUIDAX",
+            buy_venue="uni-base",
+            sell_venue="quidax",
+            size_usd=500.0,
+            profit_usd=50.0,
+            gas_usd=0.07,
+            signal={"depth": {"quidax": _default_depth()}},
+        )
+
+        def _fake_exact_cap(direction, depth, wallet_cngn):
+            assert direction == "UNI_BASE_TO_QUIDAX"
+            assert depth == c.signal["depth"]["quidax"]
+            assert wallet_cngn == Decimal("1000000")
+            return {"optimal_size_usd": 100.0, "expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
+
+        def _fake_estimate(direction, depth, investment_usd):
+            assert direction == "UNI_BASE_TO_QUIDAX"
+            assert depth == c.signal["depth"]["quidax"]
+            assert investment_usd == Decimal("100")
+            return {"expected_profit_usd": Decimal("2.0")}
+
+        monkeypatch.setattr(_router, "estimate_max_cex_dex_buy_usd_for_cngn", _fake_exact_cap)
+        monkeypatch.setattr(_router, "estimate_cex_dex_trade", _fake_estimate)
+
+        result = select_route([c], inv)
+
+        assert result is not None
+        assert result.adjusted_size_usd == Decimal("100")
+        assert result.net_profit_usd == Decimal("1.83")
+
+    def test_dex_to_cex_route_blocks_when_exact_sell_cap_unavailable(self, monkeypatch):
+        inv = _make_inventory(
+            per_account={"uni-base": 500},
+            cngn_per_account={"quidax": 1_000_000},
+        )
+        c = _make_candidate(
+            direction="UNI_BASE_TO_QUIDAX",
+            buy_venue="uni-base",
+            sell_venue="quidax",
+            size_usd=500.0,
+            profit_usd=50.0,
+            gas_usd=0.07,
+            signal={"depth": {"quidax": _default_depth()}},
+        )
+
+        monkeypatch.setattr(_router, "estimate_max_cex_dex_buy_usd_for_cngn", lambda direction, depth, wallet_cngn: None)
+
+        assert select_route([c], inv) is None
+
 
 class TestSelectRouteTiebreak:
     def test_highest_net_profit_wins(self):

@@ -9,6 +9,7 @@ from engine.core.arbitrage.cex_dex import (
     compute_arb_curve,
     estimate_cex_buy_cngn,
     estimate_cex_dex_trade,
+    estimate_max_cex_dex_buy_usd_for_cngn,
     estimate_max_cex_buy_usd_for_cngn,
     find_optimal_arb,
 )
@@ -137,6 +138,45 @@ class TestOrderbookHelpers:
         assert result["cngn_transferred"] > 0
         assert result["expected_usd_out"] > 0
         assert result["expected_profit_usd"] == result["expected_usd_out"] - Decimal("10")
+
+    def test_estimate_max_cex_dex_buy_usd_for_cngn_inverts_dex_buy_path(self, seeded_pool_cache):
+        trade = estimate_cex_dex_trade("UNI_BASE_TO_QUIDAX", _TIGHT_DEPTH, Decimal("10"))
+        assert trade is not None
+
+        wallet_cngn = Decimal(str(trade["cngn_transferred"]))
+        capped = estimate_max_cex_dex_buy_usd_for_cngn("UNI_BASE_TO_QUIDAX", _TIGHT_DEPTH, wallet_cngn)
+
+        assert capped is not None
+        assert Decimal(str(capped["cngn_transferred"])) <= wallet_cngn
+
+        larger = estimate_cex_dex_trade(
+            "UNI_BASE_TO_QUIDAX",
+            _TIGHT_DEPTH,
+            Decimal(str(capped["optimal_size_usd"])) + Decimal("0.01"),
+        )
+        assert larger is not None
+        assert Decimal(str(larger["cngn_transferred"])) > wallet_cngn
+
+    def test_thin_pool_still_routes_below_exhaustion_ceiling(self, seeded_pool_cache, monkeypatch):
+        """Pool exhausted at $5000 should not suppress viable smaller trades."""
+        import engine.core.arbitrage.cex_dex as _mod
+
+        _CEILING = Decimal("100")
+        _real = _mod.estimate_cex_dex_trade
+
+        def _thin(direction, depth, investment_usd, cex_fee=QUIDAX_FEE):
+            return None if investment_usd > _CEILING else _real(direction, depth, investment_usd, cex_fee)
+
+        monkeypatch.setattr(_mod, "estimate_cex_dex_trade", _thin)
+
+        result = estimate_max_cex_dex_buy_usd_for_cngn(
+            "UNI_BASE_TO_QUIDAX",
+            _TIGHT_DEPTH,
+            Decimal("999999"),  # wallet not a constraint
+        )
+
+        assert result is not None
+        assert Decimal(str(result["optimal_size_usd"])) <= float(_CEILING)
 
 
 class TestComputeArbCurve:

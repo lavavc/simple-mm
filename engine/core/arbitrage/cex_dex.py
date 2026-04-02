@@ -33,6 +33,8 @@ _CEX_DEX_GAS_FN = {
 # so skipping the ~114-eval ternary search keeps the event loop unblocked on dead routes.
 _SPREAD_CHECK_SIZE = Decimal("5")
 _SPREAD_CHECK_MIN_PROFIT = Decimal("0")
+_ABSOLUTE_MAX_USD = Decimal("5000")
+_REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
 
 def walk_orderbook_asks(asks: list, cngn_amount: Decimal, fee: Decimal) -> tuple[Decimal, list[dict]]:
@@ -166,6 +168,63 @@ def estimate_cex_dex_trade(
         "cngn_transferred": cngn,
     }
 
+
+def estimate_max_cex_dex_buy_usd_for_cngn(
+    direction: str,
+    quidax_depth: OrderBookDepth | None,
+    wallet_cngn: Decimal,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> dict[str, Decimal] | None:
+    """Invert the DEX->QUIDAX buy path so sell-side cNGN caps the buy-side USD size exactly."""
+    def _trade_at(investment_usd: Decimal) -> dict[str, Decimal] | None:
+        trade = estimate_cex_dex_trade(direction, quidax_depth, investment_usd, cex_fee)
+        if trade is None:
+            return None
+        return {**trade, "optimal_size_usd": float(investment_usd)}
+
+    if wallet_cngn <= 0:
+        return None
+
+    # Find the effective ceiling: largest size the pool/orderbook can absorb.
+    # If the pool is exhausted below _ABSOLUTE_MAX_USD, binary-search downward
+    # rather than treating the direction as entirely dead.
+    high = _ABSOLUTE_MAX_USD
+    max_trade = _trade_at(high)
+    if max_trade is None:
+        lo, hi = Decimal("0"), high
+        while hi - lo > _REVERSE_SEARCH_TOL_USD:
+            mid = (lo + hi) / Decimal("2")
+            if _trade_at(mid) is not None:
+                lo = mid
+            else:
+                hi = mid
+        if lo <= 0:
+            return None
+        high = lo
+        max_trade = _trade_at(high)
+        if max_trade is None:
+            return None
+
+    if Decimal(str(max_trade["cngn_transferred"])) <= wallet_cngn:
+        return max_trade
+
+    # Binary search for the exact USD size where cNGN transferred ≤ wallet_cngn.
+    # Save the last valid trade to avoid a redundant re-evaluation at convergence.
+    low = Decimal("0")
+    best_trade = None
+    while high - low > _REVERSE_SEARCH_TOL_USD:
+        mid = (low + high) / Decimal("2")
+        trade = _trade_at(mid)
+        if trade is None:
+            high = mid
+            continue
+        if Decimal(str(trade["cngn_transferred"])) <= wallet_cngn:
+            low = mid
+            best_trade = trade
+        else:
+            high = mid
+
+    return best_trade
 
 
 def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("5000"), tol=Decimal("0.5")):
