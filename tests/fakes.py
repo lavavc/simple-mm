@@ -22,8 +22,6 @@ class FakeDexAdapter:
         name: str = "uni-base",
         token0_bal: Decimal = Decimal("500000"),
         token1_bal: Decimal = Decimal("600"),
-        trade0_bal: Decimal = Decimal("100000"),
-        trade1_bal: Decimal = Decimal("200"),
         position: "PositionState | None" = None,
         remove_fails: bool = False,
         mint_fails: bool = False,
@@ -34,17 +32,12 @@ class FakeDexAdapter:
         self._positions: list[PositionState] = [position] if position else []
         self._token0_bal = token0_bal
         self._token1_bal = token1_bal
-        self._trade0_bal = trade0_bal
-        self._trade1_bal = trade1_bal
         self._remove_fails = remove_fails
         self._mint_fails = mint_fails
         self.params = DexParams(
-            deploy_token0=token0_bal,
-            deploy_token1=token1_bal,
             rebalance_threshold_percent=Decimal("2.0"),
         )
         self.minted: list[dict] = []
-        self.transfers: list[dict] = []
 
         class _Config:
             token0_decimals = 6
@@ -67,24 +60,15 @@ class FakeDexAdapter:
             int(self._token1_bal * Decimal(10 ** self.config.token1_decimals)),
         )
 
-    def get_trade_token_balances(self) -> tuple[Decimal, Decimal]:
-        return self._trade0_bal, self._trade1_bal
+    async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> None:
+        """No-op in tests — ratio swap is tested separately in test_lp_ratio.py."""
+        pass
 
-    async def remove_position(self, token_id: int) -> TxResult:
+    async def remove_position(self, token_id: int, recipient: str | None = None) -> TxResult:
         if self._remove_fails:
             return TxResult(hash="", status="failed", error="simulated remove failure")
         self._positions = [p for p in self._positions if p.token_id != token_id]
         return TxResult(hash="0xabcdremove", status="confirmed")
-
-    async def transfer_from_trade_to_lp(self, token_index: int, amount: Decimal) -> TxResult:
-        self.transfers.append({"token_index": token_index, "amount": amount})
-        if token_index == 0:
-            self._trade0_bal -= amount
-            self._token0_bal += amount
-        else:
-            self._trade1_bal -= amount
-            self._token1_bal += amount
-        return TxResult(hash="0xabcdtransfer", status="confirmed")
 
     async def mint_position(self, amount0: int, amount1: int, tick_lower: int, tick_upper: int) -> TxResult:
         if self._mint_fails:

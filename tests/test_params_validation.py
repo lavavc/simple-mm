@@ -5,16 +5,17 @@ from decimal import Decimal
 from pydantic import ValidationError
 
 from engine.api.schemas import DexParams, CexParams, WalletParams
+from engine.config import settings
 
 
 class TestDexParamsValidation:
     """Test DexParams validation and defaults."""
 
     def test_default_values(self):
-        """Test default parameter values.
+        """Test DexParams schema-level defaults (strategy constants, not per-venue values).
 
-        NOTE: This test intentionally checks production defaults.
-        If it fails, verify the change was intentional and update this test.
+        Per-venue LP params (sd_multiplier, ewma_lambda, downside_skew) live in
+        config.py as uni_base_* / uni_bsc_* and are the runtime source of truth.
         """
         params = DexParams()
 
@@ -26,8 +27,18 @@ class TestDexParamsValidation:
         assert params.max_slippage_percent == Decimal("1.0")
         assert params.downside_skew == Decimal("0.4")
         assert params.ewma_lambda == Decimal("0.99")
-        assert params.deploy_token0 == Decimal("0")
-        assert params.deploy_token1 == Decimal("0")
+
+    def test_uni_base_strategy_params_from_settings(self):
+        """uni-base LP strategy params are read from settings, not DexParams defaults."""
+        assert settings.uni_base_sd_multiplier == Decimal("2.75")
+        assert settings.uni_base_ewma_lambda == Decimal("0.975")
+        assert settings.uni_base_downside_skew == Decimal("0.45")
+
+    def test_uni_bsc_strategy_params_from_settings(self):
+        """uni-bsc LP strategy params are read from settings, not DexParams defaults."""
+        assert settings.uni_bsc_sd_multiplier == Decimal("3.0")
+        assert settings.uni_bsc_ewma_lambda == Decimal("0.975")
+        assert settings.uni_bsc_downside_skew == Decimal("0.5")
 
     def test_custom_values(self):
         params = DexParams(
@@ -37,49 +48,34 @@ class TestDexParamsValidation:
             lookback_points=50,
             rebalance_threshold_percent=Decimal("10.0"),
             max_slippage_percent=Decimal("0.5"),
-            deploy_token0=Decimal("500000"),
-            deploy_token1=Decimal("600"),
         )
 
         assert params.sd_multiplier == Decimal("2.5")
         assert params.min_tick_width == 200
         assert params.max_tick_width == 2000
         assert params.lookback_points == 50
-        assert params.deploy_token0 == Decimal("500000")
-        assert params.deploy_token1 == Decimal("600")
 
     def test_decimal_from_string(self):
-        params = DexParams(sd_multiplier="2.0", deploy_token0="100000")
-
+        params = DexParams(sd_multiplier="2.0")
         assert params.sd_multiplier == Decimal("2.0")
-        assert params.deploy_token0 == Decimal("100000")
 
     def test_decimal_from_float(self):
         params = DexParams(sd_multiplier=2.0)
-
         assert float(params.sd_multiplier) == pytest.approx(2.0)
 
     def test_decimal_from_int(self):
-        params = DexParams(sd_multiplier=2, deploy_token0=500000)
-
+        params = DexParams(sd_multiplier=2)
         assert params.sd_multiplier == Decimal("2")
-        assert params.deploy_token0 == Decimal("500000")
 
     def test_serialization(self):
-        params = DexParams(deploy_token0=Decimal("500000"), deploy_token1=Decimal("600"))
-
+        params = DexParams(sd_multiplier=Decimal("2.5"))
         data = params.model_dump()
-
-        assert "deploy_token0" in data
-        assert "deploy_token1" in data
-        assert data["deploy_token0"] == Decimal("500000")
+        assert data["sd_multiplier"] == Decimal("2.5")
 
     def test_json_serialization(self):
-        params = DexParams(deploy_token0=Decimal("500000"))
-
+        params = DexParams(sd_multiplier=Decimal("2.5"))
         json_str = params.model_dump_json()
-
-        assert "deploy_token0" in json_str
+        assert "sd_multiplier" in json_str
 
 
 class TestCexParamsValidation:
@@ -119,29 +115,24 @@ class TestWalletParamsValidation:
 
     def test_default_values(self):
         params = WalletParams()
-
         assert params.spread_bps == 15
 
     def test_custom_values(self):
         params = WalletParams(spread_bps=25)
-
         assert params.spread_bps == 25
 
     def test_serialization(self):
         params = WalletParams(spread_bps=20)
         data = params.model_dump()
-
         assert data["spread_bps"] == 20
 
 
 class TestParamsInteroperability:
     def test_dex_params_copy(self):
-        original = DexParams(sd_multiplier=Decimal("2.0"), deploy_token0=Decimal("500000"))
+        original = DexParams(sd_multiplier=Decimal("2.0"))
 
         copied = original.model_copy()
-
         assert copied.sd_multiplier == original.sd_multiplier
-        assert copied.deploy_token0 == original.deploy_token0
 
         copied_data = copied.model_dump()
         copied_data["sd_multiplier"] = Decimal("3.0")
@@ -152,23 +143,16 @@ class TestParamsInteroperability:
 
     def test_dex_params_update(self):
         original = DexParams()
-
         updated = DexParams(**{**original.model_dump(), "sd_multiplier": Decimal("2.5")})
-
         assert updated.sd_multiplier == Decimal("2.5")
-        assert updated.deploy_token0 == original.deploy_token0
 
     def test_params_from_dict(self):
         stored_config = {
             "sd_multiplier": "1.8",
             "min_tick_width": 150,
-            "deploy_token0": "500000",
-            "deploy_token1": "600",
         }
 
         params = DexParams(**stored_config)
 
         assert params.sd_multiplier == Decimal("1.8")
         assert params.min_tick_width == 150
-        assert params.deploy_token0 == Decimal("500000")
-        assert params.deploy_token1 == Decimal("600")

@@ -37,10 +37,10 @@ Current values:
 
 | Venue | `sd_multiplier` | `downside_skew` |
 |-------|----------------|----------------|
-| `uni-base` | 2.75 | 0.3 |
+| `uni-base` | 2.75 | 0.45 |
 | `uni-bsc` | 3.0 | 0.5 |
 
-This means that (a) we provide liquidity across most of the range given the high `sd_multiplier` values, and that we are bullish on Base, but neutral on BSC, which has less volume, less trading, and therefore is less predictable.
+This means we provide liquidity across most of the range (high `sd_multiplier`), with a slight bullish lean on Base (skew 0.45 = more range above the mean) and a neutral position on BSC (skew 0.5 = symmetric).
 
 Ticks are then aligned to the pool's `tick_spacing` (floor for lower, ceil for upper). The result is also clamped to `min_tick_width` and `max_tick_width` to prevent degenerate ranges.
 
@@ -73,15 +73,17 @@ Pool fee has a dual role:
 
 ## Parameters reference
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `ewma_lambda` | 0.99 | Volatility smoothing. Lower = adapts faster, noisier range |
-| `sd_multiplier` | 2.5 | Range width in standard deviations. Higher = wider, fewer reranges |
-| `downside_skew` | 0.4 | Fraction of range below mean. 0.5 = symmetric |
-| `rebalance_threshold_percent` | 10.0 | % beyond range boundary before rerange triggers |
-| `min_tick_width` | 100 | Floor on range width in ticks |
-| `max_tick_width` | 1000 | Ceiling on range width in ticks |
-| `lookback_points` | None (all) | Number of recent prices used for EWMA. None = full history |
-| `venue_divergence_rebalance_bps` | 200 | Price divergence from fair value that triggers rerange |
+LP strategy parameters are defined in `engine/config.py` as `uni_base_*` / `uni_bsc_*` fields and are the single source of truth. They can be overridden via environment variables.
+
+| Parameter | uni-base | uni-bsc | Effect |
+|-----------|----------|---------|--------|
+| `sd_multiplier` | 2.75 | 3.0 | Range width in standard deviations. Higher = wider, fewer reranges |
+| `ewma_lambda` | 0.975 | 0.975 | Volatility smoothing. Lower = adapts faster, noisier range |
+| `downside_skew` | 0.45 | 0.50 | Fraction of range below mean. 0.5 = symmetric |
+| `rebalance_threshold_percent` | 10.0 | 10.0 | % beyond range boundary before rerange triggers |
+| `min_tick_width` | 100 | 100 | Floor on range width in ticks |
+| `max_tick_width` | 1000 | 1000 | Ceiling on range width in ticks |
+| `lookback_points` | None (all) | None (all) | Number of recent prices used for EWMA. None = full history |
+| `venue_divergence_rebalance_bps` | 200 | 200 | Price divergence from fair value that triggers rerange |
 
 > **Not yet implemented**: `preemptive_rebalance` — trigger a rerange before price exits range, based on velocity or predicted trajectory. Noted here as a planned parameter.

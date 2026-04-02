@@ -5,7 +5,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from engine.api.schemas import DexParams
 from engine.venues.dex.shared import PositionState
 from engine.core.scheduler import TradingScheduler, SchedulerConfig
 from tests.fakes import FakeDexAdapter
@@ -137,8 +136,11 @@ class TestCheckDexRebalance:
         assert len(fake_dex_adapter.minted) == 1
 
     @pytest.mark.asyncio
-    async def test_no_positions_skipped(self, fake_dex_adapter):
+    async def test_no_positions_no_funds_skipped(self, fake_dex_adapter):
+        """No positions and no LP wallet balance: no mint attempted."""
         fake_dex_adapter._positions = []
+        fake_dex_adapter._token0_bal = Decimal("0")
+        fake_dex_adapter._token1_bal = Decimal("0")
 
         broadcasts = []
         db = MockDB()
@@ -148,6 +150,21 @@ class TestCheckDexRebalance:
             await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_positions_with_funds_triggers_initial_mint(self, fake_dex_adapter):
+        """No positions but LP wallet has balance: initial position is created automatically."""
+        fake_dex_adapter._positions = []
+        # Default token0/token1 balances are non-zero
+
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+            await sched._check_dex_rebalance()
+
+        assert len(fake_dex_adapter.minted) == 1
 
     @pytest.mark.asyncio
     async def test_paused_venue_skipped(self, fake_dex_adapter):
@@ -194,59 +211,20 @@ class TestRebalanceDexPosition:
         assert any("removal failed" in m or "failed" in m.lower() for m in alert_msgs)
 
     @pytest.mark.asyncio
-    async def test_trade_account_sufficient_transfers_tokens(self, fake_dex_adapter):
-        """Ample trade account: tokens should be transferred before reminting."""
-        # LP wallet has 0 tokens, trade wallet has plenty
-        adapter = FakeDexAdapter(
-            token0_bal=Decimal("0"),
-            token1_bal=Decimal("0"),
-            trade0_bal=Decimal("500000"),
-            trade1_bal=Decimal("600"),
-        )
-        adapter.params = DexParams(
-            deploy_token0=Decimal("100000"),
-            deploy_token1=Decimal("100"),
-            rebalance_threshold_percent=Decimal("2.0"),
-        )
+    async def test_successful_rebalance_remints(self, fake_dex_adapter):
+        """Successful remove is followed by remint using full LP wallet balance."""
         pos = _make_position(token_id=99)
-        adapter._positions = [pos]
+        fake_dex_adapter._positions = [pos]
 
         broadcasts = []
         db = MockDB(prices=[Decimal("0.000606")] * 20)
-        sched = _build_scheduler({"uni-base": adapter}, broadcasts, db)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
         with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._rebalance_dex_position(adapter, pos.token_id, pos)
+            result = await sched._rebalance_dex_position(fake_dex_adapter, pos.token_id, pos)
 
         assert result is True
-        assert len(adapter.transfers) > 0
-
-    @pytest.mark.asyncio
-    async def test_insufficient_trade_warns_and_remints(self, fake_dex_adapter):
-        """Trade account can't cover shortfall — warning broadcast, remint still attempted."""
-        adapter = FakeDexAdapter(
-            token0_bal=Decimal("0"),
-            token1_bal=Decimal("0"),
-            trade0_bal=Decimal("10"),  # far less than deploy_token0
-            trade1_bal=Decimal("1"),
-        )
-        adapter.params = DexParams(
-            deploy_token0=Decimal("100000"),
-            deploy_token1=Decimal("100"),
-            rebalance_threshold_percent=Decimal("2.0"),
-        )
-        pos = _make_position(token_id=77)
-        adapter._positions = [pos]
-
-        broadcasts = []
-        db = MockDB(prices=[Decimal("0.000606")] * 20)
-        sched = _build_scheduler({"uni-base": adapter}, broadcasts, db)
-
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._rebalance_dex_position(adapter, pos.token_id, pos)
-
-        warning_msgs = [b.get("message", "") for b in broadcasts if b.get("severity") == "warning"]
-        assert any("treasury refill" in m or "need" in m for m in warning_msgs)
+        assert len(fake_dex_adapter.minted) == 1
 
     @pytest.mark.asyncio
     async def test_recovery_price_passed_to_create(self, fake_dex_adapter):
@@ -312,11 +290,6 @@ class TestCreateDexPosition:
     async def test_mint_failure_calls_insert_action_failed(self, fake_dex_adapter):
         """Failed mint records insert_action with status=failed."""
         adapter = FakeDexAdapter(mint_fails=True)
-        adapter.params = DexParams(
-            deploy_token0=Decimal("100"),
-            deploy_token1=Decimal("100"),
-            rebalance_threshold_percent=Decimal("2.0"),
-        )
 
         broadcasts = []
         db = MockDB(prices=[Decimal("0.000606")] * 20)

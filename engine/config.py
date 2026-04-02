@@ -121,6 +121,14 @@ class Settings(BaseSettings):
     uni_base_universal_router: str = "0x6ff5693b99212da76ad316178a184ab56d299b43"
     permit2_address: str = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
+    # LP strategy parameters — per-venue, override via environment variables
+    uni_base_sd_multiplier: Decimal = Decimal("2.75")
+    uni_base_ewma_lambda: Decimal = Decimal("0.975")
+    uni_base_downside_skew: Decimal = Decimal("0.45")
+    uni_bsc_sd_multiplier: Decimal = Decimal("3.0")
+    uni_bsc_ewma_lambda: Decimal = Decimal("0.975")
+    uni_bsc_downside_skew: Decimal = Decimal("0.5")
+
     # AssetChain contract addresses
     assetchain_pool_address: str = "0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1"
     assetchain_nft_manager_address: str = "0x0000000000000000000000000000000000000000"

@@ -21,12 +21,10 @@ The arb router's **inventory alignment tiebreak** uses this: if the portfolio is
 
 ## Automated LP rebalancing
 
-LP positions may move outside the range, in which case we need to close them and remint a new position at a relevant range. We follow the logic below to do this:
+When an LP position moves outside its tick range and the price has drifted more than `rebalance_threshold_percent` beyond the boundary, the engine rebalances automatically:
 
-1. Close the position and alert (always). 
-2. Then check if there are sufficient funds of whichever token needs refilling in the trade account.   
-3. If so, move those tokens, and automatically remint a new position, issuing a new alert. 
-4. If there are not sufficient funds, then wait for manual refill and also automatically remint a     
-position.
+1. Close the out-of-range position and record the removal.
+2. Swap LP wallet tokens to the ratio required by the pool at the new range (using exact tick math — the trade account is not involved).
+3. Remint the position at a freshly calculated tick range.
 
-There is some subtlety to this though, because we may need to update our parameters if there has been a significant move in the range. EWMA and σ are naturally adaptive, but the `downside_skew` may need to be adjusted, depending on which way trading has moved the price. So, we measure how far the current price has deviated from the EWMA mean in units of σ, and use that to adjust skew proportionally. If the price is 1σ above mean, `downside_skew` shifts up by 0.15. If 2σ above, by 0.30, capped at 0.8. It is symmetric in the other direction.
+The `downside_skew` adapts to mean-reversion probability: if the current price is 1σ above the EWMA mean, skew shifts up by 0.15 (more range above); if 1σ below, it shifts down. This is capped at ±0.8.
