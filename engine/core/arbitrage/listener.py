@@ -8,6 +8,7 @@ import structlog
 import websockets
 
 from engine.config import settings
+from engine.core.arbitrage.pool_state import update_single_v4_pool_state
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 from engine.core.arbitrage.dex_volume import (
@@ -20,6 +21,8 @@ from engine.core.arbitrage.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+_WSS_IDLE_RECV_TIMEOUT_SECONDS = 30
+_WSS_PING_TIMEOUT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -197,6 +200,27 @@ class ArbitrageWebSocketListener:
             self._pending_calculation.cancel()
         logger.info("arbitrage_websocket_listener_stopped")
 
+    async def _refresh_pool_state(self, chain_name: str, pool_config) -> None:
+        """Refresh pool cache from RPC after (re)connect so prices aren't stuck stale."""
+        try:
+            if await update_single_v4_pool_state(pool_config):
+                logger.info("wss_pool_state_refreshed", chain=chain_name, pool=pool_config.pool_address)
+                self._trigger_market_update(chain_name)
+        except Exception as e:
+            logger.warning("wss_pool_state_refresh_failed", chain=chain_name, error=str(e))
+
+    async def _recv_with_keepalive(self, ws, chain_name: str) -> str:
+        """Wait for the next WS message, using ping/pong to detect zombie sockets."""
+        while self._running:
+            try:
+                return await asyncio.wait_for(ws.recv(), timeout=_WSS_IDLE_RECV_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("wss_idle_timeout", chain=chain_name)
+                pong_waiter = await ws.ping()
+                await asyncio.wait_for(pong_waiter, timeout=_WSS_PING_TIMEOUT_SECONDS)
+                logger.debug("wss_keepalive_ok", chain=chain_name)
+        raise RuntimeError("listener stopped")
+
     async def _listen_to_chain(
         self,
         chain_name: str,
@@ -285,9 +309,10 @@ class ArbitrageWebSocketListener:
                         request_id += 1
 
                     await sync_pool_volume_24h(pool_config)
+                    await self._refresh_pool_state(chain_name, pool_config)
 
                     while self._running:
-                        msg = await ws.recv()
+                        msg = await self._recv_with_keepalive(ws, chain_name)
                         data = json.loads(msg)
 
                         if data.get("method") == "eth_subscription":
