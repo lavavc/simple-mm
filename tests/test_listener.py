@@ -1,5 +1,9 @@
 """Tests for wallet activity matching in the DEX WS listener."""
 
+import asyncio
+
+import pytest
+
 from engine.core.arbitrage.listener import (
     ERC20_TRANSFER_TOPIC,
     WalletActivitySubscription,
@@ -85,3 +89,58 @@ def test_build_wallet_transfer_filters_targets_wallet_topics():
     }
     assert incoming_meta["kind"] == "wallet_transfer"
     assert incoming_meta["direction"] == "incoming"
+
+
+class _FakeWebSocket:
+    def __init__(self):
+        self.recv_calls = 0
+        self.ping_calls = 0
+
+    async def recv(self):
+        self.recv_calls += 1
+        if self.recv_calls == 1:
+            await asyncio.sleep(0.05)
+        return '{"method":"eth_subscription","params":{"subscription":"1","result":{}}}'
+
+    async def ping(self):
+        self.ping_calls += 1
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(None)
+        return fut
+
+
+@pytest.mark.asyncio
+async def test_recv_with_keepalive_pings_on_idle(monkeypatch):
+    from engine.core.arbitrage.listener import ArbitrageWebSocketListener
+    import engine.core.arbitrage.listener as _listener
+
+    monkeypatch.setattr(_listener, "_WSS_IDLE_RECV_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(_listener, "_WSS_PING_TIMEOUT_SECONDS", 0.01)
+
+    listener = ArbitrageWebSocketListener(broadcast=lambda _: None)
+    listener._running = True
+    ws = _FakeWebSocket()
+
+    msg = await listener._recv_with_keepalive(ws, "base")
+
+    assert "eth_subscription" in msg
+    assert ws.ping_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_pool_state_triggers_market_update(monkeypatch):
+    from engine.core.arbitrage.listener import ArbitrageWebSocketListener
+    import engine.core.arbitrage.listener as _listener
+
+    listener = ArbitrageWebSocketListener(broadcast=lambda _: None)
+    triggered: list[str] = []
+    monkeypatch.setattr(listener, "_trigger_market_update", lambda chain: triggered.append(chain))
+
+    async def _ok_refresh(_pool_config):
+        return True
+
+    monkeypatch.setattr(_listener, "update_single_v4_pool_state", _ok_refresh)
+
+    await listener._refresh_pool_state("base", type("PoolCfg", (), {"pool_address": "0xpool"})())
+
+    assert triggered == ["base"]
