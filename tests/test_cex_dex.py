@@ -157,6 +157,27 @@ class TestOrderbookHelpers:
         assert larger is not None
         assert Decimal(str(larger["cngn_transferred"])) > wallet_cngn
 
+    def test_thin_pool_still_routes_below_exhaustion_ceiling(self, seeded_pool_cache, monkeypatch):
+        """Pool exhausted at $5000 should not suppress viable smaller trades."""
+        import engine.core.arbitrage.cex_dex as _mod
+
+        _CEILING = Decimal("100")
+        _real = _mod.estimate_cex_dex_trade
+
+        def _thin(direction, depth, investment_usd, cex_fee=QUIDAX_FEE):
+            return None if investment_usd > _CEILING else _real(direction, depth, investment_usd, cex_fee)
+
+        monkeypatch.setattr(_mod, "estimate_cex_dex_trade", _thin)
+
+        result = estimate_max_cex_dex_buy_usd_for_cngn(
+            "UNI_BASE_TO_QUIDAX",
+            _TIGHT_DEPTH,
+            Decimal("999999"),  # wallet not a constraint
+        )
+
+        assert result is not None
+        assert Decimal(str(result["optimal_size_usd"])) <= float(_CEILING)
+
 
 class TestComputeArbCurve:
     """compute_arb_curve returns a 5000-point curve."""
