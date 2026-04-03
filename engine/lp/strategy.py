@@ -31,9 +31,10 @@ def price_to_tick(price: Decimal, token0_decimals: int, token1_decimals: int) ->
 
 
 def compute_ewma_stats(prices: list[Decimal], params: DexParams) -> tuple[float, float]:
-    """Return (ewma_mean, std_dev) from price history using configured lambda."""
-    if params.lookback_points:
-        prices = prices[-params.lookback_points:]
+    """Return (ewma_mean, std_dev) from price history using configured lambda.
+
+    Caller is responsible for applying lookback_points slicing before calling.
+    """
     float_prices = [float(p) for p in prices]
     lam = float(params.ewma_lambda)
     mean = float_prices[0]
@@ -68,6 +69,7 @@ def calculate_tick_range(
     if recovery_price is not None and std_dev > 0:
         deviation = (recovery_price - mean) / (std_dev * multiplier)
         skew = max(0.2, min(0.8, skew + deviation * 0.15))
+        params.downside_skew = Decimal(str(round(skew, 4)))
     total = std_dev * multiplier * 2
     lower_price = max(mean - total * skew, 0.0001)
     upper_price = mean + total * (1 - skew)

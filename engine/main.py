@@ -22,6 +22,8 @@ from engine.arb import ArbitrageEngine
 from engine.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
+from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.lp.config import DexParams
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes
@@ -166,6 +168,15 @@ async def lifespan(app: FastAPI):
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
     await init_venues(account_manager)
+
+    # Restore any persisted LP params (operator overrides, dynamic skew adjustments)
+    _db = await get_db()
+    for _vname, _vadapter in venues.items():
+        if isinstance(_vadapter, V4LPAdapter):
+            _config = await _db.get_venue_config(_vname)
+            if _config and _config.get("params"):
+                _vadapter.params = DexParams(**_config["params"])
+                logger.info("venue_params_restored", venue=_vname)
 
     # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
     from engine.market.pool_state import seed_pool_states

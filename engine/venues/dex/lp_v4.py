@@ -10,7 +10,6 @@ from eth_abi import encode
 from web3 import Web3
 
 from engine.api.schemas import LPPosition, Position, TxResult
-from engine.lp import strategy as _strategy
 from engine.lp.config import DexParams
 from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
@@ -188,8 +187,8 @@ class V4LPAdapter(BaseV4DexAdapter):
                 tick_upper=tick_upper,
                 tokens_owed_0=0,
                 tokens_owed_1=0,
-                price_lower=self._tick_to_price(tick_lower),
-                price_upper=self._tick_to_price(tick_upper),
+                price_lower=Decimal("1.0001") ** tick_lower * Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals)),
+                price_upper=Decimal("1.0001") ** tick_upper * Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals)),
                 current_price=current_price,
                 in_range=tick_lower <= current_tick <= tick_upper,
             )
@@ -420,10 +419,23 @@ class V4LPAdapter(BaseV4DexAdapter):
     def _compute_required_ratio(
         self, tick_lower: int, tick_upper: int, sqrt_price_x96: int
     ) -> tuple[Decimal, Decimal]:
-        return _strategy.compute_required_ratio(
-            tick_lower, tick_upper, sqrt_price_x96,
-            self.config.token0_decimals, self.config.token1_decimals,
-        )
+        """Return (r0, r1) — token amounts per unit of liquidity at the current price."""
+        sqrt_a = _tick_to_sqrt_x96(tick_lower)
+        sqrt_b = _tick_to_sqrt_x96(tick_upper)
+        sqrt_p = float(sqrt_price_x96)
+
+        if sqrt_p <= sqrt_a:
+            r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) * _Q96 if sqrt_a * sqrt_b > 0 else 0.0
+            r1 = 0.0
+        elif sqrt_p >= sqrt_b:
+            r0 = 0.0
+            r1 = (sqrt_b - sqrt_a) / _Q96
+        else:
+            r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b) * _Q96
+            r1 = (sqrt_p - sqrt_a) / _Q96
+
+        dec_adj = Decimal(10 ** self.config.token0_decimals) / Decimal(10 ** self.config.token1_decimals)
+        return Decimal(str(r0)) / dec_adj, Decimal(str(r1))
 
     async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> bool | None:
         """Swap LP wallet tokens to the ratio required by the pool at the current price.
@@ -489,24 +501,6 @@ class V4LPAdapter(BaseV4DexAdapter):
         if result.status != "confirmed":
             logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
             return False
-
-    # === Strategy math ===
-
-    def compute_ewma_stats(self, prices: list[Decimal]) -> tuple[float, float]:
-        return _strategy.compute_ewma_stats(prices, self.params)
-
-    def calculate_tick_range(self, prices: list[Decimal], recovery_price: float | None = None) -> tuple[int, int]:
-        return _strategy.calculate_tick_range(
-            prices, self.params, self.config.tick_spacing,
-            self.config.token0_decimals, self.config.token1_decimals,
-            recovery_price=recovery_price, venue_name=self.name,
-        )
-
-    def _tick_to_price(self, tick: int) -> Decimal:
-        return _strategy.tick_to_price(tick, self.config.token0_decimals, self.config.token1_decimals)
-
-    def _price_to_tick(self, price: Decimal) -> int:
-        return _strategy.price_to_tick(price, self.config.token0_decimals, self.config.token1_decimals)
 
     # === Helpers ===
 

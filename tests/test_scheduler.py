@@ -42,6 +42,7 @@ class MockDB:
     def __init__(self, prices=None):
         self._prices = prices if prices is not None else [Decimal("0.000606")] * 20
         self.insert_action = AsyncMock()
+        self.update_venue_config = AsyncMock()
 
     async def get_recent_prices(self, limit=100):
         return self._prices[:limit]
@@ -323,23 +324,18 @@ class TestCreateDexPosition:
 
     @pytest.mark.asyncio
     async def test_recovery_price_passed_through(self, fake_dex_adapter):
-        """recovery_price is forwarded to calculate_tick_range."""
-        prices_received = []
-
-        def fake_range(prices, recovery_price=None):
-            prices_received.append(recovery_price)
-            return -1000, 1000
-
-        fake_dex_adapter.calculate_tick_range = fake_range
+        """recovery_price is forwarded to strategy.calculate_tick_range."""
+        from unittest.mock import patch
 
         broadcasts = []
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=0.000400)
+        with patch("engine.lp.strategy.calculate_tick_range", return_value=(-1000, 1000)) as mock_range:
+            await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=0.000400)
 
-        assert len(prices_received) == 1
-        assert prices_received[0] == 0.000400
+        call_kwargs = mock_range.call_args
+        assert call_kwargs.kwargs.get("recovery_price") == 0.000400
 
 
 class TestDexArbCurveStream:

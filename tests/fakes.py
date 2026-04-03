@@ -5,7 +5,8 @@ Importable from both conftest.py and test modules.
 
 from decimal import Decimal
 
-from engine.api.schemas import DexParams, TxResult
+from engine.api.schemas import TxResult
+from tests.conftest_params import make_dex_params
 from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.venues.dex.shared import PositionState
 
@@ -34,9 +35,7 @@ class FakeDexAdapter:
         self._token1_bal = token1_bal
         self._remove_fails = remove_fails
         self._mint_fails = mint_fails
-        self.params = DexParams(
-            rebalance_threshold_percent=Decimal("2.0"),
-        )
+        self.params = make_dex_params(rebalance_threshold_percent=Decimal("2.0"))
         self.minted: list[dict] = []
 
         class _Config:
