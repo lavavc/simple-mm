@@ -61,6 +61,25 @@ def _event_from_joined_row(row: aiosqlite.Row) -> ArbitrageHistoryEvent:
 async def upsert_arbitrage_history_event(conn: aiosqlite.Connection, event: ArbitrageHistoryEvent) -> None:
     await conn.execute(
         """
+        INSERT INTO arb_attempts (
+            id, pipeline, direction, buy_venue, sell_venue, detected_at_ms, updated_at_ms, status, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING
+        """,
+        (
+            event.opportunity_id,
+            event.pipeline,
+            event.direction,
+            event.buy_venue,
+            event.sell_venue,
+            event.timestamp,
+            event.timestamp,
+            event.status,
+            event.reason,
+        ),
+    )
+    await conn.execute(
+        """
         INSERT INTO arb_history_events (
             attempt_id, event_type, timestamp_ms, status, reason, optimal_size_usd,
             routed_size_usd, executed_size_usd, expected_profit_usd, actual_profit_usd,
@@ -121,39 +140,35 @@ async def get_arbitrage_history(
     to_ts: int | None = None,
     limit: int = 50,
 ) -> list[ArbitrageHistoryItem]:
-    filters = ["e.event_type IN ('routed', 'executed', 'failed')"]
-    params: list[Any] = []
-    if pipeline:
-        filters.append("a.pipeline = ?")
-        params.append(pipeline)
-    if from_ts is not None:
-        filters.append("e.timestamp_ms >= ?")
-        params.append(from_ts)
-    if to_ts is not None:
-        filters.append("e.timestamp_ms <= ?")
-        params.append(to_ts)
-    where_sql = " AND ".join(filters)
     cursor = await conn.execute(
-        f"""
+        """
         SELECT e.*, a.pipeline, a.direction, a.buy_venue, a.sell_venue
         FROM arb_history_events e
         JOIN arb_attempts a ON a.id = e.attempt_id
-        WHERE {where_sql}
-        ORDER BY e.timestamp_ms DESC
+        WHERE e.event_type IN ('routed', 'executed', 'failed')
+        ORDER BY e.timestamp_ms ASC, e.id ASC
         """,
-        params,
     )
     rows = await cursor.fetchall()
     grouped: dict[str, list[ArbitrageHistoryEvent]] = {}
-    order: list[str] = []
     for row in rows:
         event = _event_from_joined_row(row)
-        if event.opportunity_id not in grouped:
-            grouped[event.opportunity_id] = []
-            order.append(event.opportunity_id)
-        grouped[event.opportunity_id].append(event)
+        if pipeline and event.pipeline != pipeline:
+            continue
+        if to_ts is not None and (event.timestamp or 0) > to_ts:
+            continue
+        grouped.setdefault(event.opportunity_id, []).append(event)
+
+    ordered: list[tuple[str, int]] = []
+    for opp_id, events in grouped.items():
+        latest_ts = max((event.timestamp or 0) for event in events)
+        if from_ts is not None and latest_ts < from_ts:
+            continue
+        ordered.append((opp_id, latest_ts))
+    ordered.sort(key=lambda item: item[1], reverse=True)
+
     items: list[ArbitrageHistoryItem] = []
-    for opp_id in order[:limit]:
+    for opp_id, _ in ordered[:limit]:
         events = sorted(grouped[opp_id], key=lambda item: ((item.timestamp or 0), item.id or 0))
         routed = next((event for event in events if event.event_type == "routed"), events[0])
         latest = events[-1]

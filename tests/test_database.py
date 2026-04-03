@@ -4,7 +4,8 @@ import pytest
 import time
 from decimal import Decimal
 
-from engine.db.database import Database
+from engine.db.connection import SQLiteConnectionManager
+from engine.db.repository import DatabaseRepository
 from engine.api.schemas import (
     PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity,
     ArbitrageHistoryEvent, ArbitrageHistoryWalletSnapshot,
@@ -20,7 +21,7 @@ from engine.api.schemas import (
 async def db(tmp_path):
     """Create an in-memory database for testing."""
     db_path = str(tmp_path / "test.db")
-    database = Database(db_path)
+    database = DatabaseRepository(SQLiteConnectionManager(db_path))
     await database.connect()
     yield database
     await database.close()
@@ -65,14 +66,14 @@ class TestConnection:
 
         assert "system_state" in tables
         assert "price_snapshots" in tables
-        assert "positions" in tables
+        assert "position_snapshots" in tables
         assert "actions" in tables
         assert "venue_config" in tables
         assert "alerts" in tables
     @pytest.mark.asyncio
     async def test_connect_idempotent(self, tmp_path):
         """Calling connect twice should not error."""
-        db = Database(str(tmp_path / "test2.db"))
+        db = DatabaseRepository(SQLiteConnectionManager(str(tmp_path / "test2.db")))
         await db.connect()
         await db.connect()  # Should not raise
         await db.close()

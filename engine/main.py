@@ -14,7 +14,7 @@ import uvicorn
 
 from engine.config import settings
 from engine.ws import ws_manager
-from engine.db import get_db
+from engine.db import open_repository
 from engine.market.venue_prices import create_venue_aggregator, VenuePriceAggregator
 from engine.market.price_aggregation import PriceNormalizer, BlendedPriceCalculator
 from engine.scheduler import TradingScheduler, SchedulerConfig
@@ -78,9 +78,11 @@ def broadcast_event(event: dict):
     asyncio.create_task(bot.forward_alert(event))
 
 
-async def init_venues(acct_manager: AccountManager | None = None):
+async def init_venues(acct_manager: AccountManager | None = None, db=None):
     """Initialize venue adapters. All secrets come from env vars."""
     global venues
+    if db is None:
+        raise ValueError("init_venues requires a database repository")
 
     # Uniswap V4 Base (uni-base) — requires HD wallet
     if acct_manager:
@@ -116,6 +118,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
             params=CexParams(),
             name="quidax",
             funding_role="quidax-trade-fund",
+            db=db,
         )
         logger.info("venue_initialized", venue="quidax")
 
@@ -126,6 +129,7 @@ async def init_venues(acct_manager: AccountManager | None = None):
             params=CexParams(),
             name="quidax-lp",
             funding_role="quidax-lp",
+            db=db,
         )
         logger.info("venue_initialized", venue="quidax-lp")
 
@@ -146,7 +150,8 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     logger.info("application_starting")
 
-    db = await get_db()
+    db = await open_repository(settings.db_path)
+    app.state.db = db
     logger.info("database_connected")
 
     # Account manager (HD wallet)
@@ -167,13 +172,12 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
-    await init_venues(account_manager)
+    await init_venues(account_manager, db=db)
 
     # Restore any persisted LP params (operator overrides, dynamic skew adjustments)
-    _db = await get_db()
     for _vname, _vadapter in venues.items():
         if isinstance(_vadapter, V4LPAdapter):
-            _config = await _db.get_venue_config(_vname)
+            _config = await db.get_venue_config(_vname)
             if _config and _config.get("params"):
                 _vadapter.params = DexParams(**_config["params"])
                 logger.info("venue_params_restored", venue=_vname)
@@ -197,6 +201,7 @@ async def lifespan(app: FastAPI):
     blended_calculator = BlendedPriceCalculator(
         price_aggregator=price_aggregator,
         normalizer=normalizer,
+        db=db,
     )
     logger.info("blended_price_calculator_initialized")
 
@@ -210,6 +215,7 @@ async def lifespan(app: FastAPI):
             broadcast=broadcast_event,
             execute_cex_dex_enabled=settings.arb_execute_cex_dex_enabled,
             execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
+            storage=db,
         )
         logger.info(
             "arbitrage_engine_initialized",
@@ -232,6 +238,7 @@ async def lifespan(app: FastAPI):
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
         quidax_lp=_quidax_lp,
+        db=db,
     )
 
     routes.init_routes(
@@ -257,7 +264,7 @@ async def lifespan(app: FastAPI):
 
     if settings.telegram_bot_token:
         try:
-            await bot.start(settings, scheduler, venues, arbitrage_engine, account_manager, TOKEN_CONTRACTS)
+            await bot.start(settings, scheduler, venues, arbitrage_engine, account_manager, TOKEN_CONTRACTS, db)
         except Exception as e:
             logger.error("telegram_bot_start_failed", error=str(e))
 
@@ -283,6 +290,7 @@ async def lifespan(app: FastAPI):
             logger.info("venue_closed", venue=name)
 
     await db.close()
+    app.state.db = None
     logger.info("application_stopped")
 
 

@@ -22,24 +22,33 @@ async def insert_alert(
     key = dedupe_key or (f"{category}:{message}" if dedup else None)
     if key:
         cursor = await conn.execute(
+            "SELECT id FROM alerts WHERE dedupe_key = ? AND status = 'open' LIMIT 1",
+            (key,),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            await conn.execute(
+                """
+                UPDATE alerts
+                SET severity = ?, message = ?, last_seen_at_ms = ?, occurrence_count = occurrence_count + 1
+                WHERE id = ?
+                """,
+                (severity, message, now_ms, row["id"]),
+            )
+            await conn.commit()
+            return int(row["id"])
+
+        cursor = await conn.execute(
             """
             INSERT INTO alerts (
                 category, severity, message, dedupe_key, status,
                 first_seen_at_ms, last_seen_at_ms, occurrence_count
             ) VALUES (?, ?, ?, ?, 'open', ?, ?, 1)
-            ON CONFLICT(dedupe_key) WHERE dedupe_key IS NOT NULL AND status = 'open'
-            DO UPDATE SET
-                severity = excluded.severity,
-                message = excluded.message,
-                last_seen_at_ms = excluded.last_seen_at_ms,
-                occurrence_count = alerts.occurrence_count + 1
-            RETURNING id
             """,
             (category, severity, message, key, now_ms, now_ms),
         )
-        row = await cursor.fetchone()
         await conn.commit()
-        return int(row["id"])
+        return int(cursor.lastrowid)
 
     cursor = await conn.execute(
         """

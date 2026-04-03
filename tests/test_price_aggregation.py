@@ -321,6 +321,7 @@ class TestVWAP:
         calc = BlendedPriceCalculator(
             price_aggregator=DummyAggregator(),
             normalizer=PriceNormalizer(),
+            db=object(),
         )
 
         async def _zero_twap(window_seconds: int = 300, venue: str | None = None) -> Decimal:

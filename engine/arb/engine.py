@@ -26,7 +26,6 @@ from engine.arb.wallet_state import (
     refresh_inventory_for_venues as _refresh_inventory_for_venues_impl,
     seed_account_inventory as _seed_account_inventory_impl,
 )
-from engine.db import get_db
 from engine.db.backend import StorageBackend
 from engine.venues.base import VenueAdapter
 
@@ -58,11 +57,13 @@ class ArbitrageEngine:
         self.broadcast = broadcast
         self.execute_cex_dex_enabled = execute_cex_dex_enabled
         self.execute_dex_dex_enabled = execute_dex_dex_enabled
+        if storage is None:
+            raise ValueError("ArbitrageEngine requires a storage backend")
         self._storage = storage
 
         self.inventory = InventoryTracker(params)
         self.executor = ArbitrageExecutor(venues)
-        self.history = ArbitrageHistoryRecorder(self.inventory, broadcast, db_getter=lambda: self._get_db())
+        self.history = ArbitrageHistoryRecorder(self.inventory, broadcast, db_getter=self._get_db)
 
         self._enabled = True
         self._arb_executing = False
@@ -334,9 +335,7 @@ class ArbitrageEngine:
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
 
     async def _get_db(self):
-        if self._storage is not None:
-            return self._storage
-        return await get_db()
+        return self._storage
 
     async def recover_dex_half_open(self, opp_id: str) -> dict:
         return await _recover_dex_half_open_impl(self, opp_id)

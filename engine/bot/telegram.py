@@ -11,7 +11,7 @@ import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from engine.db import get_db
+from engine.db.backend import StorageBackend
 
 logger = structlog.get_logger()
 
@@ -22,8 +22,15 @@ _venues = None
 _arbitrage_engine = None
 _account_manager = None
 _token_contracts: dict = {}
+_db: StorageBackend | None = None
 _recent_alerts: dict[str, float] = {}
 _pending_withdrawals: dict[str, tuple[str, str | None]] = {}
+
+
+def _require_db() -> StorageBackend:
+    if _db is None:
+        raise RuntimeError("Telegram bot database is not configured")
+    return _db
 
 
 def _auth(update: Update) -> bool:
@@ -44,8 +51,7 @@ def _confirm_kb(action: str) -> InlineKeyboardMarkup:
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    db = await get_db()
-    trading_state = await db.get_system_state("trading_enabled")
+    trading_state = await _require_db().get_system_state("trading_enabled")
     trading = trading_state != "false"
     cb = False
     arb_line = "❌ Not configured"
@@ -132,8 +138,7 @@ async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    db = await get_db()
-    alerts = await db.get_alerts(5)
+    alerts = await _require_db().get_alerts(5)
     if not alerts:
         await update.message.reply_text("No recent alerts.")
         return
@@ -335,14 +340,15 @@ async def forward_alert(event: dict) -> None:
 
 # --- Lifecycle ---
 
-async def start(s, sched, ven, arb_engine, acct_manager, token_contracts) -> None:
-    global _app, _settings, _scheduler, _venues, _arbitrage_engine, _account_manager, _token_contracts
+async def start(s, sched, ven, arb_engine, acct_manager, token_contracts, db: StorageBackend) -> None:
+    global _app, _settings, _scheduler, _venues, _arbitrage_engine, _account_manager, _token_contracts, _db
     _settings = s
     _scheduler = sched
     _venues = ven
     _arbitrage_engine = arb_engine
     _account_manager = acct_manager
     _token_contracts = token_contracts
+    _db = db
 
     _app = Application.builder().token(s.telegram_bot_token).build()
     _app.add_handler(CommandHandler("status", cmd_status))

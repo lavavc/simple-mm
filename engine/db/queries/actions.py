@@ -26,18 +26,30 @@ async def insert_action(
     idempotency_key: str | None = None,
 ) -> int | None:
     now_ms = int(time.time() * 1000)
+    if idempotency_key:
+        cursor = await conn.execute(
+            "SELECT id FROM actions WHERE idempotency_key = ?",
+            (idempotency_key,),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            await conn.execute(
+                """
+                UPDATE actions
+                SET timestamp_ms = ?, status = ?, error = ?, tx_hash = COALESCE(?, tx_hash), price = COALESCE(?, price)
+                WHERE id = ?
+                """,
+                (now_ms, status, error, tx_hash, price, row["id"]),
+            )
+            await conn.commit()
+            return int(row["id"])
+
     cursor = await conn.execute(
         """
         INSERT INTO actions (
             timestamp_ms, venue, action_type, triggered_by, status, direction,
             amount_in, token_in, amount_out, token_out, price, tx_hash, error, idempotency_key
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(idempotency_key) DO UPDATE SET
-            timestamp_ms = excluded.timestamp_ms,
-            status = excluded.status,
-            error = excluded.error,
-            tx_hash = COALESCE(excluded.tx_hash, actions.tx_hash),
-            price = COALESCE(excluded.price, actions.price)
         """,
         (
             now_ms,

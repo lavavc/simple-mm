@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Callable, Any
 
 import structlog
 
+from engine.db.backend import StorageBackend
 from engine.lp import strategy
 
 if TYPE_CHECKING:
@@ -15,9 +16,9 @@ logger = structlog.get_logger()
 class LPRebalancer:
     """Orchestrates DEX LP rebalancing — decoupled from the scheduler."""
 
-    def __init__(self, broadcast: Callable[[dict], Any], db_getter: Callable):
+    def __init__(self, broadcast: Callable[[dict], Any], db: StorageBackend):
         self.broadcast = broadcast
-        self._db_getter = db_getter
+        self._db = db
 
     async def check_and_rebalance(self, venue: "V4LPAdapter") -> None:
         """Check position state; rebalance if out of range past threshold."""
@@ -63,7 +64,7 @@ class LPRebalancer:
 
     async def create_position(self, venue: "V4LPAdapter", recovery_price: float | None = None) -> bool:
         """Fetch price history, compute tick range, balance funds, mint."""
-        db = await self._db_getter()
+        db = self._db
 
         try:
             prices = await db.get_recent_prices(limit=100)
@@ -77,7 +78,6 @@ class LPRebalancer:
                 recovery_price=recovery_price, venue_name=venue.name,
             )
             if recovery_price is not None:
-                db = await self._db_getter()
                 await db.update_venue_config(venue.name, venue.params.model_dump(mode="json"))
 
             if await venue.prepare_lp_balance(tick_lower, tick_upper) is False:
@@ -129,7 +129,7 @@ class LPRebalancer:
 
     async def rebalance(self, venue: "V4LPAdapter", token_id: int, position) -> bool:
         """Remove existing position and recreate with recovery_price."""
-        db = await self._db_getter()
+        db = self._db
 
         try:
             logger.info("removing_old_position", venue=venue.name, token_id=token_id)

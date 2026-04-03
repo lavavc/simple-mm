@@ -4,14 +4,14 @@ import time
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator
 from web3 import Web3
 import structlog
 
 from engine.config import settings
-from engine.db import get_db
+from engine.db.repository import DatabaseRepository
 from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.config import DexParams
 from engine.api.schemas import (
@@ -52,6 +52,13 @@ _token_contracts = None
 _blended_calculator = None
 _normalizer = None
 _quidax_lp = None
+
+
+def get_repository(request: Request) -> DatabaseRepository:
+    db = getattr(request.app.state, "db", None)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    return db
 
 
 def init_routes(
@@ -142,9 +149,8 @@ async def _get_reference_price_ngn() -> Optional[Decimal]:
 
 
 @router.get("/status", response_model=SystemStatus)
-async def get_status():
+async def get_status(db: DatabaseRepository = Depends(get_repository)):
     """Get overall system status including per-venue prices."""
-    db = await get_db()
     trading_enabled = await db.get_system_state("trading_enabled")
 
     venue_prices = _price_aggregator.get_all_prices() if _price_aggregator else {}
@@ -307,9 +313,9 @@ async def get_price_history(
     from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(100, le=1000),
+    db: DatabaseRepository = Depends(get_repository),
 ):
     """Get price history from stored snapshots."""
-    db = await get_db()
     return await db.get_price_history(from_ts, to_ts, limit)
 
 
@@ -524,12 +530,11 @@ async def resume_venue(venue: str):
 
 
 @router.put("/venues/{venue}/params", dependencies=[Depends(verify_token)])
-async def update_venue_params(venue: str, params: dict):
+async def update_venue_params(venue: str, params: dict, db: DatabaseRepository = Depends(get_repository)):
     """Update venue parameters."""
     if venue not in _venues:
         raise HTTPException(status_code=404, detail="Venue not found")
 
-    db = await get_db()
     await db.update_venue_config(venue, params)
 
     venue_adapter = _venues[venue]
@@ -678,9 +683,9 @@ async def get_actions(
     venue: Optional[str] = Query(None),
     action_type: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
+    db: DatabaseRepository = Depends(get_repository),
 ):
     """Get action history."""
-    db = await get_db()
     return await db.get_actions(venue, action_type, limit)
 
 
@@ -688,16 +693,14 @@ async def get_actions(
 
 
 @router.get("/alerts", response_model=list[Alert])
-async def get_alerts(limit: int = Query(20, le=100)):
+async def get_alerts(limit: int = Query(20, le=100), db: DatabaseRepository = Depends(get_repository)):
     """Get recent alerts."""
-    db = await get_db()
     return await db.get_alerts(limit)
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: int):
+async def acknowledge_alert(alert_id: int, db: DatabaseRepository = Depends(get_repository)):
     """Acknowledge an alert."""
-    db = await get_db()
     await db.acknowledge_alert(alert_id)
     return {"status": "acknowledged", "alert_id": alert_id}
 
@@ -724,9 +727,9 @@ async def get_arbitrage_opportunities(
     from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(50, le=200),
+    db: DatabaseRepository = Depends(get_repository),
 ):
     """Get detected arbitrage opportunities."""
-    db = await get_db()
     return await db.get_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
 
@@ -736,9 +739,9 @@ async def get_dex_arbitrage_opportunities(
     from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(50, le=200),
+    db: DatabaseRepository = Depends(get_repository),
 ):
     """Get detected DEX arbitrage opportunities."""
-    db = await get_db()
     return await db.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
 
@@ -748,9 +751,9 @@ async def get_arbitrage_history(
     from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(30, le=200),
+    db: DatabaseRepository = Depends(get_repository),
 ):
     """Get grouped arbitrage lifecycle history."""
-    db = await get_db()
     return await db.get_arbitrage_history(pipeline, from_ts, to_ts, limit)
 
 @router.get("/arbitrage/liquidation")
@@ -834,9 +837,8 @@ async def get_liquidation_valuation():
 
 
 @router.get("/arbitrage/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
-async def get_arbitrage_opportunity(opportunity_id: str):
+async def get_arbitrage_opportunity(opportunity_id: str, db: DatabaseRepository = Depends(get_repository)):
     """Get a specific arbitrage opportunity."""
-    db = await get_db()
     all_opps = await db.get_arbitrage_opportunities(limit=1000)
     for opp in all_opps:
         if opp.id == opportunity_id:
@@ -1106,9 +1108,11 @@ _DEX_POOLS = [
 
 
 @router.get("/pool-metrics/history")
-async def get_pool_metrics_history(minutes: int = Query(1440, ge=1440, le=43200)):
+async def get_pool_metrics_history(
+    minutes: int = Query(1440, ge=1440, le=43200),
+    db: DatabaseRepository = Depends(get_repository),
+):
     """Return historical pool TVL and volume from stored position snapshots."""
-    db = await get_db()
     from_ts = int((time.time() - minutes * 60) * 1000)
     return await db.get_pool_metrics_history(["uni-base", "uni-bsc"], from_ts)
 

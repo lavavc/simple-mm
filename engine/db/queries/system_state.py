@@ -15,12 +15,7 @@ async def get_system_state(conn: aiosqlite.Connection, key: str) -> str | None:
         (key,),
     )
     row = await cursor.fetchone()
-    if row is None:
-        return None
-    try:
-        return json.loads(row["value_json"])
-    except Exception:
-        return row["value_json"]
+    return row["value_json"] if row else None
 
 
 async def set_system_state(conn: aiosqlite.Connection, key: str, value: Any) -> None:

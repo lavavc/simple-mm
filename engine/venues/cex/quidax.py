@@ -9,7 +9,7 @@ import httpx
 import structlog
 
 from engine.api.schemas import Position, PriceQuote, CexParams, OrderBookDepth, OrderBookLevel
-from engine.db import get_db
+from engine.db.backend import StorageBackend
 from engine.venues.base import VenueAdapter
 from dataclasses import dataclass
 
@@ -35,6 +35,7 @@ class QuidaxAdapter(VenueAdapter):
         base_url: str | None = None,
         name: str = "quidax",
         funding_role: str = "quidax-trade-fund",
+        db: StorageBackend | None = None,
     ):
         """
         Initialize Quidax adapter.
@@ -57,6 +58,9 @@ class QuidaxAdapter(VenueAdapter):
         self._last_balances: dict[str, Decimal] = {}
         self.enabled = True
         self.paused = False
+        if db is None:
+            raise ValueError("QuidaxAdapter requires a database repository")
+        self.db = db
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with auth headers."""
@@ -311,8 +315,7 @@ class QuidaxAdapter(VenueAdapter):
                 last_error = str(e)
                 logger.warning("market_order_attempt_failed", side=side, attempt=attempt, error=last_error)
 
-        db = await get_db()
-        await db.insert_alert(
+        await self.db.insert_alert(
             severity="critical",
             category="cex",
             message=f"Quidax {self.name} market order failed after 5 retries: {last_error}",
