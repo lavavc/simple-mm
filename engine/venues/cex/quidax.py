@@ -2,8 +2,9 @@
 
 import asyncio
 import time
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional, cast
 
 import httpx
 import structlog
@@ -11,7 +12,6 @@ import structlog
 from engine.api.schemas import Position, PriceQuote, CexParams, OrderBookDepth, OrderBookLevel
 from engine.db.backend import AlertStoreProtocol
 from engine.venues.base import VenueAdapter
-from dataclasses import dataclass
 
 logger = structlog.get_logger()
 
@@ -71,7 +71,7 @@ class QuidaxAdapter(VenueAdapter):
             )
         return self._client
 
-    async def close(self):
+    async def close(self) -> None:
         """Close HTTP client."""
         if self._client:
             await self._client.aclose()
@@ -181,7 +181,7 @@ class QuidaxAdapter(VenueAdapter):
             logger.error("quidax_price_fetch_failed", error=str(e))
             return None
 
-    async def get_open_orders(self) -> list[dict]:
+    async def get_open_orders(self) -> list[dict[str, Any]]:
         """Get all open orders."""
         client = await self._get_client()
 
@@ -190,7 +190,7 @@ class QuidaxAdapter(VenueAdapter):
             params={"market": self.market, "state": "wait"},
         )
         response.raise_for_status()
-        return response.json().get("data", [])
+        return cast(list[dict[str, Any]], response.json().get("data", []))
 
     async def cancel_all_orders(self) -> int:
         """
@@ -221,7 +221,7 @@ class QuidaxAdapter(VenueAdapter):
         side: str,
         price: Decimal,
         amount: Decimal,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Place a limit order.
 
@@ -246,7 +246,7 @@ class QuidaxAdapter(VenueAdapter):
             },
         )
 
-        result = response.json()
+        result = cast(dict[str, Any], response.json())
 
         logger.debug(
             "order_placed",
@@ -372,7 +372,7 @@ class QuidaxAdapter(VenueAdapter):
         )
 
 
-    async def handle_webhook(self, event: dict) -> None:
+    async def handle_webhook(self, event: dict[str, Any]) -> None:
         """Handle Quidax webhook events."""
         event_type = event.get("event")
 

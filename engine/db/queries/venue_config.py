@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 import aiosqlite
 
 
-async def get_venue_config(conn: aiosqlite.Connection, venue: str) -> dict | None:
+async def get_venue_config(conn: aiosqlite.Connection, venue: str) -> dict[str, Any] | None:
     cursor = await conn.execute(
         "SELECT venue, params_json FROM venue_config WHERE venue = ?",
         (venue,),
@@ -23,7 +24,7 @@ async def get_venue_config(conn: aiosqlite.Connection, venue: str) -> dict | Non
     }
 
 
-async def update_venue_config(conn: aiosqlite.Connection, venue: str, params: dict) -> None:
+async def update_venue_config(conn: aiosqlite.Connection, venue: str, params: dict[str, Any]) -> None:
     await conn.execute(
         """
         INSERT INTO venue_config (venue, params_json, updated_at_ms)

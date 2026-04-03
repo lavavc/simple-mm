@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import aiosqlite
 
 
@@ -9,7 +11,7 @@ async def get_pool_metrics_history(
     conn: aiosqlite.Connection,
     venues: list[str],
     from_ts: int,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     if not venues:
         return []
     placeholders = ",".join("?" for _ in venues)

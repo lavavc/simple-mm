@@ -6,7 +6,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator, cast
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,7 +73,7 @@ def broadcast_event(event: dict[str, Any]) -> None:
 async def init_venues(
     acct_manager: AccountManager | None,
     *,
-    alert_store,
+    alert_store: Any,
 ) -> dict[str, Any]:
     """Initialize venue adapters. All secrets come from env vars."""
     venues: dict[str, Any] = {}
@@ -132,7 +132,7 @@ async def init_venues(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
     start_time = time.time()
     logger.info("application_starting")
@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI):
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states
 
-    await seed_pool_states()
+    await seed_pool_states()  # type: ignore[no-untyped-call]
     await seed_dex_volume_24h()
 
     price_aggregator: VenuePriceAggregator = create_venue_aggregator(
@@ -265,7 +265,7 @@ async def lifespan(app: FastAPI):
 
     for name, venue in venues.items():
         if hasattr(venue, "close"):
-            await venue.close()
+            await cast(Any, venue).close()
             logger.info("venue_closed", venue=name)
 
     await db.close()
@@ -292,7 +292,7 @@ app.include_router(routes.router, prefix="/api")
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket) -> None:
     """Stream real-time events (prices, positions, alerts, arbitrage) to clients."""
     await ws_manager.handle(ws)
 
@@ -302,7 +302,7 @@ if dashboard_path.exists():
     app.mount("/", StaticFiles(directory=str(dashboard_path), html=True), name="dashboard")
 
 
-def main():
+def main() -> None:
     """Run the application."""
     uvicorn.run(
         "engine.main:app",

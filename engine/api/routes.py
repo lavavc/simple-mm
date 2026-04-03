@@ -1,8 +1,10 @@
 """FastAPI routes for trading engine API."""
 
+from __future__ import annotations
+
 import time
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional, Protocol, cast
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -35,7 +37,27 @@ from engine.api.schemas import (
     BlendedPriceResponse,
     DexArbOpportunity,
     OrderBookDepthResponse,
+    OrderBookLevel,
 )
+from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
+from engine.market.venue_prices import VenuePriceAggregator
+from engine.scheduler import TradingScheduler
+
+if False:  # pragma: no cover
+    from engine.accounts import AccountManager
+    from engine.arb import ArbitrageEngine
+
+
+class SyncOrderLadderVenue(Protocol):
+    async def sync_order_ladder(self, reference_price_ngn: Decimal) -> None: ...
+
+
+class WebhookVenue(Protocol):
+    async def handle_webhook(self, event: dict[str, Any]) -> None: ...
+
+
+class DepthVenue(Protocol):
+    async def get_order_book_depth(self, limit: int = 50) -> Any: ...
 
 logger = structlog.get_logger()
 security = HTTPBearer()
@@ -47,48 +69,52 @@ def get_runtime(request: Request) -> EngineRuntime:
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is None:
         raise HTTPException(status_code=503, detail="Engine runtime not configured")
-    return runtime
+    return cast(EngineRuntime, runtime)
 
 
 def get_repository(runtime: EngineRuntime = Depends(get_runtime)) -> DatabaseRepository:
     return runtime.db
 
 
-def require_scheduler(runtime: EngineRuntime = Depends(get_runtime)):
+def require_scheduler(runtime: EngineRuntime = Depends(get_runtime)) -> TradingScheduler:
     return runtime.scheduler
 
 
-def require_price_aggregator(runtime: EngineRuntime = Depends(get_runtime)):
+def require_price_aggregator(
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> VenuePriceAggregator:
     if runtime.price_aggregator is None:
         raise HTTPException(status_code=503, detail="Price aggregator not configured")
     return runtime.price_aggregator
 
 
-def require_blended_calculator(runtime: EngineRuntime = Depends(get_runtime)):
+def require_blended_calculator(
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> BlendedPriceCalculator:
     if runtime.blended_calculator is None:
         raise HTTPException(status_code=503, detail="Blended price calculator not configured")
     return runtime.blended_calculator
 
 
-def require_normalizer(runtime: EngineRuntime = Depends(get_runtime)):
+def require_normalizer(runtime: EngineRuntime = Depends(get_runtime)) -> PriceNormalizer:
     if runtime.normalizer is None:
         raise HTTPException(status_code=503, detail="Price normalizer not configured")
     return runtime.normalizer
 
 
-def require_arbitrage_engine(runtime: EngineRuntime = Depends(get_runtime)):
+def require_arbitrage_engine(runtime: EngineRuntime = Depends(get_runtime)) -> Any:
     if runtime.arbitrage_engine is None:
         raise HTTPException(status_code=503, detail="Arbitrage engine not configured")
     return runtime.arbitrage_engine
 
 
-def require_account_manager(runtime: EngineRuntime = Depends(get_runtime)):
+def require_account_manager(runtime: EngineRuntime = Depends(get_runtime)) -> Any:
     if runtime.account_manager is None:
         raise HTTPException(status_code=503, detail="Account manager not configured")
     return runtime.account_manager
 
 
-async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> bool:
     """Verify API token for protected routes."""
     if not settings.engine_api_token:
         raise HTTPException(status_code=500, detail="DASHBOARD_API_TOKEN is not configured")
@@ -102,8 +128,9 @@ async def _get_cngn_usd_rate(runtime: EngineRuntime) -> Decimal:
     if runtime.blended_calculator:
         try:
             blended = await runtime.blended_calculator.get_blended_price()
-            if blended.vwap > 0:
-                return blended.vwap
+            for candidate in (blended.vwap, blended.twap_5m, blended.twap_1h):
+                if candidate > 0:
+                    return candidate
         except Exception as e:
             logger.warning("blended_price_unavailable", error=str(e))
 
@@ -149,7 +176,7 @@ async def _get_reference_price_ngn(runtime: EngineRuntime) -> Optional[Decimal]:
 
 
 @router.get("/status", response_model=SystemStatus)
-async def get_status(runtime: EngineRuntime = Depends(get_runtime)):
+async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemStatus:
     """Get overall system status including per-venue prices."""
     trading_enabled = await runtime.db.system_state.get_system_state("trading_enabled")
 
@@ -212,7 +239,9 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)):
 
 
 @router.get("/prices", response_model=list[VenuePriceResponse])
-async def get_all_prices(price_aggregator=Depends(require_price_aggregator)):
+async def get_all_prices(
+    price_aggregator: VenuePriceAggregator = Depends(require_price_aggregator),
+) -> list[VenuePriceResponse]:
     """Get current prices from all venues."""
     try:
         venue_prices = await price_aggregator.fetch_all()
@@ -232,7 +261,9 @@ async def get_all_prices(price_aggregator=Depends(require_price_aggregator)):
 
 
 @router.get("/prices/blended", response_model=BlendedPriceResponse)
-async def get_blended_price(blended_calculator=Depends(require_blended_calculator)):
+async def get_blended_price(
+    blended_calculator: BlendedPriceCalculator = Depends(require_blended_calculator),
+) -> BlendedPriceResponse:
     """Get the blended composite price (TWAP + VWAP across all venues)."""
     try:
         blended = await blended_calculator.get_blended_price()
@@ -255,9 +286,9 @@ async def get_blended_price(blended_calculator=Depends(require_blended_calculato
 
 @router.get("/prices/normalized", response_model=list[NormalizedPriceResponse])
 async def get_normalized_prices(
-    normalizer=Depends(require_normalizer),
-    price_aggregator=Depends(require_price_aggregator),
-):
+    normalizer: PriceNormalizer = Depends(require_normalizer),
+    price_aggregator: VenuePriceAggregator = Depends(require_price_aggregator),
+) -> list[NormalizedPriceResponse]:
     """Get all venue prices normalized to cNGN/USD basis."""
     try:
         venue_prices = await price_aggregator.fetch_all()
@@ -279,7 +310,9 @@ async def get_normalized_prices(
 
 
 @router.post("/prices/refresh", response_model=list[VenuePriceResponse])
-async def refresh_prices(price_aggregator=Depends(require_price_aggregator)):
+async def refresh_prices(
+    price_aggregator: VenuePriceAggregator = Depends(require_price_aggregator),
+) -> list[VenuePriceResponse]:
     """Force refresh prices from all venues."""
     try:
         venue_prices = await price_aggregator.fetch_all()
@@ -305,13 +338,16 @@ async def get_price_history(
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(100, le=1000),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> list[dict[str, Any]]:
     """Get price history from stored snapshots."""
     return await db.prices.get_price_history(from_ts, to_ts, limit)
 
 
 @router.get("/prices/{venue}", response_model=VenuePriceResponse)
-async def get_venue_price(venue: str, price_aggregator=Depends(require_price_aggregator)):
+async def get_venue_price(
+    venue: str,
+    price_aggregator: VenuePriceAggregator = Depends(require_price_aggregator),
+) -> VenuePriceResponse:
     """Get current price from a specific venue."""
     price = price_aggregator.get_price(venue)
     if not price:
@@ -330,7 +366,7 @@ async def get_venue_price(venue: str, price_aggregator=Depends(require_price_agg
 
 
 @router.get("/positions")
-async def get_all_positions(runtime: EngineRuntime = Depends(get_runtime)):
+async def get_all_positions(runtime: EngineRuntime = Depends(get_runtime)) -> list[dict[str, Any]]:
     """Get positions from all venues."""
     positions = []
     for name, venue in runtime.venues.items():
@@ -343,7 +379,7 @@ async def get_all_positions(runtime: EngineRuntime = Depends(get_runtime)):
 
 
 @router.get("/positions/global", response_model=GlobalPosition)
-async def get_global_position(runtime: EngineRuntime = Depends(get_runtime)):
+async def get_global_position(runtime: EngineRuntime = Depends(get_runtime)) -> GlobalPosition:
     """Get aggregated global position across all venues."""
     total_cngn = Decimal("0")
     total_usdt = Decimal("0")
@@ -380,7 +416,10 @@ async def get_global_position(runtime: EngineRuntime = Depends(get_runtime)):
 
 
 @router.get("/positions/{venue}", response_model=Position)
-async def get_venue_position(venue: str, runtime: EngineRuntime = Depends(get_runtime)):
+async def get_venue_position(
+    venue: str,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> Position:
     """Get position from a specific venue."""
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
@@ -396,14 +435,18 @@ async def get_venue_position(venue: str, runtime: EngineRuntime = Depends(get_ru
 
 
 @router.post("/trading/pause", dependencies=[Depends(verify_token)])
-async def pause_trading(scheduler=Depends(require_scheduler)):
+async def pause_trading(
+    scheduler: TradingScheduler = Depends(require_scheduler),
+) -> dict[str, str]:
     """Pause all trading globally."""
     await scheduler.pause()
     return {"status": "paused"}
 
 
 @router.post("/trading/resume", dependencies=[Depends(verify_token)])
-async def resume_trading(scheduler=Depends(require_scheduler)):
+async def resume_trading(
+    scheduler: TradingScheduler = Depends(require_scheduler),
+) -> dict[str, str]:
     """Resume all trading globally."""
     await scheduler.resume()
     return {"status": "running"}
@@ -428,7 +471,7 @@ async def withdraw_venue_position(
     venue: str,
     body: WithdrawRequest,
     runtime: EngineRuntime = Depends(get_runtime),
-):
+) -> dict[str, Any]:
     """Remove all active LP positions for a DEX venue and send tokens to the specified address."""
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
@@ -458,7 +501,10 @@ async def withdraw_venue_position(
 
 
 @router.post("/shutdown", dependencies=[Depends(verify_token)])
-async def shutdown(unwind: bool = False, runtime: EngineRuntime = Depends(get_runtime)):
+async def shutdown(
+    unwind: bool = False,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> dict[str, Any]:
     """Stop the engine. If unwind=true, removes all LP positions first."""
     import asyncio, os, signal
 
@@ -496,7 +542,7 @@ async def shutdown(unwind: bool = False, runtime: EngineRuntime = Depends(get_ru
 
 
 @router.post("/venues/{venue}/pause", dependencies=[Depends(verify_token)])
-async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)):
+async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     """Pause a specific venue."""
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
@@ -507,7 +553,7 @@ async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime))
 
 
 @router.post("/venues/{venue}/resume", dependencies=[Depends(verify_token)])
-async def resume_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)):
+async def resume_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     """Resume a specific venue."""
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
@@ -520,10 +566,10 @@ async def resume_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)
 @router.put("/venues/{venue}/params", dependencies=[Depends(verify_token)])
 async def update_venue_params(
     venue: str,
-    params: dict,
+    params: dict[str, Any],
     runtime: EngineRuntime = Depends(get_runtime),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> dict[str, Any]:
     """Update venue parameters."""
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
@@ -554,8 +600,8 @@ class DepositRequest(BaseModel):
 
 def _get_deposit_token_address(token: str) -> str:
     token_map = {
-        "USDC": settings.usdc_contract_address,
-        "cNGN": settings.cngn_contract_address,
+        "USDC": settings.usdc_base_address,
+        "cNGN": settings.cngn_base_address,
     }
     address = token_map.get(token)
     if not address:
@@ -564,7 +610,10 @@ def _get_deposit_token_address(token: str) -> str:
 
 
 @router.post("/venues/blockradar/deposit", dependencies=[Depends(verify_token)])
-async def deposit_to_blockradar(req: DepositRequest, account_manager=Depends(require_account_manager)):
+async def deposit_to_blockradar(
+    req: DepositRequest,
+    account_manager: Any = Depends(require_account_manager),
+) -> dict[str, str]:
     """Transfer USDC or cNGN from an HD wallet account to the Blockradar deposit address."""
     from engine.accounts import AccountRole
 
@@ -592,7 +641,7 @@ async def deposit_to_blockradar(req: DepositRequest, account_manager=Depends(req
 
 
 @router.get("/venues/quidax/deposit-address/{currency}")
-async def get_quidax_deposit_address(currency: str):
+async def get_quidax_deposit_address(currency: str) -> dict[str, Any]:
     """Get the static deposit address for Quidax."""
     if not settings.quidax_deposit_address:
         raise HTTPException(status_code=503, detail="QUIDAX_DEPOSIT_ADDRESS not configured")
@@ -607,12 +656,15 @@ async def get_quidax_deposit_address(currency: str):
 
 
 @router.post("/webhooks/quidax")
-async def quidax_webhook(event: dict, runtime: EngineRuntime = Depends(get_runtime)):
+async def quidax_webhook(
+    event: dict[str, Any],
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> dict[str, str]:
     """Handle Quidax webhook events (order fills, deposit addresses, etc.)."""
     if "quidax" in runtime.venues:
-        await runtime.venues["quidax"].handle_webhook(event)
+        await cast(WebhookVenue, runtime.venues["quidax"]).handle_webhook(event)
     if runtime.quidax_lp is not None:
-        await runtime.quidax_lp.handle_webhook(event)
+        await cast(WebhookVenue, runtime.quidax_lp).handle_webhook(event)
     return {"status": "ok"}
 
 
@@ -620,7 +672,10 @@ async def quidax_webhook(event: dict, runtime: EngineRuntime = Depends(get_runti
 
 
 @router.post("/venues/{venue}/sync", dependencies=[Depends(verify_token)])
-async def trigger_venue_sync(venue: str, runtime: EngineRuntime = Depends(get_runtime)):
+async def trigger_venue_sync(
+    venue: str,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> dict[str, str]:
     """Manually trigger sync for a venue."""
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
@@ -630,7 +685,7 @@ async def trigger_venue_sync(venue: str, runtime: EngineRuntime = Depends(get_ru
 
         venue_adapter = runtime.venues[venue]
         if hasattr(venue_adapter, "sync_order_ladder") and ref_price:
-            await venue_adapter.sync_order_ladder(ref_price)
+            await cast(SyncOrderLadderVenue, venue_adapter).sync_order_ladder(ref_price)
         else:
             await venue_adapter.get_position()
 
@@ -643,13 +698,16 @@ async def trigger_venue_sync(venue: str, runtime: EngineRuntime = Depends(get_ru
 
 
 @router.get("/venues/quidax/depth", response_model=OrderBookDepthResponse)
-async def get_quidax_order_book_depth(limit: int = Query(50, le=200), runtime: EngineRuntime = Depends(get_runtime)):
+async def get_quidax_order_book_depth(
+    limit: int = Query(50, le=200),
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> OrderBookDepthResponse:
     """Get the live Level 2 Order Book Depth from Quidax."""
     if "quidax" not in runtime.venues:
         raise HTTPException(status_code=404, detail="Quidax venue not configured")
     
     try:
-        depth = await runtime.venues["quidax"].get_order_book_depth(limit=limit)
+        depth = await cast(DepthVenue, runtime.venues["quidax"]).get_order_book_depth(limit=limit)
         if not depth:
             raise HTTPException(status_code=503, detail="Failed to fetch Quidax order book depth")
             
@@ -657,8 +715,8 @@ async def get_quidax_order_book_depth(limit: int = Query(50, le=200), runtime: E
             venue=depth.venue,
             pair=depth.pair,
             timestamp=depth.timestamp,
-            bids=[{"price": b.price, "amount": b.amount} for b in depth.bids],
-            asks=[{"price": a.price, "amount": a.amount} for a in depth.asks]
+            bids=[OrderBookLevel(price=b.price, amount=b.amount) for b in depth.bids],
+            asks=[OrderBookLevel(price=a.price, amount=a.amount) for a in depth.asks],
         )
     except Exception as e:
         logger.error("quidax_depth_route_failed", error=str(e))
@@ -674,7 +732,7 @@ async def get_actions(
     action_type: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> list[dict[str, Any]]:
     """Get action history."""
     return await db.actions.get_actions(venue, action_type, limit)
 
@@ -683,13 +741,19 @@ async def get_actions(
 
 
 @router.get("/alerts", response_model=list[Alert])
-async def get_alerts(limit: int = Query(20, le=100), db: DatabaseRepository = Depends(get_repository)):
+async def get_alerts(
+    limit: int = Query(20, le=100),
+    db: DatabaseRepository = Depends(get_repository),
+) -> list[Alert]:
     """Get recent alerts."""
     return await db.alerts.get_alerts(limit)
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: int, db: DatabaseRepository = Depends(get_repository)):
+async def acknowledge_alert(
+    alert_id: int,
+    db: DatabaseRepository = Depends(get_repository),
+) -> dict[str, Any]:
     """Acknowledge an alert."""
     await db.alerts.acknowledge_alert(alert_id)
     return {"status": "acknowledged", "alert_id": alert_id}
@@ -699,10 +763,12 @@ async def acknowledge_alert(alert_id: int, db: DatabaseRepository = Depends(get_
 
 
 @router.get("/arbitrage/status", response_model=ArbitrageStatus)
-async def get_arbitrage_status(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def get_arbitrage_status(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> ArbitrageStatus:
     """Get arbitrage engine status."""
     try:
-        return await arbitrage_engine.get_status()
+        return cast(ArbitrageStatus, await arbitrage_engine.get_status())
     except Exception as e:
         logger.error("arbitrage_status_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -715,7 +781,7 @@ async def get_arbitrage_opportunities(
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(50, le=200),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> list[ArbitrageOpportunity]:
     """Get detected arbitrage opportunities."""
     return await db.arbitrage.get_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
@@ -727,7 +793,7 @@ async def get_dex_arbitrage_opportunities(
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(50, le=200),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> list[DexArbOpportunity]:
     """Get detected DEX arbitrage opportunities."""
     return await db.arbitrage.get_dex_arbitrage_opportunities(status, from_ts, to_ts, limit)
 
@@ -739,12 +805,12 @@ async def get_arbitrage_history(
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
     limit: int = Query(30, le=200),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> list[ArbitrageHistoryItem]:
     """Get grouped arbitrage lifecycle history."""
     return await db.history.get_arbitrage_history(pipeline, from_ts, to_ts, limit)
 
 @router.get("/arbitrage/liquidation")
-async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime)):
+async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     """
     Returns the mark-to-market USD value of all cNGN holdings across every venue,
     computed on-demand from the live Quidax order book and cached pool state.
@@ -764,7 +830,7 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
     quidax_asks = []
     if quidax_venue:
         try:
-            depth = await quidax_venue.get_order_book_depth(limit=50)
+            depth = await cast(DepthVenue, quidax_venue).get_order_book_depth(limit=50)
             if depth and depth.asks:
                 quidax_asks = depth.asks
         except Exception:
@@ -778,24 +844,26 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
     except Exception as e:
         return {"error": str(e), "venues": {}}
 
+    valuation_balances: list[Any] = list(balances)
+
     # Append the Quidax exchange account (CEX balance — not HD-derived, fetched via API).
     if quidax_venue:
         try:
             qx_pos = await quidax_venue.get_position()
             if qx_pos and qx_pos.balances:
                 from types import SimpleNamespace
-                balances = list(balances) + [SimpleNamespace(
+                valuation_balances.append(SimpleNamespace(
                     role="quidax-exchange",
                     token_balances={
                         "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
                         "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
-                    }
-                )]
+                    },
+                ))
         except Exception:
             pass
 
     result = {}
-    for bal in balances:
+    for bal in valuation_balances:
         role = bal.role
         tokens = bal.token_balances or {}
         venue_result = {}
@@ -803,16 +871,16 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
         for token, amt in tokens.items():
             amount = Decimal(str(amt)) if amt is not None else Decimal(0)
             if token.lower() == "cngn" and amount > 0:
-                value_usd = Decimal(0)
+                value_usd = Decimal("0")
                 try:
                     if role in ("quidax-exchange", "quidax-lp", "quidax-trade-fund") and quidax_asks:
                         value_usd = cex_holdings_value(quidax_asks, amount, QUIDAX_FEE)
-                    elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt:
+                    elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt and bsc_liq is not None and bsc_fee is not None:
                         value_usd = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)
-                    elif role in ("uni-base-trade", "uni-base-lp") and base_sqrt:
+                    elif role in ("uni-base-trade", "uni-base-lp") and base_sqrt and base_liq is not None and base_fee is not None:
                         value_usd = dex_holdings_value(amount, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True)
                 except Exception:
-                    value_usd = Decimal(0)
+                    value_usd = Decimal("0")
                 venue_result[token] = {"amount": float(amount), "value_usd": float(value_usd)}
             else:
                 a = float(amount) if amt is not None else 0.0
@@ -824,7 +892,10 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
 
 
 @router.get("/arbitrage/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
-async def get_arbitrage_opportunity(opportunity_id: str, db: DatabaseRepository = Depends(get_repository)):
+async def get_arbitrage_opportunity(
+    opportunity_id: str,
+    db: DatabaseRepository = Depends(get_repository),
+) -> ArbitrageOpportunity:
     """Get a specific arbitrage opportunity."""
     opp = await db.arbitrage.get_arbitrage_opportunity(opportunity_id)
     if opp is not None:
@@ -833,7 +904,9 @@ async def get_arbitrage_opportunity(opportunity_id: str, db: DatabaseRepository 
 
 
 @router.post("/arbitrage/enable", dependencies=[Depends(verify_token)])
-async def enable_arbitrage(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def enable_arbitrage(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Enable arbitrage scanning."""
     arbitrage_engine.enable()
     logger.info("arbitrage_enabled_via_api")
@@ -841,7 +914,9 @@ async def enable_arbitrage(arbitrage_engine=Depends(require_arbitrage_engine)):
 
 
 @router.post("/arbitrage/disable", dependencies=[Depends(verify_token)])
-async def disable_arbitrage(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def disable_arbitrage(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Disable arbitrage scanning."""
     arbitrage_engine.disable()
     logger.info("arbitrage_disabled_via_api")
@@ -849,35 +924,46 @@ async def disable_arbitrage(arbitrage_engine=Depends(require_arbitrage_engine)):
 
 
 @router.post("/arbitrage/execute-cex-dex/enable", dependencies=[Depends(verify_token)])
-async def enable_execute_cex_dex(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def enable_execute_cex_dex(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Enable execution for CEX-DEX arbitrage."""
     arbitrage_engine.set_execution_enabled("cex_dex", True)
     return {"status": "enabled"}
 
 
 @router.post("/arbitrage/execute-cex-dex/disable", dependencies=[Depends(verify_token)])
-async def disable_execute_cex_dex(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def disable_execute_cex_dex(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Disable execution for CEX-DEX arbitrage."""
     arbitrage_engine.set_execution_enabled("cex_dex", False)
     return {"status": "disabled"}
 
 
 @router.post("/arbitrage/execute-dex-dex/enable", dependencies=[Depends(verify_token)])
-async def enable_execute_dex_dex(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def enable_execute_dex_dex(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Enable execution for DEX-DEX arbitrage."""
     arbitrage_engine.set_execution_enabled("dex_dex", True)
     return {"status": "enabled"}
 
 
 @router.post("/arbitrage/execute-dex-dex/disable", dependencies=[Depends(verify_token)])
-async def disable_execute_dex_dex(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def disable_execute_dex_dex(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Disable execution for DEX-DEX arbitrage."""
     arbitrage_engine.set_execution_enabled("dex_dex", False)
     return {"status": "disabled"}
 
 
 @router.put("/arbitrage/params", dependencies=[Depends(verify_token)])
-async def update_arbitrage_params(params: ArbitrageParams, arbitrage_engine=Depends(require_arbitrage_engine)):
+async def update_arbitrage_params(
+    params: ArbitrageParams,
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, Any]:
     """Update arbitrage parameters."""
     arbitrage_engine.update_params(params)
     logger.info("arbitrage_params_updated_via_api")
@@ -885,7 +971,9 @@ async def update_arbitrage_params(params: ArbitrageParams, arbitrage_engine=Depe
 
 
 @router.post("/arbitrage/reset-circuit-breaker", dependencies=[Depends(verify_token)])
-async def reset_arbitrage_circuit_breaker(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def reset_arbitrage_circuit_breaker(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, str]:
     """Manually reset the arbitrage circuit breaker."""
     arbitrage_engine.reset_circuit_breaker()
     logger.info("arbitrage_circuit_breaker_reset_via_api")
@@ -893,7 +981,9 @@ async def reset_arbitrage_circuit_breaker(arbitrage_engine=Depends(require_arbit
 
 
 @router.post("/arbitrage/scan", dependencies=[Depends(verify_token)])
-async def trigger_arbitrage_scan(arbitrage_engine=Depends(require_arbitrage_engine)):
+async def trigger_arbitrage_scan(
+    arbitrage_engine: Any = Depends(require_arbitrage_engine),
+) -> dict[str, Any]:
     """Manually trigger an arbitrage scan."""
     try:
         opportunities = await arbitrage_engine.scan()
@@ -911,7 +1001,9 @@ async def trigger_arbitrage_scan(arbitrage_engine=Depends(require_arbitrage_engi
 
 
 @router.get("/accounts")
-async def list_accounts(account_manager=Depends(require_account_manager)):
+async def list_accounts(
+    account_manager: Any = Depends(require_account_manager),
+) -> list[AccountInfo]:
     """List all configured accounts."""
     from engine.accounts import AccountRole
 
@@ -933,7 +1025,9 @@ async def list_accounts(account_manager=Depends(require_account_manager)):
 
 
 @router.get("/accounts/balances", response_model=list[AccountBalanceResponse])
-async def get_all_account_balances(runtime: EngineRuntime = Depends(get_runtime)):
+async def get_all_account_balances(
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> list[AccountBalanceResponse]:
     """Get balances for all accounts."""
     if runtime.account_manager is None:
         raise HTTPException(status_code=503, detail="Account manager not configured")
@@ -979,7 +1073,10 @@ async def get_all_account_balances(runtime: EngineRuntime = Depends(get_runtime)
 
 
 @router.get("/accounts/{role}", response_model=AccountInfo)
-async def get_account(role: str, account_manager=Depends(require_account_manager)):
+async def get_account(
+    role: str,
+    account_manager: Any = Depends(require_account_manager),
+) -> AccountInfo:
     """Get account info for a specific role."""
     from engine.accounts import AccountRole
 
@@ -1002,7 +1099,10 @@ async def get_account(role: str, account_manager=Depends(require_account_manager
 
 
 @router.get("/accounts/{role}/balance", response_model=AccountBalanceResponse)
-async def get_account_balance(role: str, runtime: EngineRuntime = Depends(get_runtime)):
+async def get_account_balance(
+    role: str,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> AccountBalanceResponse:
     """Get balance for a specific account."""
     if runtime.account_manager is None:
         raise HTTPException(status_code=503, detail="Account manager not configured")
@@ -1035,8 +1135,8 @@ async def get_account_balance(role: str, runtime: EngineRuntime = Depends(get_ru
 async def update_account_thresholds(
     role: str,
     thresholds: AccountThresholds,
-    account_manager=Depends(require_account_manager),
-):
+    account_manager: Any = Depends(require_account_manager),
+) -> dict[str, str]:
     """Update refill thresholds for an account."""
     from engine.accounts import AccountRole
 
@@ -1069,14 +1169,14 @@ _DEX_POOLS = [
 async def get_pool_metrics_history(
     minutes: int = Query(1440, ge=1440, le=43200),
     db: DatabaseRepository = Depends(get_repository),
-):
+) -> list[dict[str, Any]]:
     """Return historical pool TVL and volume from stored position snapshots."""
     from_ts = int((time.time() - minutes * 60) * 1000)
     return await db.pool_metrics.get_pool_metrics_history(["uni-base", "uni-bsc"], from_ts)
 
 
 @router.get("/pool-metrics")
-async def get_pool_metrics(runtime: EngineRuntime = Depends(get_runtime)):
+async def get_pool_metrics(runtime: EngineRuntime = Depends(get_runtime)) -> list[dict[str, Any]]:
     """Return 24h volume and TVL for all DEX pools (reuses venue adapter cache)."""
     results = []
     for pool in _DEX_POOLS:
@@ -1091,7 +1191,7 @@ async def get_pool_metrics(runtime: EngineRuntime = Depends(get_runtime)):
 
 
 @router.get("/health")
-async def health_check(runtime: EngineRuntime = Depends(get_runtime)):
+async def health_check(runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "healthy",

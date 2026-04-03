@@ -9,6 +9,12 @@ import aiosqlite
 from engine.api.schemas import Alert
 
 
+def _require_lastrowid(lastrowid: int | None) -> int:
+    if lastrowid is None:
+        raise RuntimeError("sqlite did not return a row id for alert insert")
+    return lastrowid
+
+
 async def insert_alert(
     conn: aiosqlite.Connection,
     *,
@@ -48,7 +54,7 @@ async def insert_alert(
             (category, severity, message, key, now_ms, now_ms),
         )
         await conn.commit()
-        return int(cursor.lastrowid)
+        return _require_lastrowid(cursor.lastrowid)
 
     cursor = await conn.execute(
         """
@@ -60,7 +66,7 @@ async def insert_alert(
         (category, severity, message, now_ms, now_ms),
     )
     await conn.commit()
-    return int(cursor.lastrowid)
+    return _require_lastrowid(cursor.lastrowid)
 
 
 async def get_alerts(conn: aiosqlite.Connection, limit: int = 20) -> list[Alert]:

@@ -1,6 +1,8 @@
 """LP rebalance orchestration — drives V4LPAdapter through the position lifecycle."""
 
-from typing import TYPE_CHECKING, Callable, Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Callable
 
 import structlog
 
@@ -18,11 +20,11 @@ class LPRebalancer:
 
     def __init__(
         self,
-        broadcast: Callable[[dict], Any],
+        broadcast: Callable[[dict[str, Any]], Any],
         price_store: PriceStoreProtocol,
         venue_config_store: VenueConfigStoreProtocol,
         action_store: ActionStoreProtocol,
-    ):
+    ) -> None:
         self.broadcast = broadcast
         self._price_store = price_store
         self._venue_config_store = venue_config_store
@@ -76,6 +78,9 @@ class LPRebalancer:
             prices = await self._price_store.get_recent_prices(limit=100)
             if len(prices) < 10:
                 logger.warning("insufficient_price_history", venue=venue.name, count=len(prices))
+                return False
+            if venue.config.tick_spacing is None:
+                logger.warning("missing_tick_spacing", venue=venue.name)
                 return False
 
             tick_lower, tick_upper = strategy.calculate_tick_range(
@@ -133,7 +138,7 @@ class LPRebalancer:
             logger.error("create_dex_position_failed", venue=venue.name, error=str(e))
             return False
 
-    async def rebalance(self, venue: "V4LPAdapter", token_id: int, position) -> bool:
+    async def rebalance(self, venue: "V4LPAdapter", token_id: int, position: Any) -> bool:
         """Remove existing position and recreate with recovery_price."""
         try:
             logger.info("removing_old_position", venue=venue.name, token_id=token_id)

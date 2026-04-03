@@ -374,6 +374,13 @@ async def get_arbitrage_stats(conn: aiosqlite.Connection, from_ts: int) -> dict[
         (from_ts,),
     )
     row = await cursor.fetchone()
+    if row is None:
+        return {
+            "opportunities_detected": 0,
+            "opportunities_executed": 0,
+            "total_profit_usd": Decimal("0"),
+            "total_volume_usd": Decimal("0"),
+        }
     return {
         "opportunities_detected": row["total_detected"] or 0,
         "opportunities_executed": row["total_executed"] or 0,

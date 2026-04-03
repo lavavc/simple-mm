@@ -14,7 +14,7 @@ from engine.api.schemas import PriceQuote
 async def insert_price_snapshot(
     conn: aiosqlite.Connection,
     quote: PriceQuote,
-    metadata: dict | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     await conn.execute(
         """
@@ -43,7 +43,7 @@ async def get_recent_prices(conn: aiosqlite.Connection, limit: int = 100) -> lis
         "SELECT mid FROM price_snapshots ORDER BY timestamp_ms DESC LIMIT ?",
         (limit,),
     )
-    rows = await cursor.fetchall()
+    rows = list(await cursor.fetchall())
     return [Decimal(str(row["mid"])) for row in reversed(rows)]
 
 

@@ -1,22 +1,25 @@
 """Telegram bot for operational control of the trading engine."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import secrets
 import signal
 import time
-from typing import Optional
+from typing import Any, cast
 
 import structlog
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
+from engine.config import Settings
 from engine.runtime import EngineRuntime
 
 logger = structlog.get_logger()
 
-_app: Optional[Application] = None
-_settings = None
+_app: Any | None = None
+_settings: Settings | None = None
 _runtime: EngineRuntime | None = None
 _recent_alerts: dict[str, float] = {}
 _pending_withdrawals: dict[str, tuple[str, str | None]] = {}
@@ -29,9 +32,21 @@ def _require_runtime() -> EngineRuntime:
 
 
 def _auth(update: Update) -> bool:
-    if not _settings or not _settings.telegram_chat_id:
+    if not _settings or not _settings.telegram_chat_id or update.effective_chat is None:
         return False
     return str(update.effective_chat.id) == str(_settings.telegram_chat_id)
+
+
+def _get_message(update: Update) -> Message | None:
+    return update.effective_message
+
+
+def _get_callback_query(update: Update) -> CallbackQuery | None:
+    return update.callback_query
+
+
+def _require_reply_message(message: object) -> Message | None:
+    return message if isinstance(message, Message) else None
 
 
 def _confirm_kb(action: str) -> InlineKeyboardMarkup:
@@ -43,8 +58,12 @@ def _confirm_kb(action: str) -> InlineKeyboardMarkup:
 
 # --- Read-only commands ---
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
         return
     runtime = _require_runtime()
     trading_state = await runtime.db.system_state.get_system_state("trading_enabled")
@@ -71,15 +90,19 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Arb: {arb_line}\n"
         f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await message.reply_text(text, parse_mode="Markdown")
 
 
-async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
         return
     runtime = _require_runtime()
     if not runtime.venues:
-        await update.message.reply_text("No venues configured.")
+        await message.reply_text("No venues configured.")
         return
     lines = ["*LP Positions*"]
     for name, venue in runtime.venues.items():
@@ -90,15 +113,19 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"  {token}: {amt:.4f}")
         except Exception as e:
             lines.append(f"\n*{name}*: error ({e})")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
         return
     runtime = _require_runtime()
     if not runtime.account_manager:
-        await update.message.reply_text("Account manager not configured.")
+        await message.reply_text("Account manager not configured.")
         return
     try:
         balances = await runtime.account_manager.check_all_balances(runtime.token_contracts)
@@ -107,17 +134,21 @@ async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"\n*{b.role}*")
             for token, amt in (b.token_balances or {}).items():
                 lines.append(f"  {token}: {amt}")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await message.reply_text(f"Error: {e}")
 
 
-async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
         return
     runtime = _require_runtime()
     if not runtime.arbitrage_engine:
-        await update.message.reply_text("Arbitrage engine not configured.")
+        await message.reply_text("Arbitrage engine not configured.")
         return
     try:
         s = await runtime.arbitrage_engine.get_status()
@@ -129,92 +160,118 @@ async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Opportunities (24h): {s.opportunities_detected_24h} detected / {s.opportunities_executed_24h} executed\n"
             f"Profit (24h): ${s.total_profit_24h_usd:.2f}"
         )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await message.reply_text(f"Error: {e}")
 
 
-async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
         return
     alerts = await _require_runtime().db.alerts.get_alerts(5)
     if not alerts:
-        await update.message.reply_text("No recent alerts.")
+        await message.reply_text("No recent alerts.")
         return
     lines = ["*Last 5 Alerts*"]
     for a in alerts:
         lines.append(f"\n[{a.severity}] {a.message}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # --- Destructive commands (require inline keyboard confirm) ---
 
-async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    await update.message.reply_text(
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    await message.reply_text(
         "⚠️ Pause all trading globally. Confirm?",
         reply_markup=_confirm_kb("pause"),
     )
 
 
-async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    await update.message.reply_text(
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    await message.reply_text(
         "⚠️ Resume all trading. Confirm?",
         reply_markup=_confirm_kb("resume"),
     )
 
 
-async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    args = context.args
+    message = _get_message(update)
+    if message is None:
+        return
+    args = context.args or []
     if len(args) < 2:
-        await update.message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
+        await message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
         return
     venue, to_address = args[0], args[1]
     if venue not in ("uni-base", "uni-bsc"):
-        await update.message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
+        await message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
         return
     token = secrets.token_hex(4)
     _pending_withdrawals[token] = (venue, to_address)
-    await update.message.reply_text(
+    await message.reply_text(
         f"⚠️ Withdraw LP positions: *{venue}* → `{to_address}`. Confirm?",
         reply_markup=_confirm_kb(f"wd:{token}"),
         parse_mode="Markdown",
     )
 
 
-async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
         return
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("🔥 Unwind + Stop", callback_data="confirm:shutdown:unwind"),
         InlineKeyboardButton("🛑 Stop Only", callback_data="confirm:shutdown:stop"),
         InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
     ]])
-    await update.message.reply_text("⚠️ Shutdown engine. Choose action:", reply_markup=keyboard)
+    await message.reply_text("⚠️ Shutdown engine. Choose action:", reply_markup=keyboard)
 
 
-async def cmd_reset_breaker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_reset_breaker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    await update.message.reply_text(
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    await message.reply_text(
         "⚠️ Reset circuit breaker and re-enable arb. Confirm?",
         reply_markup=_confirm_kb("reset_breaker"),
     )
 
 
-async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
+    message = _get_message(update)
+    if message is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /recover <opp_id>")
+        await message.reply_text("Usage: /recover <opp_id>")
         return
     opp_id = context.args[0]
-    await update.message.reply_text(
+    await message.reply_text(
         f"⚠️ Recover half-open arb `{opp_id}`.\n"
         f"Will retry sell if sell-side has cNGN, otherwise reverse the buy to recover capital.",
         reply_markup=_confirm_kb(f"recover:{opp_id}"),
@@ -230,7 +287,7 @@ async def _do_withdraw(venue: str, to_address: str | None = None) -> str:
     if venue == "all":
         targets = {k: v for k, v in runtime.venues.items() if isinstance(v, V4LPAdapter)}
     elif venue in runtime.venues and isinstance(runtime.venues[venue], V4LPAdapter):
-        targets = {venue: runtime.venues[venue]}
+        targets = {venue: cast(V4LPAdapter, runtime.venues[venue])}
     else:
         return f"❌ Venue {venue} not found or not a DEX."
     results = []
@@ -241,14 +298,18 @@ async def _do_withdraw(venue: str, to_address: str | None = None) -> str:
     return ("✅ Withdrawn:\n" + "\n".join(results)) if results else f"ℹ️ No positions on {venue}."
 
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not _settings or str(query.message.chat.id) != str(_settings.telegram_chat_id):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    query = _get_callback_query(update)
+    if query is None:
+        return
+    if not _settings or query.message is None or str(query.message.chat.id) != str(_settings.telegram_chat_id):
         await query.answer()
         return
     runtime = _require_runtime()
     await query.answer()
-    data = query.data
+    data = query.data or ""
+    reply_message = _require_reply_message(query.message)
 
     if data == "cancel":
         await query.edit_message_text("❌ Cancelled.")
@@ -267,18 +328,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         venue, to_address = pending
         await query.edit_message_text(f"⏳ Withdrawing {venue}...")
         msg = await _do_withdraw(venue, to_address)
-        await query.message.reply_text(msg)
+        if reply_message is not None:
+            await reply_message.reply_text(msg)
     elif data == "confirm:shutdown:unwind":
         await query.edit_message_text("⏳ Unwinding positions and stopping...")
         msg = await _do_withdraw("all")
-        await query.message.reply_text(f"{msg}\n🛑 Shutting down.")
+        if reply_message is not None:
+            await reply_message.reply_text(f"{msg}\n🛑 Shutting down.")
         asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
     elif data == "confirm:shutdown:stop":
         await query.edit_message_text("🛑 Engine shutting down.")
         asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
     elif data == "confirm:reset_breaker":
         if runtime.arbitrage_engine:
-            runtime.arbitrage_engine.reset_circuit_breaker()
+            cast(Any, runtime.arbitrage_engine).reset_circuit_breaker()
             await query.edit_message_text("✅ Circuit breaker reset.")
         else:
             await query.edit_message_text("❌ Arbitrage engine not configured.")
@@ -294,9 +357,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 method = "sell retried" if result["method"] == "retry_sell" else "buy reversed"
                 profit = result["profit_usd"]
                 sign = "+" if profit >= 0 else ""
-                await query.message.reply_text(
-                    f"✅ Recovered DEX-DEX ({method}): tx {result['sell_tx_hash']}, P&L {sign}${profit:.2f}"
-                )
+                if reply_message is not None:
+                    await reply_message.reply_text(
+                        f"✅ Recovered DEX-DEX ({method}): tx {result['sell_tx_hash']}, P&L {sign}${profit:.2f}"
+                    )
             except ValueError as e:
                 if "Unknown DEX arbitrage opportunity" not in str(e):
                     raise
@@ -304,16 +368,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 profit = result["profit_usd"]
                 sign = "+" if profit >= 0 else ""
                 method = result["method"].replace("_", " ")
-                await query.message.reply_text(
-                    f"✅ Recovered CEX-DEX ({method}): P&L {sign}${profit:.2f}"
-                )
+                if reply_message is not None:
+                    await reply_message.reply_text(
+                        f"✅ Recovered CEX-DEX ({method}): P&L {sign}${profit:.2f}"
+                    )
         except Exception as e:
-            await query.message.reply_text(f"❌ Recovery failed: {e}")
+            if reply_message is not None:
+                await reply_message.reply_text(f"❌ Recovery failed: {e}")
 
 
 # --- Alert forwarding ---
 
-async def forward_alert(event: dict) -> None:
+async def forward_alert(event: dict[str, Any]) -> None:
     if not _app or not _settings or not _settings.telegram_chat_id:
         return
     severity = event.get("severity", "")
@@ -341,12 +407,12 @@ async def forward_alert(event: dict) -> None:
 
 # --- Lifecycle ---
 
-async def start(s, runtime: EngineRuntime) -> None:
+async def start(s: Settings, runtime: EngineRuntime) -> None:
     global _app, _settings, _runtime
     _settings = s
     _runtime = runtime
 
-    _app = Application.builder().token(s.telegram_bot_token).build()
+    _app = Application.builder().token(cast(str, s.telegram_bot_token)).build()
     _app.add_handler(CommandHandler("status", cmd_status))
     _app.add_handler(CommandHandler("positions", cmd_positions))
     _app.add_handler(CommandHandler("balances", cmd_balances))
@@ -362,14 +428,16 @@ async def start(s, runtime: EngineRuntime) -> None:
 
     await _app.initialize()
     await _app.start()
-    await _app.updater.start_polling(drop_pending_updates=True)
+    if _app.updater is not None:
+        await _app.updater.start_polling(drop_pending_updates=True)
     logger.warning("telegram_bot_started")
 
 
 async def stop() -> None:
     global _app, _runtime
     if _app:
-        await _app.updater.stop()
+        if _app.updater is not None:
+            await _app.updater.stop()
         await _app.stop()
         await _app.shutdown()
         _app = None

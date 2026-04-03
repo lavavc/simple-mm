@@ -22,10 +22,10 @@ class VenueAdapter(ABC):
         """Get current price from this venue (if applicable)."""
         pass
 
-    def pause(self):
+    def pause(self) -> None:
         """Pause this venue."""
         self.paused = True
 
-    def resume(self):
+    def resume(self) -> None:
         """Resume this venue."""
         self.paused = False

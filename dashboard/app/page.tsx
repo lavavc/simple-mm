@@ -174,7 +174,7 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent className={`p-4 flex-1 flex flex-col justify-between ${isSyncing ? 'opacity-30' : ''}`}>
-            {isSyncing ? (
+            {isSyncing || !globalPosition ? (
               <div className="space-y-4 pt-1">
                 <div className="flex items-center gap-3">
                   <div className="h-8 w-8 bg-white/10 rounded-sm animate-pulse" />
@@ -186,9 +186,9 @@ export default function DashboardPage() {
                 </div>
               </div>
             ) : (() => {
-              const stableUsd = Number(globalPosition?.total_usdc ?? 0) + Number(globalPosition?.total_usdt ?? 0);
-              const total = Number(globalPosition?.total_usd_value ?? 0);
-              const cngnPct = Number(globalPosition?.delta_ratio ?? 0) * 100;
+              const stableUsd = Number(globalPosition.total_usdc) + Number(globalPosition.total_usdt);
+              const total = Number(globalPosition.total_usd_value);
+              const cngnPct = Number(globalPosition.delta_ratio) * 100;
               const stablePct = 100 - cngnPct;
               return (
                 <>
@@ -208,7 +208,7 @@ export default function DashboardPage() {
                   <div className="grid grid-cols-2 gap-3 text-[10px] font-mono border-t border-white/[0.05] pt-3 mt-auto">
                     <div className="flex flex-col">
                       <span className="text-white/30 uppercase tracking-widest mb-1">cNGN</span>
-                      <span className="text-emerald-400">{formatNumber(globalPosition?.total_cngn || 0, 0)}</span>
+                      <span className="text-emerald-400">{formatNumber(globalPosition.total_cngn, 0)}</span>
                       <span className="text-white/30 mt-0.5">{cngnPct.toFixed(1)}%</span>
                     </div>
                     <div className="flex flex-col text-right">

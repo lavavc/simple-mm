@@ -77,6 +77,40 @@ def test_status_route_reads_db_and_runtime_services():
     runtime.db.system_state.get_system_state.assert_awaited_once_with("trading_enabled")
 
 
+def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "quidax": SimpleNamespace(
+            enabled=True,
+            paused=False,
+            params=None,
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("1000"), "usdt": Decimal("50"), "usdc": Decimal("0")}
+                )
+            ),
+        )
+    }
+    runtime.blended_calculator = SimpleNamespace(
+        get_blended_price=AsyncMock(
+            return_value=SimpleNamespace(
+                vwap=Decimal("0"),
+                twap_5m=Decimal("0.0007"),
+                twap_1h=Decimal("0.00069"),
+            )
+        )
+    )
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/positions/global")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_usd_value"] == "50.7000"
+    assert body["delta_ratio"] != "0"
+
+
 def test_arbitrage_opportunity_route_uses_direct_lookup():
     runtime = _make_runtime()
     opp = ArbitrageOpportunity(
