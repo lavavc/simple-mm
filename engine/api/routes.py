@@ -13,7 +13,7 @@ import structlog
 from engine.config import settings
 from engine.db import get_db
 from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.lp.config import DexParams
+from engine.config import DexParams
 from engine.api.schemas import (
     PriceQuote,
     Position,

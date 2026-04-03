@@ -3,7 +3,7 @@
 from .shared import V4PoolReadConfig
 from .v4 import V4ExecutionConfig
 from .lp_v4 import V4LPAdapter
-from engine.lp.config import DexParams
+from engine.config import DexParams
 from engine.config import settings, Settings
 
 _BASE_POSITION_MANAGER = "0x7c5f5a4bbd8fd63184577525326123b519429bdc"

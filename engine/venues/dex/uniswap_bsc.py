@@ -3,7 +3,7 @@
 from .shared import V4PoolReadConfig
 from .v4 import V4ExecutionConfig
 from .lp_v4 import V4LPAdapter
-from engine.lp.config import DexParams
+from engine.config import DexParams
 from engine.config import settings, Settings
 
 _BSC_POSITION_MANAGER = "0x7a4a5c919ae2541aed11041a1aeee68f1287f95b"

@@ -23,7 +23,7 @@ from engine.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.lp.config import DexParams
+from engine.config import DexParams
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes

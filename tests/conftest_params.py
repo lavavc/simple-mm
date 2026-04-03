@@ -6,7 +6,7 @@ directly to avoid breaking when production defaults change.
 """
 
 from decimal import Decimal
-from engine.lp.config import DexParams
+from engine.config import DexParams
 
 
 def make_dex_params(**overrides) -> DexParams:
