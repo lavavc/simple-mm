@@ -16,7 +16,7 @@ import httpx
 import structlog
 
 from engine.api.schemas import PriceQuote
-from engine.core.arbitrage.dex_volume import get_pool_volume_24h_usd
+from engine.market.dex_volume import get_pool_volume_24h_usd
 
 if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
@@ -442,7 +442,7 @@ class DexAdapterPriceSource(VenuePriceSource):
         self.pool_address = pool_address
 
     async def fetch_price(self) -> Optional[PriceQuote]:
-        from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
+        from engine.market.pool_state import get_cached_pool_state, Q96
 
         sqrt_p, _, _, _ = get_cached_pool_state(self.pool_address)
 

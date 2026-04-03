@@ -13,13 +13,13 @@ import structlog
 from engine.config import settings
 from engine.db import get_db
 from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.config import DexParams
 from engine.api.schemas import (
     PriceQuote,
     Position,
     VenueStatus,
     VenuePriceResponse,
     SystemStatus,
-    DexParams,
     CexParams,
     Alert,
     GlobalPosition,
@@ -535,7 +535,9 @@ async def update_venue_params(venue: str, params: dict):
     venue_adapter = _venues[venue]
     if hasattr(venue_adapter, "params"):
         if isinstance(venue_adapter, V4LPAdapter):
-            venue_adapter.params = DexParams(**params)
+            merged = venue_adapter.params.model_dump()
+            merged.update(params)
+            venue_adapter.params = DexParams(**merged)
         else:
             venue_adapter.params = CexParams(**params)
 
@@ -569,7 +571,7 @@ async def deposit_to_blockradar(req: DepositRequest):
     if not _account_manager:
         raise HTTPException(status_code=503, detail="Account manager not configured")
 
-    from engine.core.accounts import AccountRole
+    from engine.accounts import AccountRole
 
     try:
         role = AccountRole(req.role)
@@ -759,9 +761,9 @@ async def get_liquidation_valuation():
     """
     from decimal import Decimal
     import time
-    from engine.core.arbitrage.pool_state import get_cached_pool_state
-    from engine.core.arbitrage.valuation import cex_holdings_value, dex_holdings_value
-    from engine.core.arbitrage.cex_dex import QUIDAX_FEE
+    from engine.market.pool_state import get_cached_pool_state
+    from engine.arb.valuation import cex_holdings_value, dex_holdings_value
+    from engine.arb.detection.cex_dex import QUIDAX_FEE
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
@@ -949,7 +951,7 @@ async def list_accounts():
     if not _account_manager:
         raise HTTPException(status_code=503, detail="Account manager not configured")
 
-    from engine.core.accounts import AccountRole
+    from engine.accounts import AccountRole
 
     accounts = []
     for role in AccountRole:
@@ -1020,7 +1022,7 @@ async def get_account(role: str):
     if not _account_manager:
         raise HTTPException(status_code=503, detail="Account manager not configured")
 
-    from engine.core.accounts import AccountRole
+    from engine.accounts import AccountRole
 
     try:
         account_role = AccountRole(role)
@@ -1046,7 +1048,7 @@ async def get_account_balance(role: str):
     if not _account_manager:
         raise HTTPException(status_code=503, detail="Account manager not configured")
 
-    from engine.core.accounts import AccountRole
+    from engine.accounts import AccountRole
 
     try:
         account_role = AccountRole(role)
@@ -1076,7 +1078,7 @@ async def update_account_thresholds(role: str, thresholds: AccountThresholds):
     if not _account_manager:
         raise HTTPException(status_code=503, detail="Account manager not configured")
 
-    from engine.core.accounts import AccountRole
+    from engine.accounts import AccountRole
 
     try:
         account_role = AccountRole(role)

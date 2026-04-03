@@ -24,7 +24,7 @@ class TestV4PoolStateReadsBase:
     @pytest.mark.asyncio
     async def test_update_seeds_pool_cache(self, anvil_base):
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
@@ -39,7 +39,7 @@ class TestV4PoolStateReadsBase:
     @pytest.mark.asyncio
     async def test_cached_price_in_expected_range(self, anvil_base):
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE, Q96
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE, Q96
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
@@ -54,7 +54,7 @@ class TestV4PoolStateReadsBase:
     @pytest.mark.asyncio
     async def test_pool_liquidity_positive(self, anvil_base):
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
@@ -65,7 +65,7 @@ class TestV4PoolStateReadsBase:
     @pytest.mark.asyncio
     async def test_fee_in_expected_range(self, anvil_base):
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
@@ -82,7 +82,7 @@ class TestV4PoolStateReadsBSC:
     @pytest.mark.asyncio
     async def test_update_seeds_pool_cache(self, anvil_bsc):
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
@@ -96,7 +96,7 @@ class TestV4PoolStateReadsBSC:
     @pytest.mark.asyncio
     async def test_bsc_price_in_range(self, anvil_bsc):
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE, Q96
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE, Q96
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
@@ -168,7 +168,7 @@ class TestV4PositionLifecycle:
     async def test_pool_state_readable_after_fund(self, funded_lp_wallet, anvil_base):
         """Basic sanity: pool state still readable after funding the wallet."""
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
@@ -192,7 +192,7 @@ class TestRebalanceFlow:
     async def test_pool_state_available_for_rebalance_check(self, anvil_base):
         """Precondition: pool state is readable so scheduler can evaluate rebalance."""
         import dataclasses
-        from engine.core.arbitrage.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
         config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)

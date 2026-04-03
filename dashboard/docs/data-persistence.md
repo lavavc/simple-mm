@@ -1,6 +1,6 @@
 ---
 title: Data Persistence
-order: 5
+order: 6
 ---
 
 Historical data persists across crashes. SQLite is a file-based database, so all data survives restarts and crashes. When starting the engine:

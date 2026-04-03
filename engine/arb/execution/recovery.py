@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import structlog
 
-from engine.core.arbitrage.route_registry import ROUTES, ROUTES_BY_DIRECTION
+from engine.arb.routing.route_registry import ROUTES, ROUTES_BY_DIRECTION
 
 
 logger = structlog.get_logger()
@@ -39,7 +39,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
     sell_venue_name = route_def.sell_leg.venue
     buy_venue = engine.venues[buy_venue_name]
     sell_venue = engine.venues[sell_venue_name]
-    from engine.core.arbitrage.executor import _clean_revert
+    from engine.arb.execution.executor import _clean_revert
 
     loop = asyncio.get_running_loop()
 

@@ -12,7 +12,8 @@ from web3 import Web3
 from web3.middleware import geth_poa_middleware
 from web3.types import TxReceipt
 
-from engine.api.schemas import DexParams, Position, PriceQuote, TxResult
+from engine.api.schemas import Position, PriceQuote, TxResult
+from engine.config import DexParams
 from engine.venues.base import VenueAdapter
 from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 
@@ -433,7 +434,7 @@ class BaseV4DexAdapter(VenueAdapter):
 
     def _parse_swap_output_raw(self, receipt: TxReceipt, token_out: str) -> Optional[int]:
         """Extract actual output token amount from a V4 Swap event in the receipt logs."""
-        from engine.core.arbitrage.dex_volume import V4_SWAP_TOPIC
+        from engine.market.dex_volume import V4_SWAP_TOPIC
         for log in receipt.get("logs", []):
             topics = log.get("topics", [])
             if not topics:

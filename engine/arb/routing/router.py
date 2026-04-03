@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
-from engine.core.arbitrage.cex_dex import (
+from engine.arb.detection.cex_dex import (
     estimate_cex_dex_trade,
     estimate_max_cex_buy_usd_for_cngn,
     estimate_max_cex_dex_buy_usd_for_cngn,
 )
-from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade, estimate_max_dex_buy_usd_for_cngn
-from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
+from engine.arb.detection.dex_dex import estimate_dex_dex_trade, estimate_max_dex_buy_usd_for_cngn
+from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 
 _IMBALANCE_THRESHOLD_USD = Decimal("10")
 

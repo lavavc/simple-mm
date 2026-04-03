@@ -10,16 +10,17 @@ from apscheduler.triggers.interval import IntervalTrigger
 import structlog
 
 from engine.config import settings
-from engine.core.venue_prices import VenuePriceAggregator
-from engine.core.price_aggregation import BlendedPriceCalculator
+from engine.market.venue_prices import VenuePriceAggregator
+from engine.market.price_aggregation import BlendedPriceCalculator
 from engine.db import get_db
+from engine.lp.rebalancer import LPRebalancer
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.core.arbitrage.listener import ArbitrageWebSocketListener, WalletActivitySubscription
+from engine.arb.listener import ArbitrageWebSocketListener, WalletActivitySubscription
 
 if TYPE_CHECKING:
-    from engine.core.arbitrage.engine import ArbitrageEngine
-    from engine.core.accounts import AccountManager
+    from engine.arb.engine import ArbitrageEngine
+    from engine.accounts import AccountManager
 
 logger = structlog.get_logger()
 
@@ -81,6 +82,7 @@ class TradingScheduler:
         self.quidax_lp = quidax_lp
 
         self.scheduler = AsyncIOScheduler()
+        self.lp_rebalancer = LPRebalancer(broadcast=self.broadcast, db_getter=get_db)
         self._trading_enabled = True
         self._started = False
         self._quidax_depth_ok = True  # tracks depth availability for alert transitions
@@ -103,7 +105,7 @@ class TradingScheduler:
         if self._started:
             return
 
-        from engine.core import gas_oracle
+        from engine.market import gas_oracle
         from datetime import datetime, timezone as _tz
         self.scheduler.add_job(
             self._update_gas_oracle,
@@ -282,8 +284,8 @@ class TradingScheduler:
         if not self.arbitrage_engine or not self._dex_bootstrap_pending:
             return
         try:
-            from engine.core import gas_oracle
-            from engine.core.arbitrage.pool_state import seed_dex_pool_states
+            from engine.market import gas_oracle
+            from engine.market.pool_state import seed_dex_pool_states
 
             await seed_dex_pool_states()
             await self._update_gas_oracle()
@@ -314,7 +316,7 @@ class TradingScheduler:
     # ------------------------------------------------------------------
 
     async def _update_gas_oracle(self):
-        from engine.core import gas_oracle
+        from engine.market import gas_oracle
         try:
             await gas_oracle.update()
             self._schedule_dex_bootstrap()
@@ -391,73 +393,18 @@ class TradingScheduler:
     # ------------------------------------------------------------------
 
     async def _check_dex_rebalance(self):
-        """Check if DEX positions need rebalancing.
-
-        Rebalances only when the active tick exits the LP range AND the price
-        has moved at least rebalance_threshold_percent beyond the boundary.
-        This avoids churning on brief range exits.
-        """
+        """Check if DEX positions need rebalancing."""
         if not self._trading_enabled:
             return
 
         for name in ["uni-base", "uni-bsc"]:
             if name not in self.venues:
                 continue
-
             venue = self.venues[name]
-            if not isinstance(venue, V4LPAdapter):
+            if not isinstance(venue, V4LPAdapter) or venue.paused:
                 continue
-
-            if venue.paused:
-                continue
-
             try:
-                token_ids = venue.get_owned_positions()
-                if not token_ids:
-                    amount0, amount1 = venue.calculate_mint_amounts()
-                    if amount0 > 0 or amount1 > 0:
-                        logger.info("no_position_funds_available_minting", venue=name)
-                        await self._create_dex_position(venue)
-                    else:
-                        logger.debug("no_dex_position_no_funds", venue=name)
-                    continue
-
-                position = venue.get_position_state(token_ids[0])
-                if not position:
-                    continue
-
-                needs_rebalance = False
-
-                if not position.in_range:
-                    # Measure how far current price is past the breached boundary
-                    if position.current_price < position.price_lower and position.price_lower > 0:
-                        distance_pct = float(
-                            (position.price_lower - position.current_price)
-                            / position.price_lower * 100
-                        )
-                    else:
-                        distance_pct = float(
-                            (position.current_price - position.price_upper)
-                            / position.price_upper * 100
-                        )
-
-                    threshold = float(venue.params.rebalance_threshold_percent)
-                    if distance_pct >= threshold:
-                        needs_rebalance = True
-                        logger.info(
-                            "position_out_of_range",
-                            venue=name,
-                            token_id=position.token_id,
-                            range_lower=float(position.price_lower),
-                            range_upper=float(position.price_upper),
-                            current_price=float(position.current_price),
-                            distance_pct=round(distance_pct, 2),
-                            threshold_pct=threshold,
-                        )
-
-                if needs_rebalance:
-                    await self._rebalance_dex_position(venue, position.token_id, position)
-
+                await self.lp_rebalancer.check_and_rebalance(venue)
             except Exception as e:
                 logger.error("dex_rebalance_check_failed", venue=name, error=str(e))
 
@@ -608,123 +555,6 @@ class TradingScheduler:
             return Decimal("1") / quidax.quote.mid
 
         return None
-
-    # ------------------------------------------------------------------
-    # DEX position management
-    # ------------------------------------------------------------------
-
-    async def _create_dex_position(self, venue: V4LPAdapter, recovery_price: float | None = None) -> bool:
-        """Create a new DEX LP position using capital allocation settings.
-
-        recovery_price: if set, adjusts downside_skew toward 0.5 based on deviation
-                        from EWMA mean, reflecting mean-reversion probability after a
-                        range exit (see V4LPAdapter.calculate_tick_range).
-        """
-        db = await get_db()
-
-        try:
-            prices = await db.get_recent_prices(limit=100)
-            if len(prices) < 10:
-                logger.warning(
-                    "insufficient_price_history",
-                    venue=venue.name,
-                    count=len(prices),
-                )
-                return False
-
-            tick_lower, tick_upper = venue.calculate_tick_range(prices, recovery_price=recovery_price)
-
-            if await venue.prepare_lp_balance(tick_lower, tick_upper) is False:
-                return False
-            amount0, amount1 = venue.calculate_mint_amounts()
-
-            if amount0 == 0 and amount1 == 0:
-                logger.warning("no_funds_available_for_mint", venue=venue.name)
-                return False
-
-            logger.info(
-                "creating_dex_position",
-                venue=venue.name,
-                tick_lower=tick_lower,
-                tick_upper=tick_upper,
-                amount0=amount0,
-                amount1=amount1,
-            )
-
-            result = await venue.mint_position(
-                amount0=amount0,
-                amount1=amount1,
-                tick_lower=tick_lower,
-                tick_upper=tick_upper,
-            )
-
-            if result.status == "confirmed":
-                logger.info("dex_position_created", venue=venue.name, tx_hash=result.hash)
-                self.broadcast({
-                    "type": "action",
-                    "data": {
-                        "venue": venue.name,
-                        "action": "position_created",
-                        "tx": result.hash,
-                    },
-                })
-                await db.insert_action(
-                    venue=venue.name,
-                    action_type="mint_position",
-                    status="confirmed",
-                    tx_hash=result.hash,
-                    triggered_by="auto:rebalance",
-                )
-                return True
-            else:
-                logger.error(
-                    "dex_position_creation_failed",
-                    venue=venue.name,
-                    error=result.error,
-                )
-                await db.insert_action(
-                    venue=venue.name,
-                    action_type="mint_position",
-                    status="failed",
-                    error=result.error,
-                    triggered_by="auto:rebalance",
-                )
-                return False
-
-        except Exception as e:
-            logger.error("create_dex_position_failed", venue=venue.name, error=str(e))
-            return False
-
-    async def _rebalance_dex_position(self, venue: V4LPAdapter, token_id: int, position) -> bool:
-        """Remove an out-of-range LP position and remint using the full LP wallet balance."""
-        db = await get_db()
-
-        try:
-            logger.info("removing_old_position", venue=venue.name, token_id=token_id)
-            result = await venue.remove_position(token_id)
-
-            if result.status != "confirmed":
-                logger.error("failed_to_remove_position", venue=venue.name, token_id=token_id, error=result.error)
-                await db.insert_action(
-                    venue=venue.name, action_type="remove_position",
-                    status="failed", error=result.error, triggered_by="auto:rebalance",
-                )
-                self.broadcast({"type": "alert", "severity": "error",
-                                "message": f"{venue.name} position removal failed: {result.error}"})
-                return False
-
-            await db.insert_action(
-                venue=venue.name, action_type="remove_position",
-                status="confirmed", tx_hash=result.hash, triggered_by="auto:rebalance",
-            )
-            logger.info("old_position_removed", venue=venue.name, token_id=token_id, tx_hash=result.hash)
-
-            recovery_price = float(position.current_price)
-            return await self._create_dex_position(venue, recovery_price=recovery_price)
-
-        except Exception as e:
-            logger.error("rebalance_dex_position_failed", venue=venue.name, token_id=token_id, error=str(e))
-            return False
 
     async def _stream_dex_arb_curve(self):
         """Fallback DEX-DEX refresh only when Base/BSC websocket coverage is unhealthy."""
@@ -920,7 +750,7 @@ class TradingScheduler:
         if not self.account_manager:
             return
 
-        from engine.core.accounts import AccountRole
+        from engine.accounts import AccountRole
 
         account_role = AccountRole(account_role_str)
         position = await adapter.get_position()

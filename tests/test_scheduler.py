@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from engine.venues.dex.shared import PositionState
-from engine.core.scheduler import TradingScheduler, SchedulerConfig
+from engine.scheduler import TradingScheduler, SchedulerConfig
 from tests.fakes import FakeDexAdapter
 
 
@@ -42,6 +42,7 @@ class MockDB:
     def __init__(self, prices=None):
         self._prices = prices if prices is not None else [Decimal("0.000606")] * 20
         self.insert_action = AsyncMock()
+        self.update_venue_config = AsyncMock()
 
     async def get_recent_prices(self, limit=100):
         return self._prices[:limit]
@@ -49,6 +50,7 @@ class MockDB:
 
 def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingScheduler:
     """Build a minimal TradingScheduler without calling __init__ or start()."""
+    from engine.lp.rebalancer import LPRebalancer
     sched = TradingScheduler.__new__(TradingScheduler)
     sched._trading_enabled = True
     sched.venues = venues
@@ -65,6 +67,7 @@ def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingSched
     sched._dex_bootstrap_task = None
     sched._db = db  # store for patching
     sched.ws_listener = MagicMock(active_connections=set())
+    sched.lp_rebalancer = LPRebalancer(broadcast=sched.broadcast, db_getter=AsyncMock(return_value=db))
     return sched
 
 
@@ -85,7 +88,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
             await sched._check_dex_rebalance()
 
         # No mint happened (no rebalance triggered)
@@ -107,7 +110,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
             await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
@@ -128,7 +131,7 @@ class TestCheckDexRebalance:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
             await sched._check_dex_rebalance()
 
         # Rebalance triggered: old position removed, new one minted
@@ -146,7 +149,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
             await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
@@ -161,7 +164,7 @@ class TestCheckDexRebalance:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
             await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 1
@@ -180,7 +183,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
             await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
@@ -203,8 +206,7 @@ class TestRebalanceDexPosition:
         db = MockDB()
         sched = _build_scheduler({"uni-base": adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._rebalance_dex_position(adapter, pos.token_id, pos)
+        result = await sched.lp_rebalancer.rebalance(adapter, pos.token_id, pos)
 
         assert result is False
         alert_msgs = [b.get("message", "") for b in broadcasts if b.get("type") == "alert"]
@@ -220,15 +222,14 @@ class TestRebalanceDexPosition:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._rebalance_dex_position(fake_dex_adapter, pos.token_id, pos)
+        result = await sched.lp_rebalancer.rebalance(fake_dex_adapter, pos.token_id, pos)
 
         assert result is True
         assert len(fake_dex_adapter.minted) == 1
 
     @pytest.mark.asyncio
     async def test_recovery_price_passed_to_create(self, fake_dex_adapter):
-        """recovery_price = current position price is passed to _create_dex_position."""
+        """recovery_price = current position price is passed to create_position."""
         pos = _make_position(in_range=False, current_price=0.0004, price_lower=0.0005, price_upper=0.0007)
         fake_dex_adapter._positions = [pos]
 
@@ -237,16 +238,14 @@ class TestRebalanceDexPosition:
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
         create_calls = []
-        original_create = sched._create_dex_position
 
         async def fake_create(venue, recovery_price=None):
             create_calls.append(recovery_price)
             return True
 
-        sched._create_dex_position = fake_create
+        sched.lp_rebalancer.create_position = fake_create
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._rebalance_dex_position(fake_dex_adapter, pos.token_id, pos)
+        await sched.lp_rebalancer.rebalance(fake_dex_adapter, pos.token_id, pos)
 
         assert len(create_calls) == 1
         assert create_calls[0] == float(pos.current_price)
@@ -266,8 +265,7 @@ class TestCreateDexPosition:
         db = MockDB(prices=[Decimal("0.000606")] * 5)  # only 5 prices
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._create_dex_position(fake_dex_adapter)
+        result = await sched.lp_rebalancer.create_position(fake_dex_adapter)
 
         assert result is False
         assert len(fake_dex_adapter.minted) == 0
@@ -278,8 +276,7 @@ class TestCreateDexPosition:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._create_dex_position(fake_dex_adapter)
+        result = await sched.lp_rebalancer.create_position(fake_dex_adapter)
 
         assert result is True
         db.insert_action.assert_called_once()
@@ -295,8 +292,7 @@ class TestCreateDexPosition:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._create_dex_position(adapter)
+        result = await sched.lp_rebalancer.create_position(adapter)
 
         assert result is False
         db.insert_action.assert_called_once()
@@ -307,8 +303,7 @@ class TestCreateDexPosition:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._create_dex_position(fake_dex_adapter)
+        await sched.lp_rebalancer.create_position(fake_dex_adapter)
 
         action_broadcasts = [b for b in broadcasts if b.get("type") == "action"]
         assert any(b.get("data", {}).get("action") == "position_created" for b in action_broadcasts)
@@ -321,8 +316,7 @@ class TestCreateDexPosition:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            result = await sched._create_dex_position(fake_dex_adapter)
+        result = await sched.lp_rebalancer.create_position(fake_dex_adapter)
 
         assert result is False
         assert len(fake_dex_adapter.minted) == 0
@@ -330,25 +324,43 @@ class TestCreateDexPosition:
 
     @pytest.mark.asyncio
     async def test_recovery_price_passed_through(self, fake_dex_adapter):
-        """recovery_price is forwarded to calculate_tick_range."""
-        prices_received = []
-        original = fake_dex_adapter.calculate_tick_range
-
-        def fake_range(prices, recovery_price=None):
-            prices_received.append(recovery_price)
-            return -1000, 1000
-
-        fake_dex_adapter.calculate_tick_range = fake_range
+        """recovery_price is forwarded to strategy.calculate_tick_range."""
+        from unittest.mock import patch
 
         broadcasts = []
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._create_dex_position(fake_dex_adapter, recovery_price=0.000400)
+        with patch("engine.lp.strategy.calculate_tick_range", return_value=(-1000, 1000)) as mock_range:
+            await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=0.000400)
 
-        assert len(prices_received) == 1
-        assert prices_received[0] == 0.000400
+        call_kwargs = mock_range.call_args
+        assert call_kwargs.kwargs.get("recovery_price") == 0.000400
+
+    @pytest.mark.asyncio
+    async def test_recovery_rebalance_persists_params(self, fake_dex_adapter):
+        """After a rebalance that adjusts downside_skew, update_venue_config is called."""
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=0.000800)
+
+        db.update_venue_config.assert_called_once()
+        venue_arg, params_arg = db.update_venue_config.call_args[0]
+        assert venue_arg == "uni-base"
+        assert "downside_skew" in params_arg
+
+    @pytest.mark.asyncio
+    async def test_non_recovery_create_does_not_persist_params(self, fake_dex_adapter):
+        """create_position without recovery_price must not call update_venue_config."""
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=None)
+
+        db.update_venue_config.assert_not_called()
 
 
 class TestDexArbCurveStream:
@@ -363,9 +375,9 @@ class TestDexArbCurveStream:
         sched.arbitrage_engine.on_dex_dex_update = AsyncMock(side_effect=lambda: call_order.append("arb"))
         sched._update_gas_oracle = AsyncMock(side_effect=lambda: call_order.append("gas"))
 
-        with patch("engine.core.arbitrage.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
-             patch("engine.core.gas_oracle.gas_usd_base", return_value=Decimal("1")), \
-             patch("engine.core.gas_oracle.gas_usd_bsc", return_value=Decimal("1")):
+        with patch("engine.market.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
+             patch("engine.market.gas_oracle.gas_usd_base", return_value=Decimal("1")), \
+             patch("engine.market.gas_oracle.gas_usd_bsc", return_value=Decimal("1")):
             await sched._bootstrap_dex_arb_curve()
 
         seed_mock.assert_awaited_once()
@@ -383,9 +395,9 @@ class TestDexArbCurveStream:
         sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
         sched._update_gas_oracle = AsyncMock()
 
-        with patch("engine.core.arbitrage.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
-             patch("engine.core.gas_oracle.gas_usd_base", return_value=None), \
-             patch("engine.core.gas_oracle.gas_usd_bsc", return_value=None):
+        with patch("engine.market.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
+             patch("engine.market.gas_oracle.gas_usd_base", return_value=None), \
+             patch("engine.market.gas_oracle.gas_usd_bsc", return_value=None):
             await sched._bootstrap_dex_arb_curve()
 
         seed_mock.assert_awaited_once()
@@ -400,7 +412,7 @@ class TestDexArbCurveStream:
         sched = _build_scheduler({}, broadcasts, db)
         sched._schedule_dex_bootstrap = MagicMock()
 
-        with patch("engine.core.gas_oracle.update", AsyncMock()):
+        with patch("engine.market.gas_oracle.update", AsyncMock()):
             await sched._update_gas_oracle()
 
         sched._schedule_dex_bootstrap.assert_called_once()

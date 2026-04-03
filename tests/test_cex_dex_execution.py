@@ -10,10 +10,10 @@ from unittest.mock import patch
 from eth_abi import encode
 
 from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
-from engine.core.arbitrage.engine import ArbitrageEngine
-from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
-from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
-from engine.core.arbitrage.executor import _clean_revert, _classify_preflight_error
+from engine.arb.engine import ArbitrageEngine
+from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
+from engine.arb.routing.router import RouteCandidate, SelectedRoute
+from engine.arb.execution.executor import _clean_revert, _classify_preflight_error
 from engine.db.database import Database
 
 
@@ -151,7 +151,7 @@ class TestCexDexPreflightGate:
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             r = _cex_dex_route_no_depth()
             await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-missing-depth")
 
@@ -166,7 +166,7 @@ class TestCexDexPreflightGate:
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             r = _cex_dex_route()
             await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-1")
 
@@ -182,7 +182,7 @@ class TestCexDexPreflightGate:
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         engine.inventory.reconcile_cngn({"uni-base": Decimal("26999")})
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             r = _cex_dex_route(size=Decimal("500"))
             await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-debug")
 
@@ -200,7 +200,7 @@ class TestCexDexPreflightGate:
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             r = _cex_dex_route()
             await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-2")
 
@@ -215,7 +215,7 @@ class TestCexDexPreflightGate:
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             route = _cex_dex_route()
             await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-sell-alignment")
 
@@ -241,7 +241,7 @@ class TestCexDexPreflightGate:
         route.expected_profit_usd = Decimal("0.42")
         route.candidate.expected_profit_usd = Decimal("1.50")
 
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-persist")
 
         opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-persist")
@@ -260,7 +260,7 @@ class TestCexDexPreflightGate:
         route.expected_profit_usd = Decimal("0")
         route.candidate.expected_profit_usd = Decimal("1.50")
 
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-zero")
 
         opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-zero")
@@ -346,7 +346,7 @@ class TestHandlePreflightError:
     """Test that _handle_preflight_error takes the right action for each category."""
 
     def _make_engine_for_preflight(self):
-        from engine.core.arbitrage.engine import ArbitrageEngine
+        from engine.arb.engine import ArbitrageEngine
         alerts = []
         engine = ArbitrageEngine(
             venues={},
@@ -366,7 +366,7 @@ class TestHandlePreflightError:
         return engine.inventory.get_status_dict()["circuit_breaker_active"]
 
     def test_balance_zeroes_inventory_and_broadcasts_warning(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
@@ -376,7 +376,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "warning" and "uni-base" in a.get("message", "") for a in alerts)
 
     def test_stable_balance_zeroes_stable_only_and_broadcasts_warning(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         engine.inventory.reconcile_stables({"uni-base": Decimal("167.07")})
@@ -397,7 +397,7 @@ class TestHandlePreflightError:
         )
 
     def test_rpc_does_not_zero_inventory_and_broadcasts_warning(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-bsc": Decimal("500")})
         _handle_preflight_error(engine, "uni-bsc", "Read timed out.", "test_preflight")
@@ -405,7 +405,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "warning" and "uni-bsc" in a.get("message", "") for a in alerts)
 
     def test_permit2_does_not_zero_inventory_and_broadcasts_critical(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
@@ -414,7 +414,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "critical" for a in alerts)
 
     def test_pool_paused_trips_circuit_breaker_and_does_not_zero_inventory(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-bsc": Decimal("500")})
         _handle_preflight_error(engine, "uni-bsc",
@@ -424,7 +424,7 @@ class TestHandlePreflightError:
         assert any(a.get("severity") == "critical" and "uni-bsc" in a.get("message", "") for a in alerts)
 
     def test_unknown_does_not_zero_inventory_and_does_not_trip_breaker(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("500")})
         _handle_preflight_error(engine, "uni-base",
@@ -434,7 +434,7 @@ class TestHandlePreflightError:
         assert any(a.get("type") == "alert" for a in alerts)
 
     def test_buy_preflight_context_uses_stable_wallet(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.venues["uni-base"] = SimpleNamespace(
             trade_account=SimpleNamespace(address="0x23DF63FAKE0000000000000000000000002e14E4"),
@@ -459,7 +459,7 @@ class TestHandlePreflightError:
         assert "Shortfall: 82.93 USDC" in message
 
     def test_message_changes_when_trade_size_changes(self):
-        from engine.core.arbitrage.preflight import _handle_preflight_error
+        from engine.arb.execution.preflight import _handle_preflight_error
         engine, alerts = self._make_engine_for_preflight()
         engine.inventory.reconcile_cngn({"uni-base": Decimal("26999")})
 

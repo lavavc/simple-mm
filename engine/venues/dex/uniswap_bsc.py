@@ -3,7 +3,7 @@
 from .shared import V4PoolReadConfig
 from .v4 import V4ExecutionConfig
 from .lp_v4 import V4LPAdapter
-from engine.api.schemas import DexParams
+from engine.config import DexParams
 from engine.config import settings, Settings
 
 _BSC_POSITION_MANAGER = "0x7a4a5c919ae2541aed11041a1aeee68f1287f95b"
@@ -59,11 +59,7 @@ class UniswapBscV4Adapter(V4LPAdapter):
         _settings: Settings = settings,
     ):
         if params is None:
-            params = DexParams(
-                sd_multiplier=_settings.uni_bsc_sd_multiplier,
-                ewma_lambda=_settings.uni_bsc_ewma_lambda,
-                downside_skew=_settings.uni_bsc_downside_skew,
-            )
+            params = _settings.uni_bsc_lp_params
         if trade_private_key is None:
             trade_private_key = lp_private_key
 

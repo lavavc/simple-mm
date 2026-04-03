@@ -15,13 +15,15 @@ import uvicorn
 from engine.config import settings
 from engine.ws import ws_manager
 from engine.db import get_db
-from engine.core.venue_prices import create_venue_aggregator, VenuePriceAggregator
-from engine.core.price_aggregation import PriceNormalizer, BlendedPriceCalculator
-from engine.core.scheduler import TradingScheduler, SchedulerConfig
-from engine.core.arbitrage import ArbitrageEngine
-from engine.core.accounts import AccountManager, AccountRole
+from engine.market.venue_prices import create_venue_aggregator, VenuePriceAggregator
+from engine.market.price_aggregation import PriceNormalizer, BlendedPriceCalculator
+from engine.scheduler import TradingScheduler, SchedulerConfig
+from engine.arb import ArbitrageEngine
+from engine.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
+from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.config import DexParams
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes
@@ -167,9 +169,18 @@ async def lifespan(app: FastAPI):
 
     await init_venues(account_manager)
 
+    # Restore any persisted LP params (operator overrides, dynamic skew adjustments)
+    _db = await get_db()
+    for _vname, _vadapter in venues.items():
+        if isinstance(_vadapter, V4LPAdapter):
+            _config = await _db.get_venue_config(_vname)
+            if _config and _config.get("params"):
+                _vadapter.params = DexParams(**_config["params"])
+                logger.info("venue_params_restored", venue=_vname)
+
     # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
-    from engine.core.arbitrage.pool_state import seed_pool_states
-    from engine.core.arbitrage.dex_volume import seed_dex_volume_24h
+    from engine.market.pool_state import seed_pool_states
+    from engine.market.dex_volume import seed_dex_volume_24h
     await seed_pool_states()
     await seed_dex_volume_24h()
 

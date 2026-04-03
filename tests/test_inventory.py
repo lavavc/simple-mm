@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from engine.api.schemas import ArbitrageParams
 from engine.config import settings
-from engine.core.arbitrage.inventory import InventoryTracker, InventoryState
+from engine.arb.risk.inventory import InventoryTracker, InventoryState
 
 
 # =============================================================================

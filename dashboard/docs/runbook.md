@@ -1,6 +1,6 @@
 ---
 title: Deployment Runbook
-order: 4
+order: 5
 ---
 
 ## Account Structure
@@ -139,3 +139,9 @@ be at risk. Should approve only the amount needed per transaction.
 `QuidaxAdapter.get_position()` returns a stub. When order-ladder trading on Quidax is
 ready, restore the authenticated `/users/me/wallets` call and verify the API key has the
 correct permission scope.
+
+---
+
+## Diving deeper
+
+For a map of how the code is structured — which directories own which concerns, the import rules between layers, and where to start reading for each subsystem — see [Architecture](architecture). For details on LP strategy parameters and rebalance logic, see [Liquidity Provision](lp). For arb detection and execution, see [Arbitrage](arbitrage).

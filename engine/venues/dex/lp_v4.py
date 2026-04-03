@@ -1,6 +1,5 @@
 """Uniswap V4 LP adapter — extends BaseV4DexAdapter with position management."""
 
-import math
 import time as _time
 from decimal import Decimal
 from typing import Optional
@@ -9,18 +8,16 @@ import structlog
 from eth_abi import encode
 from web3 import Web3
 
-from engine.api.schemas import DexParams, LPPosition, Position, TxResult
-from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
+from engine.api.schemas import LPPosition, Position, TxResult
+from engine.config import DexParams
+from .shared import (
+    ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState,
+    _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal,
+    _Q96, _tick_to_sqrt_x96, tick_to_price, compute_required_ratio,
+)
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 
 logger = structlog.get_logger()
-
-_Q96 = 2 ** 96  # shared constant — used in float, int, and Decimal contexts below
-
-
-def _tick_to_sqrt_x96(tick: int) -> float:
-    """Return sqrtPriceX96 as a float for a given tick."""
-    return math.exp(tick * math.log(1.0001) / 2) * _Q96
 
 
 # V4 PositionManager action codes
@@ -186,8 +183,8 @@ class V4LPAdapter(BaseV4DexAdapter):
                 tick_upper=tick_upper,
                 tokens_owed_0=0,
                 tokens_owed_1=0,
-                price_lower=self._tick_to_price(tick_lower),
-                price_upper=self._tick_to_price(tick_upper),
+                price_lower=tick_to_price(tick_lower, self.config.token0_decimals, self.config.token1_decimals),
+                price_upper=tick_to_price(tick_upper, self.config.token0_decimals, self.config.token1_decimals),
                 current_price=current_price,
                 in_range=tick_lower <= current_tick <= tick_upper,
             )
@@ -345,7 +342,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         if pos_state is None:
             return None, None, None
 
-        from engine.core.arbitrage.pool_state import get_cached_pool_state
+        from engine.market.pool_state import get_cached_pool_state
 
         sqrt_p, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
         if not sqrt_p or not pool_liquidity:
@@ -415,39 +412,6 @@ class V4LPAdapter(BaseV4DexAdapter):
         )
         return await self._send_transaction(tx, self.lp_account, output_token=token_out)
 
-    def _compute_required_ratio(
-        self, tick_lower: int, tick_upper: int, sqrt_price_x96: int
-    ) -> tuple[Decimal, Decimal]:
-        """Return (r0, r1) — token amounts per unit of liquidity at the current price.
-
-        Pure math, no RPC. Uses pool state only; downside_skew is not consulted.
-        r0 = (sqrt_b − sqrt_p) / (sqrt_p × sqrt_b)   [token0 per unit L when in range]
-        r1 = (sqrt_p − sqrt_a)                         [token1 per unit L when in range]
-        Adjusts for decimal differences between token0 and token1.
-        """
-        sqrt_a = _tick_to_sqrt_x96(tick_lower)
-        sqrt_b = _tick_to_sqrt_x96(tick_upper)
-        sqrt_p = float(sqrt_price_x96)
-
-        # Formulas mirror get_pool_metrics: amount0 = L*Q96*(sqrt_b-sp)/(sp*sqrt_b),
-        # amount1 = L*(sp-sqrt_a)/Q96.  Per-unit-L, with Q96 absorbed:
-        if sqrt_p <= sqrt_a:
-            # Below range: position is entirely in token0
-            r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) * _Q96 if sqrt_a * sqrt_b > 0 else 0.0
-            r1 = 0.0
-        elif sqrt_p >= sqrt_b:
-            # Above range: position is entirely in token1
-            r0 = 0.0
-            r1 = (sqrt_b - sqrt_a) / _Q96
-        else:
-            r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b) * _Q96
-            r1 = (sqrt_p - sqrt_a) / _Q96
-
-        # Adjust for decimal scaling: raw amounts are in different units
-        dec_adj = Decimal(10 ** self.config.token0_decimals) / Decimal(10 ** self.config.token1_decimals)
-        r0_dec = Decimal(str(r0)) / dec_adj
-        r1_dec = Decimal(str(r1))
-        return r0_dec, r1_dec
 
     async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> bool | None:
         """Swap LP wallet tokens to the ratio required by the pool at the current price.
@@ -468,7 +432,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         if balance0 == 0 and balance1 == 0:
             return
 
-        r0, r1 = self._compute_required_ratio(tick_lower, tick_upper, sqrt_price_x96)
+        r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_price_x96, self.config.token0_decimals, self.config.token1_decimals)
 
         # Price of token0 in token1 units (for value normalisation)
         price = (Decimal(sqrt_price_x96) / Decimal(_Q96)) ** 2 * Decimal(
@@ -513,83 +477,6 @@ class V4LPAdapter(BaseV4DexAdapter):
         if result.status != "confirmed":
             logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
             return False
-
-    # === Strategy math ===
-
-    def compute_ewma_stats(self, prices: list[Decimal]) -> tuple[float, float]:
-        """Return (ewma_mean, std_dev) from price history using configured lambda."""
-        if self.params.lookback_points:
-            prices = prices[-self.params.lookback_points:]
-        float_prices = [float(p) for p in prices]
-        lam = float(self.params.ewma_lambda)
-        mean = float_prices[0]
-        var = 0.0
-        for x in float_prices[1:]:
-            delta = x - mean
-            mean = lam * mean + (1 - lam) * x
-            var = lam * var + (1 - lam) * delta * delta
-        return mean, math.sqrt(var)
-
-    def calculate_tick_range(self, prices: list[Decimal], recovery_price: float | None = None) -> tuple[int, int]:
-        """Calculate optimal tick range using SD-based strategy."""
-        if self.params.lookback_points:
-            prices = prices[-self.params.lookback_points:]
-
-        if len(prices) < 2:
-            raise ValueError("Insufficient price history for SD calculation")
-
-        mean, std_dev = self.compute_ewma_stats(prices)
-
-        multiplier = float(self.params.sd_multiplier)
-        skew = float(self.params.downside_skew)
-        if recovery_price is not None and std_dev > 0:
-            deviation = (recovery_price - mean) / (std_dev * multiplier)
-            skew = max(0.2, min(0.8, skew + deviation * 0.15))
-        total = std_dev * multiplier * 2
-        lower_price = max(mean - total * skew, 0.0001)
-        upper_price = mean + total * (1 - skew)
-
-        tick_lower = self._price_to_tick(Decimal(str(lower_price)))
-        tick_upper = self._price_to_tick(Decimal(str(upper_price)))
-
-        spacing = self.config.tick_spacing
-        tick_lower = math.floor(tick_lower / spacing) * spacing
-        tick_upper = math.ceil(tick_upper / spacing) * spacing
-
-        tick_width = tick_upper - tick_lower
-        if tick_width < self.params.min_tick_width:
-            mid = (tick_lower + tick_upper) // 2
-            tick_lower = mid - self.params.min_tick_width // 2
-            tick_upper = mid + self.params.min_tick_width // 2
-        elif tick_width > self.params.max_tick_width:
-            mid = (tick_lower + tick_upper) // 2
-            tick_lower = mid - self.params.max_tick_width // 2
-            tick_upper = mid + self.params.max_tick_width // 2
-
-        tick_lower = math.floor(tick_lower / spacing) * spacing
-        tick_upper = math.ceil(tick_upper / spacing) * spacing
-
-        logger.info(
-            "calculated_tick_range",
-            venue=self.name,
-            mean_price=mean,
-            std_dev=std_dev,
-            tick_lower=tick_lower,
-            tick_upper=tick_upper,
-        )
-
-        return tick_lower, tick_upper
-
-    def _tick_to_price(self, tick: int) -> Decimal:
-        decimal_diff = self.config.token0_decimals - self.config.token1_decimals
-        price = Decimal("1.0001") ** tick
-        price *= Decimal(10 ** decimal_diff)
-        return price
-
-    def _price_to_tick(self, price: Decimal) -> int:
-        decimal_diff = self.config.token0_decimals - self.config.token1_decimals
-        adjusted = float(price) / (10 ** decimal_diff)
-        return int(math.log(adjusted) / math.log(1.0001))
 
     # === Helpers ===
 

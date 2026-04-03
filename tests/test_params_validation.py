@@ -4,29 +4,25 @@ import pytest
 from decimal import Decimal
 from pydantic import ValidationError
 
-from engine.api.schemas import DexParams, CexParams, WalletParams
+from pydantic import ValidationError
+from engine.config import DexParams
+from engine.api.schemas import CexParams, WalletParams
 from engine.config import settings
+from tests.conftest_params import make_dex_params
 
 
 class TestDexParamsValidation:
-    """Test DexParams validation and defaults."""
+    """Test DexParams validation."""
 
-    def test_default_values(self):
-        """Test DexParams schema-level defaults (strategy constants, not per-venue values).
+    def test_all_fields_required(self):
+        """DexParams has no defaults — all fields except lookback_points must be supplied."""
+        with pytest.raises((ValidationError, TypeError)):
+            DexParams()
 
-        Per-venue LP params (sd_multiplier, ewma_lambda, downside_skew) live in
-        config.py as uni_base_* / uni_bsc_* and are the runtime source of truth.
-        """
-        params = DexParams()
-
-        assert params.sd_multiplier == Decimal("2.5")
-        assert params.min_tick_width == 100
-        assert params.max_tick_width == 1000
+    def test_lookback_points_optional(self):
+        """lookback_points defaults to None (use all prices)."""
+        params = make_dex_params()
         assert params.lookback_points is None
-        assert params.rebalance_threshold_percent == Decimal("10.0")
-        assert params.max_slippage_percent == Decimal("1.0")
-        assert params.downside_skew == Decimal("0.4")
-        assert params.ewma_lambda == Decimal("0.99")
 
     def test_uni_base_strategy_params_from_settings(self):
         """uni-base LP strategy params are read from settings, not DexParams defaults."""
@@ -41,7 +37,7 @@ class TestDexParamsValidation:
         assert settings.uni_bsc_downside_skew == Decimal("0.5")
 
     def test_custom_values(self):
-        params = DexParams(
+        params = make_dex_params(
             sd_multiplier=Decimal("2.5"),
             min_tick_width=200,
             max_tick_width=2000,
@@ -56,24 +52,24 @@ class TestDexParamsValidation:
         assert params.lookback_points == 50
 
     def test_decimal_from_string(self):
-        params = DexParams(sd_multiplier="2.0")
+        params = make_dex_params(sd_multiplier="2.0")
         assert params.sd_multiplier == Decimal("2.0")
 
     def test_decimal_from_float(self):
-        params = DexParams(sd_multiplier=2.0)
+        params = make_dex_params(sd_multiplier=2.0)
         assert float(params.sd_multiplier) == pytest.approx(2.0)
 
     def test_decimal_from_int(self):
-        params = DexParams(sd_multiplier=2)
+        params = make_dex_params(sd_multiplier=2)
         assert params.sd_multiplier == Decimal("2")
 
     def test_serialization(self):
-        params = DexParams(sd_multiplier=Decimal("2.5"))
+        params = make_dex_params(sd_multiplier=Decimal("2.5"))
         data = params.model_dump()
         assert data["sd_multiplier"] == Decimal("2.5")
 
     def test_json_serialization(self):
-        params = DexParams(sd_multiplier=Decimal("2.5"))
+        params = make_dex_params(sd_multiplier=Decimal("2.5"))
         json_str = params.model_dump_json()
         assert "sd_multiplier" in json_str
 
@@ -129,7 +125,7 @@ class TestWalletParamsValidation:
 
 class TestParamsInteroperability:
     def test_dex_params_copy(self):
-        original = DexParams(sd_multiplier=Decimal("2.0"))
+        original = make_dex_params(sd_multiplier=Decimal("2.0"))
 
         copied = original.model_copy()
         assert copied.sd_multiplier == original.sd_multiplier
@@ -142,17 +138,47 @@ class TestParamsInteroperability:
         assert original.sd_multiplier == Decimal("2.0")
 
     def test_dex_params_update(self):
-        original = DexParams()
+        original = make_dex_params()
         updated = DexParams(**{**original.model_dump(), "sd_multiplier": Decimal("2.5")})
         assert updated.sd_multiplier == Decimal("2.5")
 
     def test_params_from_dict(self):
-        stored_config = {
-            "sd_multiplier": "1.8",
-            "min_tick_width": 150,
-        }
+        """DB always stores a full DexParams dump; partial dicts are not valid."""
+        stored_config = make_dex_params(sd_multiplier="1.8", min_tick_width=150).model_dump()
 
         params = DexParams(**stored_config)
 
         assert params.sd_multiplier == Decimal("1.8")
         assert params.min_tick_width == 150
+
+
+class TestStartupParamRestoration:
+    """Verify that persisted DexParams survive a round-trip through the DB serialisation."""
+
+    @pytest.mark.asyncio
+    async def test_persisted_params_restored_on_startup(self):
+        """Params saved to DB as JSON are correctly reconstructed into DexParams on startup."""
+        from tests.fakes import FakeDexAdapter
+
+        venue = FakeDexAdapter()
+        original = make_dex_params(sd_multiplier=Decimal("4.5"), downside_skew=Decimal("0.6"))
+        # Simulate what update_venue_config stores: model_dump(mode="json") → json-safe dict
+        stored = original.model_dump(mode="json")
+
+        # Simulate what startup does: reconstruct from stored dict
+        venue.params = DexParams(**stored)
+
+        assert venue.params.sd_multiplier == Decimal("4.5")
+        assert venue.params.downside_skew == Decimal("0.6")
+
+    def test_model_dump_json_is_fully_serialisable(self):
+        """model_dump(mode='json') must produce a dict json.dumps can handle."""
+        import json
+        params = make_dex_params(sd_multiplier=Decimal("3.14"), ewma_lambda=Decimal("0.975"))
+        serialised = params.model_dump(mode="json")
+        # Must not raise
+        json.dumps(serialised)
+        # Must round-trip
+        restored = DexParams(**serialised)
+        assert restored.sd_multiplier == params.sd_multiplier
+        assert restored.ewma_lambda == params.ewma_lambda

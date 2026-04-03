@@ -4,7 +4,7 @@ import time
 import pytest
 from decimal import Decimal
 
-from engine.core.arbitrage.pool_state import (
+from engine.market.pool_state import (
     get_cached_pool_state,
     update_pool_state_from_event,
     swap_token0_for_token1,
@@ -85,7 +85,7 @@ class TestUpdatePoolStateFromEvent:
     """update_pool_state_from_event mutates _POOL_CACHE correctly."""
 
     def test_creates_new_entry(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         fake_cache: dict = {}
         monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
 
@@ -105,7 +105,7 @@ class TestUpdatePoolStateFromEvent:
         assert entry["sqrt_p"] == Decimal(int(_BASE_SQRT_X96))
 
     def test_overwrites_existing_entry(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         fake_cache = {
             "0xpool": {
                 "tick": 0, "liquidity": Decimal(1), "fee": Decimal("0"),
@@ -120,7 +120,7 @@ class TestUpdatePoolStateFromEvent:
         assert entry["tick"] == -100
 
     def test_timestamp_set(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         fake_cache: dict = {}
         monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
 
@@ -147,7 +147,7 @@ class TestGetCachedPoolState:
         assert fee == Decimal("0.0005")
 
     def test_cold_cache_returns_nones(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         monkeypatch.setattr(_ps, "_POOL_CACHE", {})
         result = get_cached_pool_state("0xnonexistent")
         assert all(v is None for v in result)
