@@ -89,6 +89,7 @@ class UniswapBaseV4Adapter(V4LPAdapter):
                 tick_spacing=config.tick_spacing,
                 hooks=config.hooks,
                 invert_price=config.invert_price,
+                cngn_is_token0=config.cngn_is_token0,
                 position_manager=config.position_manager,
             )
 

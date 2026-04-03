@@ -634,7 +634,8 @@ class TradingScheduler:
 
             tick_lower, tick_upper = venue.calculate_tick_range(prices, recovery_price=recovery_price)
 
-            await venue.prepare_lp_balance(tick_lower, tick_upper)
+            if await venue.prepare_lp_balance(tick_lower, tick_upper) is False:
+                return False
             amount0, amount1 = venue.calculate_mint_amounts()
 
             if amount0 == 0 and amount1 == 0:

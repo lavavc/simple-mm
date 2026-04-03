@@ -449,7 +449,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         r1_dec = Decimal(str(r1))
         return r0_dec, r1_dec
 
-    async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> None:
+    async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> bool | None:
         """Swap LP wallet tokens to the ratio required by the pool at the current price.
 
         Reads the current sqrtPriceX96 from pool Slot0, computes the target token0/token1
@@ -512,6 +512,7 @@ class V4LPAdapter(BaseV4DexAdapter):
 
         if result.status != "confirmed":
             logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
+            return False
 
     # === Strategy math ===
 

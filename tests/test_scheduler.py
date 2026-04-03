@@ -314,6 +314,21 @@ class TestCreateDexPosition:
         assert any(b.get("data", {}).get("action") == "position_created" for b in action_broadcasts)
 
     @pytest.mark.asyncio
+    async def test_failed_prepare_lp_balance_skips_mint(self, fake_dex_adapter):
+        fake_dex_adapter.prepare_lp_balance = AsyncMock(return_value=False)
+
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        with patch("engine.core.scheduler.get_db", AsyncMock(return_value=db)):
+            result = await sched._create_dex_position(fake_dex_adapter)
+
+        assert result is False
+        assert len(fake_dex_adapter.minted) == 0
+        db.insert_action.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_recovery_price_passed_through(self, fake_dex_adapter):
         """recovery_price is forwarded to calculate_tick_range."""
         prices_received = []

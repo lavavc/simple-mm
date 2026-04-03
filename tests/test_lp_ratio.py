@@ -162,13 +162,13 @@ class TestPrepareLpBalance:
 
     @pytest.mark.asyncio
     async def test_failed_swap_logs_warning_and_returns(self):
-        """If the ratio swap fails, prepare_lp_balance logs and returns without raising."""
+        """If the ratio swap fails, prepare_lp_balance logs and returns False."""
         sqrt_p = _price_to_sqrt_x96(1.0)
         failed = TxResult(hash="", status="failed", error="reverted")
         adapter = _make_balance_adapter(sqrt_p, 1_000_000_000, 0, swap_result=failed)
-        # Should not raise; engine will log and proceed to mint with wrong ratio
-        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        result = await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_called_once()
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_target1_never_negative_near_upper_bound(self):
