@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import secrets
 import signal
 import time
 from typing import Optional
@@ -22,6 +23,7 @@ _arbitrage_engine = None
 _account_manager = None
 _token_contracts: dict = {}
 _recent_alerts: dict[str, float] = {}
+_pending_withdrawals: dict[str, tuple[str, str | None]] = {}
 
 
 def _auth(update: Update) -> bool:
@@ -172,9 +174,11 @@ async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if venue not in ("uni-base", "uni-bsc"):
         await update.message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
         return
+    token = secrets.token_hex(4)
+    _pending_withdrawals[token] = (venue, to_address)
     await update.message.reply_text(
         f"⚠️ Withdraw LP positions: *{venue}* → `{to_address}`. Confirm?",
-        reply_markup=_confirm_kb(f"withdraw:{venue}:{to_address}"),
+        reply_markup=_confirm_kb(f"wd:{token}"),
         parse_mode="Markdown",
     )
 
@@ -248,10 +252,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "confirm:resume":
         await _scheduler.resume()
         await query.edit_message_text("▶️ Trading resumed.")
-    elif data.startswith("confirm:withdraw:"):
-        parts = data.split(":", 3)
-        venue = parts[2]
-        to_address = parts[3] if len(parts) > 3 else None
+    elif data.startswith("confirm:wd:"):
+        token = data.split(":", 2)[2]
+        pending = _pending_withdrawals.pop(token, None)
+        if pending is None:
+            await query.edit_message_text("❌ Withdraw request expired or not found.")
+            return
+        venue, to_address = pending
         await query.edit_message_text(f"⏳ Withdrawing {venue}...")
         msg = await _do_withdraw(venue, to_address)
         await query.message.reply_text(msg)
