@@ -7,14 +7,18 @@ from pydantic import BaseModel
 
 
 class DexParams(BaseModel):
-    """Parameters for DEX position management."""
+    """Parameters for DEX position management.
 
-    # Range calculation
-    sd_multiplier: Decimal = Decimal("2.5")
-    min_tick_width: int = 100
-    max_tick_width: int = 1000
-    lookback_points: Optional[int] = None
-    rebalance_threshold_percent: Decimal = Decimal("10.0")
-    max_slippage_percent: Decimal = Decimal("1.0")
-    downside_skew: Decimal = Decimal("0.4")   # fraction of range below current price (0.5 = symmetric)
-    ewma_lambda: Decimal = Decimal("0.99")    # EWMA decay factor for volatility estimation
+    No defaults — all values must be supplied explicitly (from config.py env vars or
+    persisted overrides). This prevents silent divergence between the dataclass and
+    the operator-visible settings in config.py.
+    """
+
+    sd_multiplier: Decimal
+    min_tick_width: int
+    max_tick_width: int
+    lookback_points: Optional[int] = None  # None = use all available prices
+    rebalance_threshold_percent: Decimal
+    max_slippage_percent: Decimal
+    downside_skew: Decimal
+    ewma_lambda: Decimal

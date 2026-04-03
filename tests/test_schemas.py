@@ -10,7 +10,6 @@ from engine.api.schemas import (
     VenuePriceResponse,
     VenueStatus,
     SystemStatus,
-    DexParams,
     CexParams,
     WalletParams,
     GlobalPosition,

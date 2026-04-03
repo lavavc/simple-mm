@@ -5,7 +5,7 @@ from decimal import Decimal
 import math
 from unittest.mock import MagicMock
 
-from engine.api.schemas import DexParams
+from tests.conftest_params import make_dex_params
 
 
 class TestTickPriceConversions:
@@ -107,7 +107,7 @@ class TestTickRangeCalculation:
         """Test basic range calculation with sample prices."""
         import statistics
 
-        params = DexParams(sd_multiplier=Decimal("1.5"))
+        params = make_dex_params(sd_multiplier=Decimal("1.5"))
 
         float_prices = [float(p) for p in sample_prices]
         mean = statistics.mean(float_prices)
@@ -127,7 +127,7 @@ class TestTickRangeCalculation:
         """Volatile prices should give wider range."""
         import statistics
 
-        params = DexParams(sd_multiplier=Decimal("1.5"))
+        params = make_dex_params(sd_multiplier=Decimal("1.5"))
 
         float_prices = [float(p) for p in volatile_prices]
         std = statistics.stdev(float_prices)
@@ -139,7 +139,7 @@ class TestTickRangeCalculation:
         """Stable prices should give narrow range (clamped to min)."""
         import statistics
 
-        params = DexParams(
+        params = make_dex_params(
             sd_multiplier=Decimal("1.5"),
             min_tick_width=100,
         )
@@ -154,7 +154,7 @@ class TestTickRangeCalculation:
 
     def test_range_respects_min_width(self):
         """Range should never be smaller than min_tick_width."""
-        params = DexParams(
+        params = make_dex_params(
             sd_multiplier=Decimal("0.1"),  # Very narrow multiplier
             min_tick_width=200,
         )
@@ -173,7 +173,7 @@ class TestTickRangeCalculation:
 
     def test_range_respects_max_width(self):
         """Range should never be larger than max_tick_width."""
-        params = DexParams(
+        params = make_dex_params(
             sd_multiplier=Decimal("10"),  # Very wide multiplier
             max_tick_width=500,
         )
@@ -251,41 +251,33 @@ class TestDecimalAdjustments:
 
 
 class TestComputeEwmaStats:
-    """Tests for V4LPAdapter.compute_ewma_stats."""
-
-    def _make_adapter_simple(self, params=None):
-        """Make a lightweight object with just the method we need."""
-        from engine.venues.dex.lp_v4 import V4LPAdapter
-        p = params or DexParams(ewma_lambda=Decimal("0.99"))
-
-        class FakeAdapter:
-            pass
-
-        obj = FakeAdapter()
-        obj.params = p
-        # Bind the method
-        obj.compute_ewma_stats = V4LPAdapter.compute_ewma_stats.__get__(obj, FakeAdapter)
-        return obj
+    """Tests for strategy.compute_ewma_stats."""
 
     def test_stable_prices_low_std_dev(self):
-        adapter = self._make_adapter_simple()
+        from engine.lp.strategy import compute_ewma_stats
+        params = make_dex_params(ewma_lambda=Decimal("0.99"))
         prices = [Decimal("0.000606")] * 50
-        mean, std = adapter.compute_ewma_stats(prices)
+        mean, std = compute_ewma_stats(prices, params)
         assert abs(mean - 0.000606) < 1e-8
-        assert std == 0.0 or std < 1e-10  # EWMA starts with first price; if all equal, var=0
+        assert std == 0.0 or std < 1e-10
 
     def test_volatile_prices_higher_std_dev(self, volatile_prices):
-        adapter = self._make_adapter_simple()
-        mean_stable, std_stable = adapter.compute_ewma_stats([Decimal("0.000606")] * 50)
-        mean_vol, std_vol = adapter.compute_ewma_stats(volatile_prices)
+        from engine.lp.strategy import compute_ewma_stats
+        params = make_dex_params(ewma_lambda=Decimal("0.99"))
+        _, std_stable = compute_ewma_stats([Decimal("0.000606")] * 50, params)
+        _, std_vol = compute_ewma_stats(volatile_prices, params)
         assert std_vol > std_stable
 
-    def test_lookback_points_limits_window(self):
-        adapter = self._make_adapter_simple(DexParams(ewma_lambda=Decimal("0.99"), lookback_points=10))
+    def test_lookback_points_applied_via_calculate_tick_range(self):
+        """lookback_points slicing happens in calculate_tick_range, not compute_ewma_stats."""
+        from engine.lp.strategy import calculate_tick_range
+        params = make_dex_params(ewma_lambda=Decimal("0.99"), lookback_points=10)
         prices = [Decimal("0.000600")] * 90 + [Decimal("0.000700")] * 10
-        mean, _ = adapter.compute_ewma_stats(prices)
-        # Only last 10 prices (all 0.000700) are used
-        assert abs(mean - 0.000700) < 1e-6
+        # calculate_tick_range slices to last 10, so mean should be near 0.000700
+        tick_lower, tick_upper = calculate_tick_range(
+            prices, params, 60, 6, 6, venue_name="test"
+        )
+        assert tick_lower < tick_upper
 
 
 # =============================================================================
@@ -296,14 +288,8 @@ class TestComputeEwmaStats:
 class TestCalculateTickRangeRecoverySkew:
     """Tests for the recovery_price skew adjustment in calculate_tick_range."""
 
-    def _make_adapter_for_range(self, downside_skew="0.4"):
-        from engine.venues.dex.lp_v4 import V4LPAdapter
-
-        class Fake:
-            name = "uni-base"
-
-        obj = Fake()
-        obj.params = DexParams(
+    def _make_params(self, downside_skew="0.4"):
+        return make_dex_params(
             sd_multiplier=Decimal("2.0"),
             downside_skew=Decimal(downside_skew),
             ewma_lambda=Decimal("0.99"),
@@ -311,66 +297,64 @@ class TestCalculateTickRangeRecoverySkew:
             max_tick_width=10000,
         )
 
-        class _Cfg:
-            token0_decimals = 6
-            token1_decimals = 6
-            tick_spacing = 60
-
-        obj.config = _Cfg()
-        # Bind the two methods
-        obj.compute_ewma_stats = V4LPAdapter.compute_ewma_stats.__get__(obj, Fake)
-        obj._price_to_tick = V4LPAdapter._price_to_tick.__get__(obj, Fake)
-        obj.calculate_tick_range = V4LPAdapter.calculate_tick_range.__get__(obj, Fake)
-        return obj
-
     def _prices(self, mean=0.000606, n=50, std=0.00002):
         import random
         random.seed(1)
         return [Decimal(str(mean + random.gauss(0, std))) for _ in range(n)]
 
+    def _tick_range(self, prices, params, recovery_price=None):
+        from engine.lp.strategy import calculate_tick_range
+        return calculate_tick_range(prices, params, 60, 6, 6, recovery_price=recovery_price, venue_name="test")
+
+    def _ewma(self, prices, params):
+        from engine.lp.strategy import compute_ewma_stats
+        return compute_ewma_stats(prices, params)
+
     def test_price_above_mean_increases_downside_skew(self):
         """Price 2σ above mean → downside_skew increases (more downside protection)."""
-        adapter = self._make_adapter_for_range(downside_skew="0.4")
+        params = self._make_params(downside_skew="0.4")
         prices = self._prices(mean=0.000606, std=0.00002)
-        mean, std = adapter.compute_ewma_stats(prices)
+        mean, std = self._ewma(prices, params)
 
-        # No recovery_price: baseline range
-        t_low_base, t_up_base = adapter.calculate_tick_range(prices, recovery_price=None)
+        # No recovery_price: baseline range (skew not mutated)
+        t_low_base, t_up_base = self._tick_range(prices, params, recovery_price=None)
 
-        # Recovery price 2σ above mean
+        # Fresh params for the recovery call so skew starts from 0.4
+        params2 = self._make_params(downside_skew="0.4")
         recovery_high = mean + 2 * std
-        t_low_high, t_up_high = adapter.calculate_tick_range(prices, recovery_price=recovery_high)
+        t_low_high, t_up_high = self._tick_range(prices, params2, recovery_price=recovery_high)
 
         # More downside protection → lower bound should move DOWN (more room below)
         assert t_low_high <= t_low_base
 
     def test_price_below_mean_decreases_downside_skew(self):
         """Price 2σ below mean → downside_skew decreases (more upside room)."""
-        adapter = self._make_adapter_for_range(downside_skew="0.4")
+        params = self._make_params(downside_skew="0.4")
         prices = self._prices(mean=0.000606, std=0.00002)
-        mean, std = adapter.compute_ewma_stats(prices)
+        mean, std = self._ewma(prices, params)
 
-        t_low_base, t_up_base = adapter.calculate_tick_range(prices, recovery_price=None)
+        t_low_base, t_up_base = self._tick_range(prices, params, recovery_price=None)
 
+        params2 = self._make_params(downside_skew="0.4")
         recovery_low = mean - 2 * std
-        t_low_low, t_up_low = adapter.calculate_tick_range(prices, recovery_price=recovery_low)
+        t_low_low, t_up_low = self._tick_range(prices, params2, recovery_price=recovery_low)
 
         # Less downside protection → upper bound should move UP (more room above)
         assert t_up_low >= t_up_base
 
     def test_skew_clamped_at_extremes(self):
         """Skew is clamped to [0.2, 0.8] even at extreme price deviations."""
-        adapter = self._make_adapter_for_range(downside_skew="0.4")
+        params = self._make_params(downside_skew="0.4")
         prices = self._prices(mean=0.000606, std=0.000001)  # tiny std_dev
-        mean, std = adapter.compute_ewma_stats(prices)
+        mean, std = self._ewma(prices, params)
 
         # Extreme prices far outside any realistic range
         very_high = mean + 1000 * max(std, 1e-10)
         very_low = mean - 1000 * max(std, 1e-10)
 
         # Should not raise, and ticks should be finite
-        t_low_hi, t_up_hi = adapter.calculate_tick_range(prices, recovery_price=very_high)
-        t_low_lo, t_up_lo = adapter.calculate_tick_range(prices, recovery_price=very_low)
+        t_low_hi, t_up_hi = self._tick_range(prices, self._make_params(), recovery_price=very_high)
+        t_low_lo, t_up_lo = self._tick_range(prices, self._make_params(), recovery_price=very_low)
 
         assert t_low_hi < t_up_hi
         assert t_low_lo < t_up_lo

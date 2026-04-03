@@ -5,7 +5,6 @@ from typing import Optional, Literal
 from decimal import Decimal
 
 from engine.config import settings
-from engine.lp.config import DexParams  # re-exported for backwards compatibility
 
 
 class PriceQuote(BaseModel):

@@ -8,7 +8,8 @@ import subprocess
 import time
 import socket
 
-from engine.api.schemas import DexParams, CexParams, WalletParams
+from engine.api.schemas import CexParams, WalletParams
+from tests.conftest_params import make_dex_params
 
 
 # =============================================================================
@@ -17,21 +18,15 @@ from engine.api.schemas import DexParams, CexParams, WalletParams
 
 
 @pytest.fixture
-def default_dex_params() -> DexParams:
+def default_dex_params():
     """Default DEX parameters."""
-    return DexParams()
+    return make_dex_params()
 
 
 @pytest.fixture
-def conservative_dex_params() -> DexParams:
-    """Conservative DEX parameters with reserves."""
-    return DexParams(
-        max_utilization_percent=Decimal("70"),
-        min_reserve_token0=Decimal("50000"),
-        min_reserve_token1=Decimal("100"),
-        max_position_usd=Decimal("10000"),
-        sd_multiplier=Decimal("2.0"),
-    )
+def conservative_dex_params():
+    """Conservative DEX parameters."""
+    return make_dex_params(sd_multiplier=Decimal("2.0"), rebalance_threshold_percent=Decimal("2.0"))
 
 
 @pytest.fixture

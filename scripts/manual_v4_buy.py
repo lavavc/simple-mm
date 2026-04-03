@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engine.api.schemas import DexParams
 from engine.config import settings
 from engine.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
@@ -41,7 +40,7 @@ def _build_adapter(account: str):
             lp_private_key=lp_key,
             trade_private_key=key,
             rpc_url=settings.base_rpc_url,
-            params=DexParams(),
+            params=settings.uni_base_lp_params,
         )
 
     if account.startswith("uni-bsc"):
@@ -50,7 +49,7 @@ def _build_adapter(account: str):
             lp_private_key=lp_key,
             trade_private_key=key,
             rpc_url=settings.bsc_rpc_url,
-            params=DexParams(),
+            params=settings.uni_bsc_lp_params,
         )
 
     raise ValueError(f"Unsupported account: {account}")

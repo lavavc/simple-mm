@@ -37,7 +37,7 @@ These invariants keep layers independently testable and extractable:
 - `lp/` imports from `venues/` and `market/` only
 - `arb/` imports from `venues/` and `market/` only
 - `lp/` and `arb/` never import from each other
-- `venues/` never imports from `lp/` or `arb/`
+- `venues/` may import `DexParams` from `lp/config.py` (pure data type) but must not import from `lp/strategy.py` or `lp/rebalancer.py`
 
 ---
 

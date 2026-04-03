@@ -13,13 +13,13 @@ import structlog
 from engine.config import settings
 from engine.db import get_db
 from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.lp.config import DexParams
 from engine.api.schemas import (
     PriceQuote,
     Position,
     VenueStatus,
     VenuePriceResponse,
     SystemStatus,
-    DexParams,
     CexParams,
     Alert,
     GlobalPosition,
@@ -535,7 +535,9 @@ async def update_venue_params(venue: str, params: dict):
     venue_adapter = _venues[venue]
     if hasattr(venue_adapter, "params"):
         if isinstance(venue_adapter, V4LPAdapter):
-            venue_adapter.params = DexParams(**params)
+            merged = venue_adapter.params.model_dump()
+            merged.update(params)
+            venue_adapter.params = DexParams(**merged)
         else:
             venue_adapter.params = CexParams(**params)
 

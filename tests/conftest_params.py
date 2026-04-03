@@ -6,7 +6,7 @@ directly to avoid breaking when production defaults change.
 """
 
 from decimal import Decimal
-from engine.api.schemas import DexParams
+from engine.lp.config import DexParams
 
 
 def make_dex_params(**overrides) -> DexParams:
@@ -18,7 +18,7 @@ def make_dex_params(**overrides) -> DexParams:
 
     Usage:
         params = make_dex_params()  # All test defaults
-        params = make_dex_params(max_utilization_percent=Decimal("50"))  # Override one
+        params = make_dex_params(sd_multiplier=Decimal("2.0"))  # Override one
     """
     defaults = {
         "sd_multiplier": Decimal("1.5"),
@@ -27,8 +27,8 @@ def make_dex_params(**overrides) -> DexParams:
         "lookback_points": None,
         "rebalance_threshold_percent": Decimal("5.0"),
         "max_slippage_percent": Decimal("1.0"),
+        "downside_skew": Decimal("0.4"),
+        "ewma_lambda": Decimal("0.99"),
     }
     defaults.update(overrides)
     return DexParams(**defaults)
-
-

@@ -7,7 +7,7 @@ affect the amounts deployed to LP.
 """
 
 from decimal import Decimal
-from engine.api.schemas import DexParams
+from engine.lp.config import DexParams
 
 
 def simulate_capital_allocation(

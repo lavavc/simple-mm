@@ -12,7 +12,8 @@ from web3 import Web3
 from web3.middleware import geth_poa_middleware
 from web3.types import TxReceipt
 
-from engine.api.schemas import DexParams, Position, PriceQuote, TxResult
+from engine.api.schemas import Position, PriceQuote, TxResult
+from engine.lp.config import DexParams
 from engine.venues.base import VenueAdapter
 from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 

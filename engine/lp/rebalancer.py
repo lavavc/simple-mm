@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, Callable, Any
 
 import structlog
 
+from engine.lp import strategy
+
 if TYPE_CHECKING:
     from engine.venues.dex.lp_v4 import V4LPAdapter
 
@@ -69,7 +71,14 @@ class LPRebalancer:
                 logger.warning("insufficient_price_history", venue=venue.name, count=len(prices))
                 return False
 
-            tick_lower, tick_upper = venue.calculate_tick_range(prices, recovery_price=recovery_price)
+            tick_lower, tick_upper = strategy.calculate_tick_range(
+                prices, venue.params, venue.config.tick_spacing,
+                venue.config.token0_decimals, venue.config.token1_decimals,
+                recovery_price=recovery_price, venue_name=venue.name,
+            )
+            if recovery_price is not None:
+                db = await self._db_getter()
+                await db.update_venue_config(venue.name, venue.params.model_dump(mode="json"))
 
             if await venue.prepare_lp_balance(tick_lower, tick_upper) is False:
                 return False
