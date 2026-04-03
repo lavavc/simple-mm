@@ -52,13 +52,8 @@ The engine does not auto-compound fees. Collected fees sit in the LP wallet unti
 
 ## Capital deployment
 
-LP deployment is controlled by two explicit fields on `DexParams`:
+The engine always deploys the full LP wallet balance. Before minting, it reads the current pool price and tick range to compute the required token ratio (using exact tick math — `downside_skew` is not consulted here), then swaps the surplus of whichever token is over-weight so the correct split is available for the mint. No manual deployment amounts are required.
 
-| Field | Default | Meaning |
-|-------|---------|---------|
-| `deploy_token0` | `0` | cNGN amount to use for LP |
-| `deploy_token1` | `0` | USDC/USDT amount to use for LP |
+Single-token deposits work: fund the LP account with only cNGN or only USDC/USDT and the engine will swap to the correct ratio automatically on the next rebalance cycle.
 
-Defaults to `0` — nothing is deployed until explicitly configured. The engine caps each value to the actual wallet balance, so setting a large number is safe.
-
-Configure in `engine/config.py` and restart the engine. See [Operations](operations) for runtime controls.
+See [Operations](operations) for how to fund and withdraw.

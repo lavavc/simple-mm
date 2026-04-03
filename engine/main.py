@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-from decimal import Decimal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -26,7 +25,7 @@ from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.api import routes
-from engine.api.schemas import DexParams, CexParams, ArbitrageParams
+from engine.api.schemas import CexParams, ArbitrageParams
 from engine.bot import telegram as bot
 
 # Configure structured logging
@@ -90,11 +89,6 @@ async def init_venues(acct_manager: AccountManager | None = None):
                 lp_private_key=lp_key,
                 trade_private_key=trade_key,
                 rpc_url=settings.base_rpc_url,
-                params=DexParams(
-                    sd_multiplier=Decimal("2.75"),
-                    ewma_lambda=Decimal("0.975"),
-                    downside_skew=Decimal("0.3"),
-                ),
             )
             logger.info("venue_initialized", venue="uni-base")
         except ValueError as e:
@@ -108,11 +102,6 @@ async def init_venues(acct_manager: AccountManager | None = None):
             venues["uni-bsc"] = UniswapBscV4Adapter(
                 lp_private_key=lp_key,
                 trade_private_key=trade_key,
-                params=DexParams(
-                    sd_multiplier=Decimal("3.0"),
-                    ewma_lambda=Decimal("0.975"),
-                    downside_skew=Decimal("0.5"),
-                ),
             )
             logger.info("venue_initialized", venue="uni-bsc")
         except ValueError as e:

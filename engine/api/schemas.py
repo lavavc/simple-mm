@@ -108,10 +108,6 @@ class DexParams(BaseModel):
     downside_skew: Decimal = Decimal("0.4")   # fraction of range below current price (0.5 = symmetric)
     ewma_lambda: Decimal = Decimal("0.99")    # EWMA decay factor for volatility estimation
 
-    # Capital allocation - explicit amounts to deploy (0 = deploy nothing)
-    deploy_token0: Decimal = Decimal("0")  # Absolute amount of token0 to use for LP
-    deploy_token1: Decimal = Decimal("0")  # Absolute amount of token1 to use for LP
-
 
 class CexParams(BaseModel):
     """Parameters for CEX order ladder."""

@@ -6,7 +6,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from web3 import Web3
 import structlog
 
 from engine.config import settings
@@ -421,9 +422,20 @@ async def resume_trading():
 # === Venue Control Routes ===
 
 
+class WithdrawRequest(BaseModel):
+    to_address: str  # required — forces explicit destination, prevents accidental re-deployment
+
+    @field_validator("to_address")
+    @classmethod
+    def validate_address(cls, v: str) -> str:
+        if not Web3.is_address(v):
+            raise ValueError(f"Invalid Ethereum address: {v!r}")
+        return v
+
+
 @router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])
-async def withdraw_venue_position(venue: str):
-    """Remove all active LP positions for a DEX venue immediately."""
+async def withdraw_venue_position(venue: str, body: WithdrawRequest):
+    """Remove all active LP positions for a DEX venue and send tokens to the specified address."""
     if venue not in _venues:
         raise HTTPException(status_code=404, detail="Venue not found")
 
@@ -437,7 +449,7 @@ async def withdraw_venue_position(venue: str):
 
     results = []
     for token_id in token_ids:
-        result = await adapter.remove_position(token_id)
+        result = await adapter.remove_position(token_id, recipient=body.to_address)
         results.append({"token_id": token_id, "status": result.status, "hash": result.hash})
         if result.status != "confirmed":
             logger.error("withdraw_position_failed", venue=venue, token_id=token_id, error=result.error)
@@ -445,9 +457,9 @@ async def withdraw_venue_position(venue: str):
     _scheduler.broadcast({
         "type": "alert",
         "severity": "warning",
-        "message": f"LP positions withdrawn on {venue}: {[r['token_id'] for r in results]}",
+        "message": f"LP positions withdrawn on {venue} to {body.to_address}: {[r['token_id'] for r in results]}",
     })
-    logger.info("venue_positions_withdrawn", venue=venue, results=results)
+    logger.info("venue_positions_withdrawn", venue=venue, to_address=body.to_address, results=results)
     return {"venue": venue, "removed": results}
 
 

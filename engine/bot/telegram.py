@@ -165,13 +165,16 @@ async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
     args = context.args
-    venue = args[0] if args else "all"
-    if venue not in ("uni-base", "uni-bsc", "all"):
-        await update.message.reply_text("Usage: /withdraw <uni-base|uni-bsc|all>")
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
+        return
+    venue, to_address = args[0], args[1]
+    if venue not in ("uni-base", "uni-bsc"):
+        await update.message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
         return
     await update.message.reply_text(
-        f"⚠️ Withdraw LP positions: *{venue}*. Confirm?",
-        reply_markup=_confirm_kb(f"withdraw:{venue}"),
+        f"⚠️ Withdraw LP positions: *{venue}* → `{to_address}`. Confirm?",
+        reply_markup=_confirm_kb(f"withdraw:{venue}:{to_address}"),
         parse_mode="Markdown",
     )
 
@@ -213,7 +216,7 @@ async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Callback handler ---
 
-async def _do_withdraw(venue: str) -> str:
+async def _do_withdraw(venue: str, to_address: str | None = None) -> str:
     from engine.venues.dex.lp_v4 import V4LPAdapter
     if venue == "all":
         targets = {k: v for k, v in _venues.items() if isinstance(v, V4LPAdapter)}
@@ -224,7 +227,7 @@ async def _do_withdraw(venue: str) -> str:
     results = []
     for name, adapter in targets.items():
         for token_id in adapter.get_owned_positions():
-            result = await adapter.remove_position(token_id)
+            result = await adapter.remove_position(token_id, recipient=to_address)
             results.append(f"{name}#{token_id}: {result.status}")
     return ("✅ Withdrawn:\n" + "\n".join(results)) if results else f"ℹ️ No positions on {venue}."
 
@@ -246,9 +249,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _scheduler.resume()
         await query.edit_message_text("▶️ Trading resumed.")
     elif data.startswith("confirm:withdraw:"):
-        venue = data.split(":", 2)[2]
+        parts = data.split(":", 3)
+        venue = parts[2]
+        to_address = parts[3] if len(parts) > 3 else None
         await query.edit_message_text(f"⏳ Withdrawing {venue}...")
-        msg = await _do_withdraw(venue)
+        msg = await _do_withdraw(venue, to_address)
         await query.message.reply_text(msg)
     elif data == "confirm:shutdown:unwind":
         await query.edit_message_text("⏳ Unwinding positions and stopping...")

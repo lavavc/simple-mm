@@ -1,89 +1,50 @@
-"""Unit tests for DEX capital allocation logic."""
+"""Unit tests for V4LPAdapter.calculate_mint_amounts."""
 
-import pytest
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from engine.api.schemas import DexParams
-from tests.conftest_params import make_dex_params
+from engine.venues.dex.lp_v4 import V4LPAdapter
 
 
-def allocate(
-    balance0: Decimal,
-    balance1: Decimal,
-    deploy0: Decimal,
-    deploy1: Decimal,
-    token0_decimals: int = 18,
-    token1_decimals: int = 6,
-) -> tuple[Decimal, Decimal]:
-    """Simulate calculate_mint_amounts() without web3."""
-    amount0 = min(deploy0, balance0)
-    amount1 = min(deploy1, balance1)
-    return (
-        Decimal(int(amount0 * Decimal(10**token0_decimals))) / Decimal(10**token0_decimals),
-        Decimal(int(amount1 * Decimal(10**token1_decimals))) / Decimal(10**token1_decimals),
+def _make_adapter(balance0_raw: int, balance1_raw: int) -> SimpleNamespace:
+    """Minimal self-mock for V4LPAdapter.calculate_mint_amounts."""
+    token0 = MagicMock()
+    token0.functions.balanceOf.return_value.call.return_value = balance0_raw
+    token1 = MagicMock()
+    token1.functions.balanceOf.return_value.call.return_value = balance1_raw
+    return SimpleNamespace(
+        token0=token0,
+        token1=token1,
+        lp_account=SimpleNamespace(address="0xLP"),
+        config=SimpleNamespace(token0_decimals=6, token1_decimals=6),
+        name="uni-base",
     )
 
 
-class TestDeployAmounts:
-    def test_deploys_configured_amount(self):
-        a0, a1 = allocate(
-            balance0=Decimal("1000000"),
-            balance1=Decimal("1000"),
-            deploy0=Decimal("500000"),
-            deploy1=Decimal("400"),
-        )
-        assert a0 == Decimal("500000")
-        assert a1 == Decimal("400")
+class TestCalculateMintAmounts:
+    def test_returns_full_lp_wallet_balance(self):
+        adapter = _make_adapter(500_000_000_000, 600_000_000)
+        a0, a1 = V4LPAdapter.calculate_mint_amounts(adapter)
+        assert a0 == 500_000_000_000
+        assert a1 == 600_000_000
 
-    def test_capped_by_balance(self):
-        """Never deploys more than the wallet holds."""
-        a0, a1 = allocate(
-            balance0=Decimal("100"),
-            balance1=Decimal("50"),
-            deploy0=Decimal("999999"),
-            deploy1=Decimal("999999"),
-        )
-        assert a0 == Decimal("100")
-        assert a1 == Decimal("50")
+    def test_zero_balance_returns_zero(self):
+        adapter = _make_adapter(0, 0)
+        a0, a1 = V4LPAdapter.calculate_mint_amounts(adapter)
+        assert a0 == 0
+        assert a1 == 0
 
-    def test_zero_deploy_deploys_nothing(self):
-        a0, a1 = allocate(
-            balance0=Decimal("1000000"),
-            balance1=Decimal("1000"),
-            deploy0=Decimal("0"),
-            deploy1=Decimal("0"),
-        )
-        assert a0 == Decimal("0")
-        assert a1 == Decimal("0")
+    def test_single_token_deposit(self):
+        """Only token0 funded — returns full raw balance; ratio swap is handled by prepare_lp_balance."""
+        adapter = _make_adapter(1_000_000_000, 0)
+        a0, a1 = V4LPAdapter.calculate_mint_amounts(adapter)
+        assert a0 == 1_000_000_000
+        assert a1 == 0
 
-    def test_zero_balance_deploys_nothing(self):
-        a0, a1 = allocate(
-            balance0=Decimal("0"),
-            balance1=Decimal("0"),
-            deploy0=Decimal("500000"),
-            deploy1=Decimal("500"),
-        )
-        assert a0 == Decimal("0")
-        assert a1 == Decimal("0")
-
-    def test_partial_balance(self):
-        """Deploy amount partially covered by balance uses what's available."""
-        a0, a1 = allocate(
-            balance0=Decimal("300"),
-            balance1=Decimal("1000"),
-            deploy0=Decimal("500"),
-            deploy1=Decimal("200"),
-        )
-        assert a0 == Decimal("300")  # capped by balance
-        assert a1 == Decimal("200")  # deploy < balance, use deploy
-
-    def test_asymmetric_deploy(self):
-        """Each token is capped independently."""
-        a0, a1 = allocate(
-            balance0=Decimal("1000"),
-            balance1=Decimal("50"),
-            deploy0=Decimal("500"),
-            deploy1=Decimal("200"),
-        )
-        assert a0 == Decimal("500")   # deploy < balance
-        assert a1 == Decimal("50")    # capped by balance
+    def test_asymmetric_balances(self):
+        """Each token is returned as-is regardless of ratio."""
+        adapter = _make_adapter(1_000_000, 50_000)
+        a0, a1 = V4LPAdapter.calculate_mint_amounts(adapter)
+        assert a0 == 1_000_000
+        assert a1 == 50_000

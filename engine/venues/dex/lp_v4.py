@@ -10,10 +10,18 @@ from eth_abi import encode
 from web3 import Web3
 
 from engine.api.schemas import DexParams, LPPosition, Position, TxResult
-from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState, _decode_uint256, _encode_balance_of
+from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 
 logger = structlog.get_logger()
+
+_Q96 = 2 ** 96  # shared constant — used in float, int, and Decimal contexts below
+
+
+def _tick_to_sqrt_x96(tick: int) -> float:
+    """Return sqrtPriceX96 as a float for a given tick."""
+    return math.exp(tick * math.log(1.0001) / 2) * _Q96
+
 
 # V4 PositionManager action codes
 _V4_LP_MINT_POSITION      = 0
@@ -21,8 +29,6 @@ _V4_LP_DECREASE_LIQUIDITY = 2
 _V4_LP_BURN_POSITION      = 3
 _V4_LP_SETTLE_PAIR        = 17  # 0x11
 _V4_LP_TAKE_PAIR          = 18  # 0x12
-
-_DEFAULT_LP_GAS = 500_000
 
 POSITION_MANAGER_ABI = [
     {
@@ -165,7 +171,6 @@ class V4LPAdapter(BaseV4DexAdapter):
             sqrt_price_x96 = int(slot0[0])
             current_tick = int(slot0[1])
 
-            from .shared import sqrt_price_x96_to_decimal
             current_price = sqrt_price_x96_to_decimal(
                 sqrt_price_x96,
                 self.config.token0_decimals,
@@ -194,34 +199,11 @@ class V4LPAdapter(BaseV4DexAdapter):
 
     async def get_position(self) -> Position:
         """Get current position including real LP data."""
-        multicall = self.w3.eth.contract(
-            address=Web3.to_checksum_address(MULTICALL3_ADDRESS),
-            abi=MULTICALL3_ABI,
-        )
-        results = multicall.functions.aggregate3([
-            (Web3.to_checksum_address(self.config.token0_address), True, _encode_balance_of(self.lp_account.address)),
-            (Web3.to_checksum_address(self.config.token0_address), True, _encode_balance_of(self.trade_account.address)),
-            (Web3.to_checksum_address(self.config.token1_address), True, _encode_balance_of(self.lp_account.address)),
-            (Web3.to_checksum_address(self.config.token1_address), True, _encode_balance_of(self.trade_account.address)),
-        ]).call()
-
-        t0_amount = Decimal(
-            (_decode_uint256(results[0][1]) if results[0][0] else 0)
-            + (_decode_uint256(results[1][1]) if results[1][0] else 0)
-        ) / Decimal(10 ** self.config.token0_decimals)
-        t1_amount = Decimal(
-            (_decode_uint256(results[2][1]) if results[2][0] else 0)
-            + (_decode_uint256(results[3][1]) if results[3][0] else 0)
-        ) / Decimal(10 ** self.config.token1_decimals)
-
-        lp_position = None
+        pos = await super().get_position()
         token_ids = self.get_owned_positions()
-        pos_state = None
-        if token_ids:
-            pos_state = self.get_position_state(token_ids[0])
-
-        position_value_usd, volume_24h_usd, our_share_pct = self.get_pool_metrics(pos_state)
-
+        pos_state = self.get_position_state(token_ids[0]) if token_ids else None
+        position_value_usd, _, our_share_pct = self.get_pool_metrics(pos_state)
+        lp_position = None
         if pos_state:
             lp_position = LPPosition(
                 token_id=str(pos_state.token_id),
@@ -231,26 +213,7 @@ class V4LPAdapter(BaseV4DexAdapter):
                 in_range=pos_state.in_range,
                 our_share_pct=our_share_pct,
             )
-
-        balances = {"cngn": Decimal(0), "usdt": Decimal(0), "usdc": Decimal(0)}
-        for sym, amount in [
-            (self.config.token0_symbol.lower(), t0_amount),
-            (self.config.token1_symbol.lower(), t1_amount),
-        ]:
-            if sym in balances:
-                balances[sym] = amount
-            else:
-                balances["usdt"] = amount
-
-        return Position(
-            venue=self.name,
-            pair=f"{self.config.token0_symbol}/{self.config.token1_symbol}",
-            timestamp=int(_time.time() * 1000),
-            balances=balances,
-            lp_position=lp_position,
-            position_value_usd=position_value_usd,
-            volume_24h_usd=volume_24h_usd,
-        )
+        return pos.model_copy(update={"lp_position": lp_position, "position_value_usd": position_value_usd})
 
     # === LP operations ===
 
@@ -297,10 +260,12 @@ class V4LPAdapter(BaseV4DexAdapter):
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
         tx_params = self._get_tx_params(self.lp_account)
         tx_params["value"] = 0
-        tx_params["gas"] = _DEFAULT_LP_GAS
+        tx_params["gas"] = 2_000_000  # placeholder; replaced by estimate below
         tx = self.position_manager_contract.functions.modifyLiquidities(
             unlock_data, deadline
         ).build_transaction(tx_params)
+        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": 0})
+        tx["gas"] = int(estimated * 1.2)
 
         logger.info(
             "v4_mint_position",
@@ -313,8 +278,13 @@ class V4LPAdapter(BaseV4DexAdapter):
         )
         return await self._send_transaction(tx, self.lp_account)
 
-    async def remove_position(self, token_id: int) -> TxResult:
-        """Remove V4 LP position via modifyLiquidities (decrease + burn + take)."""
+    async def remove_position(self, token_id: int, recipient: str | None = None) -> TxResult:
+        """Remove V4 LP position via modifyLiquidities (decrease + burn + take).
+
+        recipient: address to send withdrawn tokens to. Defaults to the LP account.
+                   Rebalance path passes no recipient (reminting immediately);
+                   manual withdraw path passes the caller's destination address.
+        """
         if not self.position_manager_contract:
             return TxResult(hash="", status="failed", error="no position_manager configured")
 
@@ -323,6 +293,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             return TxResult(hash="", status="failed", error="position not found")
 
         currency0, currency1, _, _, _ = self._resolve_pool_key()
+        to_addr = Web3.to_checksum_address(recipient or self.lp_account.address)
 
         actions = bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR])
         params = [
@@ -336,7 +307,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             ),
             encode(
                 ["address", "address", "address"],
-                [currency0, currency1, self.lp_account.address],
+                [currency0, currency1, to_addr],
             ),
         ]
         unlock_data = encode(["bytes", "bytes[]"], [actions, params])
@@ -344,12 +315,14 @@ class V4LPAdapter(BaseV4DexAdapter):
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
         tx_params = self._get_tx_params(self.lp_account)
         tx_params["value"] = 0
-        tx_params["gas"] = _DEFAULT_LP_GAS
+        tx_params["gas"] = 2_000_000  # placeholder; replaced by estimate below
         tx = self.position_manager_contract.functions.modifyLiquidities(
             unlock_data, deadline
         ).build_transaction(tx_params)
+        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": 0})
+        tx["gas"] = int(estimated * 1.2)
 
-        logger.info("v4_remove_position", venue=self.name, token_id=token_id, liquidity=pos.liquidity)
+        logger.info("v4_remove_position", venue=self.name, token_id=token_id, liquidity=pos.liquidity, recipient=to_addr)
         return await self._send_transaction(tx, self.lp_account)
 
     # === Pool metrics (used by get_position) ===
@@ -372,39 +345,38 @@ class V4LPAdapter(BaseV4DexAdapter):
         if pos_state is None:
             return None, None, None
 
-        from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
+        from engine.core.arbitrage.pool_state import get_cached_pool_state
 
         sqrt_p, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
         if not sqrt_p or not pool_liquidity:
             return None, None, None
 
-        Q96_INT = int(Q96)
         L = pos_state.liquidity
-        sqrt_lower = int(math.exp(pos_state.tick_lower * math.log(1.0001) / 2) * Q96_INT)
-        sqrt_upper = int(math.exp(pos_state.tick_upper * math.log(1.0001) / 2) * Q96_INT)
+        sqrt_lower = int(_tick_to_sqrt_x96(pos_state.tick_lower))
+        sqrt_upper = int(_tick_to_sqrt_x96(pos_state.tick_upper))
         sp = int(sqrt_p)
 
         t0_scale = Decimal(10 ** self.config.token0_decimals)
         t1_scale = Decimal(10 ** self.config.token1_decimals)
 
         if sp <= sqrt_lower:
-            amount0 = Decimal(L * Q96_INT * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
+            amount0 = Decimal(L * _Q96 * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
             amount1 = Decimal(0)
         elif sp >= sqrt_upper:
             amount0 = Decimal(0)
-            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // Q96_INT) / t1_scale
+            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // _Q96) / t1_scale
         else:
-            amount0 = Decimal(L * Q96_INT * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
-            amount1 = Decimal(L * (sp - sqrt_lower) // Q96_INT) / t1_scale
+            amount0 = Decimal(L * _Q96 * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
+            amount1 = Decimal(L * (sp - sqrt_lower) // _Q96) / t1_scale
 
-        if self.config.token0_symbol.upper() == "CNGN":
+        if self.config.cngn_is_token0:
             # Base: token0=cNGN (6 dec), token1=USDC (6 dec)
-            cngn_price_usd = (sqrt_p / Q96) ** 2
+            cngn_price_usd = (sqrt_p / _Q96) ** 2
             position_value_usd = amount0 * cngn_price_usd + amount1
         else:
             # BSC: token0=USDT (18 dec), token1=cNGN (6 dec)
             dec_adj = Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals))
-            cngn_price_usd = Decimal(1) / ((sqrt_p / Q96) ** 2 * dec_adj)
+            cngn_price_usd = Decimal(1) / ((sqrt_p / _Q96) ** 2 * dec_adj)
             position_value_usd = amount0 + amount1 * cngn_price_usd
 
         our_share_pct = Decimal(L) / pool_liquidity * Decimal(100) if pos_state.in_range else Decimal(0)
@@ -414,51 +386,133 @@ class V4LPAdapter(BaseV4DexAdapter):
     # === Capital allocation ===
 
     def calculate_mint_amounts(self) -> tuple[int, int]:
-        """Return raw token amounts to deploy, capped by LP wallet balance."""
-        balance0_raw = self.token0.functions.balanceOf(self.lp_account.address).call()
-        balance1_raw = self.token1.functions.balanceOf(self.lp_account.address).call()
-
-        balance0 = Decimal(balance0_raw) / Decimal(10 ** self.config.token0_decimals)
-        balance1 = Decimal(balance1_raw) / Decimal(10 ** self.config.token1_decimals)
-
-        amount0 = min(self.params.deploy_token0, balance0)
-        amount1 = min(self.params.deploy_token1, balance1)
-
+        """Return full LP wallet balances as raw token amounts to deploy."""
+        balance0 = self.token0.functions.balanceOf(self.lp_account.address).call()
+        balance1 = self.token1.functions.balanceOf(self.lp_account.address).call()
         logger.info(
             "calculated_mint_amounts",
             venue=self.name,
-            balance0=float(balance0),
-            balance1=float(balance1),
-            deploy_token0=float(self.params.deploy_token0),
-            deploy_token1=float(self.params.deploy_token1),
-            amount0=float(amount0),
-            amount1=float(amount1),
+            balance0=balance0 / 10 ** self.config.token0_decimals,
+            balance1=balance1 / 10 ** self.config.token1_decimals,
         )
+        return balance0, balance1
 
-        return (
-            int(amount0 * Decimal(10 ** self.config.token0_decimals)),
-            int(amount1 * Decimal(10 ** self.config.token1_decimals)),
+    async def _ensure_lp_swap_approvals(self, token_in: str) -> None:
+        """Ensure LP account has Permit2 + UniversalRouter approvals for a preparatory swap."""
+        await self._approve_token_to_permit2_if_needed(token_in, account=self.lp_account)
+        await self._approve_permit2_to_router_if_needed(token_in, account=self.lp_account)
+
+    async def _swap_from_lp(self, token_in: str, amount_in: int, min_out: int) -> TxResult:
+        """Swap from the LP account using the same V4 pool (preparatory ratio correction)."""
+        await self._ensure_lp_swap_approvals(token_in)
+        tx, _ = self._build_swap_tx(token_in, amount_in, min_out, account=self.lp_account)
+        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": 0})
+        tx["gas"] = int(estimated * 1.2)
+        token_out = (
+            self.config.token1_address
+            if token_in.lower() == self.config.token0_address.lower()
+            else self.config.token0_address
         )
+        return await self._send_transaction(tx, self.lp_account, output_token=token_out)
 
-    def get_trade_token_balances(self) -> tuple[Decimal, Decimal]:
-        """Return (token0, token1) balances of the trade account in decimal units."""
-        raw0 = self.token0.functions.balanceOf(self.trade_account.address).call()
-        raw1 = self.token1.functions.balanceOf(self.trade_account.address).call()
-        return (
-            Decimal(raw0) / Decimal(10 ** self.config.token0_decimals),
-            Decimal(raw1) / Decimal(10 ** self.config.token1_decimals),
-        )
+    def _compute_required_ratio(
+        self, tick_lower: int, tick_upper: int, sqrt_price_x96: int
+    ) -> tuple[Decimal, Decimal]:
+        """Return (r0, r1) — token amounts per unit of liquidity at the current price.
 
-    async def transfer_from_trade_to_lp(self, token_index: int, amount: Decimal) -> TxResult:
-        """Transfer token0 (index 0) or token1 (index 1) from trade account to LP account."""
-        token = self.token0 if token_index == 0 else self.token1
-        decimals = self.config.token0_decimals if token_index == 0 else self.config.token1_decimals
-        amount_raw = int(amount * Decimal(10 ** decimals))
-        tx = token.functions.transfer(
-            self.lp_account.address, amount_raw
-        ).build_transaction(self._get_tx_params(self.trade_account))
-        tx["gas"] = 100_000
-        return await self._send_transaction(tx, self.trade_account)
+        Pure math, no RPC. Uses pool state only; downside_skew is not consulted.
+        r0 = (sqrt_b − sqrt_p) / (sqrt_p × sqrt_b)   [token0 per unit L when in range]
+        r1 = (sqrt_p − sqrt_a)                         [token1 per unit L when in range]
+        Adjusts for decimal differences between token0 and token1.
+        """
+        sqrt_a = _tick_to_sqrt_x96(tick_lower)
+        sqrt_b = _tick_to_sqrt_x96(tick_upper)
+        sqrt_p = float(sqrt_price_x96)
+
+        # Formulas mirror get_pool_metrics: amount0 = L*Q96*(sqrt_b-sp)/(sp*sqrt_b),
+        # amount1 = L*(sp-sqrt_a)/Q96.  Per-unit-L, with Q96 absorbed:
+        if sqrt_p <= sqrt_a:
+            # Below range: position is entirely in token0
+            r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) * _Q96 if sqrt_a * sqrt_b > 0 else 0.0
+            r1 = 0.0
+        elif sqrt_p >= sqrt_b:
+            # Above range: position is entirely in token1
+            r0 = 0.0
+            r1 = (sqrt_b - sqrt_a) / _Q96
+        else:
+            r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b) * _Q96
+            r1 = (sqrt_p - sqrt_a) / _Q96
+
+        # Adjust for decimal scaling: raw amounts are in different units
+        dec_adj = Decimal(10 ** self.config.token0_decimals) / Decimal(10 ** self.config.token1_decimals)
+        r0_dec = Decimal(str(r0)) / dec_adj
+        r1_dec = Decimal(str(r1))
+        return r0_dec, r1_dec
+
+    async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> bool | None:
+        """Swap LP wallet tokens to the ratio required by the pool at the current price.
+
+        Reads the current sqrtPriceX96 from pool Slot0, computes the target token0/token1
+        split using pure tick math, and swaps the surplus token if the imbalance exceeds 1%
+        of total portfolio value. downside_skew is NOT used here — ratio is pool-state only.
+        """
+        pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
+        slot0 = self.state_view.functions.getSlot0(pool_id_bytes).call()
+        sqrt_price_x96 = int(slot0[0])
+
+        balance0_raw = self.token0.functions.balanceOf(self.lp_account.address).call()
+        balance1_raw = self.token1.functions.balanceOf(self.lp_account.address).call()
+        balance0 = Decimal(balance0_raw) / Decimal(10 ** self.config.token0_decimals)
+        balance1 = Decimal(balance1_raw) / Decimal(10 ** self.config.token1_decimals)
+
+        if balance0 == 0 and balance1 == 0:
+            return
+
+        r0, r1 = self._compute_required_ratio(tick_lower, tick_upper, sqrt_price_x96)
+
+        # Price of token0 in token1 units (for value normalisation)
+        price = (Decimal(sqrt_price_x96) / Decimal(_Q96)) ** 2 * Decimal(
+            10 ** self.config.token0_decimals
+        ) / Decimal(10 ** self.config.token1_decimals)
+
+        # Total value in token1 units
+        total_value = balance0 * price + balance1
+        if total_value == 0:
+            return
+
+        # Target allocations
+        denom = r0 * price + r1 if (r0 * price + r1) > 0 else Decimal(1)
+        target0 = total_value * r0 / denom
+        target1 = max(Decimal(0), total_value - target0 * price)
+
+        imbalance = abs(balance0 - target0) * price
+        threshold = total_value * Decimal("0.01")
+
+        if imbalance <= threshold:
+            logger.info("lp_balance_already_correct", venue=self.name,
+                        balance0=float(balance0), balance1=float(balance1),
+                        target0=float(target0), target1=float(target1))
+            return
+
+        if balance0 > target0:
+            surplus = balance0 - target0
+            surplus_raw = int(surplus * Decimal(10 ** self.config.token0_decimals))
+            min_out = int(surplus * price * Decimal("0.99") * Decimal(10 ** self.config.token1_decimals))
+            logger.info("lp_swap_to_ratio", venue=self.name, direction="token0→token1",
+                        surplus=float(surplus), min_out=min_out)
+            result = await self._swap_from_lp(self.config.token0_address, surplus_raw, min_out)
+        else:
+            surplus = balance1 - target1
+            surplus_raw = int(surplus * Decimal(10 ** self.config.token1_decimals))
+            min_out_dec = surplus / price * Decimal("0.99")
+            min_out = int(min_out_dec * Decimal(10 ** self.config.token0_decimals))
+            logger.info("lp_swap_to_ratio", venue=self.name, direction="token1→token0",
+                        surplus=float(surplus), min_out=min_out)
+            result = await self._swap_from_lp(self.config.token1_address, surplus_raw, min_out)
+
+        if result.status != "confirmed":
+            logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
+            return False
 
     # === Strategy math ===
 
@@ -548,22 +602,21 @@ class V4LPAdapter(BaseV4DexAdapter):
         amount1: int,
     ) -> int:
         """Convert token amounts + tick range to V4 liquidity units."""
-        Q96 = 2 ** 96
-        sqrt_a = int(math.exp(tick_lower * math.log(1.0001) / 2) * Q96)
-        sqrt_b = int(math.exp(tick_upper * math.log(1.0001) / 2) * Q96)
+        sqrt_a = int(_tick_to_sqrt_x96(tick_lower))
+        sqrt_b = int(_tick_to_sqrt_x96(tick_upper))
         sqrt_p = sqrt_price_x96
 
         if sqrt_p <= sqrt_a:
             if sqrt_b == sqrt_a:
                 return 0
-            return amount0 * sqrt_a * sqrt_b // ((sqrt_b - sqrt_a) * Q96)
+            return amount0 * sqrt_a * sqrt_b // ((sqrt_b - sqrt_a) * _Q96)
         elif sqrt_p >= sqrt_b:
             if sqrt_b == sqrt_a:
                 return 0
-            return amount1 * Q96 // (sqrt_b - sqrt_a)
+            return amount1 * _Q96 // (sqrt_b - sqrt_a)
         else:
-            L0 = amount0 * sqrt_p * sqrt_b // ((sqrt_b - sqrt_p) * Q96) if sqrt_b > sqrt_p else 0
-            L1 = amount1 * Q96 // (sqrt_p - sqrt_a) if sqrt_p > sqrt_a else 0
+            L0 = amount0 * sqrt_p * sqrt_b // ((sqrt_b - sqrt_p) * _Q96) if sqrt_b > sqrt_p else 0
+            L1 = amount1 * _Q96 // (sqrt_p - sqrt_a) if sqrt_p > sqrt_a else 0
             if L0 > 0 and L1 > 0:
                 return min(L0, L1)
             return max(L0, L1)
@@ -584,7 +637,7 @@ class V4LPAdapter(BaseV4DexAdapter):
                 self.lp_account.address,
                 Web3.to_checksum_address(pm_addr),
             ).call()
-            if allowance >= 1:
+            if allowance >= 2 ** 128:
                 self._lp_approvals_done.add(cache_key)
                 continue
             tx_params = self._get_tx_params(self.lp_account)

@@ -4,7 +4,7 @@ from .shared import V4PoolReadConfig
 from .v4 import V4ExecutionConfig
 from .lp_v4 import V4LPAdapter
 from engine.api.schemas import DexParams
-from engine.config import settings
+from engine.config import settings, Settings
 
 _BASE_POSITION_MANAGER = "0x7c5f5a4bbd8fd63184577525326123b519429bdc"
 
@@ -43,6 +43,7 @@ UNISWAP_BASE_EXECUTION_CONFIG = V4ExecutionConfig(
     tick_spacing=30,
     hooks="0x0000000000000000000000000000000000000000",
     invert_price=False,
+    cngn_is_token0=True,
     position_manager=_BASE_POSITION_MANAGER,
 )
 
@@ -56,9 +57,14 @@ class UniswapBaseV4Adapter(V4LPAdapter):
         trade_private_key: str | None = None,
         params: DexParams | None = None,
         rpc_url: str | None = None,
+        _settings: Settings = settings,
     ):
         if params is None:
-            params = DexParams()
+            params = DexParams(
+                sd_multiplier=_settings.uni_base_sd_multiplier,
+                ewma_lambda=_settings.uni_base_ewma_lambda,
+                downside_skew=_settings.uni_base_downside_skew,
+            )
         if trade_private_key is None:
             trade_private_key = lp_private_key
 
@@ -83,6 +89,7 @@ class UniswapBaseV4Adapter(V4LPAdapter):
                 tick_spacing=config.tick_spacing,
                 hooks=config.hooks,
                 invert_price=config.invert_price,
+                cngn_is_token0=config.cngn_is_token0,
                 position_manager=config.position_manager,
             )
 

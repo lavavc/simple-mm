@@ -414,7 +414,12 @@ class TradingScheduler:
             try:
                 token_ids = venue.get_owned_positions()
                 if not token_ids:
-                    logger.debug("no_dex_position", venue=name)
+                    amount0, amount1 = venue.calculate_mint_amounts()
+                    if amount0 > 0 or amount1 > 0:
+                        logger.info("no_position_funds_available_minting", venue=name)
+                        await self._create_dex_position(venue)
+                    else:
+                        logger.debug("no_dex_position_no_funds", venue=name)
                     continue
 
                 position = venue.get_position_state(token_ids[0])
@@ -629,6 +634,8 @@ class TradingScheduler:
 
             tick_lower, tick_upper = venue.calculate_tick_range(prices, recovery_price=recovery_price)
 
+            if await venue.prepare_lp_balance(tick_lower, tick_upper) is False:
+                return False
             amount0, amount1 = venue.calculate_mint_amounts()
 
             if amount0 == 0 and amount1 == 0:
@@ -689,7 +696,7 @@ class TradingScheduler:
             return False
 
     async def _rebalance_dex_position(self, venue: V4LPAdapter, token_id: int, position) -> bool:
-        """Remove an out-of-range LP position, top up from the trade account if needed, then remint."""
+        """Remove an out-of-range LP position and remint using the full LP wallet balance."""
         db = await get_db()
 
         try:
@@ -712,46 +719,6 @@ class TradingScheduler:
             )
             logger.info("old_position_removed", venue=venue.name, token_id=token_id, tx_hash=result.hash)
 
-            # --- Determine how much each token is needed and whether trade account can cover it ---
-            lp0, lp1 = venue.calculate_mint_amounts()  # what LP wallet can cover after removal
-            need0 = max(Decimal(0), venue.params.deploy_token0 - Decimal(lp0) / Decimal(10**venue.config.token0_decimals))
-            need1 = max(Decimal(0), venue.params.deploy_token1 - Decimal(lp1) / Decimal(10**venue.config.token1_decimals))
-
-            trade0, trade1 = venue.get_trade_token_balances()
-            transfer0 = min(need0, trade0)
-            transfer1 = min(need1, trade1)
-
-            for token_index, transfer_amount, symbol in [
-                (0, transfer0, venue.config.token0_symbol),
-                (1, transfer1, venue.config.token1_symbol),
-            ]:
-                if transfer_amount > 0:
-                    tr = await venue.transfer_from_trade_to_lp(token_index, transfer_amount)
-                    if tr.status == "confirmed":
-                        logger.info("trade_to_lp_transfer", venue=venue.name,
-                                    token=symbol, amount=float(transfer_amount), tx=tr.hash)
-                    else:
-                        logger.warning("trade_to_lp_transfer_failed", venue=venue.name,
-                                       token=symbol, error=tr.error)
-
-            still_short0 = max(Decimal(0), need0 - transfer0)
-            still_short1 = max(Decimal(0), need1 - transfer1)
-            if still_short0 > 0 or still_short1 > 0:
-                self.broadcast({
-                    "type": "alert", "severity": "warning",
-                    "message": (
-                        f"{venue.name} LP removed — awaiting treasury refill: "
-                        f"need {float(still_short0):.2f} {venue.config.token0_symbol}, "
-                        f"{float(still_short1):.2f} {venue.config.token1_symbol}"
-                    ),
-                })
-            else:
-                self.broadcast({
-                    "type": "alert", "severity": "info",
-                    "message": f"{venue.name} LP removed and topped up from trade account — reminting",
-                })
-
-            # --- Remint with skew adjusted for mean-reversion probability ---
             recovery_price = float(position.current_price)
             return await self._create_dex_position(venue, recovery_price=recovery_price)
 

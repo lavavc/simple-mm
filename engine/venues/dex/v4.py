@@ -139,6 +139,7 @@ class V4ExecutionConfig:
     tick_spacing: Optional[int] = None
     hooks: str = "0x0000000000000000000000000000000000000000"
     invert_price: bool = False
+    cngn_is_token0: bool = False
     position_manager: str = ""
 
 
@@ -287,12 +288,14 @@ class BaseV4DexAdapter(VenueAdapter):
             await self._approve_token_to_permit2_if_needed(token)
             await self._approve_permit2_to_router_if_needed(token)
 
-    def _build_swap_tx(self, token_in: str, amount_in: int, min_amount_out: int) -> tuple[dict, int]:
+    def _build_swap_tx(self, token_in: str, amount_in: int, min_amount_out: int, *, account=None) -> tuple[dict, int]:
         """Build the Universal Router swap transaction. Returns (tx, deadline).
 
         Makes network calls: fetches latest block for deadline, resolves pool key,
         and queries current nonce + gas price via _get_tx_params.
+        account: signing account (default: self.trade_account).
         """
+        acct = account or self.trade_account
         token_out = (
             self.config.token1_address
             if token_in.lower() == self.config.token0_address.lower()
@@ -312,7 +315,7 @@ class BaseV4DexAdapter(VenueAdapter):
             encode(["address", "uint256"], [token_out, min_amount_out]),
         ]
         v4_input = encode(["bytes", "bytes[]"], [actions, params])
-        tx_params = self._get_tx_params(self.trade_account, block=block)
+        tx_params = self._get_tx_params(acct, block=block)
         tx_params["value"] = 0
         tx_params["gas"] = 2_000_000  # placeholder; swap() replaces this with estimate_gas × 1.2
         tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
@@ -485,21 +488,22 @@ class BaseV4DexAdapter(VenueAdapter):
             logger.error("transaction_failed", venue=self.name, account=account.address, error=str(e))
             return TxResult(hash="", status="failed", error=str(e))
 
-    async def _approve_token_to_permit2_if_needed(self, token: str):
-        cache_key = f"erc20_permit2_{token.lower()}"
+    async def _approve_token_to_permit2_if_needed(self, token: str, *, account=None):
+        acct = account or self.trade_account
+        cache_key = f"erc20_permit2_{token.lower()}_{acct.address.lower()}"
         if cache_key in self._approvals_done:
             return
 
         token_contract = self.w3.eth.contract(address=Web3.to_checksum_address(token), abi=ERC20_ABI)
         current = token_contract.functions.allowance(
-            self.trade_account.address,
+            acct.address,
             Web3.to_checksum_address(self.config.permit2),
         ).call()
         logger.info(
             "token_to_permit2_allowance_state",
             venue=self.name,
             token=token,
-            owner=self.trade_account.address,
+            owner=acct.address,
             spender=self.config.permit2,
             allowance=current,
         )
@@ -507,8 +511,8 @@ class BaseV4DexAdapter(VenueAdapter):
             self._approvals_done.add(cache_key)
             return
 
-        logger.info("approving_token_to_permit2", venue=self.name, token=token)
-        tx_params = self._get_tx_params(self.trade_account)
+        logger.info("approving_token_to_permit2", venue=self.name, token=token, account=acct.address)
+        tx_params = self._get_tx_params(acct)
         tx_params["value"] = 0
         tx_params["gas"] = _DEFAULT_APPROVAL_GAS
         # Unlimited approval to Permit2 — Permit2 then enforces per-spender allowances.
@@ -517,19 +521,20 @@ class BaseV4DexAdapter(VenueAdapter):
             Web3.to_checksum_address(self.config.permit2),
             2**256 - 1,
         ).build_transaction(tx_params)
-        result = await self._send_transaction(tx, self.trade_account)
+        result = await self._send_transaction(tx, acct)
         if result.status != "confirmed":
             logger.error("token_to_permit2_approval_failed", venue=self.name, token=token, error=result.error)
         else:
             self._approvals_done.add(cache_key)
 
-    async def _approve_permit2_to_router_if_needed(self, token: str):
-        cache_key = f"permit2_router_{token.lower()}"
+    async def _approve_permit2_to_router_if_needed(self, token: str, *, account=None):
+        acct = account or self.trade_account
+        cache_key = f"permit2_router_{token.lower()}_{acct.address.lower()}"
         if cache_key in self._approvals_done:
             return
 
         amount, expiration, _ = self.permit2.functions.allowance(
-            self.trade_account.address,
+            acct.address,
             Web3.to_checksum_address(token),
             Web3.to_checksum_address(self.config.universal_router),
         ).call()
@@ -537,7 +542,7 @@ class BaseV4DexAdapter(VenueAdapter):
             "permit2_router_allowance_state",
             venue=self.name,
             token=token,
-            owner=self.trade_account.address,
+            owner=acct.address,
             spender=self.config.universal_router,
             amount=amount,
             expiration=expiration,
@@ -546,8 +551,8 @@ class BaseV4DexAdapter(VenueAdapter):
             self._approvals_done.add(cache_key)
             return
 
-        logger.info("approving_permit2_to_router", venue=self.name, token=token, router=self.config.universal_router)
-        tx_params = self._get_tx_params(self.trade_account)
+        logger.info("approving_permit2_to_router", venue=self.name, token=token, router=self.config.universal_router, account=acct.address)
+        tx_params = self._get_tx_params(acct)
         tx_params["value"] = 0
         tx_params["gas"] = _DEFAULT_PERMIT2_APPROVAL_GAS
         tx = self.permit2.functions.approve(
@@ -556,7 +561,7 @@ class BaseV4DexAdapter(VenueAdapter):
             _PERMIT2_MAX_AMOUNT,
             _PERMIT2_EXPIRATION,
         ).build_transaction(tx_params)
-        result = await self._send_transaction(tx, self.trade_account)
+        result = await self._send_transaction(tx, acct)
         if result.status != "confirmed":
             logger.error("permit2_router_approval_failed", venue=self.name, token=token, error=result.error)
         else:

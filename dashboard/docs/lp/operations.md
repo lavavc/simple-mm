@@ -23,7 +23,7 @@ Use `/alerts` in the bot to see the last 5 alerts without opening the dashboard.
 
 ## Deploying liquidity
 
-LP deployment is controlled by `deploy_token0` and `deploy_token1` on `DexParams` — see [Overview](overview). These are set in `engine/config.py`. Setting both to `0` prevents new LP minting after the next rerange without touching the current position.
+Fund the LP account with any balance of the pool's tokens — a single-token deposit (e.g. only cNGN, or only USDC) is fine. The engine will automatically swap to the correct ratio for the current tick range and mint the position within the next rebalance cycle (default every 2 minutes). No manual deployment amounts need to be configured.
 
 ## Pausing and resuming trading
 
@@ -34,13 +34,14 @@ Via the Telegram bot:
 
 ## Withdrawing liquidity
 
+Withdrawals require an explicit destination address to prevent accidental re-deployment.
+
 Via the Telegram bot:
 
-- `/withdraw uni-base` — removes the active LP position on Base
-- `/withdraw uni-bsc` — removes the active LP position on BSC
-- `/withdraw all` — removes both
+- `/withdraw uni-base 0x...` — removes the active LP position on Base and sends tokens to the specified address
+- `/withdraw uni-bsc 0x...` — same for BSC
 
-After withdrawal, no re-mint occurs until deploy amounts are set and a rebalance triggers.
+The engine's own rebalance path (triggered by price moving out of range) sends tokens back to the LP account automatically for immediate reminting — no address needed for that path.
 
 ## Stopping the engine
 
@@ -48,6 +49,8 @@ Via the Telegram bot `/shutdown`:
 
 - **Unwind + Stop** — removes all LP positions on-chain, then stops the engine
 - **Stop only** — stops immediately, positions remain deployed
+
+**Important:** "Unwind + Stop" sends withdrawn tokens to the LP wallet (not a cold wallet). On the next engine restart, the engine will detect the LP wallet balance and automatically remint the position within the first rebalance cycle. If you want to secure the funds rather than redeploy them, sweep the LP wallets to a cold address (via the manual `transfer.py` script) before restarting.
 
 Resume after either stop with:
 
