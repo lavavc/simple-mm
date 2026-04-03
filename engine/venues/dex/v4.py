@@ -433,7 +433,7 @@ class BaseV4DexAdapter(VenueAdapter):
 
     def _parse_swap_output_raw(self, receipt: TxReceipt, token_out: str) -> Optional[int]:
         """Extract actual output token amount from a V4 Swap event in the receipt logs."""
-        from engine.core.arbitrage.dex_volume import V4_SWAP_TOPIC
+        from engine.market.dex_volume import V4_SWAP_TOPIC
         for log in receipt.get("logs", []):
             topics = log.get("topics", [])
             if not topics:

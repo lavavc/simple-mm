@@ -4,10 +4,10 @@ import pytest
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.core.arbitrage.valuation import portfolio_value, cex_holdings_value, dex_holdings_value
+from engine.arb.valuation import portfolio_value, cex_holdings_value, dex_holdings_value
 from engine.api.schemas import OrderBookDepth, OrderBookLevel
-from engine.core.arbitrage.cex_dex import QUIDAX_FEE
-from engine.core.arbitrage.pool_state import swap_token0_for_token1
+from engine.arb.detection.cex_dex import QUIDAX_FEE
+from engine.market.pool_state import swap_token0_for_token1
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 
@@ -54,7 +54,7 @@ class TestCexHoldingsValue:
 
     def test_output_matches_walk_orderbook_asks(self):
         """cex_holdings_value is a thin wrapper — output must match walk directly."""
-        from engine.core.arbitrage.cex_dex import walk_orderbook_asks
+        from engine.arb.detection.cex_dex import walk_orderbook_asks
         asks = [_level(1640, 1000)]
         expected, _ = walk_orderbook_asks(asks, Decimal("50000"), QUIDAX_FEE)
         actual = cex_holdings_value(asks, Decimal("50000"), QUIDAX_FEE)
@@ -63,7 +63,7 @@ class TestCexHoldingsValue:
 
 class TestDexHoldingsValue:
     def test_cngn_is_token0_uses_swap_t0_for_t1(self, seeded_pool_cache):
-        from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token0_for_token1
+        from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1
         base_key = seeded_pool_cache["uni-base"]
         sqrt_p, liq, _, fee = get_cached_pool_state(base_key)
 
@@ -77,7 +77,7 @@ class TestDexHoldingsValue:
         assert value == expected
 
     def test_cngn_is_token1_uses_swap_t1_for_t0(self, seeded_pool_cache):
-        from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token1_for_token0
+        from engine.market.pool_state import get_cached_pool_state, swap_token1_for_token0
         bsc_key = seeded_pool_cache["uni-bsc"]
         sqrt_p, liq, _, fee = get_cached_pool_state(bsc_key)
 
@@ -132,7 +132,7 @@ class TestPortfolioValue:
 
     def test_missing_pool_state_graceful(self, monkeypatch):
         """When pool state is missing, DEX cNGN value is 0 (no crash)."""
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         monkeypatch.setattr(_ps, "_POOL_CACHE", {})
         balances = [_make_balance("uni-base-trade", cngn=100000)]
         result = portfolio_value(_DEPTH, balances)

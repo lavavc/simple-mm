@@ -4,7 +4,7 @@ Usage:
     python scripts/show_accounts.py
 """
 
-from engine.core.accounts import AccountManager, DEFAULT_ACCOUNT_CONFIGS
+from engine.accounts import AccountManager, DEFAULT_ACCOUNT_CONFIGS
 
 CHAIN_NAMES = {1: "Ethereum", 8453: "Base", 56: "BSC"}
 NATIVE_SYMBOLS = {1: "ETH", 8453: "ETH", 56: "BNB"}

@@ -5,7 +5,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import TxResult, PriceQuote
-from engine.core.arbitrage.executor import ArbitrageExecutor
+from engine.arb.execution.executor import ArbitrageExecutor
 from tests.fakes import FakeCexAdapter, FakeDexAdapter
 
 

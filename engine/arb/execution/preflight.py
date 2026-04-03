@@ -144,7 +144,7 @@ def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: s
     All other categories leave inventory intact and either broadcast a warning
     (rpc, unknown) or trip the circuit breaker (pool_paused, permit2).
     """
-    from engine.core.arbitrage.executor import _classify_preflight_error
+    from engine.arb.execution.executor import _classify_preflight_error
     category = _classify_preflight_error(err)
     context_text, context_fields = _build_preflight_context(engine, venue_name, log_ctx)
     event_base = {

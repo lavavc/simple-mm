@@ -4,7 +4,7 @@ import copy
 import pytest
 from decimal import Decimal
 
-from engine.core.accounts import (
+from engine.accounts import (
     AccountManager,
     AccountRole,
     AccountConfig,

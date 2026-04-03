@@ -4,10 +4,10 @@ import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-from engine.core.arbitrage import router as _router
-from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
+import engine.arb.routing.router as _router
+from engine.arb.routing.router import RouteCandidate, SelectedRoute, select_route
 from engine.api.schemas import ArbitrageParams, OrderBookDepth, OrderBookLevel
-from engine.core.arbitrage.inventory import InventoryTracker
+from engine.arb.risk.inventory import InventoryTracker
 
 
 def _default_depth() -> OrderBookDepth:

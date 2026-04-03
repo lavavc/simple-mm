@@ -13,13 +13,13 @@ import time
 from decimal import Decimal
 import structlog
 from engine.api.schemas import OrderBookDepth
-from engine.core.arbitrage.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0, Q96
+from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0, Q96
 
 logger = structlog.get_logger()
 
 QUIDAX_FEE = Decimal("0.001")  # 0.1% taker fee
 
-from engine.core import gas_oracle as _gas_oracle  # noqa: E402
+from engine.market import gas_oracle as _gas_oracle  # noqa: E402
 _CEX_DEX_GAS_FN = {
     "QUIDAX_TO_UNI_BASE": _gas_oracle.gas_usd_base,
     "UNI_BASE_TO_QUIDAX": _gas_oracle.gas_usd_base,

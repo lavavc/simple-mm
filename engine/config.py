@@ -125,9 +125,48 @@ class Settings(BaseSettings):
     uni_base_sd_multiplier: Decimal = Decimal("2.75")
     uni_base_ewma_lambda: Decimal = Decimal("0.975")
     uni_base_downside_skew: Decimal = Decimal("0.45")
+    uni_base_min_tick_width: int = 100
+    uni_base_max_tick_width: int = 1000
+    uni_base_lookback_points: Optional[int] = None
+    uni_base_rebalance_threshold_percent: Decimal = Decimal("10.0")
+    uni_base_max_slippage_percent: Decimal = Decimal("1.0")
+
     uni_bsc_sd_multiplier: Decimal = Decimal("3.0")
     uni_bsc_ewma_lambda: Decimal = Decimal("0.975")
     uni_bsc_downside_skew: Decimal = Decimal("0.5")
+    uni_bsc_min_tick_width: int = 100
+    uni_bsc_max_tick_width: int = 1000
+    uni_bsc_lookback_points: Optional[int] = None
+    uni_bsc_rebalance_threshold_percent: Decimal = Decimal("10.0")
+    uni_bsc_max_slippage_percent: Decimal = Decimal("1.0")
+
+    @property
+    def uni_base_lp_params(self) -> "DexParams":
+        from engine.lp.config import DexParams
+        return DexParams(
+            sd_multiplier=self.uni_base_sd_multiplier,
+            ewma_lambda=self.uni_base_ewma_lambda,
+            downside_skew=self.uni_base_downside_skew,
+            min_tick_width=self.uni_base_min_tick_width,
+            max_tick_width=self.uni_base_max_tick_width,
+            lookback_points=self.uni_base_lookback_points,
+            rebalance_threshold_percent=self.uni_base_rebalance_threshold_percent,
+            max_slippage_percent=self.uni_base_max_slippage_percent,
+        )
+
+    @property
+    def uni_bsc_lp_params(self) -> "DexParams":
+        from engine.lp.config import DexParams
+        return DexParams(
+            sd_multiplier=self.uni_bsc_sd_multiplier,
+            ewma_lambda=self.uni_bsc_ewma_lambda,
+            downside_skew=self.uni_bsc_downside_skew,
+            min_tick_width=self.uni_bsc_min_tick_width,
+            max_tick_width=self.uni_bsc_max_tick_width,
+            lookback_points=self.uni_bsc_lookback_points,
+            rebalance_threshold_percent=self.uni_bsc_rebalance_threshold_percent,
+            max_slippage_percent=self.uni_bsc_max_slippage_percent,
+        )
 
     # AssetChain contract addresses
     assetchain_pool_address: str = "0xE2a45a102B00Fad6447d0AD859b43BAf8bF6DeF1"

@@ -15,11 +15,11 @@ import uvicorn
 from engine.config import settings
 from engine.ws import ws_manager
 from engine.db import get_db
-from engine.core.venue_prices import create_venue_aggregator, VenuePriceAggregator
-from engine.core.price_aggregation import PriceNormalizer, BlendedPriceCalculator
-from engine.core.scheduler import TradingScheduler, SchedulerConfig
-from engine.core.arbitrage import ArbitrageEngine
-from engine.core.accounts import AccountManager, AccountRole
+from engine.market.venue_prices import create_venue_aggregator, VenuePriceAggregator
+from engine.market.price_aggregation import PriceNormalizer, BlendedPriceCalculator
+from engine.scheduler import TradingScheduler, SchedulerConfig
+from engine.arb import ArbitrageEngine
+from engine.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 from engine.venues.cex.quidax import QuidaxAdapter
@@ -168,8 +168,8 @@ async def lifespan(app: FastAPI):
     await init_venues(account_manager)
 
     # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
-    from engine.core.arbitrage.pool_state import seed_pool_states
-    from engine.core.arbitrage.dex_volume import seed_dex_volume_24h
+    from engine.market.pool_state import seed_pool_states
+    from engine.market.dex_volume import seed_dex_volume_24h
     await seed_pool_states()
     await seed_dex_volume_24h()
 

@@ -9,24 +9,25 @@ from typing import Any, Callable, Optional
 import structlog
 
 from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportunity
-from engine.core.arbitrage.executor import ArbitrageExecutor
-from engine.core.arbitrage.history import ArbitrageHistoryRecorder
-from engine.core.arbitrage.inventory import InventoryTracker
-from engine.core.arbitrage.recovery import (
+from engine.arb.execution.executor import ArbitrageExecutor
+from engine.arb.risk.history import ArbitrageHistoryRecorder
+from engine.arb.risk.inventory import InventoryTracker
+from engine.arb.execution.recovery import (
     _recover_dex_half_open_inner as _recover_dex_half_open_inner_impl,
     recover_cex_half_open as _recover_cex_half_open_impl,
     recover_dex_half_open as _recover_dex_half_open_impl,
 )
-from engine.core.arbitrage.route_execution import execute_route as _execute_route_impl
-from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION, TradeRoute
-from engine.core.arbitrage.router import RouteCandidate, SelectedRoute, select_route
-from engine.core.arbitrage.wallet_state import (
+from engine.arb.execution.route_execution import execute_route as _execute_route_impl
+from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION, TradeRoute
+from engine.arb.routing.router import RouteCandidate, SelectedRoute, select_route
+from engine.arb.wallet_state import (
     fetch_venue_wallet_snapshot as _fetch_venue_wallet_snapshot_impl,
     reconcile_balances as _reconcile_balances_impl,
     refresh_inventory_for_venues as _refresh_inventory_for_venues_impl,
     seed_account_inventory as _seed_account_inventory_impl,
 )
 from engine.db import get_db
+from engine.db.backend import StorageBackend
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
@@ -50,16 +51,18 @@ class ArbitrageEngine:
         broadcast: Callable[[dict], Any],
         execute_cex_dex_enabled: bool = False,
         execute_dex_dex_enabled: bool = False,
+        storage: StorageBackend | None = None,
     ):
         self.venues = venues
         self.params = params
         self.broadcast = broadcast
         self.execute_cex_dex_enabled = execute_cex_dex_enabled
         self.execute_dex_dex_enabled = execute_dex_dex_enabled
+        self._storage = storage
 
         self.inventory = InventoryTracker(params)
         self.executor = ArbitrageExecutor(venues)
-        self.history = ArbitrageHistoryRecorder(self.inventory, broadcast, db_getter=lambda: get_db())
+        self.history = ArbitrageHistoryRecorder(self.inventory, broadcast, db_getter=lambda: self._get_db())
 
         self._enabled = True
         self._arb_executing = False
@@ -99,9 +102,9 @@ class ArbitrageEngine:
         Entry point for CEX-DEX arb. Called by scheduler on every Quidax depth update.
         Computes optimal arb + portfolio valuation, broadcasts both, optionally executes.
         """
-        from engine.core.arbitrage.cex_dex import find_optimal_arb
-        from engine.core.arbitrage.valuation import portfolio_value
-        from engine.core.arbitrage.pool_state import seed_dex_pool_states
+        from engine.arb.detection.cex_dex import find_optimal_arb
+        from engine.arb.valuation import portfolio_value
+        from engine.market.pool_state import seed_dex_pool_states
 
         self._reconcile_balances(balances)
         loop = asyncio.get_running_loop()
@@ -148,8 +151,8 @@ class ArbitrageEngine:
 
     async def _broadcast_cex_curve(self, depth, signal) -> None:
         """Background: compute full CEX-DEX curve and broadcast."""
-        from engine.core.arbitrage.cex_dex import compute_arb_curve
-        from engine.core.arbitrage.pool_state import seed_pool_states
+        from engine.arb.detection.cex_dex import compute_arb_curve
+        from engine.market.pool_state import seed_pool_states
         try:
             loop = asyncio.get_running_loop()
             curve = await loop.run_in_executor(None, compute_arb_curve, depth)
@@ -178,8 +181,8 @@ class ArbitrageEngine:
         Computes optimal arb, broadcasts, records opportunity, optionally executes.
         Spawns background curve task.
         """
-        from engine.core.arbitrage.dex_dex import find_optimal_dex_arb
-        from engine.core.arbitrage.pool_state import seed_dex_pool_states
+        from engine.arb.detection.dex_dex import find_optimal_dex_arb
+        from engine.market.pool_state import seed_dex_pool_states
 
         if not self._inventory_seeded or not self._trade_approvals_seeded:
             await self._seed_account_inventory()
@@ -235,7 +238,7 @@ class ArbitrageEngine:
         if optimal.get("expected_profit_usd", -1) < settings.arbitrage_min_profit_usd:
             return f"dex-arb-{uuid.uuid4()}"
 
-        db = await get_db()
+        db = await self._get_db()
         cutoff_ts = int(time.time() * 1000) - 60000
         await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
 
@@ -270,14 +273,14 @@ class ArbitrageEngine:
 
     async def _broadcast_dex_curve(self) -> None:
         """Background: compute full DEX-DEX curve and broadcast."""
-        from engine.core.arbitrage.dex_dex import generate_dex_profit_curve
+        from engine.arb.detection.dex_dex import generate_dex_profit_curve
         try:
             loop = asyncio.get_running_loop()
             curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
             if curve_data:
                 # Persist pool prices to DB for history charts
                 from engine.api.schemas import PriceQuote
-                db = await get_db()
+                db = await self._get_db()
                 now_ms = int(time.time() * 1000)
                 for key in ("uni-bsc", "uni-base"):
                     price_val = curve_data.get("prices", {}).get(key)
@@ -298,7 +301,7 @@ class ArbitrageEngine:
     # ------------------------------------------------------------------
 
     async def get_status(self) -> ArbitrageStatus:
-        db = await get_db()
+        db = await self._get_db()
         now = int(time.time() * 1000)
         stats = await db.get_arbitrage_stats(now - 86400000)
         inv = self.inventory.get_status_dict()
@@ -331,6 +334,8 @@ class ArbitrageEngine:
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
 
     async def _get_db(self):
+        if self._storage is not None:
+            return self._storage
         return await get_db()
 
     async def recover_dex_half_open(self, opp_id: str) -> dict:

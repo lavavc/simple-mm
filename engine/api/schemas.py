@@ -5,6 +5,7 @@ from typing import Optional, Literal
 from decimal import Decimal
 
 from engine.config import settings
+from engine.lp.config import DexParams  # re-exported for backwards compatibility
 
 
 class PriceQuote(BaseModel):
@@ -93,20 +94,6 @@ class SystemStatus(BaseModel):
     uptime: int
     last_price_update: Optional[int] = None
     venues: list[VenueStatus]
-
-
-class DexParams(BaseModel):
-    """Parameters for DEX position management."""
-
-    # Range calculation
-    sd_multiplier: Decimal = Decimal("2.5")
-    min_tick_width: int = 100
-    max_tick_width: int = 1000
-    lookback_points: Optional[int] = None
-    rebalance_threshold_percent: Decimal = Decimal("10.0")
-    max_slippage_percent: Decimal = Decimal("1.0")
-    downside_skew: Decimal = Decimal("0.4")   # fraction of range below current price (0.5 = symmetric)
-    ewma_lambda: Decimal = Decimal("0.99")    # EWMA decay factor for volatility estimation
 
 
 class CexParams(BaseModel):

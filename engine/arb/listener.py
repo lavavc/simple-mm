@@ -8,16 +8,16 @@ import structlog
 import websockets
 
 from engine.config import settings
-from engine.core.arbitrage.pool_state import update_single_v4_pool_state
+from engine.market.pool_state import update_single_v4_pool_state
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-from engine.core.arbitrage.dex_volume import (
+from engine.market.dex_volume import (
     V4_SWAP_TOPIC,
     event_id_from_log,
     record_live_v4_swap_volume,
     sync_pool_volume_24h,
 )
-from engine.core.arbitrage.pool_state import update_pool_state_from_event
+from engine.market.pool_state import update_pool_state_from_event
 
 logger = structlog.get_logger()
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"

@@ -8,9 +8,9 @@ from decimal import Decimal
 
 import structlog
 
-from engine.core.arbitrage.preflight import _coerce_decimal, _handle_preflight_error
-from engine.core.arbitrage.route_registry import TradeRoute
-from engine.core.arbitrage.router import SelectedRoute
+from engine.arb.execution.preflight import _coerce_decimal, _handle_preflight_error
+from engine.arb.routing.route_registry import TradeRoute
+from engine.arb.routing.router import SelectedRoute
 
 
 logger = structlog.get_logger()
@@ -55,13 +55,13 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
         await engine.history.record_routed(opp_id, route)
 
         if not sell_is_cex:
-            from engine.core.arbitrage.executor import _clean_revert
+            from engine.arb.execution.executor import _clean_revert
 
             sell_venue = engine.venues[sell_venue_name]
             sim_min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
 
             if buy_is_cex:
-                from engine.core.arbitrage.cex_dex import estimate_cex_buy_cngn
+                from engine.arb.detection.cex_dex import estimate_cex_buy_cngn
 
                 quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
                 sell_cngn_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
@@ -80,7 +80,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                     )
                     return
             else:
-                from engine.core.arbitrage.dex_dex import estimate_dex_dex_trade
+                from engine.arb.detection.dex_dex import estimate_dex_dex_trade
 
                 sell_estimate = estimate_dex_dex_trade(direction, size_usd)
                 if not sell_estimate:
@@ -140,7 +140,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                 return
 
         if not buy_is_cex:
-            from engine.core.arbitrage.executor import _clean_revert
+            from engine.arb.execution.executor import _clean_revert
 
             buy_venue = engine.venues[buy_venue_name]
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))

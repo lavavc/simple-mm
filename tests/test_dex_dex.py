@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from engine.core.arbitrage.dex_dex import (
+from engine.arb.detection.dex_dex import (
     estimate_dex_dex_trade,
     estimate_max_dex_buy_usd_for_cngn,
     find_optimal_dex_arb,
@@ -14,14 +14,14 @@ class TestFindOptimalDexArbNullCases:
     """find_optimal_dex_arb returns None when pool state is missing or thin."""
 
     def test_none_when_cache_empty(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         monkeypatch.setattr(_ps, "_POOL_CACHE", {})
         result = find_optimal_dex_arb()
         assert result is None
 
     def test_none_when_fee_missing(self, monkeypatch):
         """Pool with fee=None blocks execution."""
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
         import time
