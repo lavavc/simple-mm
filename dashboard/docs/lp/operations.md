@@ -41,15 +41,6 @@ Via the Telegram bot:
 - `/withdraw uni-base 0x...` — removes the active LP position on Base and sends tokens to the specified address
 - `/withdraw uni-bsc 0x...` — same for BSC
 
-Via the API:
-
-```
-POST /venues/uni-base/withdraw
-{"to_address": "0x...cold-wallet"}
-```
-
-After a manual withdrawal, the engine will not remint automatically (the LP account has no balance). To redeploy, fund the LP account again.
-
 The engine's own rebalance path (triggered by price moving out of range) sends tokens back to the LP account automatically for immediate reminting — no address needed for that path.
 
 ## Stopping the engine
@@ -58,6 +49,8 @@ Via the Telegram bot `/shutdown`:
 
 - **Unwind + Stop** — removes all LP positions on-chain, then stops the engine
 - **Stop only** — stops immediately, positions remain deployed
+
+**Important:** "Unwind + Stop" sends withdrawn tokens to the LP wallet (not a cold wallet). On the next engine restart, the engine will detect the LP wallet balance and automatically remint the position within the first rebalance cycle. If you want to secure the funds rather than redeploy them, sweep the LP wallets to a cold address (via the manual `transfer.py` script) before restarting.
 
 Resume after either stop with:
 

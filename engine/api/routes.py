@@ -6,7 +6,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from web3 import Web3
 import structlog
 
 from engine.config import settings
@@ -423,6 +424,13 @@ async def resume_trading():
 
 class WithdrawRequest(BaseModel):
     to_address: str  # required — forces explicit destination, prevents accidental re-deployment
+
+    @field_validator("to_address")
+    @classmethod
+    def validate_address(cls, v: str) -> str:
+        if not Web3.is_address(v):
+            raise ValueError(f"Invalid Ethereum address: {v!r}")
+        return v
 
 
 @router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])

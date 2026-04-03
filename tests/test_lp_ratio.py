@@ -1,170 +1,187 @@
-"""Unit tests for LP ratio math: _compute_required_ratio and prepare_lp_balance logic."""
+"""Unit tests for V4LPAdapter._compute_required_ratio and prepare_lp_balance."""
 
 import math
 import pytest
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+from engine.api.schemas import TxResult
+from engine.venues.dex.lp_v4 import V4LPAdapter, _Q96
 
 
-def compute_required_ratio(
-    tick_lower: int,
-    tick_upper: int,
-    sqrt_price_x96: int,
-    token0_decimals: int = 6,
-    token1_decimals: int = 6,
-) -> tuple[Decimal, Decimal]:
-    """Pure-math implementation of V4LPAdapter._compute_required_ratio for testing."""
-    Q96 = 2 ** 96
-    sqrt_a = math.exp(tick_lower * math.log(1.0001) / 2) * Q96
-    sqrt_b = math.exp(tick_upper * math.log(1.0001) / 2) * Q96
-    sqrt_p = float(sqrt_price_x96)
-
-    if sqrt_p <= sqrt_a:
-        r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) if sqrt_a * sqrt_b > 0 else 0.0
-        r1 = 0.0
-    elif sqrt_p >= sqrt_b:
-        r0 = 0.0
-        r1 = sqrt_b - sqrt_a
-    else:
-        r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b)
-        r1 = sqrt_p - sqrt_a
-
-    dec_adj = Decimal(10 ** token0_decimals) / Decimal(10 ** token1_decimals)
-    r0_dec = Decimal(str(r0)) / dec_adj
-    r1_dec = Decimal(str(r1))
-    return r0_dec, r1_dec
-
-
-def price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
+def _price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
     """Convert a human-readable token1-per-token0 price to sqrtPriceX96."""
     dec_adj = 10 ** (token0_decimals - token1_decimals)
-    adjusted = price * dec_adj
-    return int(math.sqrt(adjusted) * (2 ** 96))
+    return int(math.sqrt(price * dec_adj) * _Q96)
+
+
+def _make_ratio_adapter(token0_decimals: int = 6, token1_decimals: int = 6) -> SimpleNamespace:
+    """Minimal self-mock sufficient for _compute_required_ratio."""
+    return SimpleNamespace(config=SimpleNamespace(
+        token0_decimals=token0_decimals,
+        token1_decimals=token1_decimals,
+    ))
+
+
+def _make_balance_adapter(
+    sqrt_price_x96: int,
+    balance0_raw: int,
+    balance1_raw: int,
+    swap_result: TxResult | None = None,
+    token0_decimals: int = 6,
+    token1_decimals: int = 6,
+) -> SimpleNamespace:
+    """Minimal self-mock for prepare_lp_balance."""
+    pool_id = "0x" + "ab" * 32
+    token0_addr = "0x" + "aa" * 20
+    token1_addr = "0x" + "bb" * 20
+    lp_addr = "0x" + "cc" * 20
+
+    state_view = MagicMock()
+    state_view.functions.getSlot0.return_value.call.return_value = [sqrt_price_x96, 0, 0, 0]
+
+    token0 = MagicMock()
+    token0.functions.balanceOf.return_value.call.return_value = balance0_raw
+    token1 = MagicMock()
+    token1.functions.balanceOf.return_value.call.return_value = balance1_raw
+
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(
+            pool_id=pool_id,
+            token0_decimals=token0_decimals,
+            token1_decimals=token1_decimals,
+            token0_address=token0_addr,
+            token1_address=token1_addr,
+        ),
+        name="uni-base",
+        lp_account=SimpleNamespace(address=lp_addr),
+        state_view=state_view,
+        token0=token0,
+        token1=token1,
+        _swap_from_lp=AsyncMock(
+            return_value=swap_result or TxResult(hash="0xswap", status="confirmed")
+        ),
+    )
+    # Bind the real _compute_required_ratio to this mock adapter
+    adapter._compute_required_ratio = lambda tl, tu, sp: V4LPAdapter._compute_required_ratio(adapter, tl, tu, sp)
+    return adapter
 
 
 class TestComputeRequiredRatio:
-    """Tests for _compute_required_ratio pure math."""
+    """Tests for V4LPAdapter._compute_required_ratio."""
 
     def test_symmetric_range_price_at_midpoint(self):
-        """When price is at tick range midpoint, both r0 and r1 should be non-zero."""
-        # Symmetric range around tick 0 (price ≈ 1.0 for equal-decimal tokens)
-        tick_lower = -1000
-        tick_upper = 1000
-        sqrt_p = price_to_sqrt_x96(1.0)
-
-        r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_p)
-
-        assert r0 > 0, "r0 should be positive when price is below upper bound"
-        assert r1 > 0, "r1 should be positive when price is above lower bound"
+        """When price is inside the range, both r0 and r1 are non-zero."""
+        adapter = _make_ratio_adapter()
+        sqrt_p = _price_to_sqrt_x96(1.0)
+        r0, r1 = V4LPAdapter._compute_required_ratio(adapter, -1000, 1000, sqrt_p)
+        assert r0 > 0
+        assert r1 > 0
 
     def test_price_below_range_all_token0(self):
-        """When current price is below the range, position should be entirely in token0."""
-        tick_lower = 1000   # price above current
-        tick_upper = 2000
-        sqrt_p = price_to_sqrt_x96(0.5)  # well below range
-
-        r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_p)
-
-        assert r0 > 0, "r0 should be positive when price is below range"
-        assert r1 == 0, "r1 should be zero when price is below range"
+        """Price below range: position is entirely token0, r1 == 0."""
+        adapter = _make_ratio_adapter()
+        sqrt_p = _price_to_sqrt_x96(0.5)  # below tick_lower=1000
+        r0, r1 = V4LPAdapter._compute_required_ratio(adapter, 1000, 2000, sqrt_p)
+        assert r0 > 0
+        assert r1 == 0
 
     def test_price_above_range_all_token1(self):
-        """When current price is above the range, position should be entirely in token1."""
-        tick_lower = -2000
-        tick_upper = -1000  # price below current
-        sqrt_p = price_to_sqrt_x96(2.0)  # well above range
+        """Price above range: position is entirely token1, r0 == 0."""
+        adapter = _make_ratio_adapter()
+        sqrt_p = _price_to_sqrt_x96(2.0)  # above tick_upper=-1000
+        r0, r1 = V4LPAdapter._compute_required_ratio(adapter, -2000, -1000, sqrt_p)
+        assert r0 == 0
+        assert r1 > 0
 
-        r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_p)
+    def test_price_near_upper_less_token0(self):
+        """Closer to upper tick → less token0 needed than at midpoint."""
+        adapter = _make_ratio_adapter()
+        sqrt_mid = _price_to_sqrt_x96(0.5)
+        sqrt_near_upper = _price_to_sqrt_x96(1.005)  # tick ≈ 50, close to upper=100
+        r0_mid, _ = V4LPAdapter._compute_required_ratio(adapter, -2000, 100, sqrt_mid)
+        r0_upper, _ = V4LPAdapter._compute_required_ratio(adapter, -2000, 100, sqrt_near_upper)
+        assert r0_upper < r0_mid
 
-        assert r0 == 0, "r0 should be zero when price is above range"
-        assert r1 > 0, "r1 should be positive when price is above range"
-
-    def test_skew_toward_upper_more_token1(self):
-        """With price close to upper bound, more of the position should be in token1."""
-        tick_lower = -2000
-        tick_upper = 100
-        # price close to upper → more token1
-        sqrt_p = price_to_sqrt_x96(1.005)  # tick ≈ 50, close to upper
-
-        r0_close_to_upper, r1_close_to_upper = compute_required_ratio(tick_lower, tick_upper, sqrt_p)
-
-        # And compare with price in the middle
-        sqrt_p_mid = price_to_sqrt_x96(0.5)  # well into range
-        r0_mid, r1_mid = compute_required_ratio(tick_lower, tick_upper, sqrt_p_mid)
-
-        # When closer to upper bound, r0 should be smaller (less token0 needed)
-        assert r0_close_to_upper < r0_mid
-
-    def test_ratio_sums_to_nonzero_when_in_range(self):
-        """Total LP value should use both tokens when price is inside range."""
-        tick_lower = -500
-        tick_upper = 500
-        sqrt_p = price_to_sqrt_x96(1.0)
-
-        r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_p)
-
-        # Both should contribute
-        assert r0 + r1 > 0
+    def test_decimal_adjustment_affects_r0(self):
+        """Dec adjustment must change r0 when token decimals differ."""
+        adapter_6_6 = _make_ratio_adapter(token0_decimals=6, token1_decimals=6)
+        adapter_6_18 = _make_ratio_adapter(token0_decimals=6, token1_decimals=18)
+        sqrt_p_6_6 = _price_to_sqrt_x96(1.0, 6, 6)
+        sqrt_p_6_18 = _price_to_sqrt_x96(1.0, 6, 18)
+        r0_equal, r1_equal = V4LPAdapter._compute_required_ratio(adapter_6_6, -1000, 1000, sqrt_p_6_6)
+        r0_diff, r1_diff = V4LPAdapter._compute_required_ratio(adapter_6_18, -1000, 1000, sqrt_p_6_18)
+        # For equal-decimal 6/6 at symmetric range: both tokens have equal value weight
+        assert abs(float(r0_equal) - float(r1_equal)) / float(r1_equal) < 0.01, "6/6 should give ~50/50"
+        # Different decimals produce different r0 (dec_adj changes the ratio)
+        assert r0_diff != r0_equal
 
 
-class TestPrepareLpBalanceLogic:
-    """Tests for the swap-to-ratio logic in prepare_lp_balance."""
+class TestPrepareLpBalance:
+    """Tests for V4LPAdapter.prepare_lp_balance via mocked RPC."""
 
-    def test_no_swap_needed_when_balanced(self):
-        """If already at target ratio within 1%, no swap should occur."""
-        # Symmetric range at price 1.0: equal split
-        tick_lower = -1000
-        tick_upper = 1000
-        sqrt_p = price_to_sqrt_x96(1.0)
-        Q96 = Decimal(2 ** 96)
-        price = (Decimal(sqrt_p) / Q96) ** 2  # ≈ 1.0
+    @pytest.mark.asyncio
+    async def test_no_swap_when_empty(self):
+        """Both balances zero: returns immediately, no swap."""
+        sqrt_p = _price_to_sqrt_x96(1.0)
+        adapter = _make_balance_adapter(sqrt_p, 0, 0)
+        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        adapter._swap_from_lp.assert_not_called()
 
-        r0, r1 = [Decimal(str(v)) for v in compute_required_ratio(tick_lower, tick_upper, sqrt_p)]
+    @pytest.mark.asyncio
+    async def test_no_swap_when_balanced(self):
+        """Balances already at target ratio (within 1%): no swap triggered."""
+        sqrt_p = _price_to_sqrt_x96(1.0)
+        # Symmetric range at price ≈ 1: target is approximately 50/50 by value.
+        # Fund with equal raw amounts — should be close enough to skip the swap.
+        adapter = _make_balance_adapter(sqrt_p, 500_000_000, 500_000_000)
+        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        adapter._swap_from_lp.assert_not_called()
 
-        # Construct target-ratio balance
-        total_value = Decimal("1000")
-        denom = r0 * price + r1 if (r0 * price + r1) > 0 else Decimal(1)
-        target0 = total_value * r0 / denom
-        target1 = total_value - target0 * price
+    @pytest.mark.asyncio
+    async def test_swap_token0_to_token1_when_excess_token0(self):
+        """All token0, none of token1: surplus token0 swap is triggered."""
+        sqrt_p = _price_to_sqrt_x96(1.0)
+        # Entirely in token0, none in token1 — large imbalance
+        adapter = _make_balance_adapter(sqrt_p, 1_000_000_000, 0)
+        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        adapter._swap_from_lp.assert_called_once()
+        call_args = adapter._swap_from_lp.call_args[0]
+        assert call_args[0].lower() == adapter.config.token0_address.lower()
 
-        # Set balances exactly at target
-        balance0 = target0
-        balance1 = target1
+    @pytest.mark.asyncio
+    async def test_swap_token1_to_token0_when_excess_token1(self):
+        """All token1, none of token0: surplus token1 swap is triggered."""
+        sqrt_p = _price_to_sqrt_x96(1.0)
+        adapter = _make_balance_adapter(sqrt_p, 0, 1_000_000_000)
+        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        adapter._swap_from_lp.assert_called_once()
+        call_args = adapter._swap_from_lp.call_args[0]
+        assert call_args[0].lower() == adapter.config.token1_address.lower()
 
-        imbalance = abs(balance0 - target0) * price
-        threshold = total_value * Decimal("0.01")
+    @pytest.mark.asyncio
+    async def test_failed_swap_logs_warning_and_returns(self):
+        """If the ratio swap fails, prepare_lp_balance logs and returns without raising."""
+        sqrt_p = _price_to_sqrt_x96(1.0)
+        failed = TxResult(hash="", status="failed", error="reverted")
+        adapter = _make_balance_adapter(sqrt_p, 1_000_000_000, 0, swap_result=failed)
+        # Should not raise; engine will log and proceed to mint with wrong ratio
+        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        adapter._swap_from_lp.assert_called_once()
 
-        # No swap should be needed
-        assert imbalance <= threshold
-
-    def test_swap_direction_when_excess_token0(self):
-        """When there's more token0 than needed, surplus should be token0→token1 swap."""
-        tick_lower = -1000
-        tick_upper = 1000
-        sqrt_p = price_to_sqrt_x96(1.0)
-        Q96 = Decimal(2 ** 96)
-        price = (Decimal(sqrt_p) / Q96) ** 2
-
-        r0, r1 = [Decimal(str(v)) for v in compute_required_ratio(tick_lower, tick_upper, sqrt_p)]
-
-        total_value = Decimal("1000")
-        denom = r0 * price + r1 if (r0 * price + r1) > 0 else Decimal(1)
-        target0 = total_value * r0 / denom
-
-        # Excess token0 (much more than target)
-        balance0 = target0 * Decimal("2")
-
-        assert balance0 > target0, "Setup: balance0 should exceed target"
-
-    def test_swap_direction_when_excess_token1(self):
-        """When price is above range (position all in token1), r0=0 so target0=0 and all value is in token1."""
-        # Price well above range → position entirely in token1
-        tick_lower = -2000
-        tick_upper = -1000
-        sqrt_p = price_to_sqrt_x96(2.0)  # well above range
-
-        r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_p)
-
-        # r0 should be 0 (all token1 position)
-        assert r0 == Decimal("0"), "When above range, no token0 needed"
-        assert r1 > 0, "When above range, all value should be in token1"
+    @pytest.mark.asyncio
+    async def test_target1_never_negative_near_upper_bound(self):
+        """target1 is clamped to 0 when floating-point drift makes it negative."""
+        # Price very close to upper tick — r1 ≈ 0, target0 * price ≈ total_value.
+        # Without max(0, ...), target1 can go slightly negative and trigger a wrong swap.
+        tick_lower, tick_upper = -2000, 100
+        sqrt_near_upper = _price_to_sqrt_x96(1.009)  # tick ≈ 90, very close to upper=100
+        # Fund only token0 (worst case for the negative-target1 scenario)
+        adapter = _make_balance_adapter(sqrt_near_upper, 1_000_000_000, 0)
+        await V4LPAdapter.prepare_lp_balance(adapter, tick_lower, tick_upper)
+        # Should not have swapped token1→token0 (that would be wrong direction)
+        if adapter._swap_from_lp.called:
+            call_args = adapter._swap_from_lp.call_args[0]
+            assert call_args[0].lower() == adapter.config.token0_address.lower(), \
+                "Wrong swap direction: target1 went negative, triggering spurious token1→token0 swap"

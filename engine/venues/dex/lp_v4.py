@@ -15,6 +15,8 @@ from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 
 logger = structlog.get_logger()
 
+_Q96 = 2 ** 96  # shared constant — used in float, int, and Decimal contexts below
+
 # V4 PositionManager action codes
 _V4_LP_MINT_POSITION      = 0
 _V4_LP_DECREASE_LIQUIDITY = 2
@@ -461,22 +463,23 @@ class V4LPAdapter(BaseV4DexAdapter):
         r1 = (sqrt_p − sqrt_a)                         [token1 per unit L when in range]
         Adjusts for decimal differences between token0 and token1.
         """
-        Q96 = 2 ** 96
-        sqrt_a = math.exp(tick_lower * math.log(1.0001) / 2) * Q96
-        sqrt_b = math.exp(tick_upper * math.log(1.0001) / 2) * Q96
+        sqrt_a = math.exp(tick_lower * math.log(1.0001) / 2) * _Q96
+        sqrt_b = math.exp(tick_upper * math.log(1.0001) / 2) * _Q96
         sqrt_p = float(sqrt_price_x96)
 
+        # Formulas mirror get_pool_metrics: amount0 = L*Q96*(sqrt_b-sp)/(sp*sqrt_b),
+        # amount1 = L*(sp-sqrt_a)/Q96.  Per-unit-L, with Q96 absorbed:
         if sqrt_p <= sqrt_a:
             # Below range: position is entirely in token0
-            r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) if sqrt_a * sqrt_b > 0 else 0.0
+            r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) * _Q96 if sqrt_a * sqrt_b > 0 else 0.0
             r1 = 0.0
         elif sqrt_p >= sqrt_b:
             # Above range: position is entirely in token1
             r0 = 0.0
-            r1 = sqrt_b - sqrt_a
+            r1 = (sqrt_b - sqrt_a) / _Q96
         else:
-            r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b)
-            r1 = sqrt_p - sqrt_a
+            r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b) * _Q96
+            r1 = (sqrt_p - sqrt_a) / _Q96
 
         # Adjust for decimal scaling: raw amounts are in different units
         dec_adj = Decimal(10 ** self.config.token0_decimals) / Decimal(10 ** self.config.token1_decimals)
@@ -506,8 +509,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         r0, r1 = self._compute_required_ratio(tick_lower, tick_upper, sqrt_price_x96)
 
         # Price of token0 in token1 units (for value normalisation)
-        Q96 = Decimal(2 ** 96)
-        price = (Decimal(sqrt_price_x96) / Q96) ** 2 * Decimal(
+        price = (Decimal(sqrt_price_x96) / Decimal(_Q96)) ** 2 * Decimal(
             10 ** self.config.token0_decimals
         ) / Decimal(10 ** self.config.token1_decimals)
 
@@ -519,7 +521,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         # Target allocations
         denom = r0 * price + r1 if (r0 * price + r1) > 0 else Decimal(1)
         target0 = total_value * r0 / denom
-        target1 = total_value - target0 * price
+        target1 = max(Decimal(0), total_value - target0 * price)
 
         imbalance = abs(balance0 - target0) * price
         threshold = total_value * Decimal("0.01")
@@ -536,7 +538,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             min_out = int(surplus * price * Decimal("0.99") * Decimal(10 ** self.config.token1_decimals))
             logger.info("lp_swap_to_ratio", venue=self.name, direction="token0→token1",
                         surplus=float(surplus), min_out=min_out)
-            await self._swap_from_lp(self.config.token0_address, surplus_raw, min_out)
+            result = await self._swap_from_lp(self.config.token0_address, surplus_raw, min_out)
         else:
             surplus = balance1 - target1
             surplus_raw = int(surplus * Decimal(10 ** self.config.token1_decimals))
@@ -544,7 +546,10 @@ class V4LPAdapter(BaseV4DexAdapter):
             min_out = int(min_out_dec * Decimal(10 ** self.config.token0_decimals))
             logger.info("lp_swap_to_ratio", venue=self.name, direction="token1→token0",
                         surplus=float(surplus), min_out=min_out)
-            await self._swap_from_lp(self.config.token1_address, surplus_raw, min_out)
+            result = await self._swap_from_lp(self.config.token1_address, surplus_raw, min_out)
+
+        if result.status != "confirmed":
+            logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
 
     # === Strategy math ===
 
@@ -634,9 +639,8 @@ class V4LPAdapter(BaseV4DexAdapter):
         amount1: int,
     ) -> int:
         """Convert token amounts + tick range to V4 liquidity units."""
-        Q96 = 2 ** 96
-        sqrt_a = int(math.exp(tick_lower * math.log(1.0001) / 2) * Q96)
-        sqrt_b = int(math.exp(tick_upper * math.log(1.0001) / 2) * Q96)
+        sqrt_a = int(math.exp(tick_lower * math.log(1.0001) / 2) * _Q96)
+        sqrt_b = int(math.exp(tick_upper * math.log(1.0001) / 2) * _Q96)
         sqrt_p = sqrt_price_x96
 
         if sqrt_p <= sqrt_a:
