@@ -10,12 +10,18 @@ from eth_abi import encode
 from web3 import Web3
 
 from engine.api.schemas import DexParams, LPPosition, Position, TxResult
-from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState, _decode_uint256, _encode_balance_of
+from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 
 logger = structlog.get_logger()
 
 _Q96 = 2 ** 96  # shared constant — used in float, int, and Decimal contexts below
+
+
+def _tick_to_sqrt_x96(tick: int) -> float:
+    """Return sqrtPriceX96 as a float for a given tick."""
+    return math.exp(tick * math.log(1.0001) / 2) * _Q96
+
 
 # V4 PositionManager action codes
 _V4_LP_MINT_POSITION      = 0
@@ -165,7 +171,6 @@ class V4LPAdapter(BaseV4DexAdapter):
             sqrt_price_x96 = int(slot0[0])
             current_tick = int(slot0[1])
 
-            from .shared import sqrt_price_x96_to_decimal
             current_price = sqrt_price_x96_to_decimal(
                 sqrt_price_x96,
                 self.config.token0_decimals,
@@ -194,34 +199,11 @@ class V4LPAdapter(BaseV4DexAdapter):
 
     async def get_position(self) -> Position:
         """Get current position including real LP data."""
-        multicall = self.w3.eth.contract(
-            address=Web3.to_checksum_address(MULTICALL3_ADDRESS),
-            abi=MULTICALL3_ABI,
-        )
-        results = multicall.functions.aggregate3([
-            (Web3.to_checksum_address(self.config.token0_address), True, _encode_balance_of(self.lp_account.address)),
-            (Web3.to_checksum_address(self.config.token0_address), True, _encode_balance_of(self.trade_account.address)),
-            (Web3.to_checksum_address(self.config.token1_address), True, _encode_balance_of(self.lp_account.address)),
-            (Web3.to_checksum_address(self.config.token1_address), True, _encode_balance_of(self.trade_account.address)),
-        ]).call()
-
-        t0_amount = Decimal(
-            (_decode_uint256(results[0][1]) if results[0][0] else 0)
-            + (_decode_uint256(results[1][1]) if results[1][0] else 0)
-        ) / Decimal(10 ** self.config.token0_decimals)
-        t1_amount = Decimal(
-            (_decode_uint256(results[2][1]) if results[2][0] else 0)
-            + (_decode_uint256(results[3][1]) if results[3][0] else 0)
-        ) / Decimal(10 ** self.config.token1_decimals)
-
-        lp_position = None
+        pos = await super().get_position()
         token_ids = self.get_owned_positions()
-        pos_state = None
-        if token_ids:
-            pos_state = self.get_position_state(token_ids[0])
-
-        position_value_usd, volume_24h_usd, our_share_pct = self.get_pool_metrics(pos_state)
-
+        pos_state = self.get_position_state(token_ids[0]) if token_ids else None
+        position_value_usd, _, our_share_pct = self.get_pool_metrics(pos_state)
+        lp_position = None
         if pos_state:
             lp_position = LPPosition(
                 token_id=str(pos_state.token_id),
@@ -231,26 +213,7 @@ class V4LPAdapter(BaseV4DexAdapter):
                 in_range=pos_state.in_range,
                 our_share_pct=our_share_pct,
             )
-
-        balances = {"cngn": Decimal(0), "usdt": Decimal(0), "usdc": Decimal(0)}
-        for sym, amount in [
-            (self.config.token0_symbol.lower(), t0_amount),
-            (self.config.token1_symbol.lower(), t1_amount),
-        ]:
-            if sym in balances:
-                balances[sym] = amount
-            else:
-                balances["usdt"] = amount
-
-        return Position(
-            venue=self.name,
-            pair=f"{self.config.token0_symbol}/{self.config.token1_symbol}",
-            timestamp=int(_time.time() * 1000),
-            balances=balances,
-            lp_position=lp_position,
-            position_value_usd=position_value_usd,
-            volume_24h_usd=volume_24h_usd,
-        )
+        return pos.model_copy(update={"lp_position": lp_position, "position_value_usd": position_value_usd})
 
     # === LP operations ===
 
@@ -382,39 +345,38 @@ class V4LPAdapter(BaseV4DexAdapter):
         if pos_state is None:
             return None, None, None
 
-        from engine.core.arbitrage.pool_state import get_cached_pool_state, Q96
+        from engine.core.arbitrage.pool_state import get_cached_pool_state
 
         sqrt_p, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
         if not sqrt_p or not pool_liquidity:
             return None, None, None
 
-        Q96_INT = int(Q96)
         L = pos_state.liquidity
-        sqrt_lower = int(math.exp(pos_state.tick_lower * math.log(1.0001) / 2) * Q96_INT)
-        sqrt_upper = int(math.exp(pos_state.tick_upper * math.log(1.0001) / 2) * Q96_INT)
+        sqrt_lower = int(_tick_to_sqrt_x96(pos_state.tick_lower))
+        sqrt_upper = int(_tick_to_sqrt_x96(pos_state.tick_upper))
         sp = int(sqrt_p)
 
         t0_scale = Decimal(10 ** self.config.token0_decimals)
         t1_scale = Decimal(10 ** self.config.token1_decimals)
 
         if sp <= sqrt_lower:
-            amount0 = Decimal(L * Q96_INT * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
+            amount0 = Decimal(L * _Q96 * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
             amount1 = Decimal(0)
         elif sp >= sqrt_upper:
             amount0 = Decimal(0)
-            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // Q96_INT) / t1_scale
+            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // _Q96) / t1_scale
         else:
-            amount0 = Decimal(L * Q96_INT * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
-            amount1 = Decimal(L * (sp - sqrt_lower) // Q96_INT) / t1_scale
+            amount0 = Decimal(L * _Q96 * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
+            amount1 = Decimal(L * (sp - sqrt_lower) // _Q96) / t1_scale
 
         if self.config.cngn_is_token0:
             # Base: token0=cNGN (6 dec), token1=USDC (6 dec)
-            cngn_price_usd = (sqrt_p / Q96) ** 2
+            cngn_price_usd = (sqrt_p / _Q96) ** 2
             position_value_usd = amount0 * cngn_price_usd + amount1
         else:
             # BSC: token0=USDT (18 dec), token1=cNGN (6 dec)
             dec_adj = Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals))
-            cngn_price_usd = Decimal(1) / ((sqrt_p / Q96) ** 2 * dec_adj)
+            cngn_price_usd = Decimal(1) / ((sqrt_p / _Q96) ** 2 * dec_adj)
             position_value_usd = amount0 + amount1 * cngn_price_usd
 
         our_share_pct = Decimal(L) / pool_liquidity * Decimal(100) if pos_state.in_range else Decimal(0)
@@ -463,8 +425,8 @@ class V4LPAdapter(BaseV4DexAdapter):
         r1 = (sqrt_p − sqrt_a)                         [token1 per unit L when in range]
         Adjusts for decimal differences between token0 and token1.
         """
-        sqrt_a = math.exp(tick_lower * math.log(1.0001) / 2) * _Q96
-        sqrt_b = math.exp(tick_upper * math.log(1.0001) / 2) * _Q96
+        sqrt_a = _tick_to_sqrt_x96(tick_lower)
+        sqrt_b = _tick_to_sqrt_x96(tick_upper)
         sqrt_p = float(sqrt_price_x96)
 
         # Formulas mirror get_pool_metrics: amount0 = L*Q96*(sqrt_b-sp)/(sp*sqrt_b),
@@ -639,21 +601,21 @@ class V4LPAdapter(BaseV4DexAdapter):
         amount1: int,
     ) -> int:
         """Convert token amounts + tick range to V4 liquidity units."""
-        sqrt_a = int(math.exp(tick_lower * math.log(1.0001) / 2) * _Q96)
-        sqrt_b = int(math.exp(tick_upper * math.log(1.0001) / 2) * _Q96)
+        sqrt_a = int(_tick_to_sqrt_x96(tick_lower))
+        sqrt_b = int(_tick_to_sqrt_x96(tick_upper))
         sqrt_p = sqrt_price_x96
 
         if sqrt_p <= sqrt_a:
             if sqrt_b == sqrt_a:
                 return 0
-            return amount0 * sqrt_a * sqrt_b // ((sqrt_b - sqrt_a) * Q96)
+            return amount0 * sqrt_a * sqrt_b // ((sqrt_b - sqrt_a) * _Q96)
         elif sqrt_p >= sqrt_b:
             if sqrt_b == sqrt_a:
                 return 0
-            return amount1 * Q96 // (sqrt_b - sqrt_a)
+            return amount1 * _Q96 // (sqrt_b - sqrt_a)
         else:
-            L0 = amount0 * sqrt_p * sqrt_b // ((sqrt_b - sqrt_p) * Q96) if sqrt_b > sqrt_p else 0
-            L1 = amount1 * Q96 // (sqrt_p - sqrt_a) if sqrt_p > sqrt_a else 0
+            L0 = amount0 * sqrt_p * sqrt_b // ((sqrt_b - sqrt_p) * _Q96) if sqrt_b > sqrt_p else 0
+            L1 = amount1 * _Q96 // (sqrt_p - sqrt_a) if sqrt_p > sqrt_a else 0
             if L0 > 0 and L1 > 0:
                 return min(L0, L1)
             return max(L0, L1)
