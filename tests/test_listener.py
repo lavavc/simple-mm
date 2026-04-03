@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from engine.core.arbitrage.listener import (
+from engine.arb.listener import (
     ERC20_TRANSFER_TOPIC,
     WalletActivitySubscription,
     build_wallet_transfer_filters,
@@ -111,8 +111,8 @@ class _FakeWebSocket:
 
 @pytest.mark.asyncio
 async def test_recv_with_keepalive_pings_on_idle(monkeypatch):
-    from engine.core.arbitrage.listener import ArbitrageWebSocketListener
-    import engine.core.arbitrage.listener as _listener
+    from engine.arb.listener import ArbitrageWebSocketListener
+    import engine.arb.listener as _listener
 
     monkeypatch.setattr(_listener, "_WSS_IDLE_RECV_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(_listener, "_WSS_PING_TIMEOUT_SECONDS", 0.01)
@@ -129,8 +129,8 @@ async def test_recv_with_keepalive_pings_on_idle(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_pool_state_triggers_market_update(monkeypatch):
-    from engine.core.arbitrage.listener import ArbitrageWebSocketListener
-    import engine.core.arbitrage.listener as _listener
+    from engine.arb.listener import ArbitrageWebSocketListener
+    import engine.arb.listener as _listener
 
     listener = ArbitrageWebSocketListener(broadcast=lambda _: None)
     triggered: list[str] = []

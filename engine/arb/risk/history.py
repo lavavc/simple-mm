@@ -12,8 +12,8 @@ from engine.api.schemas import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryWalletSnapshot,
 )
-from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
-from engine.core.arbitrage.router import SelectedRoute
+from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
+from engine.arb.routing.router import SelectedRoute
 
 
 _STABLE_SYMBOLS = {

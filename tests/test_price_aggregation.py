@@ -4,7 +4,7 @@ import pytest
 from decimal import Decimal
 
 from engine.api.schemas import PriceQuote
-from engine.core.price_aggregation import (
+from engine.market.price_aggregation import (
     PriceNormalizer,
     BlendedPriceCalculator,
     NormalizedPrice,
@@ -12,7 +12,7 @@ from engine.core.price_aggregation import (
     CNGN_USD_PAIRS,
     INVERTED_PAIRS,
 )
-from engine.core.venue_prices import VenuePrice
+from engine.market.venue_prices import VenuePrice
 
 
 # =============================================================================

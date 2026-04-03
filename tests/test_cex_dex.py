@@ -4,7 +4,7 @@ import pytest
 from decimal import Decimal
 
 from engine.api.schemas import OrderBookDepth, OrderBookLevel
-from engine.core.arbitrage.cex_dex import (
+from engine.arb.detection.cex_dex import (
     QUIDAX_FEE,
     compute_arb_curve,
     estimate_cex_buy_cngn,
@@ -39,7 +39,7 @@ class TestFindOptimalArbNullCases:
     """find_optimal_arb returns None when preconditions are not met."""
 
     def test_none_when_cache_empty(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         monkeypatch.setattr(_ps, "_POOL_CACHE", {})
         result = find_optimal_arb(_TIGHT_DEPTH)
         assert result is None
@@ -159,7 +159,7 @@ class TestOrderbookHelpers:
 
     def test_thin_pool_still_routes_below_exhaustion_ceiling(self, seeded_pool_cache, monkeypatch):
         """Pool exhausted at $5000 should not suppress viable smaller trades."""
-        import engine.core.arbitrage.cex_dex as _mod
+        import engine.arb.detection.cex_dex as _mod
 
         _CEILING = Decimal("100")
         _real = _mod.estimate_cex_dex_trade
@@ -183,7 +183,7 @@ class TestComputeArbCurve:
     """compute_arb_curve returns a 5000-point curve."""
 
     def test_returns_none_when_cache_empty(self, monkeypatch):
-        from engine.core.arbitrage import pool_state as _ps
+        from engine.market import pool_state as _ps
         monkeypatch.setattr(_ps, "_POOL_CACHE", {})
         result = compute_arb_curve(_TIGHT_DEPTH)
         assert result is None

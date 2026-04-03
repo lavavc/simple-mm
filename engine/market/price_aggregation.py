@@ -22,7 +22,7 @@ from typing import Optional
 import structlog
 
 from engine.api.schemas import PriceQuote
-from engine.core.venue_prices import VenuePriceAggregator, VenuePrice
+from engine.market.venue_prices import VenuePriceAggregator, VenuePrice
 
 logger = structlog.get_logger()
 

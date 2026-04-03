@@ -13,7 +13,7 @@ import os
 from decimal import Decimal
 from unittest.mock import patch
 
-import engine.core.arbitrage.dex_dex as _dex_dex_module
+import engine.arb.detection.dex_dex as _dex_dex_module
 
 _FAKE_ESTIMATE = {"cngn_transferred": 140000.0, "expected_profit_usd": 1.2}
 
@@ -24,9 +24,9 @@ def mock_dex_dex_estimate(monkeypatch):
     monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: _FAKE_ESTIMATE)
 
 from engine.api.schemas import ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
-from engine.core.arbitrage.engine import ArbitrageEngine
-from engine.core.arbitrage.route_registry import ROUTES_BY_DIRECTION
-from engine.core.arbitrage.router import RouteCandidate, SelectedRoute
+from engine.arb.engine import ArbitrageEngine
+from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
+from engine.arb.routing.router import RouteCandidate, SelectedRoute
 from engine.db.database import Database
 
 
@@ -152,7 +152,7 @@ class TestPreflightGate:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         opp_id = "opp-preflight-1"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert buy_venue.swap_calls == [], "buy swap must not be called when sell preflight fails"
@@ -171,7 +171,7 @@ class TestPreflightGate:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         opp_id = "opp-preflight-2"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert buy_venue.swap_calls == []
@@ -189,7 +189,7 @@ class TestPreflightGate:
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         await test_db.insert_dex_arbitrage_opportunity(_make_opp("opp-preflight-3", status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), "opp-preflight-3")
 
         assert len(buy_venue.swap_calls) == 1
@@ -218,7 +218,7 @@ class TestHalfOpenDetection:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-1"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
@@ -235,7 +235,7 @@ class TestHalfOpenDetection:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-2"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert engine.inventory._state.circuit_breaker_active
@@ -250,7 +250,7 @@ class TestHalfOpenDetection:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-3"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         critical = [a for a in alerts if a.get("severity") == "critical"]
@@ -270,7 +270,7 @@ class TestHalfOpenDetection:
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-4"
         await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
@@ -298,7 +298,7 @@ class TestRecovery:
         )
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             result = await engine.recover_dex_half_open(opp_id)
 
         assert result["method"] == "retry_sell"
@@ -324,7 +324,7 @@ class TestRecovery:
                                                            buy_amount_cngn=Decimal("798000"))
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             result = await engine.recover_dex_half_open(opp_id)
 
         assert result["method"] == "reverse_buy"
@@ -350,7 +350,7 @@ class TestRecovery:
         await test_db.update_dex_arbitrage_execution_state(opp_id, status="half_open")
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             with pytest.raises(ValueError, match="buy_amount_cngn not recorded"):
                 await engine.recover_dex_half_open(opp_id)
 
@@ -363,6 +363,6 @@ class TestRecovery:
         await test_db.insert_dex_arbitrage_opportunity(opp)
 
         engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.core.arbitrage.engine.get_db", fake_get_db):
+        with patch("engine.arb.engine.get_db", fake_get_db):
             with pytest.raises(ValueError, match="not recoverable"):
                 await engine.recover_dex_half_open(opp_id)

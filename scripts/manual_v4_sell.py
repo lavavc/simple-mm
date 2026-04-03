@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 
 from engine.api.schemas import DexParams
 from engine.config import settings
-from engine.core.accounts import AccountManager, AccountRole
+from engine.accounts import AccountManager, AccountRole
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 

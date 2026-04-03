@@ -16,7 +16,7 @@ import asyncio
 from decimal import Decimal
 
 from engine.config import settings
-from engine.core.accounts import AccountManager, AccountRole
+from engine.accounts import AccountManager, AccountRole
 
 TOKEN_ADDRESSES = {
     ("CNGN", 8453): settings.cngn_base_address,

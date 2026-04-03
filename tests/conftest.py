@@ -227,7 +227,7 @@ def seeded_pool_cache(monkeypatch):
     Provides realistic sqrtPriceX96, liquidity, and fee for BSC and Base pools.
     Returns a dict mapping venue name to pool_address for convenience.
     """
-    from engine.core.arbitrage import pool_state as _ps
+    from engine.market import pool_state as _ps
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
@@ -253,7 +253,7 @@ def seeded_pool_cache(monkeypatch):
     monkeypatch.setattr(_ps, "_POOL_CACHE", fake_cache)
 
     # Seed gas oracle so arb functions don't block on missing prices.
-    from engine.core import gas_oracle as _go
+    from engine.market import gas_oracle as _go
     monkeypatch.setitem(_go._state, "gas_usd_base", Decimal("0.003"))
     monkeypatch.setitem(_go._state, "gas_usd_bsc", Decimal("0.005"))
 

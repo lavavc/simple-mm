@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import structlog
 
-from engine.core.arbitrage.pool_state import (
+from engine.market.pool_state import (
     get_cached_pool_state,
     swap_token0_for_token1,
     swap_token1_for_token0,
@@ -17,7 +17,7 @@ logger = structlog.get_logger()
 _ABSOLUTE_MAX_USD = Decimal("15000")
 _REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
-from engine.core import gas_oracle as _gas_oracle  # noqa: E402
+from engine.market import gas_oracle as _gas_oracle  # noqa: E402
 
 
 def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):

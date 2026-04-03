@@ -5,8 +5,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-import engine.core.arbitrage.dex_volume as dex_volume
-from engine.core.arbitrage.dex_volume import (
+import engine.market.dex_volume as dex_volume
+from engine.market.dex_volume import (
     RollingDexVolumeStore,
     _rpc_candidates,
     _refresh_pool,
