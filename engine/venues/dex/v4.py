@@ -445,7 +445,11 @@ class BaseV4DexAdapter(VenueAdapter):
             if t0_hex != V4_SWAP_TOPIC.lower():
                 continue
             raw = log.get("data", "0x")
-            data = bytes.fromhex(raw[2:] if raw.startswith("0x") else raw)
+            if isinstance(raw, (bytes, bytearray)):
+                data = bytes(raw)
+            else:
+                raw_str = str(raw)
+                data = bytes.fromhex(raw_str[2:] if raw_str.startswith("0x") else raw_str)
             if len(data) < 64:
                 continue
             amount0 = int.from_bytes(data[0:32], "big", signed=True)

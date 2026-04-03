@@ -339,7 +339,11 @@ class ArbitrageWebSocketListener:
         """Parse V4 Swap event data and update the pool cache — zero RPC calls."""
         try:
             raw_data = log.get("data", "0x")
-            data_bytes = bytes.fromhex(raw_data[2:] if raw_data.startswith("0x") else raw_data)
+            if isinstance(raw_data, (bytes, bytearray)):
+                data_bytes = bytes(raw_data)
+            else:
+                raw_str = str(raw_data)
+                data_bytes = bytes.fromhex(raw_str[2:] if raw_str.startswith("0x") else raw_str)
 
             if len(data_bytes) < 192:
                 logger.warning("v4_swap_event_data_too_short", length=len(data_bytes))
