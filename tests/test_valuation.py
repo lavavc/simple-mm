@@ -9,6 +9,7 @@ from engine.api.schemas import OrderBookDepth, OrderBookLevel
 from engine.core.arbitrage.cex_dex import QUIDAX_FEE
 from engine.core.arbitrage.pool_state import swap_token0_for_token1
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
+from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 
 
 def _level(price: float, amount: float) -> OrderBookLevel:
@@ -96,6 +97,14 @@ class TestDexHoldingsValue:
             rpc_url="https://example.invalid",
         )
         assert adapter.config.cngn_is_token0 is True
+
+    def test_uni_bsc_rpc_override_preserves_cngn_token_order(self, test_private_key):
+        adapter = UniswapBscV4Adapter(
+            lp_private_key=test_private_key,
+            trade_private_key=test_private_key,
+            rpc_url="https://example.invalid",
+        )
+        assert adapter.config.cngn_is_token0 is False
 
 
 class TestPortfolioValue:
