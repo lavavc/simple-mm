@@ -1,4 +1,4 @@
-"""Unit tests for V4LPAdapter._compute_required_ratio and prepare_lp_balance."""
+"""Unit tests for compute_required_ratio and prepare_lp_balance."""
 
 import math
 import pytest
@@ -7,21 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import TxResult
-from engine.venues.dex.lp_v4 import V4LPAdapter, _Q96
+from engine.venues.dex.shared import _Q96, compute_required_ratio
+from engine.venues.dex.lp_v4 import V4LPAdapter
 
 
 def _price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
     """Convert a human-readable token1-per-token0 price to sqrtPriceX96."""
     dec_adj = 10 ** (token0_decimals - token1_decimals)
     return int(math.sqrt(price * dec_adj) * _Q96)
-
-
-def _make_ratio_adapter(token0_decimals: int = 6, token1_decimals: int = 6) -> SimpleNamespace:
-    """Minimal self-mock sufficient for _compute_required_ratio."""
-    return SimpleNamespace(config=SimpleNamespace(
-        token0_decimals=token0_decimals,
-        token1_decimals=token1_decimals,
-    ))
 
 
 def _make_balance_adapter(
@@ -63,55 +56,50 @@ def _make_balance_adapter(
             return_value=swap_result or TxResult(hash="0xswap", status="confirmed")
         ),
     )
-    # Bind the real _compute_required_ratio to this mock adapter
-    adapter._compute_required_ratio = lambda tl, tu, sp: V4LPAdapter._compute_required_ratio(adapter, tl, tu, sp)
+    adapter._compute_required_ratio = lambda tl, tu, sp: compute_required_ratio(
+        tl, tu, sp, adapter.config.token0_decimals, adapter.config.token1_decimals
+    )
     return adapter
 
 
 class TestComputeRequiredRatio:
-    """Tests for V4LPAdapter._compute_required_ratio."""
+    """Tests for shared.compute_required_ratio."""
 
     def test_symmetric_range_price_at_midpoint(self):
         """When price is inside the range, both r0 and r1 are non-zero."""
-        adapter = _make_ratio_adapter()
         sqrt_p = _price_to_sqrt_x96(1.0)
-        r0, r1 = V4LPAdapter._compute_required_ratio(adapter, -1000, 1000, sqrt_p)
+        r0, r1 = compute_required_ratio(-1000, 1000, sqrt_p, 6, 6)
         assert r0 > 0
         assert r1 > 0
 
     def test_price_below_range_all_token0(self):
         """Price below range: position is entirely token0, r1 == 0."""
-        adapter = _make_ratio_adapter()
         sqrt_p = _price_to_sqrt_x96(0.5)  # below tick_lower=1000
-        r0, r1 = V4LPAdapter._compute_required_ratio(adapter, 1000, 2000, sqrt_p)
+        r0, r1 = compute_required_ratio(1000, 2000, sqrt_p, 6, 6)
         assert r0 > 0
         assert r1 == 0
 
     def test_price_above_range_all_token1(self):
         """Price above range: position is entirely token1, r0 == 0."""
-        adapter = _make_ratio_adapter()
         sqrt_p = _price_to_sqrt_x96(2.0)  # above tick_upper=-1000
-        r0, r1 = V4LPAdapter._compute_required_ratio(adapter, -2000, -1000, sqrt_p)
+        r0, r1 = compute_required_ratio(-2000, -1000, sqrt_p, 6, 6)
         assert r0 == 0
         assert r1 > 0
 
     def test_price_near_upper_less_token0(self):
         """Closer to upper tick → less token0 needed than at midpoint."""
-        adapter = _make_ratio_adapter()
         sqrt_mid = _price_to_sqrt_x96(0.5)
         sqrt_near_upper = _price_to_sqrt_x96(1.005)  # tick ≈ 50, close to upper=100
-        r0_mid, _ = V4LPAdapter._compute_required_ratio(adapter, -2000, 100, sqrt_mid)
-        r0_upper, _ = V4LPAdapter._compute_required_ratio(adapter, -2000, 100, sqrt_near_upper)
+        r0_mid, _ = compute_required_ratio(-2000, 100, sqrt_mid, 6, 6)
+        r0_upper, _ = compute_required_ratio(-2000, 100, sqrt_near_upper, 6, 6)
         assert r0_upper < r0_mid
 
     def test_decimal_adjustment_affects_r0(self):
         """Dec adjustment must change r0 when token decimals differ."""
-        adapter_6_6 = _make_ratio_adapter(token0_decimals=6, token1_decimals=6)
-        adapter_6_18 = _make_ratio_adapter(token0_decimals=6, token1_decimals=18)
         sqrt_p_6_6 = _price_to_sqrt_x96(1.0, 6, 6)
         sqrt_p_6_18 = _price_to_sqrt_x96(1.0, 6, 18)
-        r0_equal, r1_equal = V4LPAdapter._compute_required_ratio(adapter_6_6, -1000, 1000, sqrt_p_6_6)
-        r0_diff, r1_diff = V4LPAdapter._compute_required_ratio(adapter_6_18, -1000, 1000, sqrt_p_6_18)
+        r0_equal, r1_equal = compute_required_ratio(-1000, 1000, sqrt_p_6_6, 6, 6)
+        r0_diff, r1_diff = compute_required_ratio(-1000, 1000, sqrt_p_6_18, 6, 18)
         # For equal-decimal 6/6 at symmetric range: both tokens have equal value weight
         assert abs(float(r0_equal) - float(r1_equal)) / float(r1_equal) < 0.01, "6/6 should give ~50/50"
         # Different decimals produce different r0 (dec_adj changes the ratio)

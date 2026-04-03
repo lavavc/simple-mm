@@ -358,3 +358,29 @@ class TestCalculateTickRangeRecoverySkew:
 
         assert t_low_hi < t_up_hi
         assert t_low_lo < t_up_lo
+
+    def test_skew_mutation_persisted_on_params(self):
+        """calculate_tick_range mutates params.downside_skew when recovery_price adjusts it."""
+        from engine.lp.strategy import calculate_tick_range, compute_ewma_stats
+
+        params = make_dex_params(downside_skew=Decimal("0.4"), ewma_lambda=Decimal("0.99"))
+        prices = self._prices(mean=0.000606, std=0.00002)
+        original_skew = params.downside_skew
+
+        # Price 3σ above mean → deviation pushes skew higher
+        mean, std = compute_ewma_stats(prices, params)
+        recovery_high = mean + 3 * std
+        calculate_tick_range(prices, params, 60, 6, 6, recovery_price=recovery_high, venue_name="test")
+
+        assert params.downside_skew != original_skew
+        assert Decimal("0.2") <= params.downside_skew <= Decimal("0.8")
+
+    def test_no_skew_mutation_without_recovery_price(self):
+        """calculate_tick_range must not touch params.downside_skew when recovery_price is None."""
+        from engine.lp.strategy import calculate_tick_range
+
+        params = make_dex_params(downside_skew=Decimal("0.4"), ewma_lambda=Decimal("0.99"))
+        prices = self._prices(mean=0.000606, std=0.00002)
+        calculate_tick_range(prices, params, 60, 6, 6, recovery_price=None, venue_name="test")
+
+        assert params.downside_skew == Decimal("0.4")

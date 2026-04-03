@@ -337,6 +337,31 @@ class TestCreateDexPosition:
         call_kwargs = mock_range.call_args
         assert call_kwargs.kwargs.get("recovery_price") == 0.000400
 
+    @pytest.mark.asyncio
+    async def test_recovery_rebalance_persists_params(self, fake_dex_adapter):
+        """After a rebalance that adjusts downside_skew, update_venue_config is called."""
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=0.000800)
+
+        db.update_venue_config.assert_called_once()
+        venue_arg, params_arg = db.update_venue_config.call_args[0]
+        assert venue_arg == "uni-base"
+        assert "downside_skew" in params_arg
+
+    @pytest.mark.asyncio
+    async def test_non_recovery_create_does_not_persist_params(self, fake_dex_adapter):
+        """create_position without recovery_price must not call update_venue_config."""
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=None)
+
+        db.update_venue_config.assert_not_called()
+
 
 class TestDexArbCurveStream:
 

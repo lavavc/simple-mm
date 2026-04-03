@@ -3,8 +3,26 @@
 from decimal import Decimal
 
 from pydantic_settings import BaseSettings
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
+
+
+class DexParams(BaseModel):
+    """LP strategy parameters for a single DEX venue.
+
+    No defaults — all values must be supplied explicitly (from Settings env vars or
+    persisted DB overrides). This prevents silent divergence between the dataclass
+    and the operator-visible settings in config.py.
+    """
+
+    sd_multiplier: Decimal
+    min_tick_width: int
+    max_tick_width: int
+    lookback_points: Optional[int] = None  # None = use all available prices
+    rebalance_threshold_percent: Decimal
+    max_slippage_percent: Decimal
+    downside_skew: Decimal
+    ewma_lambda: Decimal
 
 
 class Settings(BaseSettings):
@@ -141,8 +159,7 @@ class Settings(BaseSettings):
     uni_bsc_max_slippage_percent: Decimal = Decimal("1.0")
 
     @property
-    def uni_base_lp_params(self) -> "DexParams":
-        from engine.lp.config import DexParams
+    def uni_base_lp_params(self) -> DexParams:
         return DexParams(
             sd_multiplier=self.uni_base_sd_multiplier,
             ewma_lambda=self.uni_base_ewma_lambda,
@@ -155,8 +172,7 @@ class Settings(BaseSettings):
         )
 
     @property
-    def uni_bsc_lp_params(self) -> "DexParams":
-        from engine.lp.config import DexParams
+    def uni_bsc_lp_params(self) -> DexParams:
         return DexParams(
             sd_multiplier=self.uni_bsc_sd_multiplier,
             ewma_lambda=self.uni_bsc_ewma_lambda,

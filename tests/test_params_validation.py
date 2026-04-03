@@ -5,7 +5,7 @@ from decimal import Decimal
 from pydantic import ValidationError
 
 from pydantic import ValidationError
-from engine.lp.config import DexParams
+from engine.config import DexParams
 from engine.api.schemas import CexParams, WalletParams
 from engine.config import settings
 from tests.conftest_params import make_dex_params
@@ -150,3 +150,35 @@ class TestParamsInteroperability:
 
         assert params.sd_multiplier == Decimal("1.8")
         assert params.min_tick_width == 150
+
+
+class TestStartupParamRestoration:
+    """Verify that persisted DexParams survive a round-trip through the DB serialisation."""
+
+    @pytest.mark.asyncio
+    async def test_persisted_params_restored_on_startup(self):
+        """Params saved to DB as JSON are correctly reconstructed into DexParams on startup."""
+        from tests.fakes import FakeDexAdapter
+
+        venue = FakeDexAdapter()
+        original = make_dex_params(sd_multiplier=Decimal("4.5"), downside_skew=Decimal("0.6"))
+        # Simulate what update_venue_config stores: model_dump(mode="json") → json-safe dict
+        stored = original.model_dump(mode="json")
+
+        # Simulate what startup does: reconstruct from stored dict
+        venue.params = DexParams(**stored)
+
+        assert venue.params.sd_multiplier == Decimal("4.5")
+        assert venue.params.downside_skew == Decimal("0.6")
+
+    def test_model_dump_json_is_fully_serialisable(self):
+        """model_dump(mode='json') must produce a dict json.dumps can handle."""
+        import json
+        params = make_dex_params(sd_multiplier=Decimal("3.14"), ewma_lambda=Decimal("0.975"))
+        serialised = params.model_dump(mode="json")
+        # Must not raise
+        json.dumps(serialised)
+        # Must round-trip
+        restored = DexParams(**serialised)
+        assert restored.sd_multiplier == params.sd_multiplier
+        assert restored.ewma_lambda == params.ewma_lambda

@@ -1,7 +1,55 @@
 """Shared DEX math, read configs, and low-level contract helpers."""
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
+
+# Uniswap V4 fixed-point constant — used across tick math and liquidity calculations
+_Q96 = 2 ** 96
+
+
+def _tick_to_sqrt_x96(tick: int) -> float:
+    """Return sqrtPriceX96 as a float for a given tick."""
+    return math.exp(tick * math.log(1.0001) / 2) * _Q96
+
+
+def tick_to_price(tick: int, token0_decimals: int, token1_decimals: int) -> Decimal:
+    """Convert a tick index to a human-readable price."""
+    decimal_diff = token0_decimals - token1_decimals
+    return Decimal("1.0001") ** tick * Decimal(10 ** decimal_diff)
+
+
+def price_to_tick(price: Decimal, token0_decimals: int, token1_decimals: int) -> int:
+    """Convert a human-readable price to a tick index."""
+    decimal_diff = token0_decimals - token1_decimals
+    adjusted = float(price) / (10 ** decimal_diff)
+    return int(math.log(adjusted) / math.log(1.0001))
+
+
+def compute_required_ratio(
+    tick_lower: int,
+    tick_upper: int,
+    sqrt_price_x96: int,
+    token0_decimals: int,
+    token1_decimals: int,
+) -> tuple[Decimal, Decimal]:
+    """Return (r0, r1) — token amounts per unit of liquidity at the current price."""
+    sqrt_a = _tick_to_sqrt_x96(tick_lower)
+    sqrt_b = _tick_to_sqrt_x96(tick_upper)
+    sqrt_p = float(sqrt_price_x96)
+
+    if sqrt_p <= sqrt_a:
+        r0 = (sqrt_b - sqrt_a) / (sqrt_a * sqrt_b) * _Q96 if sqrt_a * sqrt_b > 0 else 0.0
+        r1 = 0.0
+    elif sqrt_p >= sqrt_b:
+        r0 = 0.0
+        r1 = (sqrt_b - sqrt_a) / _Q96
+    else:
+        r0 = (sqrt_b - sqrt_p) / (sqrt_p * sqrt_b) * _Q96
+        r1 = (sqrt_p - sqrt_a) / _Q96
+
+    dec_adj = Decimal(10 ** token0_decimals) / Decimal(10 ** token1_decimals)
+    return Decimal(str(r0)) / dec_adj, Decimal(str(r1))
 
 
 @dataclass
