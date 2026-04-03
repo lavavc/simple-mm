@@ -126,7 +126,9 @@ def _make_engine(venues, test_db):
         params=_params(),
         broadcast=lambda e: alerts.append(e),
         execute_dex_dex_enabled=True,
-        storage=test_db,
+        arbitrage_store=test_db.arbitrage,
+        history_store=test_db.history,
+        price_store=test_db.prices,
     )
     engine._inventory_seeded = True  # skip seed network calls
     return engine, alerts
@@ -146,12 +148,12 @@ class TestPreflightGate:
 
         engine, alerts = _make_engine(venues, test_db)
         opp_id = "opp-preflight-1"
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert buy_venue.swap_calls == [], "buy swap must not be called when sell preflight fails"
         assert not engine._arb_executing
-        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
         assert opp is not None
         assert opp.status == "abandoned"
 
@@ -164,12 +166,12 @@ class TestPreflightGate:
 
         engine, alerts = _make_engine(venues, test_db)
         opp_id = "opp-preflight-2"
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert buy_venue.swap_calls == []
         assert not engine._arb_executing
-        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
         assert opp is not None
         assert opp.status == "abandoned"
 
@@ -181,11 +183,11 @@ class TestPreflightGate:
         venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
 
         engine, alerts = _make_engine(venues, test_db)
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp("opp-preflight-3", status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp("opp-preflight-3", status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), "opp-preflight-3")
 
         assert len(buy_venue.swap_calls) == 1
-        opp = await test_db.get_dex_arbitrage_opportunity("opp-preflight-3")
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity("opp-preflight-3")
         assert opp.status == "completed"
         assert opp.actual_profit_usd is not None
         assert opp.sell_tx_hash is not None
@@ -209,10 +211,10 @@ class TestHalfOpenDetection:
 
         engine, alerts = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-1"
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
-        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
         assert opp.status == "half_open"
         assert opp.buy_tx_hash is not None
 
@@ -225,7 +227,7 @@ class TestHalfOpenDetection:
 
         engine, alerts = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-2"
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         assert engine.inventory._state.circuit_breaker_active
@@ -239,7 +241,7 @@ class TestHalfOpenDetection:
 
         engine, alerts = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-3"
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
         critical = [a for a in alerts if a.get("severity") == "critical"]
@@ -258,10 +260,10 @@ class TestHalfOpenDetection:
 
         engine, alerts = _make_engine(venues, test_db)
         opp_id = "opp-halfopen-4"
-        await test_db.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
         await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
 
-        opp = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
         assert opp.reason is not None
         assert "0x08c379a0" not in opp.reason
 
@@ -280,8 +282,8 @@ class TestRecovery:
 
         opp_id = "opp-recover-1"
         opp = _make_opp(opp_id, status="half_open", buy_amount_cngn=Decimal("798000"))
-        await test_db.insert_dex_arbitrage_opportunity(opp)
-        await test_db.update_dex_arbitrage_execution_state(
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(opp)
+        await test_db.arbitrage.update_dex_arbitrage_execution_state(
             opp_id, status="half_open", buy_amount_cngn=Decimal("798000"),
         )
 
@@ -293,7 +295,7 @@ class TestRecovery:
         # Recovery sells the actual cNGN received (buy_amount_cngn), not any pre-planned estimate.
         _, amount_in, _ = sell_venue.swap_calls[0]
         assert amount_in == int(Decimal("798000") * Decimal(10 ** sell_venue.cngn_decimals))
-        done = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        done = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
         assert done.status == "completed"
         assert done.actual_profit_usd is not None
 
@@ -306,8 +308,8 @@ class TestRecovery:
 
         opp_id = "opp-recover-2"
         opp = _make_opp(opp_id, status="half_open", buy_amount_cngn=Decimal("798000"))
-        await test_db.insert_dex_arbitrage_opportunity(opp)
-        await test_db.update_dex_arbitrage_execution_state(opp_id, status="half_open",
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(opp)
+        await test_db.arbitrage.update_dex_arbitrage_execution_state(opp_id, status="half_open",
                                                            buy_amount_cngn=Decimal("798000"))
 
         engine, alerts = _make_engine(venues, test_db)
@@ -319,7 +321,7 @@ class TestRecovery:
         assert len(buy_venue.swap_calls) == 1
         _, amount_in, _ = buy_venue.swap_calls[0]
         assert amount_in == int(Decimal("798000") * Decimal(10 ** buy_venue.cngn_decimals))
-        done = await test_db.get_dex_arbitrage_opportunity(opp_id)
+        done = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
         assert done.status == "completed"
         assert done.actual_profit_usd is not None
 
@@ -332,8 +334,8 @@ class TestRecovery:
 
         opp_id = "opp-recover-3"
         opp = _make_opp(opp_id, status="half_open", buy_amount_cngn=None)
-        await test_db.insert_dex_arbitrage_opportunity(opp)
-        await test_db.update_dex_arbitrage_execution_state(opp_id, status="half_open")
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(opp)
+        await test_db.arbitrage.update_dex_arbitrage_execution_state(opp_id, status="half_open")
 
         engine, alerts = _make_engine(venues, test_db)
         with pytest.raises(ValueError, match="buy_amount_cngn not recorded"):
@@ -345,7 +347,7 @@ class TestRecovery:
         venues = {"uni-base": FakeV4Venue("uni-base"), "uni-bsc": FakeV4Venue("uni-bsc")}
         opp_id = "opp-recover-4"
         opp = _make_opp(opp_id, status="completed")
-        await test_db.insert_dex_arbitrage_opportunity(opp)
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(opp)
 
         engine, alerts = _make_engine(venues, test_db)
         with pytest.raises(ValueError, match="not recoverable"):

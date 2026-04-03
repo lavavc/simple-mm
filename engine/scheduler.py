@@ -10,7 +10,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import structlog
 
 from engine.config import settings
-from engine.db.backend import StorageBackend
+from engine.db.backend import AlertStoreProtocol, PositionStoreProtocol, PriceStoreProtocol, SystemStateStoreProtocol, VenueConfigStoreProtocol, ActionStoreProtocol
 from engine.market.venue_prices import VenuePriceAggregator
 from engine.market.price_aggregation import BlendedPriceCalculator
 from engine.lp.rebalancer import LPRebalancer
@@ -70,7 +70,12 @@ class TradingScheduler:
         account_manager: "AccountManager | None" = None,
         token_contracts: dict[str, str] | None = None,
         quidax_lp=None,
-        db: StorageBackend | None = None,
+        system_state_store: SystemStateStoreProtocol | None = None,
+        price_store: PriceStoreProtocol | None = None,
+        position_store: PositionStoreProtocol | None = None,
+        alert_store: AlertStoreProtocol | None = None,
+        venue_config_store: VenueConfigStoreProtocol | None = None,
+        action_store: ActionStoreProtocol | None = None,
     ):
         self.price_aggregator = price_aggregator
         self.venues = venues
@@ -81,12 +86,27 @@ class TradingScheduler:
         self.account_manager = account_manager
         self.token_contracts = token_contracts or {}
         self.quidax_lp = quidax_lp
-        if db is None:
-            raise ValueError("TradingScheduler requires a database repository")
-        self.db = db
+        if (
+            system_state_store is None
+            or price_store is None
+            or position_store is None
+            or alert_store is None
+            or venue_config_store is None
+            or action_store is None
+        ):
+            raise ValueError("TradingScheduler requires system state, price, position, alert, venue config, and action stores")
+        self.system_state_store = system_state_store
+        self.price_store = price_store
+        self.position_store = position_store
+        self.alert_store = alert_store
 
         self.scheduler = AsyncIOScheduler()
-        self.lp_rebalancer = LPRebalancer(broadcast=self.broadcast, db=self.db)
+        self.lp_rebalancer = LPRebalancer(
+            broadcast=self.broadcast,
+            price_store=price_store,
+            venue_config_store=venue_config_store,
+            action_store=action_store,
+        )
         self._trading_enabled = True
         self._started = False
         self._quidax_depth_ok = True  # tracks depth availability for alert transitions
@@ -303,13 +323,13 @@ class TradingScheduler:
 
     async def pause(self):
         self._trading_enabled = False
-        await self.db.set_system_state("trading_enabled", "false")
+        await self.system_state_store.set_system_state("trading_enabled", "false")
         self.broadcast({"type": "system", "status": "paused"})
         logger.info("trading_paused")
 
     async def resume(self):
         self._trading_enabled = True
-        await self.db.set_system_state("trading_enabled", "true")
+        await self.system_state_store.set_system_state("trading_enabled", "true")
         self.broadcast({"type": "system", "status": "running"})
         logger.info("trading_resumed")
 
@@ -349,7 +369,7 @@ class TradingScheduler:
                 })
 
                 if price.quote:
-                    await self.db.insert_price_snapshot(price.quote)
+                    await self.price_store.insert_price_snapshot(price.quote)
 
             self.broadcast({"type": "venue_prices", "data": prices_data})
 
@@ -379,7 +399,7 @@ class TradingScheduler:
             try:
                 pos = await venue.get_position()
                 positions.append(pos)
-                await self.db.insert_position(pos)
+                await self.position_store.insert_position(pos)
             except Exception as e:
                 logger.error("position_sync_failed", venue=name, error=str(e))
 
@@ -508,7 +528,7 @@ class TradingScheduler:
                 )
                 logger.warning("portfolio_delta_alert", message=msg)
 
-                alert_id = await self.db.insert_alert(
+                alert_id = await self.alert_store.insert_alert(
                     severity="warning",
                     category="delta",
                     message=msg,
@@ -715,7 +735,7 @@ class TradingScheduler:
                         reasons=balance.refill_reasons,
                     )
 
-                    await self.db.insert_alert(
+                    await self.alert_store.insert_alert(
                         severity="warning",
                         category="refill",
                         message=f"Account {balance.role} needs refill: {', '.join(balance.refill_reasons)}",
@@ -786,7 +806,7 @@ class TradingScheduler:
                 else:
                     logger.warning("quidax_deposit_address_missing", role=account_role_str, token=cex_key)
             else:
-                await self.db.insert_alert(
+                await self.alert_store.insert_alert(
                     severity="warning",
                     category="refill",
                     message=(

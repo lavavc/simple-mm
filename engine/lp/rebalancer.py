@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Callable, Any
 
 import structlog
 
-from engine.db.backend import StorageBackend
+from engine.db.backend import ActionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
 from engine.lp import strategy
 
 if TYPE_CHECKING:
@@ -16,9 +16,17 @@ logger = structlog.get_logger()
 class LPRebalancer:
     """Orchestrates DEX LP rebalancing — decoupled from the scheduler."""
 
-    def __init__(self, broadcast: Callable[[dict], Any], db: StorageBackend):
+    def __init__(
+        self,
+        broadcast: Callable[[dict], Any],
+        price_store: PriceStoreProtocol,
+        venue_config_store: VenueConfigStoreProtocol,
+        action_store: ActionStoreProtocol,
+    ):
         self.broadcast = broadcast
-        self._db = db
+        self._price_store = price_store
+        self._venue_config_store = venue_config_store
+        self._action_store = action_store
 
     async def check_and_rebalance(self, venue: "V4LPAdapter") -> None:
         """Check position state; rebalance if out of range past threshold."""
@@ -64,10 +72,8 @@ class LPRebalancer:
 
     async def create_position(self, venue: "V4LPAdapter", recovery_price: float | None = None) -> bool:
         """Fetch price history, compute tick range, balance funds, mint."""
-        db = self._db
-
         try:
-            prices = await db.get_recent_prices(limit=100)
+            prices = await self._price_store.get_recent_prices(limit=100)
             if len(prices) < 10:
                 logger.warning("insufficient_price_history", venue=venue.name, count=len(prices))
                 return False
@@ -78,7 +84,7 @@ class LPRebalancer:
                 recovery_price=recovery_price, venue_name=venue.name,
             )
             if recovery_price is not None:
-                await db.update_venue_config(venue.name, venue.params.model_dump(mode="json"))
+                await self._venue_config_store.update_venue_config(venue.name, venue.params.model_dump(mode="json"))
 
             if await venue.prepare_lp_balance(tick_lower, tick_upper) is False:
                 return False
@@ -110,14 +116,14 @@ class LPRebalancer:
                     "type": "action",
                     "data": {"venue": venue.name, "action": "position_created", "tx": result.hash},
                 })
-                await db.insert_action(
+                await self._action_store.insert_action(
                     venue=venue.name, action_type="mint_position",
                     status="confirmed", tx_hash=result.hash, triggered_by="auto:rebalance",
                 )
                 return True
             else:
                 logger.error("dex_position_creation_failed", venue=venue.name, error=result.error)
-                await db.insert_action(
+                await self._action_store.insert_action(
                     venue=venue.name, action_type="mint_position",
                     status="failed", error=result.error, triggered_by="auto:rebalance",
                 )
@@ -129,15 +135,13 @@ class LPRebalancer:
 
     async def rebalance(self, venue: "V4LPAdapter", token_id: int, position) -> bool:
         """Remove existing position and recreate with recovery_price."""
-        db = self._db
-
         try:
             logger.info("removing_old_position", venue=venue.name, token_id=token_id)
             result = await venue.remove_position(token_id)
 
             if result.status != "confirmed":
                 logger.error("failed_to_remove_position", venue=venue.name, token_id=token_id, error=result.error)
-                await db.insert_action(
+                await self._action_store.insert_action(
                     venue=venue.name, action_type="remove_position",
                     status="failed", error=result.error, triggered_by="auto:rebalance",
                 )
@@ -147,7 +151,7 @@ class LPRebalancer:
                 })
                 return False
 
-            await db.insert_action(
+            await self._action_store.insert_action(
                 venue=venue.name, action_type="remove_position",
                 status="confirmed", tx_hash=result.hash, triggered_by="auto:rebalance",
             )

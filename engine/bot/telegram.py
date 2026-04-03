@@ -11,26 +11,21 @@ import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from engine.db.backend import StorageBackend
+from engine.runtime import EngineRuntime
 
 logger = structlog.get_logger()
 
 _app: Optional[Application] = None
 _settings = None
-_scheduler = None
-_venues = None
-_arbitrage_engine = None
-_account_manager = None
-_token_contracts: dict = {}
-_db: StorageBackend | None = None
+_runtime: EngineRuntime | None = None
 _recent_alerts: dict[str, float] = {}
 _pending_withdrawals: dict[str, tuple[str, str | None]] = {}
 
 
-def _require_db() -> StorageBackend:
-    if _db is None:
-        raise RuntimeError("Telegram bot database is not configured")
-    return _db
+def _require_runtime() -> EngineRuntime:
+    if _runtime is None:
+        raise RuntimeError("Telegram bot runtime is not configured")
+    return _runtime
 
 
 def _auth(update: Update) -> bool:
@@ -51,12 +46,13 @@ def _confirm_kb(action: str) -> InlineKeyboardMarkup:
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    trading_state = await _require_db().get_system_state("trading_enabled")
+    runtime = _require_runtime()
+    trading_state = await runtime.db.system_state.get_system_state("trading_enabled")
     trading = trading_state != "false"
     cb = False
     arb_line = "❌ Not configured"
-    if _arbitrage_engine:
-        s = await _arbitrage_engine.get_status()
+    if runtime.arbitrage_engine:
+        s = await runtime.arbitrage_engine.get_status()
         cb = s.circuit_breaker_active
         if not s.enabled:
             arb_line = "⏸ Detection paused"
@@ -81,11 +77,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    if not _venues:
+    runtime = _require_runtime()
+    if not runtime.venues:
         await update.message.reply_text("No venues configured.")
         return
     lines = ["*LP Positions*"]
-    for name, venue in _venues.items():
+    for name, venue in runtime.venues.items():
         try:
             pos = await venue.get_position()
             lines.append(f"\n*{name}*")
@@ -99,11 +96,12 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    if not _account_manager:
+    runtime = _require_runtime()
+    if not runtime.account_manager:
         await update.message.reply_text("Account manager not configured.")
         return
     try:
-        balances = await _account_manager.check_all_balances(_token_contracts)
+        balances = await runtime.account_manager.check_all_balances(runtime.token_contracts)
         lines = ["*Account Balances*"]
         for b in balances:
             lines.append(f"\n*{b.role}*")
@@ -117,11 +115,12 @@ async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    if not _arbitrage_engine:
+    runtime = _require_runtime()
+    if not runtime.arbitrage_engine:
         await update.message.reply_text("Arbitrage engine not configured.")
         return
     try:
-        s = await _arbitrage_engine.get_status()
+        s = await runtime.arbitrage_engine.get_status()
         text = (
             f"*Arbitrage Status*\n"
             f"Enabled: {'✅' if s.enabled else '❌'}\n"
@@ -138,7 +137,7 @@ async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         return
-    alerts = await _require_db().get_alerts(5)
+    alerts = await _require_runtime().db.alerts.get_alerts(5)
     if not alerts:
         await update.message.reply_text("No recent alerts.")
         return
@@ -227,10 +226,11 @@ async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _do_withdraw(venue: str, to_address: str | None = None) -> str:
     from engine.venues.dex.lp_v4 import V4LPAdapter
+    runtime = _require_runtime()
     if venue == "all":
-        targets = {k: v for k, v in _venues.items() if isinstance(v, V4LPAdapter)}
-    elif venue in _venues and isinstance(_venues[venue], V4LPAdapter):
-        targets = {venue: _venues[venue]}
+        targets = {k: v for k, v in runtime.venues.items() if isinstance(v, V4LPAdapter)}
+    elif venue in runtime.venues and isinstance(runtime.venues[venue], V4LPAdapter):
+        targets = {venue: runtime.venues[venue]}
     else:
         return f"❌ Venue {venue} not found or not a DEX."
     results = []
@@ -246,16 +246,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _settings or str(query.message.chat.id) != str(_settings.telegram_chat_id):
         await query.answer()
         return
+    runtime = _require_runtime()
     await query.answer()
     data = query.data
 
     if data == "cancel":
         await query.edit_message_text("❌ Cancelled.")
     elif data == "confirm:pause":
-        await _scheduler.pause()
+        await runtime.scheduler.pause()
         await query.edit_message_text("⏸ Trading paused.")
     elif data == "confirm:resume":
-        await _scheduler.resume()
+        await runtime.scheduler.resume()
         await query.edit_message_text("▶️ Trading resumed.")
     elif data.startswith("confirm:wd:"):
         token = data.split(":", 2)[2]
@@ -276,20 +277,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🛑 Engine shutting down.")
         asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
     elif data == "confirm:reset_breaker":
-        if _arbitrage_engine:
-            _arbitrage_engine.reset_circuit_breaker()
+        if runtime.arbitrage_engine:
+            runtime.arbitrage_engine.reset_circuit_breaker()
             await query.edit_message_text("✅ Circuit breaker reset.")
         else:
             await query.edit_message_text("❌ Arbitrage engine not configured.")
     elif data.startswith("confirm:recover:"):
         opp_id = data.split(":", 2)[2]
-        if not _arbitrage_engine:
+        if not runtime.arbitrage_engine:
             await query.edit_message_text("❌ Arbitrage engine not configured.")
             return
         await query.edit_message_text(f"⏳ Recovering {opp_id}...")
         try:
             try:
-                result = await _arbitrage_engine.recover_dex_half_open(opp_id)
+                result = await runtime.arbitrage_engine.recover_dex_half_open(opp_id)
                 method = "sell retried" if result["method"] == "retry_sell" else "buy reversed"
                 profit = result["profit_usd"]
                 sign = "+" if profit >= 0 else ""
@@ -299,7 +300,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError as e:
                 if "Unknown DEX arbitrage opportunity" not in str(e):
                     raise
-                result = await _arbitrage_engine.recover_cex_half_open(opp_id)
+                result = await runtime.arbitrage_engine.recover_cex_half_open(opp_id)
                 profit = result["profit_usd"]
                 sign = "+" if profit >= 0 else ""
                 method = result["method"].replace("_", " ")
@@ -340,15 +341,10 @@ async def forward_alert(event: dict) -> None:
 
 # --- Lifecycle ---
 
-async def start(s, sched, ven, arb_engine, acct_manager, token_contracts, db: StorageBackend) -> None:
-    global _app, _settings, _scheduler, _venues, _arbitrage_engine, _account_manager, _token_contracts, _db
+async def start(s, runtime: EngineRuntime) -> None:
+    global _app, _settings, _runtime
     _settings = s
-    _scheduler = sched
-    _venues = ven
-    _arbitrage_engine = arb_engine
-    _account_manager = acct_manager
-    _token_contracts = token_contracts
-    _db = db
+    _runtime = runtime
 
     _app = Application.builder().token(s.telegram_bot_token).build()
     _app.add_handler(CommandHandler("status", cmd_status))
@@ -371,10 +367,11 @@ async def start(s, sched, ven, arb_engine, acct_manager, token_contracts, db: St
 
 
 async def stop() -> None:
-    global _app
+    global _app, _runtime
     if _app:
         await _app.updater.stop()
         await _app.stop()
         await _app.shutdown()
         _app = None
         logger.info("telegram_bot_stopped")
+    _runtime = None

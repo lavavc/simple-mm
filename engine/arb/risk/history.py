@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Callable, Optional
 
 import structlog
 
@@ -14,6 +14,7 @@ from engine.api.schemas import (
 )
 from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 from engine.arb.routing.router import SelectedRoute
+from engine.db.backend import HistoryStoreProtocol
 
 
 _STABLE_SYMBOLS = {
@@ -43,11 +44,11 @@ class ArbitrageHistoryRecorder:
         self,
         inventory,
         broadcast: Callable[[dict], Any],
-        db_getter: Callable[[], Awaitable[Any]],
+        history_store: HistoryStoreProtocol,
     ):
         self.inventory = inventory
         self.broadcast = broadcast
-        self.db_getter = db_getter
+        self.history_store = history_store
 
     def _stable_symbol_for_venue(self, venue_name: str) -> Optional[str]:
         return _STABLE_SYMBOLS.get(venue_name)
@@ -99,8 +100,7 @@ class ArbitrageHistoryRecorder:
 
     async def _store(self, event: ArbitrageHistoryEvent) -> None:
         try:
-            db = await self.db_getter()
-            await db.upsert_arbitrage_history_event(event)
+            await self.history_store.upsert_arbitrage_history_event(event)
             self.broadcast({"type": "arb_history_updated", "data": {"opportunity_id": event.opportunity_id}})
         except Exception as exc:
             logger.warning(

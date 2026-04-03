@@ -43,6 +43,10 @@ class MockDB:
         self._prices = prices if prices is not None else [Decimal("0.000606")] * 20
         self.insert_action = AsyncMock()
         self.update_venue_config = AsyncMock()
+        self.insert_price_snapshot = AsyncMock()
+        self.insert_position = AsyncMock()
+        self.insert_alert = AsyncMock()
+        self.set_system_state = AsyncMock()
 
     async def get_recent_prices(self, limit=100):
         return self._prices[:limit]
@@ -62,12 +66,23 @@ def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingSched
     sched.account_manager = None
     sched.token_contracts = {}
     sched.quidax_lp = None
-    sched.db = db
+    sched.system_state_store = SimpleNamespace(set_system_state=db.set_system_state)
+    sched.price_store = SimpleNamespace(
+        get_recent_prices=db.get_recent_prices,
+        insert_price_snapshot=db.insert_price_snapshot,
+    )
+    sched.position_store = SimpleNamespace(insert_position=db.insert_position)
+    sched.alert_store = SimpleNamespace(insert_alert=db.insert_alert)
     sched._started = False
     sched._dex_bootstrap_pending = True
     sched._dex_bootstrap_task = None
     sched.ws_listener = MagicMock(active_connections=set())
-    sched.lp_rebalancer = LPRebalancer(broadcast=sched.broadcast, db=db)
+    sched.lp_rebalancer = LPRebalancer(
+        broadcast=sched.broadcast,
+        price_store=sched.price_store,
+        venue_config_store=SimpleNamespace(update_venue_config=db.update_venue_config),
+        action_store=SimpleNamespace(insert_action=db.insert_action),
+    )
     return sched
 
 

@@ -9,12 +9,22 @@ from typing import Any
 import aiosqlite
 
 from engine.api.schemas import ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity
+from engine.arb.routing.route_registry import ROUTES
 
 
 def _to_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     return Decimal(str(value))
+
+
+def _cex_direction_for_venues(buy_venue: str, sell_venue: str) -> str:
+    for route in ROUTES:
+        if route.pipeline != "cex_dex":
+            continue
+        if route.buy_leg.venue == buy_venue and route.sell_leg.venue == sell_venue:
+            return route.direction
+    raise ValueError(f"Unknown CEX route: {buy_venue} -> {sell_venue}")
 
 
 def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
@@ -94,7 +104,7 @@ async def upsert_cex_attempt(
         """,
         (
             opp.id,
-            opp.id,
+            _cex_direction_for_venues(opp.buy_venue, opp.sell_venue),
             opp.buy_venue,
             opp.sell_venue,
             opp.timestamp,

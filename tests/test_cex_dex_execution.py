@@ -127,7 +127,9 @@ def _make_engine(venues, test_db):
         params=_params(),
         broadcast=lambda e: alerts.append(e),
         execute_cex_dex_enabled=True,
-        storage=test_db,
+        arbitrage_store=test_db.arbitrage,
+        history_store=test_db.history,
+        price_store=test_db.prices,
     )
     engine._inventory_seeded = True
     return engine, alerts
@@ -214,7 +216,7 @@ class TestCexDexPreflightGate:
         _, sim_amount_raw, sim_min_out_raw = sell_venue.sim_calls[0]
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, sim_amount_raw, sim_min_out_raw)
 
-        opp = await test_db.get_arbitrage_opportunity("opp-cex-sell-alignment")
+        opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-sell-alignment")
         assert opp is not None
         assert opp.buy_price == Decimal("0.00061")
         assert opp.sell_price == Decimal("0.00071")
@@ -233,7 +235,7 @@ class TestCexDexPreflightGate:
 
         await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-persist")
 
-        opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-persist")
+        opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-profit-persist")
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0.42")
 
@@ -251,7 +253,7 @@ class TestCexDexPreflightGate:
 
         await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-zero")
 
-        opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-zero")
+        opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-profit-zero")
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0")
 
@@ -340,7 +342,9 @@ class TestHandlePreflightError:
             venues={},
             params=_params(),
             broadcast=lambda e: alerts.append(e),
-            storage=object(),
+            arbitrage_store=object(),
+            history_store=object(),
+            price_store=object(),
         )
         engine._inventory_seeded = True
         return engine, alerts

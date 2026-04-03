@@ -22,7 +22,7 @@ from typing import Optional
 import structlog
 
 from engine.api.schemas import PriceQuote
-from engine.db.backend import StorageBackend
+from engine.db.backend import PriceHistoryStoreProtocol
 from engine.market.venue_prices import VenuePriceAggregator, VenuePrice
 
 logger = structlog.get_logger()
@@ -164,7 +164,7 @@ class BlendedPriceCalculator:
         price_aggregator: VenuePriceAggregator,
         normalizer: PriceNormalizer | None = None,
         venue_weights: dict[str, Decimal] | None = None,
-        db: StorageBackend | None = None,
+        price_store: PriceHistoryStoreProtocol | None = None,
     ):
         """
         Args:
@@ -175,9 +175,9 @@ class BlendedPriceCalculator:
         self.price_aggregator = price_aggregator
         self.normalizer = normalizer or PriceNormalizer()
         self.venue_weights = venue_weights or {}
-        if db is None:
-            raise ValueError("BlendedPriceCalculator requires a database repository")
-        self.db = db
+        if price_store is None:
+            raise ValueError("BlendedPriceCalculator requires a price store")
+        self.price_store = price_store
 
         # Caches
         self._last_blended: Optional[BlendedPrice] = None
@@ -255,7 +255,7 @@ class BlendedPriceCalculator:
         now_ms = int(time.time() * 1000)
         from_ms = now_ms - (window_seconds * 1000)
 
-        snapshots = await self.db.get_price_snapshots_in_window(
+        snapshots = await self.price_store.get_price_snapshots_in_window(
             from_ts=from_ms,
             to_ts=now_ms,
             source=venue,
