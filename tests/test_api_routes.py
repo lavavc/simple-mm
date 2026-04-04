@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import engine.api as api_module
 from engine.api import api_router
 from engine.api.schemas import ArbitrageOpportunity
 from engine.runtime import EngineRuntime
@@ -48,6 +49,10 @@ def _make_app(runtime: EngineRuntime | None) -> FastAPI:
     if runtime is not None:
         app.state.runtime = runtime
     return app
+
+
+def test_api_router_is_the_canonical_public_import():
+    assert api_module.api_router is api_router
 
 
 def test_health_route_reads_runtime_state():

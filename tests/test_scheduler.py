@@ -1,17 +1,11 @@
 """Scheduler tests using FakeDexAdapter + mocked DB."""
 
 import pytest
+from typing import Any
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from engine.scheduler.context import SchedulerContext
-from engine.scheduler.jobs.accounts import AccountJobs
-from engine.scheduler.jobs.arbitrage import ArbitrageJobs
-from engine.scheduler.jobs.lp import LpJobs
-from engine.scheduler.jobs.market import MarketJobs
-from engine.scheduler.jobs.positions import PositionJobs
-from engine.scheduler.types import SchedulerState
 from engine.venues.dex.shared import PositionState
 from engine.scheduler import TradingScheduler, SchedulerConfig
 from tests.fakes import FakeDexAdapter
@@ -59,71 +53,115 @@ class MockDB:
         return self._prices[:limit]
 
 
-def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingScheduler:
-    """Build a minimal TradingScheduler without calling __init__ or start()."""
-    from engine.lp.rebalancer import LPRebalancer
+def _build_scheduler(
+    venues: dict,
+    broadcasts: list,
+    db: MockDB,
+    *,
+    price_aggregator: MagicMock | None = None,
+    blended_calculator: Any = None,
+    arbitrage_engine: Any = None,
+    account_manager: Any = None,
+    token_contracts: dict | None = None,
+    quidax_lp: Any = None,
+) -> TradingScheduler:
+    """Build a minimal TradingScheduler through the real constructor."""
+    return TradingScheduler(
+        price_aggregator=price_aggregator or MagicMock(),
+        venues=venues,
+        config=SchedulerConfig(),
+        broadcast=broadcasts.append,
+        blended_calculator=blended_calculator,
+        arbitrage_engine=arbitrage_engine,
+        account_manager=account_manager,
+        token_contracts=token_contracts or {},
+        quidax_lp=quidax_lp,
+        system_state_store=SimpleNamespace(set_system_state=db.set_system_state),
+        price_store=SimpleNamespace(
+            get_recent_prices=db.get_recent_prices,
+            insert_price_snapshot=db.insert_price_snapshot,
+        ),
+        position_store=SimpleNamespace(insert_position=db.insert_position),
+        alert_store=SimpleNamespace(insert_alert=db.insert_alert),
+        venue_config_store=SimpleNamespace(update_venue_config=db.update_venue_config),
+        action_store=SimpleNamespace(insert_action=db.insert_action),
+    )
 
-    sched = TradingScheduler.__new__(TradingScheduler)
-    sched.config = SchedulerConfig()
-    sched.broadcast = broadcasts.append
-    sched.price_aggregator = MagicMock()
-    sched.blended_calculator = None
-    sched.arbitrage_engine = None
-    sched.account_manager = None
-    sched.token_contracts = {}
-    sched.venues = venues
-    sched.quidax_lp = None
-    sched.system_state_store = SimpleNamespace(set_system_state=db.set_system_state)
-    sched.price_store = SimpleNamespace(
-        get_recent_prices=db.get_recent_prices,
-        insert_price_snapshot=db.insert_price_snapshot,
-    )
-    sched.position_store = SimpleNamespace(insert_position=db.insert_position)
-    sched.alert_store = SimpleNamespace(insert_alert=db.insert_alert)
-    sched.venue_config_store = SimpleNamespace(update_venue_config=db.update_venue_config)
-    sched.action_store = SimpleNamespace(insert_action=db.insert_action)
-    sched.state = SchedulerState(trading_enabled=True, dex_bootstrap_pending=True)
-    sched.context = SchedulerContext(
-        config=sched.config,
-        price_aggregator=sched.price_aggregator,
-        venues=sched.venues,
-        broadcast=sched.broadcast,
-        blended_calculator=sched.blended_calculator,
-        arbitrage_engine=sched.arbitrage_engine,
-        account_manager=sched.account_manager,
-        token_contracts=sched.token_contracts,
-        quidax_lp=sched.quidax_lp,
-        system_state_store=sched.system_state_store,
-        price_store=sched.price_store,
-        position_store=sched.position_store,
-        alert_store=sched.alert_store,
-        venue_config_store=sched.venue_config_store,
-        action_store=sched.action_store,
-    )
-    sched.ws_listener = MagicMock(active_connections=set())
-    sched.lp_rebalancer = LPRebalancer(
-        broadcast=sched.broadcast,
-        price_store=sched.price_store,
-        venue_config_store=sched.venue_config_store,
-        action_store=sched.action_store,
-    )
-    sched.position_jobs = PositionJobs(sched.context, sched.state)
-    sched.account_jobs = AccountJobs(sched.context, sched.state)
-    sched.arbitrage_jobs = ArbitrageJobs(
-        sched.context,
-        sched.state,
-        update_gas_oracle=sched._update_gas_oracle,
-        get_balances_for_valuation=sched.position_jobs.get_balances_for_valuation,
-        broadcast_account_balances=sched.account_jobs.broadcast_account_balances,
-    )
-    sched.market_jobs = MarketJobs(
-        sched.context,
-        sched.state,
-        schedule_dex_bootstrap=sched.arbitrage_jobs.schedule_dex_bootstrap,
-    )
-    sched.lp_jobs = LpJobs(sched.context, sched.state, sched.lp_rebalancer)
-    sched.arbitrage_jobs.ws_listener = sched.ws_listener
-    return sched
+
+def _make_ws_tracking_dex(name: str, chain_name: str) -> FakeDexAdapter:
+    venue = FakeDexAdapter(name=name)
+    venue.config.chain_name = chain_name
+    venue.trade_account = SimpleNamespace(address=f"0x{name.replace('-', '')}")
+    venue.stable_address = f"0x{name.replace('-', '')}stable"
+    venue.cngn_address = f"0x{name.replace('-', '')}cngn"
+    return venue
+
+
+class TestSchedulerConstruction:
+
+    def test_start_registers_jobs_from_context_dependencies(self):
+        broadcasts = []
+        db = MockDB()
+        arb_engine = SimpleNamespace(on_dex_dex_update=AsyncMock())
+        account_manager = MagicMock()
+        blended_calculator = MagicMock()
+        venues = {
+            "uni-base": _make_ws_tracking_dex("uni-base", "base"),
+            "uni-bsc": _make_ws_tracking_dex("uni-bsc", "bsc"),
+            "quidax": MagicMock(),
+            "quidax-lp": MagicMock(),
+            "blockradar": MagicMock(),
+        }
+        sched = _build_scheduler(
+            venues,
+            broadcasts,
+            db,
+            arbitrage_engine=arb_engine,
+            account_manager=account_manager,
+            blended_calculator=blended_calculator,
+        )
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch("asyncio.create_task", side_effect=fake_create_task) as create_task_mock, patch.object(
+            sched.scheduler, "start"
+        ) as scheduler_start_mock:
+            sched.start()
+
+        job_ids = {job.id for job in sched.scheduler.get_jobs()}
+        assert "balance_check" in job_ids
+        assert "auto_fund_quidax_arb" in job_ids
+        assert "auto_fund_quidax_lp" in job_ids
+        assert "portfolio_delta" in job_ids
+        assert "blockradar_rate_sync" in job_ids
+        assert "dex_arb_curve_stream" in job_ids
+        assert "quidax_depth_stream" in job_ids
+        assert sched.ws_listener.on_dex_event is arb_engine.on_dex_dex_update
+        assert sched.ws_listener.on_wallet_event == sched._handle_wallet_activity
+        assert len(sched.ws_listener.wallet_subscriptions["base"]) == 2
+        assert len(sched.ws_listener.wallet_subscriptions["bsc"]) == 2
+        assert sched.state.started is True
+        assert create_task_mock.call_count == 2
+        scheduler_start_mock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pause_resume_use_context_backed_system_state_store(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+
+        await sched.pause()
+        await sched.resume()
+
+        assert sched.trading_enabled is True
+        assert broadcasts == [
+            {"type": "system", "status": "paused"},
+            {"type": "system", "status": "running"},
+        ]
+        db.set_system_state.assert_any_await("trading_enabled", "false")
+        db.set_system_state.assert_any_await("trading_enabled", "true")
 
 
 # =============================================================================
@@ -418,10 +456,11 @@ class TestDexArbCurveStream:
     async def test_bootstrap_runs_initial_dex_recalc(self):
         broadcasts = []
         db = MockDB()
-        sched = _build_scheduler({}, broadcasts, db)
-        sched.context.arbitrage_engine = MagicMock()
+        arbitrage_engine = MagicMock()
+        arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched = _build_scheduler({}, broadcasts, db, arbitrage_engine=arbitrage_engine)
         call_order = []
-        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock(side_effect=lambda: call_order.append("arb"))
+        sched.context.arbitrage_engine.on_dex_dex_update.side_effect = lambda: call_order.append("arb")
         sched.arbitrage_jobs._update_gas_oracle = AsyncMock(side_effect=lambda: call_order.append("gas"))
 
         with patch("engine.market.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
@@ -439,9 +478,9 @@ class TestDexArbCurveStream:
     async def test_bootstrap_waits_when_gas_missing(self):
         broadcasts = []
         db = MockDB()
-        sched = _build_scheduler({}, broadcasts, db)
-        sched.context.arbitrage_engine = MagicMock()
-        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock()
+        arbitrage_engine = MagicMock()
+        arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched = _build_scheduler({}, broadcasts, db, arbitrage_engine=arbitrage_engine)
         sched.arbitrage_jobs._update_gas_oracle = AsyncMock()
 
         with patch("engine.market.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
@@ -470,10 +509,10 @@ class TestDexArbCurveStream:
     async def test_skips_dex_recalc_when_ws_healthy(self):
         broadcasts = []
         db = MockDB()
-        sched = _build_scheduler({}, broadcasts, db)
+        arbitrage_engine = MagicMock()
+        arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched = _build_scheduler({}, broadcasts, db, arbitrage_engine=arbitrage_engine)
         sched.ws_listener.active_connections = {"base", "bsc"}
-        sched.context.arbitrage_engine = MagicMock()
-        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock()
 
         await sched._stream_dex_arb_curve()
 
@@ -483,10 +522,10 @@ class TestDexArbCurveStream:
     async def test_runs_dex_recalc_when_ws_unhealthy(self):
         broadcasts = []
         db = MockDB()
-        sched = _build_scheduler({}, broadcasts, db)
+        arbitrage_engine = MagicMock()
+        arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched = _build_scheduler({}, broadcasts, db, arbitrage_engine=arbitrage_engine)
         sched.ws_listener.active_connections = {"base"}
-        sched.context.arbitrage_engine = MagicMock()
-        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock()
 
         await sched._stream_dex_arb_curve()
 
@@ -496,13 +535,10 @@ class TestDexArbCurveStream:
     async def test_wallet_activity_broadcasts_account_balances(self):
         broadcasts = []
         db = MockDB()
-        sched = _build_scheduler({}, broadcasts, db)
-        sched.context.arbitrage_engine = MagicMock()
-        sched.context.arbitrage_engine.on_wallet_activity = AsyncMock()
-        sched.context.account_manager = MagicMock()
-        sched.context.token_contracts = {"USDT": "0x123"}
-        sched.context.venues = {}
-        sched.context.account_manager.check_all_balances = AsyncMock(return_value=[
+        arbitrage_engine = MagicMock()
+        arbitrage_engine.on_wallet_activity = AsyncMock()
+        account_manager = MagicMock()
+        account_manager.check_all_balances = AsyncMock(return_value=[
             SimpleNamespace(
                 role="uni-bsc-trade",
                 address="0xabc",
@@ -514,6 +550,14 @@ class TestDexArbCurveStream:
                 refill_reasons=[],
             )
         ])
+        sched = _build_scheduler(
+            {},
+            broadcasts,
+            db,
+            arbitrage_engine=arbitrage_engine,
+            account_manager=account_manager,
+            token_contracts={"USDT": "0x123"},
+        )
 
         await sched._handle_wallet_activity(["uni-bsc"])
 

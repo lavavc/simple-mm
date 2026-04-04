@@ -73,20 +73,6 @@ class TradingScheduler:
 
         self.config = config
         self.broadcast = broadcast
-        self.price_aggregator = price_aggregator
-        self.venues = venues
-        self.blended_calculator = blended_calculator
-        self.arbitrage_engine = arbitrage_engine
-        self.account_manager = account_manager
-        self.token_contracts = token_contracts or {}
-        self.quidax_lp = quidax_lp
-        self.system_state_store = system_state_store
-        self.price_store = price_store
-        self.position_store = position_store
-        self.alert_store = alert_store
-        self.venue_config_store = venue_config_store
-        self.action_store = action_store
-
         self.scheduler = AsyncIOScheduler()
         self.state = SchedulerState(dex_bootstrap_pending=bool(arbitrage_engine))
         self.context = SchedulerContext(
@@ -97,7 +83,7 @@ class TradingScheduler:
             blended_calculator=blended_calculator,
             arbitrage_engine=arbitrage_engine,
             account_manager=account_manager,
-            token_contracts=self.token_contracts,
+            token_contracts=token_contracts or {},
             quidax_lp=quidax_lp,
             system_state_store=system_state_store,
             price_store=price_store,
@@ -131,8 +117,16 @@ class TradingScheduler:
         self.ws_listener = ArbitrageWebSocketListener(
             broadcast=broadcast,
             on_update=self._update_price,
-            on_dex_event=self.arbitrage_engine.on_dex_dex_update if self.arbitrage_engine else None,
-            on_wallet_event=self._handle_wallet_activity if (self.arbitrage_engine or self.account_manager) else None,
+            on_dex_event=(
+                self.context.arbitrage_engine.on_dex_dex_update
+                if self.context.arbitrage_engine
+                else None
+            ),
+            on_wallet_event=(
+                self._handle_wallet_activity
+                if (self.context.arbitrage_engine or self.context.account_manager)
+                else None
+            ),
             wallet_subscriptions=self.arbitrage_jobs.build_wallet_ws_subscriptions(),
         )
         self.arbitrage_jobs.ws_listener = self.ws_listener
@@ -188,7 +182,7 @@ class TradingScheduler:
             misfire_grace_time=10,
         )
 
-        if self.account_manager:
+        if self.context.account_manager:
             self.scheduler.add_job(
                 self._check_balances,
                 IntervalTrigger(seconds=self.config.balance_check_interval),
@@ -198,7 +192,7 @@ class TradingScheduler:
             )
             logger.info("balance_check_job_registered")
 
-            quidax_arb = self.venues.get("quidax")
+            quidax_arb = self.context.venues.get("quidax")
             if quidax_arb:
                 import functools
 
@@ -210,7 +204,7 @@ class TradingScheduler:
                 )
                 logger.info("auto_fund_quidax_arb_job_registered")
 
-            quidax_lp = self.quidax_lp or self.venues.get("quidax-lp")
+            quidax_lp = self.context.quidax_lp or self.context.venues.get("quidax-lp")
             if quidax_lp:
                 import functools
 
@@ -222,7 +216,7 @@ class TradingScheduler:
                 )
                 logger.info("auto_fund_quidax_lp_job_registered")
 
-        if self.blended_calculator:
+        if self.context.blended_calculator:
             self.scheduler.add_job(
                 self._check_portfolio_delta,
                 IntervalTrigger(seconds=self.config.portfolio_delta_interval),
@@ -231,7 +225,7 @@ class TradingScheduler:
             )
             logger.info("portfolio_delta_job_registered")
 
-        if "blockradar" in self.venues:
+        if "blockradar" in self.context.venues:
             self.scheduler.add_job(
                 self._sync_blockradar_rates,
                 IntervalTrigger(seconds=self.config.price_update_interval),
@@ -276,13 +270,13 @@ class TradingScheduler:
 
     async def pause(self) -> None:
         self.state.trading_enabled = False
-        await self.system_state_store.set_system_state("trading_enabled", "false")
+        await self.context.system_state_store.set_system_state("trading_enabled", "false")
         self.broadcast({"type": "system", "status": "paused"})
         logger.info("trading_paused")
 
     async def resume(self) -> None:
         self.state.trading_enabled = True
-        await self.system_state_store.set_system_state("trading_enabled", "true")
+        await self.context.system_state_store.set_system_state("trading_enabled", "true")
         self.broadcast({"type": "system", "status": "running"})
         logger.info("trading_resumed")
 

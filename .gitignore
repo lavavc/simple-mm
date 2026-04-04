@@ -1,8 +1,11 @@
 .claude/
 .env
+.venv/
 __pycache__/
 *.pyc
 data/
 .coverage
 engine_full.log
 *.db
+.pytest_cache/
+.mypy_cache/
