@@ -4,7 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { formatNumber, formatCurrency, formatUptime } from '@/lib/utils';
-import { useStatus, useGlobalPosition, useBlendedPrice } from '@/lib/hooks/useQueries';
+import { useStatus, useGlobalPosition, useBlendedPrice, useLastEventPacket } from '@/lib/hooks/useQueries';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
 import { Activity, Zap, Wallet, AlertTriangle, ArrowRight, TrendingUp, Cpu } from 'lucide-react';
 
@@ -45,6 +45,7 @@ export default function DashboardPage() {
   const { data: status, isLoading: statusLoading } = useStatus();
   const { data: globalPosition, isLoading: positionLoading } = useGlobalPosition();
   const { data: blendedPrice, isLoading: blendedLoading } = useBlendedPrice();
+  const { data: lastPacketAt } = useLastEventPacket();
 
   const { data: curveData } = useQuery<DexArbData | null>({
     queryKey: ['dex_arb_curve'],
@@ -60,7 +61,7 @@ export default function DashboardPage() {
   }, []);
 
   const isSyncing = statusLoading || positionLoading || blendedLoading || !curveData;
-  const timeSinceLastPacket = curveData?.timestamp ? Math.max(0, (now - curveData.timestamp) / 1000).toFixed(1) : "0.0";
+  const timeSinceLastPacket = lastPacketAt ? Math.max(0, (now - lastPacketAt) / 1000).toFixed(1) : "0.0";
 
   const resolvedCurveData = curveData || {
     timestamp: 0,
@@ -86,7 +87,7 @@ export default function DashboardPage() {
           <h1 className="text-xs font-bold tracking-widest uppercase text-white">Main Dashboard <span className="text-white/40 font-mono ml-2 normal-case tracking-normal">System overview and active operations</span></h1>
         </div>
         <div className="flex items-center gap-3">
-          {!isSyncing && curveData?.timestamp && (
+          {!isSyncing && lastPacketAt && (
             <div className="text-[11px] font-mono text-white/50 tracking-widest uppercase mr-2 flex flex-col items-end">
               <span className="text-[9px] text-white/40 mb-0.5">LAST PACKET</span>
               <span className={parseFloat(timeSinceLastPacket) > 5 ? "text-yellow-500/90" : "text-white/90"}>{timeSinceLastPacket}s ago</span>

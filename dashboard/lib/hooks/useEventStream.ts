@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { addNotification } from '@/lib/notifications';
+import { LAST_EVENT_PACKET_QUERY_KEY } from './useQueries';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
 const RECONNECT_BASE_MS = 1000;
@@ -54,6 +55,7 @@ export function useEventStream() {
     ws.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        qc.setQueryData(LAST_EVENT_PACKET_QUERY_KEY, Date.now());
         console.log('[SOCKET EVENT]', event.type, event.data);
         const keys = EVENT_TO_KEYS[event.type];
         if (keys) {
