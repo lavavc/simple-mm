@@ -34,13 +34,12 @@ Pool state itself (sqrtPriceX96, current tick, in-range liquidity) is updated in
 
 ### Snapshot states
 
-Operator-facing LP views now distinguish three states:
+Operator-facing LP views now distinguish two states:
 
-- **`live`** — composition was computed from a current pool read or a fresh shared pool-state cache snapshot
-- **`stale`** — live and cached pool-state reads failed, so the engine is showing the last successful composition snapshot for the same token-ID set
+- **`live`** — composition was computed from a current pool read
 - **`degraded`** — the LP NFT still exists, but the engine can only show token IDs / static metadata; composition and valuation are unavailable
 
-An LP position therefore does not disappear just because live composition reads fail. `stale` keeps the last known balances and value visible with a warning. `degraded` keeps the NFT visible even when valuation cannot be computed safely.
+An LP position therefore does not disappear just because live composition reads fail. The degraded summary keeps the NFT visible even when valuation cannot be computed safely.
 
 ## Position value and fee share
 

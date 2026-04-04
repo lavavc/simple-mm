@@ -29,8 +29,7 @@ class LPPosition(BaseModel):
     range_max: Optional[Decimal] = None
     in_range: Optional[bool] = None
     our_share_pct: Optional[Decimal] = None  # our_liquidity / pool_liquidity * 100
-    snapshot_status: Literal["live", "stale", "degraded"] = "live"
-    snapshot_timestamp: Optional[int] = None
+    snapshot_status: Literal["live", "degraded"] = "live"
     snapshot_message: Optional[str] = None
 
 

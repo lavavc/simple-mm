@@ -11,7 +11,6 @@ from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
 from engine.venues.dex.lp_v4 import (
     LPBalanceSwapResult,
     LPMarketSnapshot,
-    LPPositionSnapshot,
     LPStaticPositionMetadata,
     V4LPAdapter,
 )
@@ -52,6 +51,7 @@ def _make_balance_adapter(
             token1_decimals=token1_decimals,
             token0_address=token0_addr,
             token1_address=token1_addr,
+            invert_price=False,
         ),
         name="uni-base",
         lp_account=SimpleNamespace(address=lp_addr),
@@ -97,8 +97,6 @@ def _make_lp_snapshot_adapter(
     current_price: Decimal = Decimal("1"),
     pool_liquidity: Decimal = Decimal("5000000"),
     live_market: LPMarketSnapshot | None = None,
-    cached_market: LPMarketSnapshot | None = None,
-    last_snapshot: LPPositionSnapshot | None = None,
     include_live_market: bool = True,
 ) -> SimpleNamespace:
     positions = pos_states or []
@@ -109,6 +107,7 @@ def _make_lp_snapshot_adapter(
         token0_symbol="cNGN",
         token1_symbol="USDC",
         cngn_is_token0=True,
+        invert_price=False,
     )
     position_metadata = {
         pos.token_id: LPStaticPositionMetadata(
@@ -134,15 +133,12 @@ def _make_lp_snapshot_adapter(
                     current_tick=0,
                     current_price=current_price,
                     pool_liquidity=pool_liquidity,
-                    snapshot_timestamp=1234,
                 )
                 if include_live_market
                 else None
             )
         ),
-        _get_cached_pool_snapshot=lambda: cached_market,
         _get_static_position_metadata=lambda token_id: position_metadata.get(token_id),
-        _last_lp_snapshot=last_snapshot,
         lp_account=SimpleNamespace(address="0x" + "cc" * 20),
         position_manager_contract=object(),
         state_view=MagicMock(),
@@ -157,9 +153,6 @@ def _make_lp_snapshot_adapter(
         V4LPAdapter._aggregate_lp_position_snapshots,
         adapter,
     )
-    adapter._same_token_ids = V4LPAdapter._same_token_ids
-    adapter._remember_lp_snapshot = MethodType(V4LPAdapter._remember_lp_snapshot, adapter)
-    adapter._get_stale_lp_snapshot = MethodType(V4LPAdapter._get_stale_lp_snapshot, adapter)
     adapter._build_degraded_lp_snapshot = MethodType(V4LPAdapter._build_degraded_lp_snapshot, adapter)
     adapter._build_snapshots_from_market = MethodType(V4LPAdapter._build_snapshots_from_market, adapter)
     adapter._empty_position_balances = MethodType(V4LPAdapter._empty_position_balances, adapter)
@@ -167,27 +160,6 @@ def _make_lp_snapshot_adapter(
     adapter.get_active_lp_position_snapshot = MethodType(V4LPAdapter.get_active_lp_position_snapshot, adapter)
     adapter.get_position = MethodType(V4LPAdapter.get_position, adapter)
     return adapter
-
-
-def _make_stale_snapshot(token_ids: tuple[int, ...]) -> LPPositionSnapshot:
-    return LPPositionSnapshot(
-        token_id=token_ids[0] if len(token_ids) == 1 else None,
-        token_ids=token_ids,
-        position_count=len(token_ids),
-        liquidity=1_000_000,
-        token0_amount=Decimal("12.5"),
-        token1_amount=Decimal("150"),
-        token0_symbol="cNGN",
-        token1_symbol="USDC",
-        range_min=Decimal("0.9"),
-        range_max=Decimal("1.1"),
-        in_range=True,
-        position_value_usd=Decimal("150.5"),
-        our_share_pct=Decimal("12.5"),
-        snapshot_status="live",
-        snapshot_timestamp=1700000000000,
-        snapshot_message=None,
-    )
 
 
 class TestComputeRequiredRatio:
@@ -362,54 +334,12 @@ class TestActiveLpPositionSnapshot:
         assert result.token0_amount > 0
         assert result.token1_amount > 0
 
-    def test_snapshot_uses_cached_pool_state_when_live_read_fails(self):
-        pos_state = _make_position_state(token_id=77, in_range=True)
-        cached_market = LPMarketSnapshot(
-            sqrt_price_x96=Decimal(_price_to_sqrt_x96(1.0)),
-            current_tick=None,
-            current_price=Decimal("1"),
-            pool_liquidity=Decimal("5000000"),
-            snapshot_timestamp=5678,
-            snapshot_message="Using cached pool-state snapshot.",
-        )
-        adapter = _make_lp_snapshot_adapter(
-            [pos_state],
-            sqrt_price_x96=_price_to_sqrt_x96(1.0),
-            include_live_market=False,
-            cached_market=cached_market,
-        )
-
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
-
-        assert result is not None
-        assert result.snapshot_status == "live"
-        assert result.snapshot_timestamp == 5678
-        assert result.snapshot_message == "Using cached pool-state snapshot."
-
-    def test_snapshot_uses_last_successful_snapshot_when_pool_state_unavailable(self):
+    def test_snapshot_returns_degraded_summary_when_live_pool_state_unavailable(self):
         pos_state = _make_position_state(token_id=77, in_range=True)
         adapter = _make_lp_snapshot_adapter(
             [pos_state],
             sqrt_price_x96=_price_to_sqrt_x96(1.0),
             include_live_market=False,
-            cached_market=None,
-            last_snapshot=_make_stale_snapshot((77,)),
-        )
-
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
-
-        assert result is not None
-        assert result.snapshot_status == "stale"
-        assert result.position_value_usd == Decimal("150.5")
-        assert result.snapshot_timestamp == 1700000000000
-
-    def test_snapshot_returns_degraded_summary_when_no_pool_state_or_stale_snapshot(self):
-        pos_state = _make_position_state(token_id=77, in_range=True)
-        adapter = _make_lp_snapshot_adapter(
-            [pos_state],
-            sqrt_price_x96=_price_to_sqrt_x96(1.0),
-            include_live_market=False,
-            cached_market=None,
         )
 
         result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
@@ -420,6 +350,7 @@ class TestActiveLpPositionSnapshot:
         assert result.token0_amount is None
         assert result.position_value_usd is None
         assert result.range_min == Decimal("0.9")
+        assert result.snapshot_message == "LP position exists, but live composition is unavailable."
 
 
 class TestV4GetPosition:
@@ -453,7 +384,6 @@ class TestV4GetPosition:
             [pos_state],
             sqrt_price_x96=_price_to_sqrt_x96(1.0),
             include_live_market=False,
-            cached_market=None,
         )
 
         result = await V4LPAdapter.get_position(adapter)

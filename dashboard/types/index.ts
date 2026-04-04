@@ -17,8 +17,7 @@ export interface LPPosition {
   range_max?: number | null;
   in_range?: boolean | null;
   our_share_pct?: number | null;
-  snapshot_status: 'live' | 'stale' | 'degraded';
-  snapshot_timestamp?: number | null;
+  snapshot_status: 'live' | 'degraded';
   snapshot_message?: string | null;
 }
 

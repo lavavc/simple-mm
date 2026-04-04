@@ -53,15 +53,6 @@ function getLpStatusClasses(lp: LPPosition) {
       liquidity: 'text-red-400',
     };
   }
-  if (lp.snapshot_status === 'stale') {
-    return {
-      border: 'border-yellow-500/30',
-      header: 'border-yellow-500/10 bg-yellow-500/[0.02]',
-      icon: 'text-yellow-400',
-      badge: 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400',
-      liquidity: 'text-yellow-400',
-    };
-  }
   if (lp.in_range) {
     return {
       border: 'border-emerald-500/30',
@@ -82,7 +73,6 @@ function getLpStatusClasses(lp: LPPosition) {
 
 function getLpStatusLabel(lp: LPPosition): string {
   if (lp.snapshot_status === 'degraded') return 'DEGRADED';
-  if (lp.snapshot_status === 'stale') return 'STALE';
   return lp.in_range ? 'IN RANGE' : 'OUT RANGE';
 }
 
@@ -131,13 +121,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
   const lpStatusClasses = lpPosition ? getLpStatusClasses(lpPosition) : null;
   const lpStatusLabel = lpPosition ? getLpStatusLabel(lpPosition) : null;
   const lpRangeAvailable = lpPosition?.range_min != null && lpPosition?.range_max != null;
-  const lpSnapshotTime = lpPosition?.snapshot_timestamp
-    ? new Date(lpPosition.snapshot_timestamp).toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
-    : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
@@ -315,19 +298,11 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                   </div>
                 </div>
 
-                {(lpSnapshotTime || lpPosition.snapshot_message) && (
+                {lpPosition.snapshot_message && (
                   <div className="bg-black/40 p-3 rounded-sm border border-white/[0.02] space-y-2">
-                    {lpSnapshotTime && (
-                      <div className="flex justify-between items-center text-[10px] font-mono">
-                        <span className="text-white/40 uppercase tracking-widest">Last Snapshot</span>
-                        <span className="text-white/80">{lpSnapshotTime}</span>
-                      </div>
-                    )}
-                    {lpPosition.snapshot_message && (
-                      <div className="text-[11px] text-white/60 font-mono leading-relaxed">
-                        {lpPosition.snapshot_message}
-                      </div>
-                    )}
+                    <div className="text-[11px] text-white/60 font-mono leading-relaxed">
+                      {lpPosition.snapshot_message}
+                    </div>
                   </div>
                 )}
 

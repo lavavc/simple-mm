@@ -108,19 +108,15 @@ export function VenueCard({ venue }: VenueCardProps) {
                   const variant =
                     lp.snapshot_status === 'degraded'
                       ? 'destructive'
-                      : lp.snapshot_status === 'stale'
-                        ? 'warning'
-                        : lp.in_range
-                          ? 'success'
-                          : 'warning';
+                      : lp.in_range
+                        ? 'success'
+                        : 'warning';
                   const label =
                     lp.snapshot_status === 'degraded'
                       ? 'LP Degraded Snapshot'
-                      : lp.snapshot_status === 'stale'
-                        ? 'LP Stale Snapshot'
-                        : lp.in_range
-                          ? 'LP In Range'
-                          : 'LP Out of Range';
+                      : lp.in_range
+                        ? 'LP In Range'
+                        : 'LP Out of Range';
                   return (
                     <Badge variant={variant} className="text-xs">
                       {label}

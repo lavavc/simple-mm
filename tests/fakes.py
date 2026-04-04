@@ -61,6 +61,7 @@ class FakeDexAdapter:
             token1_symbol = "USDC"
             token0_address = "0xcngn"
             token1_address = "0xusdc"
+            invert_price = False
 
         self.config = _Config()
         self.config.tick_spacing = tick_spacing

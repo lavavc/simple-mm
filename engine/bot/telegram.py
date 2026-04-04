@@ -120,8 +120,6 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 lines.append(f"  {label}")
                 lines.append(f"  position_count: {pos.lp_position.position_count}")
                 lines.append(f"  snapshot_status: {pos.lp_position.snapshot_status}")
-                if pos.lp_position.snapshot_timestamp is not None:
-                    lines.append(f"  snapshot_timestamp: {pos.lp_position.snapshot_timestamp}")
                 if pos.lp_position.snapshot_message:
                     lines.append(f"  snapshot_message: {pos.lp_position.snapshot_message}")
                 if pos.lp_position.range_min is not None and pos.lp_position.range_max is not None:

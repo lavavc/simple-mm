@@ -16,7 +16,6 @@ Portfolio delta is broadcast as `portfolio_delta` WebSocket events every 2 minut
 LP status surfaces use the same contract everywhere:
 
 - **`live`** — current composition and value are available
-- **`stale`** — last successful composition/value is shown, with a warning
 - **`degraded`** — the LP NFT still exists, but composition/value are unavailable
 
 This matters operationally: a transient RPC or cache failure should not be read as “no LP position”.
