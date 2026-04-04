@@ -45,7 +45,7 @@ pytest tests/test_dex_fork.py -v
 | `test_dex_dex.py` | `core/arbitrage/dex_dex.py` | `find_optimal_dex_arb` null cases and result structure |
 | `test_router.py` | `core/arbitrage/router.py` | `select_route` sizing, filtering, tiebreak |
 | `test_valuation.py` | `core/arbitrage/valuation.py` | `portfolio_value`, CEX/DEX holdings valuation |
-| `test_scheduler.py` | `core/scheduler.py` | `_check_dex_rebalance`, `_rebalance_dex_position`, `_create_dex_position` |
+| `test_scheduler.py` | `scheduler/core.py` + `scheduler/jobs/*` | Shell wiring plus `_check_dex_rebalance`, `_rebalance_dex_position`, `_create_dex_position`, DEX bootstrap and wallet activity delegation |
 | `test_executor.py` | `core/arbitrage/executor.py` | Detection mode, CEX-CEX, half-open, unknown venue |
 | `test_dex_fork.py` | V4 pool state + lifecycle | Section A: reads; Section B: funded wallet; Section C: rebalance |
 
