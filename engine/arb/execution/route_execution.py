@@ -5,24 +5,26 @@ from __future__ import annotations
 import asyncio
 import time
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
 from engine.arb.execution.preflight import _coerce_decimal, _handle_preflight_error
 from engine.arb.routing.route_registry import TradeRoute
 from engine.arb.routing.router import SelectedRoute
+from engine.venues.base import is_dex_execution_venue
 
 
 logger = structlog.get_logger()
 
 
-async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp_id: str) -> None:
+async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute, opp_id: str) -> None:
     """Execute a routed arbitrage trade (CEX-DEX or DEX-DEX)."""
     engine._arb_executing = True
     arbitrage_store = engine.arbitrage_store
-    buy_trade = None
-    sell_tx_hash = None
-    sell_cngn_amount = None
+    buy_trade: Any = None
+    sell_tx_hash: str | None = None
+    sell_cngn_amount: Decimal | None = None
     buy_venue_name = route_def.buy_leg.venue
     sell_venue_name = route_def.sell_leg.venue
     buy_is_cex = route_def.buy_leg.leg_type == "api"
@@ -58,6 +60,8 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
             from engine.arb.execution.executor import _clean_revert
 
             sell_venue = engine.venues[sell_venue_name]
+            if not is_dex_execution_venue(sell_venue):
+                raise TypeError(f"{sell_venue_name} is not a DEX execution venue")
             sim_min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
 
             if buy_is_cex:
@@ -143,6 +147,8 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
             from engine.arb.execution.executor import _clean_revert
 
             buy_venue = engine.venues[buy_venue_name]
+            if not is_dex_execution_venue(buy_venue):
+                raise TypeError(f"{buy_venue_name} is not a DEX execution venue")
             buy_amount_raw = int(size_usd * Decimal(10 ** buy_venue.stable_decimals))
             buy_err = await loop.run_in_executor(
                 None, buy_venue.simulate_swap, buy_venue.stable_address, buy_amount_raw, 0
@@ -230,6 +236,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                 opp_id,
             )
         else:
+            assert sell_cngn_amount is not None
             sell_trade = await engine.executor.execute_dex_sell(
                 sell_venue_name,
                 sell_cngn_amount,
@@ -296,11 +303,11 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                     f"Recover: /recover {opp_id}"
                 )
             else:
-                sell_account = getattr(
-                    getattr(engine.venues.get(sell_venue_name), "trade_account", None),
-                    "address",
-                    "unknown",
-                )
+                sell_venue = engine.venues.get(sell_venue_name)
+                if sell_venue is not None and is_dex_execution_venue(sell_venue):
+                    sell_account = sell_venue.trade_account.address
+                else:
+                    sell_account = "unknown"
                 await arbitrage_store.update_dex_arbitrage_execution_state(
                     opp_id,
                     status="half_open",

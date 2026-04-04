@@ -2,6 +2,7 @@
 
 import time
 from decimal import Decimal
+from typing import Any, Callable
 
 import structlog
 
@@ -20,7 +21,12 @@ _REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 from engine.market import gas_oracle as _gas_oracle  # noqa: E402
 
 
-def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Decimal("0.5")):
+def _ternary_search(
+    eval_func: Callable[[Decimal], tuple[Decimal, Decimal, Decimal, str]],
+    low: Decimal = Decimal("1"),
+    high: Decimal = Decimal("15000"),
+    tol: Decimal = Decimal("0.5"),
+) -> tuple[Decimal, Decimal, Decimal, Decimal, str]:
     """Find the profit-maximising size for a unimodal profit function."""
     while high - low > tol:
         m1 = low + (high - low) / Decimal("3")
@@ -36,7 +42,7 @@ def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("15000"), tol=Deci
     return best_prof, mid, best_cngn, best_out, best_dir
 
 
-def _load_dex_dex_pool_state() -> dict | None:
+def _load_dex_dex_pool_state() -> dict[str, Decimal] | None:
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
@@ -61,7 +67,11 @@ def _load_dex_dex_pool_state() -> dict | None:
     }
 
 
-def _estimate_dex_dex_amounts(direction: str, investment_usd: Decimal, pool_state: dict) -> tuple[Decimal, Decimal] | None:
+def _estimate_dex_dex_amounts(
+    direction: str,
+    investment_usd: Decimal,
+    pool_state: dict[str, Decimal],
+) -> tuple[Decimal, Decimal] | None:
     if direction == "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE":
         cngn = swap_token0_for_token1(
             investment_usd,
@@ -101,7 +111,12 @@ def _estimate_dex_dex_amounts(direction: str, investment_usd: Decimal, pool_stat
     return cngn, usd_out
 
 
-def _build_dex_dex_trade_result(direction: str, investment_usd: Decimal, cngn: Decimal, usd_out: Decimal) -> dict:
+def _build_dex_dex_trade_result(
+    direction: str,
+    investment_usd: Decimal,
+    cngn: Decimal,
+    usd_out: Decimal,
+) -> dict[str, Any]:
     expected_profit = usd_out - investment_usd
     net_spread_bps = int((expected_profit / investment_usd) * 10000) if investment_usd > 0 else 0
     return {
@@ -114,7 +129,7 @@ def _build_dex_dex_trade_result(direction: str, investment_usd: Decimal, cngn: D
     }
 
 
-def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | None:
+def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict[str, Any] | None:
     """Compute executable DEX-DEX amounts for a specific routed USD size."""
     if investment_usd <= 0:
         return None
@@ -130,7 +145,7 @@ def estimate_dex_dex_trade(direction: str, investment_usd: Decimal) -> dict | No
     return _build_dex_dex_trade_result(direction, investment_usd, cngn, usd_out)
 
 
-def estimate_max_dex_buy_usd_for_cngn(direction: str, wallet_cngn: Decimal) -> dict | None:
+def estimate_max_dex_buy_usd_for_cngn(direction: str, wallet_cngn: Decimal) -> dict[str, Any] | None:
     """Invert the DEX-DEX path so sell-side cNGN caps the buy-side USD size exactly."""
     if wallet_cngn <= 0:
         return None
@@ -175,13 +190,15 @@ def estimate_max_dex_buy_usd_for_cngn(direction: str, wallet_cngn: Decimal) -> d
     return _build_dex_dex_trade_result(direction, low, cngn, usd_out)
 
 
-def find_optimal_dex_arb() -> dict | None:
+def find_optimal_dex_arb() -> dict[str, Any] | None:
     """
     Fast path: ternary search across both DEX-DEX directions.
     Returns the optimal arb signal dict, or None if pool state is unavailable.
     Callers should schedule seed_pool_states() on None return.
     """
-    if _gas_oracle.gas_usd_base() is None or _gas_oracle.gas_usd_bsc() is None:
+    gas_base = _gas_oracle.gas_usd_base()
+    gas_bsc = _gas_oracle.gas_usd_bsc()
+    if gas_base is None or gas_bsc is None:
         return None
 
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
@@ -192,12 +209,11 @@ def find_optimal_dex_arb() -> dict | None:
     uni_base_sqrt, uni_base_liq, uni_base_ts, uni_base_fee = \
         get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
-    if uni_bsc_fee is None or uni_base_fee is None:
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
         logger.error("dex_arb_blocked_missing_fees")
-        return None
-
-    if not uni_bsc_sqrt or not uni_base_sqrt:
-        logger.warning("dex_arb_cache_miss")
         return None
 
     uni_bsc_raw = ((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))
@@ -207,12 +223,12 @@ def find_optimal_dex_arb() -> dict | None:
     max_usd_v1 = _ABSOLUTE_MAX_USD
     max_usd_v2 = _ABSOLUTE_MAX_USD
 
-    def eval_bsc_to_base(inv: Decimal):
+    def eval_bsc_to_base(inv: Decimal) -> tuple[Decimal, Decimal, Decimal, str]:
         cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
         out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
         return out - inv, out, cngn, "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE"
 
-    def eval_base_to_bsc(inv: Decimal):
+    def eval_base_to_bsc(inv: Decimal) -> tuple[Decimal, Decimal, Decimal, str]:
         cngn = swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
         out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
         return out - inv, out, cngn, "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE"
@@ -247,12 +263,12 @@ def find_optimal_dex_arb() -> dict | None:
             "slippage_tolerance_bps": 10,
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000),
             "uni_base_fee_bps": int(uni_base_fee * 10000),
-            "gas_usd": float(_gas_oracle.gas_usd_base() + _gas_oracle.gas_usd_bsc()),
+            "gas_usd": float(gas_base + gas_bsc),
         },
     }
 
 
-def generate_dex_profit_curve() -> dict:
+def generate_dex_profit_curve() -> dict[str, Any]:
     """
     Slow path: full DEX-DEX profit curve for UI display.
     Calls find_optimal_dex_arb() for pool validation and to determine dynamic curve range
@@ -268,6 +284,11 @@ def generate_dex_profit_curve() -> dict:
 
     uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     uni_base_sqrt, uni_base_liq, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
+        return {}
 
     optimal_size = fast["optimal_arb"]["optimal_size_usd"]
     curve_max = max(5000, int(optimal_size * 1.5))

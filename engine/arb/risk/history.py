@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 import structlog
 
@@ -12,9 +12,11 @@ from engine.api.schemas import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryWalletSnapshot,
 )
-from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
+from engine.arb.routing.route_registry import Pipeline, ROUTES_BY_DIRECTION
 from engine.arb.routing.router import SelectedRoute
 from engine.db.backend import HistoryStoreProtocol
+
+EventType = Literal["routed", "executed", "failed"]
 
 
 _STABLE_SYMBOLS = {
@@ -42,8 +44,8 @@ class ArbitrageHistoryRecorder:
 
     def __init__(
         self,
-        inventory,
-        broadcast: Callable[[dict], Any],
+        inventory: Any,
+        broadcast: Callable[[dict[str, Any]], Any],
         history_store: HistoryStoreProtocol,
     ):
         self.inventory = inventory
@@ -65,7 +67,7 @@ class ArbitrageHistoryRecorder:
         opp_id: str,
         route: SelectedRoute,
         *,
-        event_type: str,
+        event_type: EventType,
         status: str,
         reason: Optional[str] = None,
         actual_profit_usd: Optional[Decimal] = None,
@@ -75,9 +77,11 @@ class ArbitrageHistoryRecorder:
     ) -> ArbitrageHistoryEvent:
         optimal = route.candidate.signal.get("optimal_arb", {})
         route_def = ROUTES_BY_DIRECTION.get(route.candidate.direction)
+        if route_def is None:
+            raise ValueError(f"Unknown route direction: {route.candidate.direction}")
         return ArbitrageHistoryEvent(
             opportunity_id=opp_id,
-            pipeline=route_def.pipeline if route_def else "unknown",
+            pipeline=route_def.pipeline,
             event_type=event_type,
             timestamp=int(time.time() * 1000),
             direction=route.candidate.direction,
@@ -163,8 +167,8 @@ class ArbitrageHistoryRecorder:
         self,
         *,
         opp_id: str,
-        event_type: str,
-        pipeline: str,
+        event_type: EventType,
+        pipeline: Pipeline,
         direction: str,
         buy_venue: str,
         sell_venue: str,
@@ -207,7 +211,7 @@ class ArbitrageHistoryRecorder:
         self,
         *,
         opp_id: str,
-        pipeline: str,
+        pipeline: Pipeline,
         direction: str,
         buy_venue: str,
         sell_venue: str,
@@ -246,7 +250,7 @@ class ArbitrageHistoryRecorder:
         self,
         *,
         opp_id: str,
-        pipeline: str,
+        pipeline: Pipeline,
         direction: str,
         buy_venue: str,
         sell_venue: str,

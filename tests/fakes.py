@@ -4,11 +4,26 @@ Importable from both conftest.py and test modules.
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 from engine.api.schemas import TxResult
 from tests.conftest_params import make_dex_params
 from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.venues.dex.shared import PositionState
+
+
+class _DummyBalanceCall:
+    def call(self) -> int:
+        return 0
+
+
+class _DummyFunctions:
+    def balanceOf(self, _address: str) -> _DummyBalanceCall:
+        return _DummyBalanceCall()
+
+
+class _DummyContract:
+    functions = _DummyFunctions()
 
 
 class FakeDexAdapter:
@@ -46,6 +61,13 @@ class FakeDexAdapter:
 
         self.config = _Config()
         self.config.tick_spacing = tick_spacing
+        self.stable_address = "0xstable"
+        self.cngn_address = "0xcngn"
+        self.stable_decimals = self.config.token1_decimals
+        self.cngn_decimals = self.config.token0_decimals
+        self.stable_token = _DummyContract()
+        self.cngn_token = _DummyContract()
+        self.trade_account = SimpleNamespace(address="0xFAKEDEX00000000000000000000000000000001")
 
     def get_owned_positions(self) -> list[int]:
         return [p.token_id for p in self._positions]
@@ -58,6 +80,12 @@ class FakeDexAdapter:
             int(self._token0_bal * Decimal(10 ** self.config.token0_decimals)),
             int(self._token1_bal * Decimal(10 ** self.config.token1_decimals)),
         )
+
+    def simulate_swap(self, token_in: str, amount_in: int, min_out: int) -> None:
+        return None
+
+    async def ensure_trade_approvals(self) -> None:
+        return None
 
     async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> None:
         """No-op in tests — ratio swap is tested separately in test_lp_ratio.py."""

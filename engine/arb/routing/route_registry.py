@@ -6,22 +6,29 @@ router, and signal handlers all read leg types and venue names from this registr
 — no other files need changing when a new venue or direction is introduced.
 """
 from dataclasses import dataclass
+from typing import Literal
+
+
+Pipeline = Literal["cex_dex", "dex_dex"]
+TradeLegType = Literal["onchain", "api"]
+TradeAction = Literal["buy", "sell"]
+CngnEffect = Literal["buys_cngn_from_cex", "sells_cngn_to_cex", "neutral"]
 
 
 @dataclass(frozen=True)
 class TradeLeg:
     venue: str      # "uni-bsc", "uni-base", "quidax", etc.
-    leg_type: str   # "onchain" | "api"
-    action: str     # "buy" | "sell"
+    leg_type: TradeLegType
+    action: TradeAction
 
 
 @dataclass(frozen=True)
 class TradeRoute:
     direction: str    # e.g. "QUIDAX_TO_UNI_BSC"
-    pipeline: str     # "cex_dex" | "dex_dex"
+    pipeline: Pipeline
     buy_leg: TradeLeg
     sell_leg: TradeLeg
-    cngn_effect: str  # "buys_cngn_from_cex" | "sells_cngn_to_cex" | "neutral"
+    cngn_effect: CngnEffect
 
 
 ROUTES: list[TradeRoute] = [

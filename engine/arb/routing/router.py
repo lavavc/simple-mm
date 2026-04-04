@@ -6,7 +6,7 @@ scoring by net profit (after gas and rebalance cost) with inventory alignment as
 """
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from engine.arb.detection.cex_dex import (
     estimate_cex_dex_trade,
@@ -27,7 +27,7 @@ class RouteCandidate:
     optimal_size_usd: Decimal
     expected_profit_usd: Decimal
     gas_usd: Decimal
-    signal: dict             # passed through to execution methods
+    signal: dict[str, Any]             # passed through to execution methods
 
 
 @dataclass
@@ -40,7 +40,7 @@ class SelectedRoute:
 
 def select_route(
     candidates: list[RouteCandidate],
-    inventory,
+    inventory: Any,
 ) -> Optional[SelectedRoute]:
     """
     Pick the best feasible route from candidates.
@@ -70,6 +70,8 @@ def select_route(
         cngn_bal = inventory.state.per_account_cngn.get(c.sell_venue)
         if not cngn_bal:
             continue
+
+        sell_cngn_cap_trade: dict[str, Any] | None = None
 
         if route_def.cngn_effect == "buys_cngn_from_cex":
             # CEX buy → DEX sell: cap against what the CEX orderbook can absorb for our cNGN
@@ -102,6 +104,7 @@ def select_route(
                 continue
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
         elif route_def.cngn_effect == "neutral":
+            assert sell_cngn_cap_trade is not None
             cngn_cap_size = Decimal(str(sell_cngn_cap_trade["optimal_size_usd"]))
             if adjusted_size == cngn_cap_size:
                 # cNGN cap was binding — profit already computed at this size.

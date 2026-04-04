@@ -5,6 +5,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from hexbytes import HexBytes
+
 import engine.market.dex_volume as dex_volume
 from engine.market.dex_volume import (
     RollingDexVolumeStore,
@@ -135,6 +137,14 @@ def test_event_id_from_log_handles_hex_strings():
         "logIndex": "0x2",
     }
     assert event_id_from_log(log) == "0xabc:2"
+
+
+def test_event_id_from_log_handles_hexbytes_and_numeric_index():
+    log = {
+        "transactionHash": HexBytes("0xabcdef"),
+        "logIndex": 3,
+    }
+    assert event_id_from_log(log) == "0xabcdef:3"
 
 
 def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):

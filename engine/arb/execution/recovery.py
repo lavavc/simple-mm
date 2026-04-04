@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
 from engine.arb.routing.route_registry import ROUTES, ROUTES_BY_DIRECTION
+from engine.venues.base import is_dex_execution_venue
 
 
 logger = structlog.get_logger()
 
 
-async def recover_dex_half_open(engine, opp_id: str) -> dict:
+async def recover_dex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
     """Recover a half-open DEX-DEX arb."""
     if engine._arb_executing:
         raise ValueError("execution in progress")
@@ -24,7 +26,7 @@ async def recover_dex_half_open(engine, opp_id: str) -> dict:
         engine._arb_executing = False
 
 
-async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
+async def _recover_dex_half_open_inner(engine: Any, opp_id: str) -> dict[str, Any]:
     """Inner implementation of recover_dex_half_open, called with _arb_executing held."""
     arbitrage_store = engine.arbitrage_store
     opp = await arbitrage_store.get_dex_arbitrage_opportunity(opp_id)
@@ -51,7 +53,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
         )
 
     can_retry_sell = False
-    if hasattr(sell_venue, "simulate_swap"):
+    if is_dex_execution_venue(sell_venue):
         sell_amount_raw = int(sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
         sell_sim_err = await loop.run_in_executor(
             None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
@@ -192,7 +194,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
     }
 
 
-async def recover_cex_half_open(engine, opp_id: str) -> dict:
+async def recover_cex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
     """Recover a half-open CEX-DEX arb."""
     if engine._arb_executing:
         raise ValueError("execution in progress")
@@ -226,7 +228,15 @@ async def recover_cex_half_open(engine, opp_id: str) -> dict:
         engine._arb_executing = False
 
 
-async def _reverse_cex_recovery(engine, arbitrage_store, opp_id: str, opp, cex_direction: str, buy_is_cex: bool, buy_amount_cngn: Decimal) -> dict:
+async def _reverse_cex_recovery(
+    engine: Any,
+    arbitrage_store: Any,
+    opp_id: str,
+    opp: Any,
+    cex_direction: str,
+    buy_is_cex: bool,
+    buy_amount_cngn: Decimal,
+) -> dict[str, Any]:
     """Execute a reversal trade to recover a half-open CEX arb and record the outcome."""
     buy_venue_name = opp.buy_venue
     if buy_is_cex:

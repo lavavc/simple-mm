@@ -11,7 +11,10 @@ Both functions accept a cex_fee parameter so any CEX venue can be plugged in.
 """
 import time
 from decimal import Decimal
+from typing import Any, Callable
+
 import structlog
+
 from engine.api.schemas import OrderBookDepth
 from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0, Q96
 
@@ -37,7 +40,11 @@ _ABSOLUTE_MAX_USD = Decimal("5000")
 _REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
 
-def walk_orderbook_asks(asks: list, cngn_amount: Decimal, fee: Decimal) -> tuple[Decimal, list[dict]]:
+def walk_orderbook_asks(
+    asks: list[Any],
+    cngn_amount: Decimal,
+    fee: Decimal,
+) -> tuple[Decimal, list[dict[str, float]]]:
     """
     Walk the ASK side of an order book: sell `cngn_amount` cNGN to receive USDT.
     Asks sorted lowest price first. Returns (usdt_received_after_fee, trace).
@@ -61,7 +68,11 @@ def walk_orderbook_asks(asks: list, cngn_amount: Decimal, fee: Decimal) -> tuple
     return total_usdt * (Decimal("1") - fee), traces
 
 
-def walk_orderbook_bids(bids: list, usdt_amount: Decimal, fee: Decimal) -> tuple[Decimal, list[dict]]:
+def walk_orderbook_bids(
+    bids: list[Any],
+    usdt_amount: Decimal,
+    fee: Decimal,
+) -> tuple[Decimal, list[dict[str, float]]]:
     """
     Walk the BID side of an order book: sell `usdt_amount` USDT to receive cNGN.
     Bids sorted highest price first. Returns (cngn_received_after_fee, trace).
@@ -133,7 +144,10 @@ def estimate_cex_dex_trade(
     uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     uni_base_sqrt, uni_base_liq, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
-    if not uni_bsc_sqrt or not uni_base_sqrt or uni_bsc_fee is None or uni_base_fee is None:
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
         return None
 
     bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True)
@@ -180,7 +194,7 @@ def estimate_max_cex_dex_buy_usd_for_cngn(
         trade = estimate_cex_dex_trade(direction, quidax_depth, investment_usd, cex_fee)
         if trade is None:
             return None
-        return {**trade, "optimal_size_usd": float(investment_usd)}
+        return {**trade, "optimal_size_usd": investment_usd}
 
     if wallet_cngn <= 0:
         return None
@@ -227,7 +241,12 @@ def estimate_max_cex_dex_buy_usd_for_cngn(
     return best_trade
 
 
-def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("5000"), tol=Decimal("0.5")):
+def _ternary_search(
+    eval_func: Callable[[Decimal], tuple[Decimal, Decimal, Decimal]],
+    low: Decimal = Decimal("1"),
+    high: Decimal = Decimal("5000"),
+    tol: Decimal = Decimal("0.5"),
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     """Find the profit-maximising size for a unimodal profit function."""
     while high - low > tol:
         m1 = low + (high - low) / Decimal("3")
@@ -243,7 +262,10 @@ def _ternary_search(eval_func, low=Decimal("1"), high=Decimal("5000"), tol=Decim
     return best_prof, best_size, best_cngn, best_out
 
 
-def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE) -> dict | None:
+def find_optimal_arb(
+    quidax_depth: OrderBookDepth,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> dict[str, Any] | None:
     """
     Fast path: find the optimal CEX-DEX trade across all four directions.
     No curve generation. Returns optimal_arb, all_arbs, and prices.
@@ -251,7 +273,9 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids:
         return None
 
-    if _gas_oracle.gas_usd_base() is None or _gas_oracle.gas_usd_bsc() is None:
+    gas_base = _gas_oracle.gas_usd_base()
+    gas_bsc = _gas_oracle.gas_usd_bsc()
+    if gas_base is None or gas_bsc is None:
         return None
 
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
@@ -260,37 +284,40 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     uni_base_sqrt, uni_base_liq, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
-    if not uni_bsc_sqrt or not uni_base_sqrt or uni_bsc_fee is None or uni_base_fee is None:
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
         return None
 
     bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True)
     asks = sorted(quidax_depth.asks, key=lambda x: x.price)
 
-    def cex_buy(inv):
+    def cex_buy(inv: Decimal) -> tuple[Decimal, list[dict[str, float]]]:
         return walk_orderbook_bids(bids, inv, cex_fee)
 
-    def cex_sell(amount):
+    def cex_sell(amount: Decimal) -> tuple[Decimal, list[dict[str, float]]]:
         return walk_orderbook_asks(asks, amount, cex_fee)
 
-    def eval_quidax_to_bsc(inv):
+    def eval_quidax_to_bsc(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
         cngn, _ = cex_buy(inv)
         if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
         out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
         return out - inv, out, cngn
 
-    def eval_bsc_to_quidax(inv):
+    def eval_bsc_to_quidax(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
         cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
         if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
         out, _ = cex_sell(cngn)
         return out - inv, out, cngn
 
-    def eval_quidax_to_base(inv):
+    def eval_quidax_to_base(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
         cngn, _ = cex_buy(inv)
         if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
         out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
         return out - inv, out, cngn
 
-    def eval_base_to_quidax(inv):
+    def eval_base_to_quidax(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
         cngn = swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
         if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
         out, _ = cex_sell(cngn)
@@ -305,10 +332,10 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
 
     best_profit = Decimal("-999999")
     best_size = Decimal("0")
-    best_dir = None
+    best_dir: str | None = None
     best_cngn = Decimal("0")
     usd_out_expected = Decimal("0")
-    all_arbs = []
+    all_arbs: list[dict[str, Any]] = []
 
     for dir_name, eval_func in directions:
         if eval_func(_SPREAD_CHECK_SIZE)[0] <= _SPREAD_CHECK_MIN_PROFIT:
@@ -337,6 +364,7 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
     quidax_mid = Decimal("1") / ((bids[0].price + asks[0].price) / 2) if bids and asks else Decimal(0)
     uni_bsc_price_usd = float(Decimal(1) / (((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))))
     uni_base_price_usd = float(((uni_base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6)))
+    best_gas = _CEX_DEX_GAS_FN[best_dir]() if best_dir is not None else None
 
     return {
         "timestamp": int(time.time() * 1000),
@@ -356,12 +384,15 @@ def find_optimal_arb(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE
             "slippage_tolerance_bps": 10,
             "uni_bsc_fee_bps": int(uni_bsc_fee * 10000) if uni_bsc_fee else 0,
             "uni_base_fee_bps": int(uni_base_fee * 10000) if uni_base_fee else 0,
-            "gas_usd": float(_CEX_DEX_GAS_FN.get(best_dir, _gas_oracle.gas_usd_bsc)()),
+            "gas_usd": float(best_gas) if best_gas is not None else 0.0,
         },
     }
 
 
-def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FEE) -> dict | None:
+def compute_arb_curve(
+    quidax_depth: OrderBookDepth,
+    cex_fee: Decimal = QUIDAX_FEE,
+) -> dict[str, Any] | None:
     """
     Slow path: generate the full profit curve for UI display.
     Call on a slower poll cycle; do not block the fast arb path on this.
@@ -375,7 +406,10 @@ def compute_arb_curve(quidax_depth: OrderBookDepth, cex_fee: Decimal = QUIDAX_FE
     uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     uni_base_sqrt, uni_base_liq, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
-    if not uni_bsc_sqrt or not uni_base_sqrt or uni_bsc_fee is None or uni_base_fee is None:
+    if (
+        uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
+        or uni_base_sqrt is None or uni_base_liq is None or uni_base_fee is None
+    ):
         return None
 
     bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True)

@@ -29,6 +29,20 @@ cp .env.example .env
 # Run the engine
 python -m engine.main
 ```
+
+## Local Checks
+
+```bash
+source .venv/bin/activate
+python -m mypy engine --no-error-summary
+python -m pytest -x -q --ignore=tests/test_dex_fork.py
+python -m pytest -q tests/test_dex_fork.py -v
+```
+
+- CI runs the same strict `mypy` check and the default pytest suite on pull requests and pushes to `main`.
+- `mypy` covers `engine/`, the production Python package, and intentionally ignores `tests/` and `dashboard/` because test doubles are looser by design and frontend code is checked by its own toolchain.
+T- he default pytest run covers the fast local suite and intentionally skips `tests/test_dex_fork.py`, because those tests need Foundry's `anvil` plus RPC-backed fork access.
+
 ---
 
 ## Dashboard

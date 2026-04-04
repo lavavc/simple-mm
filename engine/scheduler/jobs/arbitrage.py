@@ -73,7 +73,7 @@ class ArbitrageJobs:
         if not self.context.arbitrage_engine or not self.state.dex_bootstrap_pending:
             return
         try:
-            await seed_dex_pool_states()  # type: ignore[no-untyped-call]
+            await seed_dex_pool_states()
             await self._update_gas_oracle()
             if gas_oracle.gas_usd_base() is None or gas_oracle.gas_usd_bsc() is None:
                 logger.warning("dex_arb_bootstrap_waiting_for_gas")

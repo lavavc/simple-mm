@@ -8,7 +8,7 @@ from typing import Any, Optional
 import structlog
 
 from engine.api.schemas import ArbitrageTrade
-from engine.venues.base import VenueAdapter
+from engine.venues.base import VenueAdapter, is_dex_execution_venue
 from engine.venues.cex.quidax import QuidaxAdapter
 
 logger = structlog.get_logger()
@@ -21,8 +21,8 @@ def _clean_revert(err: Any) -> str | None:
     Strips the trailing hex — the text is already decoded by web3.
     Falls back to ABI-decoding Error(string) if the error is raw hex only.
     """
-    if not err:
-        return err
+    if err is None:
+        return None
     if isinstance(err, (tuple, list)):
         parts: list[str] = []
         for item in err:
@@ -39,7 +39,7 @@ def _clean_revert(err: Any) -> str | None:
     cleaned = re.sub(r":\s*0x[0-9a-fA-F]{8,}$", "", err).strip()
     if re.fullmatch(r"0x08c379a0[0-9a-fA-F]*", cleaned):
         try:
-            from eth_abi import decode
+            from eth_abi import decode  # type: ignore[attr-defined]
             msg = decode(["string"], bytes.fromhex(cleaned[10:]))[0]
             return f"execution reverted: {msg}"
         except Exception:
@@ -91,19 +91,12 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _dex_execution_slippage(venue: VenueAdapter) -> Decimal:
+def _dex_execution_slippage(venue: object) -> Decimal:
     params = getattr(venue, "params", None)
     max_slippage_percent = getattr(params, "max_slippage_percent", None)
     if max_slippage_percent is not None:
         return Decimal(max_slippage_percent) / Decimal(100)
     return Decimal(_ARB_SLIPPAGE_BPS) / Decimal(10000)
-
-
-def _is_dex_execution_venue(venue: VenueAdapter) -> bool:
-    return all(
-        hasattr(venue, attr)
-        for attr in ("swap", "stable_address", "cngn_address", "stable_decimals", "cngn_decimals")
-    )
 
 
 class ArbitrageExecutor:
@@ -120,6 +113,8 @@ class ArbitrageExecutor:
     ) -> Optional[ArbitrageTrade]:
         """Swap stablecoin → cNGN on a DEX."""
         venue = self.venues[venue_name]
+        if not is_dex_execution_venue(venue):
+            raise TypeError(f"{venue_name} is not a DEX execution venue")
 
         price_quote = await venue.get_current_price()
         if price_quote is None or price_quote.mid == 0:
@@ -166,6 +161,8 @@ class ArbitrageExecutor:
     ) -> Optional[ArbitrageTrade]:
         """Swap cNGN → stablecoin on a DEX."""
         venue = self.venues[venue_name]
+        if not is_dex_execution_venue(venue):
+            raise TypeError(f"{venue_name} is not a DEX execution venue")
 
         price_quote = await venue.get_current_price()
         current_price = price_quote.mid if price_quote else Decimal("0")

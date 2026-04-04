@@ -236,7 +236,7 @@ class TradingScheduler:
             )
             logger.info("blockradar_rate_sync_job_registered")
 
-        asyncio.create_task(self.ws_listener.start())  # type: ignore[no-untyped-call]
+        asyncio.create_task(self.ws_listener.start())
         self.arbitrage_jobs.schedule_dex_bootstrap()
         self.scheduler.add_job(
             self._stream_dex_arb_curve,
@@ -263,7 +263,7 @@ class TradingScheduler:
 
     def stop(self) -> None:
         if self.state.started:
-            asyncio.create_task(self.ws_listener.stop())  # type: ignore[no-untyped-call]
+            asyncio.create_task(self.ws_listener.stop())
             self.scheduler.shutdown(wait=False)
             self.state.started = False
             logger.info("scheduler_stopped")

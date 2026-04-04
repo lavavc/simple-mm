@@ -15,7 +15,14 @@ RUN mkdir engine && touch engine/__init__.py && \
     pip install --no-cache-dir . && \
     rm -rf engine
 
-# ---- Stage 3: Test runner (CI only, not shipped) ----
+# ---- Stage 3: Type checker (CI only, not shipped) ----
+FROM base AS typecheck
+RUN pip install --no-cache-dir ".[dev]"
+COPY engine/ ./engine/
+ENV PYTHONPATH=/app
+RUN python -m mypy engine --no-error-summary
+
+# ---- Stage 4: Test runner (CI only, not shipped) ----
 FROM base AS test
 RUN pip install --no-cache-dir ".[dev]"
 COPY engine/ ./engine/
@@ -25,7 +32,7 @@ ENV PYTHONPATH=/app \
     WALLET_MNEMONIC="test test test test test test test test test test test junk"
 RUN pytest -x -q --ignore=tests/test_dex_fork.py
 
-# ---- Stage 4: Production image ----
+# ---- Stage 5: Production image ----
 FROM base AS production
 COPY engine/ ./engine/
 COPY scripts/ ./scripts/

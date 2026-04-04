@@ -18,6 +18,7 @@ from engine.market.dex_volume import (
     sync_pool_volume_24h,
 )
 from engine.market.pool_state import update_pool_state_from_event
+from engine.web3_utils import coerce_hex_bytes
 
 logger = structlog.get_logger()
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -113,7 +114,7 @@ def build_wallet_transfer_filters(
 
 
 def matching_wallet_venues(
-    log: dict,
+    log: dict[str, Any],
     subscriptions: Iterable[WalletActivitySubscription],
 ) -> set[str]:
     """Return affected venue names when a Transfer log touches tracked wallets."""
@@ -141,7 +142,7 @@ class ArbitrageWebSocketListener:
 
     def __init__(
         self,
-        broadcast: Callable[[dict], Any],
+        broadcast: Callable[[dict[str, Any]], Any],
         on_update: Callable[[], Any] | None = None,
         on_dex_event: Callable[[], Any] | None = None,
         on_wallet_event: Callable[[list[str]], Any] | None = None,
@@ -154,16 +155,16 @@ class ArbitrageWebSocketListener:
         self.wallet_subscriptions = wallet_subscriptions or {}
         self._running = False
 
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: list[asyncio.Task[Any]] = []
 
         # Debounce tracking
         self._debounce_delay = 0.25 # seconds to wait before calculating curve
-        self._pending_calculation: asyncio.Task | None = None
+        self._pending_calculation: asyncio.Task[Any] | None = None
         self._pending_market_update = False
         self._pending_wallet_venues: set[str] = set()
         self.active_connections: set[str] = set()
 
-    async def start(self):
+    async def start(self) -> None:
         """Start listening to all supported WebSocket endpoints."""
         if self._running:
             return
@@ -191,7 +192,7 @@ class ArbitrageWebSocketListener:
                 )
             ))
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop all listeners."""
         self._running = False
         for task in self._tasks:
@@ -200,7 +201,7 @@ class ArbitrageWebSocketListener:
             self._pending_calculation.cancel()
         logger.info("arbitrage_websocket_listener_stopped")
 
-    async def _refresh_pool_state(self, chain_name: str, pool_config) -> None:
+    async def _refresh_pool_state(self, chain_name: str, pool_config: Any) -> None:
         """Refresh pool cache from RPC after (re)connect so prices aren't stuck stale."""
         try:
             if await update_single_v4_pool_state(pool_config):
@@ -209,7 +210,7 @@ class ArbitrageWebSocketListener:
         except Exception as e:
             logger.warning("wss_pool_state_refresh_failed", chain=chain_name, error=str(e))
 
-    async def _recv_with_keepalive(self, ws, chain_name: str) -> str:
+    async def _recv_with_keepalive(self, ws: Any, chain_name: str) -> str:
         """Wait for the next WS message, using ping/pong to detect zombie sockets."""
         while self._running:
             try:
@@ -225,9 +226,9 @@ class ArbitrageWebSocketListener:
         self,
         chain_name: str,
         wss_url: str,
-        pool_config,
+        pool_config: Any,
         wallet_subscriptions: list[WalletActivitySubscription],
-    ):
+    ) -> None:
         """Persistent wss connection loop for a specific chain."""
         backoff = 1
 
@@ -240,7 +241,7 @@ class ArbitrageWebSocketListener:
 
                     subscriptions: dict[str, dict[str, Any]] = {}
 
-                    def _handle_subscription_event(subscription: dict[str, Any], log: dict) -> None:
+                    def _handle_subscription_event(subscription: dict[str, Any], log: dict[str, Any]) -> None:
                         if subscription["kind"] == "pool_swap":
                             self._parse_and_update_state(log, subscription["pool_config"])
                             self._trigger_market_update(chain_name)
@@ -335,15 +336,10 @@ class ArbitrageWebSocketListener:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
-    def _parse_and_update_state(self, log: dict, pool_config):
+    def _parse_and_update_state(self, log: dict[str, Any], pool_config: Any) -> None:
         """Parse V4 Swap event data and update the pool cache — zero RPC calls."""
         try:
-            raw_data = log.get("data", "0x")
-            if isinstance(raw_data, (bytes, bytearray)):
-                data_bytes = bytes(raw_data)
-            else:
-                raw_str = str(raw_data)
-                data_bytes = bytes.fromhex(raw_str[2:] if raw_str.startswith("0x") else raw_str)
+            data_bytes = coerce_hex_bytes(log.get("data", "0x"))
 
             if len(data_bytes) < 192:
                 logger.warning("v4_swap_event_data_too_short", length=len(data_bytes))
@@ -402,7 +398,7 @@ class ArbitrageWebSocketListener:
         self._pending_wallet_venues.update(venues)
         self._ensure_pending_calculation()
 
-    async def _delayed_calculation(self):
+    async def _delayed_calculation(self) -> None:
         """Wait for debounce, then recompute once for all accumulated signals.
 
         Loops so that signals arriving *during* processing are batched into the

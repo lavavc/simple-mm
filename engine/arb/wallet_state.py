@@ -8,6 +8,8 @@ from typing import Any
 
 import structlog
 
+from engine.venues.base import is_dex_execution_venue
+
 
 logger = structlog.get_logger()
 
@@ -40,11 +42,7 @@ def fetch_venue_wallet_snapshot(
 ) -> tuple[str, Decimal, Decimal] | None:
     """Read a venue trade wallet's live stable/cNGN balances."""
     venue = engine.venues.get(venue_name)
-    if not venue:
-        return None
-
-    required_attrs = ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals")
-    if not all(hasattr(venue, attr) for attr in required_attrs):
+    if venue is None or not is_dex_execution_venue(venue):
         return None
 
     try:
@@ -101,10 +99,7 @@ async def seed_account_inventory(engine: Any, *, ensure_approvals: bool = True) 
     """Seed wallet balances, and optionally ensure trade approvals for execution paths."""
     tradeable = {
         name: venue for name, venue in engine.venues.items()
-        if all(hasattr(venue, attr) for attr in (
-            "stable_token", "cngn_token", "trade_account",
-            "stable_decimals", "cngn_decimals", "ensure_trade_approvals",
-        ))
+        if is_dex_execution_venue(venue)
     }
 
     loop = asyncio.get_running_loop()

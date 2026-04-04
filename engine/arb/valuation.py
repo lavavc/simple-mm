@@ -8,11 +8,12 @@ Adding a new CEX venue: call cex_holdings_value with the venue's order book and 
 Adding a new DEX venue: call dex_holdings_value with the pool's cached state.
 """
 from decimal import Decimal
+from typing import Any
 from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0
 from engine.arb.detection.cex_dex import walk_orderbook_asks, QUIDAX_FEE
 
 
-def cex_holdings_value(order_book_asks: list, cngn_amount: Decimal, fee: Decimal) -> Decimal:
+def cex_holdings_value(order_book_asks: list[Any], cngn_amount: Decimal, fee: Decimal) -> Decimal:
     """USD value of cNGN holdings if sold into a CEX order book."""
     value, _ = walk_orderbook_asks(order_book_asks, cngn_amount, fee)
     return value
@@ -32,7 +33,7 @@ def dex_holdings_value(
     return swap_fn(cngn_amount, sqrt_p, liquidity, fee, token0_decimals, token1_decimals)
 
 
-def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE) -> dict:
+def portfolio_value(quidax_depth: Any, balances: list[Any], cex_fee: Decimal = QUIDAX_FEE) -> dict[str, float]:
     """
     Mark-to-market USD value of all cNGN holdings across every venue.
     Returns a flat dict compatible with the liquidation_valuation broadcast format.
@@ -70,7 +71,7 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
     if bsc_bal:
         result["uni_bsc_usdt"] = float(bsc_bal.token_balances.get("USDT", Decimal(0)))
         bsc_sqrt, bsc_liq, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
-        if bsc_sqrt:
+        if bsc_sqrt is not None and bsc_liq is not None and bsc_fee is not None:
             bsc_cngn = bsc_bal.token_balances.get("cNGN", Decimal(0))
             if bsc_cngn > 0:
                 result["uni_bsc_cngn_usd"] = float(dex_holdings_value(bsc_cngn, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False))
@@ -80,7 +81,7 @@ def portfolio_value(quidax_depth, balances: list, cex_fee: Decimal = QUIDAX_FEE)
     if base_bal:
         result["uni_base_usdc"] = float(base_bal.token_balances.get("USDC", Decimal(0)))
         base_sqrt, base_liq, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
-        if base_sqrt:
+        if base_sqrt is not None and base_liq is not None and base_fee is not None:
             base_cngn = base_bal.token_balances.get("cNGN", Decimal(0))
             if base_cngn > 0:
                 result["uni_base_cngn_usd"] = float(dex_holdings_value(base_cngn, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True))

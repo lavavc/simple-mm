@@ -4,16 +4,18 @@ import asyncio
 import time as _time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional, Literal
 
 import structlog
-from eth_abi import encode
+from eth_abi import encode  # type: ignore[attr-defined]
+from eth_account.signers.local import LocalAccount
 from web3 import Web3
-from web3.middleware import geth_poa_middleware
-from web3.types import TxReceipt
+from web3.middleware import geth_poa_middleware  # type: ignore[attr-defined]
+from web3.types import BlockData, Nonce, TxParams, TxReceipt, Wei
 
 from engine.api.schemas import Position, PriceQuote, TxResult
 from engine.config import DexParams
+from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
 from engine.venues.base import VenueAdapter
 from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 
@@ -213,11 +215,11 @@ class BaseV4DexAdapter(VenueAdapter):
         return self.config.token1_address if self.config.invert_price else self.config.token0_address
 
     @property
-    def stable_token(self):
+    def stable_token(self) -> Any:
         return self.token0 if self.config.invert_price else self.token1
 
     @property
-    def cngn_token(self):
+    def cngn_token(self) -> Any:
         return self.token1 if self.config.invert_price else self.token0
 
     async def get_position(self) -> Position:
@@ -284,12 +286,19 @@ class BaseV4DexAdapter(VenueAdapter):
             logger.error("v4_price_fetch_failed", venue=self.name, error=str(e))
             return None
 
-    async def ensure_trade_approvals(self):
+    async def ensure_trade_approvals(self) -> None:
         for token in [self.config.token0_address, self.config.token1_address]:
             await self._approve_token_to_permit2_if_needed(token)
             await self._approve_permit2_to_router_if_needed(token)
 
-    def _build_swap_tx(self, token_in: str, amount_in: int, min_amount_out: int, *, account=None) -> tuple[dict, int]:
+    def _build_swap_tx(
+        self,
+        token_in: str,
+        amount_in: int,
+        min_amount_out: int,
+        *,
+        account: LocalAccount | None = None,
+    ) -> tuple[TxParams, int]:
         """Build the Universal Router swap transaction. Returns (tx, deadline).
 
         Makes network calls: fetches latest block for deadline, resolves pool key,
@@ -317,7 +326,7 @@ class BaseV4DexAdapter(VenueAdapter):
         ]
         v4_input = encode(["bytes", "bytes[]"], [actions, params])
         tx_params = self._get_tx_params(acct, block=block)
-        tx_params["value"] = 0
+        tx_params["value"] = Wei(0)
         tx_params["gas"] = 2_000_000  # placeholder; swap() replaces this with estimate_gas × 1.2
         tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
         return tx, deadline
@@ -326,7 +335,13 @@ class BaseV4DexAdapter(VenueAdapter):
         """Run the swap preflight (eth_call) without sending. Returns error string or None if ok."""
         tx, _ = self._build_swap_tx(token_in, amount_in, min_amount_out)
         try:
-            self.w3.eth.call({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
+            call_params: TxParams = {
+                "from": tx["from"],
+                "to": tx["to"],
+                "data": tx["data"],
+                "value": tx.get("value", Wei(0)),
+            }
+            self.w3.eth.call(call_params)
             return None
         except Exception as e:
             return str(e)
@@ -350,7 +365,14 @@ class BaseV4DexAdapter(VenueAdapter):
         )
 
         tx, deadline = self._build_swap_tx(token_in, amount_in, min_amount_out)
-        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": tx.get("value", 0)})
+        estimated = self.w3.eth.estimate_gas(
+            {
+                "from": tx["from"],
+                "to": tx["to"],
+                "data": tx["data"],
+                "value": tx.get("value", Wei(0)),
+            }
+        )
         tx["gas"] = int(estimated * 1.2)
         logger.info("v4_swap_gas_estimated", venue=self.name, estimated=estimated, gas_limit=tx["gas"])
         return await self._send_transaction(tx, self.trade_account, output_token=token_out)
@@ -378,10 +400,10 @@ class BaseV4DexAdapter(VenueAdapter):
             )
             return self._pool_key
 
-        event_topic = self.w3.keccak(text="Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)").hex()
+        event_topic = as_hexstr(self.w3.keccak(text="Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)").hex())
         logs = self.w3.eth.get_logs({
             "address": Web3.to_checksum_address(self.config.pool_manager),
-            "topics": [event_topic, self.config.pool_id],
+            "topics": [event_topic, as_hexstr(self.config.pool_id)],
             "fromBlock": 0,
             "toBlock": "latest",
         })
@@ -408,19 +430,26 @@ class BaseV4DexAdapter(VenueAdapter):
         )
         return self._pool_key
 
-    def _get_tx_params(self, account, block=None) -> dict:
+    def _get_tx_params(
+        self,
+        account: LocalAccount,
+        block: BlockData | None = None,
+    ) -> TxParams:
         if block is None:
             block = self.w3.eth.get_block("latest")
-        base_fee = block.get("baseFeePerGas", self.w3.eth.gas_price)
-        priority_fee = self.w3.to_wei(0.1, "gwei")
-        max_fee_per_gas = (2 * int(base_fee)) + priority_fee
+        if "baseFeePerGas" in block:
+            base_fee = int(block["baseFeePerGas"])
+        else:
+            base_fee = int(self.w3.eth.gas_price)
+        priority_fee = Wei(self.w3.to_wei(0.1, "gwei"))
+        max_fee_per_gas = Wei((2 * base_fee) + int(priority_fee))
 
         logger.info(
             "tx_fee_params",
             venue=self.name,
             account=account.address,
             chain_id=self.config.chain_id,
-            base_fee_wei=int(base_fee),
+            base_fee_wei=base_fee,
             priority_fee_wei=int(priority_fee),
             max_fee_per_gas_wei=int(max_fee_per_gas),
         )
@@ -439,18 +468,10 @@ class BaseV4DexAdapter(VenueAdapter):
             topics = log.get("topics", [])
             if not topics:
                 continue
-            t0 = topics[0]
-            t0_hex = (t0.hex() if isinstance(t0, bytes) else t0).lower()
-            if not t0_hex.startswith("0x"):
-                t0_hex = "0x" + t0_hex
+            t0_hex = coerce_hex_str(topics[0]).lower()
             if t0_hex != V4_SWAP_TOPIC.lower():
                 continue
-            raw = log.get("data", "0x")
-            if isinstance(raw, (bytes, bytearray)):
-                data = bytes(raw)
-            else:
-                raw_str = str(raw)
-                data = bytes.fromhex(raw_str[2:] if raw_str.startswith("0x") else raw_str)
+            data = coerce_hex_bytes(log.get("data", "0x"))
             if len(data) < 64:
                 continue
             amount0 = int.from_bytes(data[0:32], "big", signed=True)
@@ -461,30 +482,37 @@ class BaseV4DexAdapter(VenueAdapter):
             return abs(amount1) if amount1 < 0 else None
         return None
 
-    async def _send_transaction(self, tx: dict, account, *, output_token: str | None = None) -> TxResult:
+    async def _send_transaction(
+        self,
+        tx: TxParams,
+        account: LocalAccount,
+        *,
+        output_token: str | None = None,
+    ) -> TxResult:
         try:
             if account.address not in self._nonce_locks:
                 self._nonce_locks[account.address] = asyncio.Lock()
 
             async with self._nonce_locks[account.address]:
-                tx["nonce"] = self.w3.eth.get_transaction_count(account.address, "pending")
-                signed = account.sign_transaction(tx)
+                tx["nonce"] = Nonce(self.w3.eth.get_transaction_count(account.address, "pending"))
+                signed = account.sign_transaction(tx)  # type: ignore[no-untyped-call]
                 tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
 
             receipt: TxReceipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-            status = "confirmed" if receipt["status"] == 1 else "failed"
+            status: Literal["confirmed", "failed"] = "confirmed" if receipt["status"] == 1 else "failed"
             log_fn = logger.info if status == "confirmed" else logger.error
+            tx_hash_str = coerce_hex_str(tx_hash)
             log_fn(
                 "transaction_sent",
                 venue=self.name,
                 account=account.address,
-                hash=tx_hash.hex(),
+                hash=tx_hash_str,
                 status=status,
                 gas_used=receipt["gasUsed"],
             )
             output_raw = self._parse_swap_output_raw(receipt, output_token) if output_token and status == "confirmed" else None
             return TxResult(
-                hash=tx_hash.hex(),
+                hash=tx_hash_str,
                 status=status,
                 gas_used=receipt["gasUsed"],
                 output_raw=output_raw,
@@ -493,7 +521,12 @@ class BaseV4DexAdapter(VenueAdapter):
             logger.error("transaction_failed", venue=self.name, account=account.address, error=str(e))
             return TxResult(hash="", status="failed", error=str(e))
 
-    async def _approve_token_to_permit2_if_needed(self, token: str, *, account=None):
+    async def _approve_token_to_permit2_if_needed(
+        self,
+        token: str,
+        *,
+        account: LocalAccount | None = None,
+    ) -> None:
         acct = account or self.trade_account
         cache_key = f"erc20_permit2_{token.lower()}_{acct.address.lower()}"
         if cache_key in self._approvals_done:
@@ -518,7 +551,7 @@ class BaseV4DexAdapter(VenueAdapter):
 
         logger.info("approving_token_to_permit2", venue=self.name, token=token, account=acct.address)
         tx_params = self._get_tx_params(acct)
-        tx_params["value"] = 0
+        tx_params["value"] = Wei(0)
         tx_params["gas"] = _DEFAULT_APPROVAL_GAS
         # Unlimited approval to Permit2 — Permit2 then enforces per-spender allowances.
         # See runbook.md "Known issues" for the infinite approval risk note.
@@ -532,7 +565,12 @@ class BaseV4DexAdapter(VenueAdapter):
         else:
             self._approvals_done.add(cache_key)
 
-    async def _approve_permit2_to_router_if_needed(self, token: str, *, account=None):
+    async def _approve_permit2_to_router_if_needed(
+        self,
+        token: str,
+        *,
+        account: LocalAccount | None = None,
+    ) -> None:
         acct = account or self.trade_account
         cache_key = f"permit2_router_{token.lower()}_{acct.address.lower()}"
         if cache_key in self._approvals_done:
@@ -558,7 +596,7 @@ class BaseV4DexAdapter(VenueAdapter):
 
         logger.info("approving_permit2_to_router", venue=self.name, token=token, router=self.config.universal_router, account=acct.address)
         tx_params = self._get_tx_params(acct)
-        tx_params["value"] = 0
+        tx_params["value"] = Wei(0)
         tx_params["gas"] = _DEFAULT_PERMIT2_APPROVAL_GAS
         tx = self.permit2.functions.approve(
             Web3.to_checksum_address(token),

@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states
 
-    await seed_pool_states()  # type: ignore[no-untyped-call]
+    await seed_pool_states()
     await seed_dex_volume_24h()
 
     price_aggregator: VenuePriceAggregator = create_venue_aggregator(
