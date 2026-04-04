@@ -324,6 +324,33 @@ class TestCheckDexRebalance:
         assert len(fake_dex_adapter.minted) == 0
         assert any("multiple LP positions" in b.get("message", "") for b in broadcasts if b.get("type") == "alert")
         assert db.insert_action.await_args.kwargs["action_type"] == "lp_management_halted"
+        assert db.insert_action.await_args.kwargs["idempotency_key"] == "lp_management_halted:uni-base:41,42"
+
+    @pytest.mark.asyncio
+    async def test_multiple_position_incident_broadcasts_once_until_resolved(self, fake_dex_adapter):
+        fake_dex_adapter._positions = [_make_position(token_id=41), _make_position(token_id=42)]
+
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
+
+        alert_messages = [b.get("message", "") for b in broadcasts if b.get("type") == "alert"]
+        assert len(alert_messages) == 1
+        assert db.insert_action.await_count == 2
+        assert db.insert_action.await_args_list[0].kwargs["idempotency_key"] == "lp_management_halted:uni-base:41,42"
+        assert db.insert_action.await_args_list[1].kwargs["idempotency_key"] == "lp_management_halted:uni-base:41,42"
+
+        fake_dex_adapter._positions = [_make_position(token_id=41)]
+        await sched._check_dex_rebalance()
+
+        fake_dex_adapter._positions = [_make_position(token_id=41), _make_position(token_id=42)]
+        await sched._check_dex_rebalance()
+
+        alert_messages = [b.get("message", "") for b in broadcasts if b.get("type") == "alert"]
+        assert len(alert_messages) == 2
 
 
 # =============================================================================

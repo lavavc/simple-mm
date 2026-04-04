@@ -119,10 +119,21 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 )
                 lines.append(f"  {label}")
                 lines.append(f"  position_count: {pos.lp_position.position_count}")
-                lines.append(
-                    f"  range: {pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
-                )
-                lines.append(f"  in_range: {'yes' if pos.lp_position.in_range else 'no'}")
+                lines.append(f"  snapshot_status: {pos.lp_position.snapshot_status}")
+                if pos.lp_position.snapshot_timestamp is not None:
+                    lines.append(f"  snapshot_timestamp: {pos.lp_position.snapshot_timestamp}")
+                if pos.lp_position.snapshot_message:
+                    lines.append(f"  snapshot_message: {pos.lp_position.snapshot_message}")
+                if pos.lp_position.range_min is not None and pos.lp_position.range_max is not None:
+                    lines.append(
+                        f"  range: {pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
+                    )
+                else:
+                    lines.append("  range: unavailable")
+                if pos.lp_position.in_range is None:
+                    lines.append("  in_range: unknown")
+                else:
+                    lines.append(f"  in_range: {'yes' if pos.lp_position.in_range else 'no'}")
                 if pos.position_value_usd is not None:
                     lines.append(f"  value_usd: {pos.position_value_usd:.4f}")
                 if pos.lp_position.our_share_pct is not None:

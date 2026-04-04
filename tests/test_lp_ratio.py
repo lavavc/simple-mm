@@ -3,12 +3,18 @@
 import math
 import pytest
 from decimal import Decimal
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import TxResult
 from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
-from engine.venues.dex.lp_v4 import LPBalanceSwapResult, V4LPAdapter
+from engine.venues.dex.lp_v4 import (
+    LPBalanceSwapResult,
+    LPMarketSnapshot,
+    LPPositionSnapshot,
+    LPStaticPositionMetadata,
+    V4LPAdapter,
+)
 
 
 def _price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
@@ -90,6 +96,10 @@ def _make_lp_snapshot_adapter(
     sqrt_price_x96: int,
     current_price: Decimal = Decimal("1"),
     pool_liquidity: Decimal = Decimal("5000000"),
+    live_market: LPMarketSnapshot | None = None,
+    cached_market: LPMarketSnapshot | None = None,
+    last_snapshot: LPPositionSnapshot | None = None,
+    include_live_market: bool = True,
 ) -> SimpleNamespace:
     positions = pos_states or []
     config = SimpleNamespace(
@@ -100,40 +110,84 @@ def _make_lp_snapshot_adapter(
         token1_symbol="USDC",
         cngn_is_token0=True,
     )
+    position_metadata = {
+        pos.token_id: LPStaticPositionMetadata(
+            token_id=pos.token_id,
+            liquidity=pos.liquidity,
+            tick_lower=pos.tick_lower,
+            tick_upper=pos.tick_upper,
+            range_min=pos.price_lower,
+            range_max=pos.price_upper,
+        )
+        for pos in positions
+    }
     adapter = SimpleNamespace(
         name="uni-base",
         config=config,
         get_owned_positions=lambda: [pos.token_id for pos in positions],
-        _get_live_pool_snapshot=lambda: (Decimal(sqrt_price_x96), 0, current_price, pool_liquidity),
-        _get_position_state_from_market=lambda token_id, *, current_tick, current_price: next(
-            (pos for pos in positions if pos.token_id == token_id),
-            None,
+        _get_live_pool_snapshot=lambda: (
+            live_market
+            if live_market is not None
+            else (
+                LPMarketSnapshot(
+                    sqrt_price_x96=Decimal(sqrt_price_x96),
+                    current_tick=0,
+                    current_price=current_price,
+                    pool_liquidity=pool_liquidity,
+                    snapshot_timestamp=1234,
+                )
+                if include_live_market
+                else None
+            )
         ),
+        _get_cached_pool_snapshot=lambda: cached_market,
+        _get_static_position_metadata=lambda token_id: position_metadata.get(token_id),
+        _last_lp_snapshot=last_snapshot,
+        lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+        position_manager_contract=object(),
+        state_view=MagicMock(),
     )
-    adapter._compute_lp_token_amounts = lambda current_pos, sqrt_p: V4LPAdapter._compute_lp_token_amounts(
+    adapter._compute_lp_token_amounts = MethodType(V4LPAdapter._compute_lp_token_amounts, adapter)
+    adapter._build_position_state_from_metadata = MethodType(
+        V4LPAdapter._build_position_state_from_metadata,
         adapter,
-        current_pos,
-        sqrt_p,
     )
-    adapter._build_lp_position_snapshot = lambda current_pos, *, sqrt_price_x96, pool_liquidity: V4LPAdapter._build_lp_position_snapshot(
+    adapter._build_lp_position_snapshot = MethodType(V4LPAdapter._build_lp_position_snapshot, adapter)
+    adapter._aggregate_lp_position_snapshots = MethodType(
+        V4LPAdapter._aggregate_lp_position_snapshots,
         adapter,
-        current_pos,
-        sqrt_price_x96=sqrt_price_x96,
-        pool_liquidity=pool_liquidity,
     )
-    adapter._aggregate_lp_position_snapshots = lambda snapshots: V4LPAdapter._aggregate_lp_position_snapshots(
-        adapter,
-        snapshots,
-    )
-    adapter._empty_position_balances = lambda: V4LPAdapter._empty_position_balances(adapter)
-    adapter._add_symbol_balance = lambda balances, symbol, amount: V4LPAdapter._add_symbol_balance(
-        adapter,
-        balances,
-        symbol,
-        amount,
-    )
-    adapter.get_active_lp_position_snapshot = lambda: V4LPAdapter.get_active_lp_position_snapshot(adapter)
+    adapter._same_token_ids = V4LPAdapter._same_token_ids
+    adapter._remember_lp_snapshot = MethodType(V4LPAdapter._remember_lp_snapshot, adapter)
+    adapter._get_stale_lp_snapshot = MethodType(V4LPAdapter._get_stale_lp_snapshot, adapter)
+    adapter._build_degraded_lp_snapshot = MethodType(V4LPAdapter._build_degraded_lp_snapshot, adapter)
+    adapter._build_snapshots_from_market = MethodType(V4LPAdapter._build_snapshots_from_market, adapter)
+    adapter._empty_position_balances = MethodType(V4LPAdapter._empty_position_balances, adapter)
+    adapter._add_symbol_balance = MethodType(V4LPAdapter._add_symbol_balance, adapter)
+    adapter.get_active_lp_position_snapshot = MethodType(V4LPAdapter.get_active_lp_position_snapshot, adapter)
+    adapter.get_position = MethodType(V4LPAdapter.get_position, adapter)
     return adapter
+
+
+def _make_stale_snapshot(token_ids: tuple[int, ...]) -> LPPositionSnapshot:
+    return LPPositionSnapshot(
+        token_id=token_ids[0] if len(token_ids) == 1 else None,
+        token_ids=token_ids,
+        position_count=len(token_ids),
+        liquidity=1_000_000,
+        token0_amount=Decimal("12.5"),
+        token1_amount=Decimal("150"),
+        token0_symbol="cNGN",
+        token1_symbol="USDC",
+        range_min=Decimal("0.9"),
+        range_max=Decimal("1.1"),
+        in_range=True,
+        position_value_usd=Decimal("150.5"),
+        our_share_pct=Decimal("12.5"),
+        snapshot_status="live",
+        snapshot_timestamp=1700000000000,
+        snapshot_message=None,
+    )
 
 
 class TestComputeRequiredRatio:
@@ -254,7 +308,11 @@ class TestActiveLpPositionSnapshot:
     """Tests for V4LPAdapter.get_active_lp_position_snapshot."""
 
     def test_returns_none_when_no_active_position(self):
-        adapter = _make_lp_snapshot_adapter([], sqrt_price_x96=_price_to_sqrt_x96(1.0))
+        adapter = _make_lp_snapshot_adapter(
+            [],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+            include_live_market=False,
+        )
 
         result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
 
@@ -268,6 +326,7 @@ class TestActiveLpPositionSnapshot:
         assert result is not None
         assert result.token0_amount > 0
         assert result.token1_amount == 0
+        assert result.snapshot_status == "live"
 
     def test_snapshot_above_range_is_all_token1(self):
         pos_state = _make_position_state(tick_lower=-2000, tick_upper=-1000, in_range=False)
@@ -286,6 +345,7 @@ class TestActiveLpPositionSnapshot:
         assert result is not None
         assert result.token0_amount > 0
         assert result.token1_amount > 0
+        assert result.snapshot_status == "live"
 
     def test_snapshot_aggregates_multiple_positions(self):
         adapter = _make_lp_snapshot_adapter(
@@ -302,6 +362,65 @@ class TestActiveLpPositionSnapshot:
         assert result.token0_amount > 0
         assert result.token1_amount > 0
 
+    def test_snapshot_uses_cached_pool_state_when_live_read_fails(self):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        cached_market = LPMarketSnapshot(
+            sqrt_price_x96=Decimal(_price_to_sqrt_x96(1.0)),
+            current_tick=None,
+            current_price=Decimal("1"),
+            pool_liquidity=Decimal("5000000"),
+            snapshot_timestamp=5678,
+            snapshot_message="Using cached pool-state snapshot.",
+        )
+        adapter = _make_lp_snapshot_adapter(
+            [pos_state],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+            include_live_market=False,
+            cached_market=cached_market,
+        )
+
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+
+        assert result is not None
+        assert result.snapshot_status == "live"
+        assert result.snapshot_timestamp == 5678
+        assert result.snapshot_message == "Using cached pool-state snapshot."
+
+    def test_snapshot_uses_last_successful_snapshot_when_pool_state_unavailable(self):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        adapter = _make_lp_snapshot_adapter(
+            [pos_state],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+            include_live_market=False,
+            cached_market=None,
+            last_snapshot=_make_stale_snapshot((77,)),
+        )
+
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+
+        assert result is not None
+        assert result.snapshot_status == "stale"
+        assert result.position_value_usd == Decimal("150.5")
+        assert result.snapshot_timestamp == 1700000000000
+
+    def test_snapshot_returns_degraded_summary_when_no_pool_state_or_stale_snapshot(self):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        adapter = _make_lp_snapshot_adapter(
+            [pos_state],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+            include_live_market=False,
+            cached_market=None,
+        )
+
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+
+        assert result is not None
+        assert result.snapshot_status == "degraded"
+        assert result.token_ids == (77,)
+        assert result.token0_amount is None
+        assert result.position_value_usd is None
+        assert result.range_min == Decimal("0.9")
+
 
 class TestV4GetPosition:
     @pytest.mark.asyncio
@@ -316,6 +435,7 @@ class TestV4GetPosition:
         assert result.lp_position is not None
         assert result.lp_position.token_id == "77"
         assert result.lp_position.token_ids == ["77"]
+        assert result.lp_position.snapshot_status == "live"
 
     @pytest.mark.asyncio
     async def test_get_position_returns_zero_balances_when_no_nft(self):
@@ -325,3 +445,19 @@ class TestV4GetPosition:
 
         assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
         assert result.lp_position is None
+
+    @pytest.mark.asyncio
+    async def test_get_position_keeps_lp_visible_when_snapshot_is_degraded(self):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        adapter = _make_lp_snapshot_adapter(
+            [pos_state],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+            include_live_market=False,
+            cached_market=None,
+        )
+
+        result = await V4LPAdapter.get_position(adapter)
+
+        assert result.lp_position is not None
+        assert result.lp_position.snapshot_status == "degraded"
+        assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}

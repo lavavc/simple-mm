@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from engine.api.schemas import (
     PriceQuote,
+    LPPosition,
     Position,
     VenuePriceResponse,
     VenueStatus,
@@ -170,6 +171,22 @@ class TestGlobalPosition:
         )
         assert gp.total_cngn == Decimal("100000")
         assert gp.delta_ratio == Decimal("0.47")
+
+
+class TestLPPosition:
+
+    def test_degraded_snapshot_allows_optional_live_fields(self):
+        lp = LPPosition(
+            token_id="77",
+            token_ids=["77"],
+            position_count=1,
+            snapshot_status="degraded",
+            snapshot_message="LP position exists, but composition is unavailable.",
+        )
+        assert lp.snapshot_status == "degraded"
+        assert lp.liquidity is None
+        assert lp.range_min is None
+        assert lp.in_range is None
 
 
 class TestPortfolioExposure:

@@ -91,6 +91,7 @@ class FakeDexAdapter:
                 range_max=max(p.price_upper for p in self._positions),
                 in_range=any(p.in_range for p in self._positions),
                 our_share_pct=None,
+                snapshot_status="live",
             )
         return Position(
             venue=self.name,

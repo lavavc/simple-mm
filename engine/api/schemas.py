@@ -24,11 +24,14 @@ class LPPosition(BaseModel):
     token_id: Optional[str] = None
     token_ids: list[str] = Field(default_factory=list)
     position_count: int = 0
-    liquidity: str  # BigInt as string
-    range_min: Decimal
-    range_max: Decimal
-    in_range: bool
+    liquidity: Optional[str] = None  # BigInt as string
+    range_min: Optional[Decimal] = None
+    range_max: Optional[Decimal] = None
+    in_range: Optional[bool] = None
     our_share_pct: Optional[Decimal] = None  # our_liquidity / pool_liquidity * 100
+    snapshot_status: Literal["live", "stale", "degraded"] = "live"
+    snapshot_timestamp: Optional[int] = None
+    snapshot_message: Optional[str] = None
 
 
 class Position(BaseModel):
@@ -140,7 +143,7 @@ class PortfolioExposureSource(BaseModel):
     """One contributing balance source in the global portfolio view."""
 
     source: str
-    kind: Literal["account", "venue_position", "exchange"]
+    kind: Literal["account", "lp_position", "exchange"]
     balances: dict[str, Decimal]
     usd_value: Decimal
 

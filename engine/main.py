@@ -19,8 +19,9 @@ from engine.api import api_router
 from engine.api.schemas import ArbitrageParams, CexParams
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
-from engine.db import open_repository
+from engine.db.repository import open_repository
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
+from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
 from engine.market.venue_prices import VenuePriceAggregator, create_venue_aggregator
 from engine.runtime import EngineRuntime
@@ -187,11 +188,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         price_store=db.prices,
     )
     logger.info("blended_price_calculator_initialized")
+    portfolio_source_registry = DEFAULT_PORTFOLIO_SOURCE_REGISTRY
     portfolio_exposure_calculator = PortfolioExposureCalculator(
         venues=venues,
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
         blended_calculator=blended_calculator,
+        portfolio_source_registry=portfolio_source_registry,
     )
     logger.info("portfolio_exposure_calculator_initialized")
 
@@ -224,6 +227,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
+        portfolio_source_registry=portfolio_source_registry,
         quidax_lp=quidax_lp,
         system_state_store=db.system_state,
         price_store=db.prices,
@@ -245,6 +249,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         blended_calculator=blended_calculator,
         normalizer=normalizer,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
+        portfolio_source_registry=portfolio_source_registry,
         quidax_lp=quidax_lp,
     )
     app.state.runtime = runtime

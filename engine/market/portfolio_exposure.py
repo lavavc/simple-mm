@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 import structlog
 
-from engine.api.schemas import GlobalPosition, PortfolioExposure, PortfolioExposureSource
 from engine.config import settings
-from engine.venues.cex.quidax import QuidaxAdapter
-from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.market.portfolio_registry import PortfolioSourceDescriptor
 
 if TYPE_CHECKING:
     from engine.accounts import AccountManager
@@ -18,6 +17,31 @@ if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
+
+PortfolioExposureSourceKind = Literal["account", "lp_position", "exchange"]
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioExposureSourceSnapshot:
+    """One contributing balance source in the global portfolio view."""
+
+    source: str
+    kind: PortfolioExposureSourceKind
+    balances: dict[str, Decimal]
+    usd_value: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioExposureSnapshot:
+    """Expanded global portfolio snapshot with per-source breakdown."""
+
+    total_cngn: Decimal
+    total_usdt: Decimal
+    total_usdc: Decimal
+    total_usd_value: Decimal
+    delta_ratio: Decimal
+    target_delta: Decimal
+    sources: tuple[PortfolioExposureSourceSnapshot, ...]
 
 
 class PortfolioExposureCalculator:
@@ -29,17 +53,19 @@ class PortfolioExposureCalculator:
         account_manager: "AccountManager | None",
         token_contracts: dict[int, dict[str, str]],
         blended_calculator: "BlendedPriceCalculator | None",
+        portfolio_source_registry: Sequence[PortfolioSourceDescriptor],
     ) -> None:
         self.venues = venues
         self.account_manager = account_manager
         self.token_contracts = token_contracts
         self.blended_calculator = blended_calculator
+        self.portfolio_source_registry = tuple(portfolio_source_registry)
 
-    async def calculate(self) -> PortfolioExposure:
+    async def calculate(self) -> PortfolioExposureSnapshot:
         """Return the current portfolio exposure with per-source breakdown."""
         cngn_usd_rate = await self._get_cngn_usd_rate()
         total_balances = {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
-        sources: list[PortfolioExposureSource] = []
+        sources: list[PortfolioExposureSourceSnapshot] = []
 
         if self.account_manager is not None:
             try:
@@ -54,7 +80,7 @@ class PortfolioExposureCalculator:
                     continue
                 self._accumulate(total_balances, normalized)
                 sources.append(
-                    PortfolioExposureSource(
+                    PortfolioExposureSourceSnapshot(
                         source=getattr(account_balance, "role", "unknown-account"),
                         kind="account",
                         balances=normalized,
@@ -62,14 +88,21 @@ class PortfolioExposureCalculator:
                     )
                 )
 
-        for venue_name, venue in self.venues.items():
-            if not self._include_venue_position(venue_name, venue):
+        seen_registered_venues: set[str] = set()
+        for descriptor in self.portfolio_source_registry:
+            if descriptor.venue in seen_registered_venues:
+                logger.warning("duplicate_portfolio_source_descriptor", venue=descriptor.venue)
+                continue
+            seen_registered_venues.add(descriptor.venue)
+
+            venue = self.venues.get(descriptor.venue)
+            if venue is None:
                 continue
 
             try:
                 position = await venue.get_position()
             except Exception as exc:
-                logger.warning("portfolio_venue_position_failed", venue=venue_name, error=str(exc))
+                logger.warning("portfolio_venue_position_failed", venue=descriptor.venue, error=str(exc))
                 continue
 
             normalized = self._normalize_balances(getattr(position, "balances", {}))
@@ -77,9 +110,9 @@ class PortfolioExposureCalculator:
                 continue
             self._accumulate(total_balances, normalized)
             sources.append(
-                PortfolioExposureSource(
-                    source=venue_name,
-                    kind=self._source_kind_for_venue(venue_name, venue),
+                PortfolioExposureSourceSnapshot(
+                    source=descriptor.venue,
+                    kind=descriptor.source_kind,
                     balances=normalized,
                     usd_value=self._balances_to_usd_value(normalized, cngn_usd_rate),
                 )
@@ -95,26 +128,14 @@ class PortfolioExposureCalculator:
             else Decimal("0")
         )
 
-        return PortfolioExposure(
+        return PortfolioExposureSnapshot(
             total_cngn=total_cngn,
             total_usdt=total_usdt,
             total_usdc=total_usdc,
             total_usd_value=total_usd_value,
             delta_ratio=delta_ratio,
             target_delta=Decimal(str(settings.target_delta_ratio)),
-            sources=sources,
-        )
-
-    async def calculate_global_position(self) -> GlobalPosition:
-        """Return the legacy aggregate shape without source breakdowns."""
-        exposure = await self.calculate()
-        return GlobalPosition(
-            total_cngn=exposure.total_cngn,
-            total_usdt=exposure.total_usdt,
-            total_usdc=exposure.total_usdc,
-            total_usd_value=exposure.total_usd_value,
-            delta_ratio=exposure.delta_ratio,
-            target_delta=exposure.target_delta,
+            sources=tuple(sources),
         )
 
     async def _get_cngn_usd_rate(self) -> Decimal:
@@ -155,19 +176,3 @@ class PortfolioExposureCalculator:
 
     def _has_meaningful_balance(self, balances: dict[str, Decimal]) -> bool:
         return any(amount > 0 for amount in balances.values())
-
-    def _include_venue_position(self, venue_name: str, venue: Any) -> bool:
-        if isinstance(venue, V4LPAdapter):
-            return True
-        if isinstance(venue, QuidaxAdapter):
-            return True
-        return venue_name in {"quidax", "quidax-lp"}
-
-    def _source_kind_for_venue(self, venue_name: str, venue: Any) -> str:
-        if isinstance(venue, V4LPAdapter):
-            return "venue_position"
-        if isinstance(venue, QuidaxAdapter):
-            return "exchange"
-        if venue_name in {"quidax", "quidax-lp"}:
-            return "exchange"
-        return "venue_position"

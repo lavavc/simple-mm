@@ -1,9 +1,9 @@
 """Uniswap V4 LP adapter — extends BaseV4DexAdapter with position management."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import time as _time
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import structlog
 from eth_abi import encode  # type: ignore[attr-defined]
@@ -94,16 +94,39 @@ class LPPositionSnapshot:
     token_id: int | None
     token_ids: tuple[int, ...]
     position_count: int
-    liquidity: int
-    token0_amount: Decimal
-    token1_amount: Decimal
+    liquidity: int | None
+    token0_amount: Decimal | None
+    token1_amount: Decimal | None
     token0_symbol: str
     token1_symbol: str
+    range_min: Decimal | None
+    range_max: Decimal | None
+    in_range: bool | None
+    position_value_usd: Decimal | None
+    our_share_pct: Decimal | None
+    snapshot_status: Literal["live", "stale", "degraded"] = "live"
+    snapshot_timestamp: int | None = None
+    snapshot_message: str | None = None
+
+
+@dataclass(slots=True)
+class LPStaticPositionMetadata:
+    token_id: int
+    liquidity: int
+    tick_lower: int
+    tick_upper: int
     range_min: Decimal
     range_max: Decimal
-    in_range: bool
-    position_value_usd: Decimal
-    our_share_pct: Decimal | None
+
+
+@dataclass(slots=True)
+class LPMarketSnapshot:
+    sqrt_price_x96: Decimal
+    current_price: Decimal
+    pool_liquidity: Decimal | None
+    current_tick: int | None = None
+    snapshot_timestamp: int | None = None
+    snapshot_message: str | None = None
 
 
 def _sign_extend_24(v: int) -> int:
@@ -150,6 +173,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             self.position_manager_contract = None
 
         self._lp_approvals_done: set[str] = set()
+        self._last_lp_snapshot: LPPositionSnapshot | None = None
 
     # === Position queries ===
 
@@ -171,7 +195,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
 
-    def _get_live_pool_snapshot(self) -> tuple[Decimal, int, Decimal, Decimal | None] | None:
+    def _get_live_pool_snapshot(self) -> LPMarketSnapshot | None:
         """Return the latest live market state needed to evaluate LP positions."""
         try:
             pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
@@ -187,19 +211,45 @@ class V4LPAdapter(BaseV4DexAdapter):
                 current_price = Decimal(1) / current_price
 
             pool_liquidity = Decimal(self.state_view.functions.getLiquidity(pool_id_bytes).call())
-            return sqrt_price_x96, current_tick, current_price, pool_liquidity
+            return LPMarketSnapshot(
+                sqrt_price_x96=sqrt_price_x96,
+                current_tick=current_tick,
+                current_price=current_price,
+                pool_liquidity=pool_liquidity,
+                snapshot_timestamp=int(_time.time() * 1000),
+            )
         except Exception as e:
             logger.warning("get_v4_live_pool_snapshot_failed", venue=self.name, error=str(e))
             return None
 
-    def _get_position_state_from_market(
-        self,
-        token_id: int,
-        *,
-        current_tick: int,
-        current_price: Decimal,
-    ) -> Optional[PositionState]:
-        """Get position details using a shared live market snapshot."""
+    def _get_cached_pool_snapshot(self) -> LPMarketSnapshot | None:
+        """Reuse the shared pool-state cache when a live RPC read fails."""
+        from engine.market.pool_state import get_cached_pool_state
+
+        sqrt_price_x96, pool_liquidity, timestamp, _ = get_cached_pool_state(self.config.pool_id)
+        if sqrt_price_x96 is None:
+            return None
+
+        current_price = sqrt_price_x96_to_decimal(
+            int(sqrt_price_x96),
+            self.config.token0_decimals,
+            self.config.token1_decimals,
+        )
+        if self.config.invert_price and current_price > 0:
+            current_price = Decimal(1) / current_price
+
+        snapshot_timestamp = int(timestamp * 1000) if timestamp is not None else None
+        return LPMarketSnapshot(
+            sqrt_price_x96=Decimal(sqrt_price_x96),
+            current_price=current_price,
+            pool_liquidity=pool_liquidity,
+            current_tick=None,
+            snapshot_timestamp=snapshot_timestamp,
+            snapshot_message="Using cached pool-state snapshot.",
+        )
+
+    def _get_static_position_metadata(self, token_id: int) -> LPStaticPositionMetadata | None:
+        """Read token ID, liquidity, and tick range without needing live pool state."""
         if not self.position_manager_contract:
             return None
         try:
@@ -216,35 +266,84 @@ class V4LPAdapter(BaseV4DexAdapter):
                 b"\x00" * 32,
             ).call()
 
-            if liquidity == 0:
-                return None
-
-            return PositionState(
+            return LPStaticPositionMetadata(
                 token_id=token_id,
                 liquidity=liquidity,
                 tick_lower=tick_lower,
                 tick_upper=tick_upper,
-                tokens_owed_0=0,
-                tokens_owed_1=0,
-                price_lower=tick_to_price(tick_lower, self.config.token0_decimals, self.config.token1_decimals),
-                price_upper=tick_to_price(tick_upper, self.config.token0_decimals, self.config.token1_decimals),
-                current_price=current_price,
-                in_range=tick_lower <= current_tick <= tick_upper,
+                range_min=tick_to_price(
+                    tick_lower,
+                    self.config.token0_decimals,
+                    self.config.token1_decimals,
+                ),
+                range_max=tick_to_price(
+                    tick_upper,
+                    self.config.token0_decimals,
+                    self.config.token1_decimals,
+                ),
             )
         except Exception as e:
-            logger.warning("get_v4_position_state_failed", venue=self.name, token_id=token_id, error=str(e))
+            logger.warning(
+                "get_v4_static_position_metadata_failed",
+                venue=self.name,
+                token_id=token_id,
+                error=str(e),
+            )
             return None
+
+    def _build_position_state_from_metadata(
+        self,
+        metadata: LPStaticPositionMetadata,
+        *,
+        current_price: Decimal,
+        current_tick: int | None,
+    ) -> PositionState:
+        in_range = (
+            metadata.tick_lower <= current_tick <= metadata.tick_upper
+            if current_tick is not None
+            else metadata.range_min <= current_price <= metadata.range_max
+        )
+        return PositionState(
+            token_id=metadata.token_id,
+            liquidity=metadata.liquidity,
+            tick_lower=metadata.tick_lower,
+            tick_upper=metadata.tick_upper,
+            tokens_owed_0=0,
+            tokens_owed_1=0,
+            price_lower=metadata.range_min,
+            price_upper=metadata.range_max,
+            current_price=current_price,
+            in_range=in_range,
+        )
+
+    def _get_position_state_from_market(
+        self,
+        token_id: int,
+        *,
+        current_tick: int | None,
+        current_price: Decimal,
+    ) -> Optional[PositionState]:
+        """Get position details using a shared live market snapshot."""
+        if not self.position_manager_contract:
+            return None
+        metadata = self._get_static_position_metadata(token_id)
+        if metadata is None or metadata.liquidity == 0:
+            return None
+        return self._build_position_state_from_metadata(
+            metadata,
+            current_price=current_price,
+            current_tick=current_tick,
+        )
 
     def get_position_state(self, token_id: int) -> Optional[PositionState]:
         """Get position details via PositionManager.getPositionInfo + StateView."""
-        market = self._get_live_pool_snapshot()
+        market = self._get_live_pool_snapshot() or self._get_cached_pool_snapshot()
         if market is None:
             return None
-        _, current_tick, current_price, _ = market
         return self._get_position_state_from_market(
             token_id,
-            current_tick=current_tick,
-            current_price=current_price,
+            current_tick=market.current_tick,
+            current_price=market.current_price,
         )
 
     def _empty_position_balances(self) -> dict[str, Decimal]:
@@ -272,17 +371,22 @@ class V4LPAdapter(BaseV4DexAdapter):
         position_value_usd = None
 
         if snapshot is not None:
-            self._add_symbol_balance(balances, snapshot.token0_symbol, snapshot.token0_amount)
-            self._add_symbol_balance(balances, snapshot.token1_symbol, snapshot.token1_amount)
+            if snapshot.token0_amount is not None:
+                self._add_symbol_balance(balances, snapshot.token0_symbol, snapshot.token0_amount)
+            if snapshot.token1_amount is not None:
+                self._add_symbol_balance(balances, snapshot.token1_symbol, snapshot.token1_amount)
             lp_position = LPPosition(
                 token_id=str(snapshot.token_id) if snapshot.token_id is not None else None,
                 token_ids=[str(token_id) for token_id in snapshot.token_ids],
                 position_count=snapshot.position_count,
-                liquidity=str(snapshot.liquidity),
+                liquidity=str(snapshot.liquidity) if snapshot.liquidity is not None else None,
                 range_min=snapshot.range_min,
                 range_max=snapshot.range_max,
                 in_range=snapshot.in_range,
                 our_share_pct=snapshot.our_share_pct,
+                snapshot_status=snapshot.snapshot_status,
+                snapshot_timestamp=snapshot.snapshot_timestamp,
+                snapshot_message=snapshot.snapshot_message,
             )
             position_value_usd = snapshot.position_value_usd
 
@@ -366,6 +470,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             in_range=pos_state.in_range,
             position_value_usd=position_value_usd,
             our_share_pct=our_share_pct,
+            snapshot_timestamp=int(_time.time() * 1000),
         )
 
     def _aggregate_lp_position_snapshots(
@@ -386,51 +491,181 @@ class V4LPAdapter(BaseV4DexAdapter):
             token_id=token_ids[0] if len(token_ids) == 1 else None,
             token_ids=token_ids,
             position_count=len(token_ids),
-            liquidity=sum(snapshot.liquidity for snapshot in snapshots),
-            token0_amount=sum(snapshot.token0_amount for snapshot in snapshots),
-            token1_amount=sum(snapshot.token1_amount for snapshot in snapshots),
+            liquidity=sum((snapshot.liquidity or 0) for snapshot in snapshots),
+            token0_amount=sum(
+                (
+                    (
+                        snapshot.token0_amount
+                        if snapshot.token0_amount is not None
+                        else Decimal("0")
+                    )
+                    for snapshot in snapshots
+                ),
+                start=Decimal("0"),
+            ),
+            token1_amount=sum(
+                (
+                    (
+                        snapshot.token1_amount
+                        if snapshot.token1_amount is not None
+                        else Decimal("0")
+                    )
+                    for snapshot in snapshots
+                ),
+                start=Decimal("0"),
+            ),
             token0_symbol=self.config.token0_symbol,
             token1_symbol=self.config.token1_symbol,
-            range_min=min(snapshot.range_min for snapshot in snapshots),
-            range_max=max(snapshot.range_max for snapshot in snapshots),
-            in_range=any(snapshot.in_range for snapshot in snapshots),
-            position_value_usd=sum(snapshot.position_value_usd for snapshot in snapshots),
+            range_min=min(snapshot.range_min for snapshot in snapshots if snapshot.range_min is not None),
+            range_max=max(snapshot.range_max for snapshot in snapshots if snapshot.range_max is not None),
+            in_range=any(bool(snapshot.in_range) for snapshot in snapshots),
+            position_value_usd=sum(
+                (
+                    (
+                        snapshot.position_value_usd
+                        if snapshot.position_value_usd is not None
+                        else Decimal("0")
+                    )
+                    for snapshot in snapshots
+                ),
+                start=Decimal("0"),
+            ),
             our_share_pct=(
-                sum(snapshot.our_share_pct or Decimal(0) for snapshot in snapshots)
+                sum(
+                    (
+                        (
+                            snapshot.our_share_pct
+                            if snapshot.our_share_pct is not None
+                            else Decimal("0")
+                        )
+                        for snapshot in snapshots
+                    ),
+                    start=Decimal("0"),
+                )
                 if have_share
                 else None
             ),
         )
 
-    def get_active_lp_position_snapshot(self) -> LPPositionSnapshot | None:
-        """Return the aggregated deployed LP composition from live pool state."""
-        token_ids = self.get_owned_positions()
-        if not token_ids:
-            return None
+    @staticmethod
+    def _same_token_ids(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+        return tuple(sorted(left)) == tuple(sorted(right))
 
-        market = self._get_live_pool_snapshot()
-        if market is None:
-            return None
-        sqrt_price_x96, current_tick, current_price, pool_liquidity = market
+    def _remember_lp_snapshot(self, snapshot: LPPositionSnapshot) -> None:
+        if snapshot.snapshot_status == "degraded":
+            return
+        self._last_lp_snapshot = snapshot
 
+    def _get_stale_lp_snapshot(
+        self,
+        token_ids: tuple[int, ...],
+        *,
+        message: str,
+    ) -> LPPositionSnapshot | None:
+        snapshot = self._last_lp_snapshot
+        if snapshot is None or not self._same_token_ids(snapshot.token_ids, token_ids):
+            return None
+        return replace(
+            snapshot,
+            snapshot_status="stale",
+            snapshot_message=message,
+        )
+
+    def _build_degraded_lp_snapshot(
+        self,
+        token_ids: tuple[int, ...],
+        metadata: list[LPStaticPositionMetadata],
+        *,
+        message: str,
+    ) -> LPPositionSnapshot:
+        return LPPositionSnapshot(
+            token_id=token_ids[0] if len(token_ids) == 1 else None,
+            token_ids=token_ids,
+            position_count=len(token_ids),
+            liquidity=sum(item.liquidity for item in metadata) if metadata else None,
+            token0_amount=None,
+            token1_amount=None,
+            token0_symbol=self.config.token0_symbol,
+            token1_symbol=self.config.token1_symbol,
+            range_min=min((item.range_min for item in metadata), default=None),
+            range_max=max((item.range_max for item in metadata), default=None),
+            in_range=None,
+            position_value_usd=None,
+            our_share_pct=None,
+            snapshot_status="degraded",
+            snapshot_timestamp=int(_time.time() * 1000),
+            snapshot_message=message,
+        )
+
+    def _build_snapshots_from_market(
+        self,
+        metadata: list[LPStaticPositionMetadata],
+        market: LPMarketSnapshot,
+    ) -> list[LPPositionSnapshot]:
         snapshots: list[LPPositionSnapshot] = []
-        for token_id in token_ids:
-            pos_state = self._get_position_state_from_market(
-                token_id,
-                current_tick=current_tick,
-                current_price=current_price,
-            )
-            if pos_state is None:
+        for item in metadata:
+            if item.liquidity == 0:
                 continue
+            pos_state = self._build_position_state_from_metadata(
+                item,
+                current_price=market.current_price,
+                current_tick=market.current_tick,
+            )
             snapshots.append(
-                self._build_lp_position_snapshot(
-                    pos_state,
-                    sqrt_price_x96=sqrt_price_x96,
-                    pool_liquidity=pool_liquidity,
+                replace(
+                    self._build_lp_position_snapshot(
+                        pos_state,
+                        sqrt_price_x96=market.sqrt_price_x96,
+                        pool_liquidity=market.pool_liquidity,
+                    ),
+                    snapshot_status="live",
+                    snapshot_timestamp=market.snapshot_timestamp,
+                    snapshot_message=market.snapshot_message,
                 )
             )
+        return snapshots
 
-        return self._aggregate_lp_position_snapshots(snapshots)
+    def get_active_lp_position_snapshot(self) -> LPPositionSnapshot | None:
+        """Return the aggregated deployed LP composition using live, cached, or stale state."""
+        token_ids = tuple(self.get_owned_positions())
+        if not token_ids:
+            self._last_lp_snapshot = None
+            return None
+
+        metadata: list[LPStaticPositionMetadata] = []
+        for token_id in token_ids:
+            item = self._get_static_position_metadata(token_id)
+            if item is not None:
+                metadata.append(item)
+
+        for market in (self._get_live_pool_snapshot(), self._get_cached_pool_snapshot()):
+            if market is None or len(metadata) != len(token_ids):
+                continue
+            aggregated = self._aggregate_lp_position_snapshots(
+                self._build_snapshots_from_market(metadata, market)
+            )
+            if aggregated is not None:
+                aggregated = replace(
+                    aggregated,
+                    snapshot_status="live",
+                    snapshot_timestamp=market.snapshot_timestamp,
+                    snapshot_message=market.snapshot_message,
+                )
+                self._remember_lp_snapshot(aggregated)
+                return aggregated
+
+        stale_snapshot = self._get_stale_lp_snapshot(
+            token_ids,
+            message="Using last successful LP snapshot; pool-state reads are unavailable.",
+        )
+        if stale_snapshot is not None:
+            return stale_snapshot
+
+        return self._build_degraded_lp_snapshot(
+            token_ids,
+            metadata,
+            message="LP position exists, but composition could not be computed from live or cached pool state.",
+        )
 
     # === LP operations ===
 

@@ -31,6 +31,8 @@ These boundaries are intentional and should stay sharp:
 
 - `engine/venues/` contains thin adapters over on-chain contracts and external APIs. No strategy logic belongs there.
 - `engine/market/` owns shared market data, normalization, pool cache state, volume tracking, and gas data. No execution policy belongs there.
+- Portfolio totals are governed by the explicit registry in `engine/market/portfolio_registry.py`. Unregistered venue positions must not silently affect global totals.
+- Shared service modules under `engine/market/` must stay packageable and importable in isolation. Do not make them depend on API schema modules, concrete venue adapters, or eager package exports that drag in higher layers.
 - `engine/lp/` owns LP strategy and rebalancing only. LP code should not grow arb-specific knowledge.
 - `engine/arb/` owns arbitrage detection, routing, execution, and risk. Arb code should not depend on LP internals.
 - `engine/db/` is the persistence layer. High-level modules should depend on narrow store protocols from `engine/db/backend.py`, not concrete query modules or repository internals.
@@ -150,6 +152,7 @@ These are the critical invariants for arb changes. Review all of them when touch
   - `dashboard/docs/arbitrage/*.md` for arb behavior
   - `dashboard/docs/lp/*.md` for LP behavior
   - `README.md` for local setup, checks, and CI expectations
+- When adding a venue that contributes to global portfolio totals, update `engine/market/portfolio_registry.py` and the closest relevant dashboard docs in the same change.
 - Non-obvious invariants should be test-backed. The most important ones currently are:
   - router sizing and tiebreak behavior
   - half-open persistence and recovery

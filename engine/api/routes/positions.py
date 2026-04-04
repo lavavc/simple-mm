@@ -9,7 +9,7 @@ import structlog
 
 from engine.api.deps import get_runtime
 from engine.api.schemas import GlobalPosition, Position
-from engine.api.helpers.portfolio import get_portfolio_exposure_calculator
+from engine.api.helpers.portfolio import get_portfolio_exposure_calculator, to_global_position_response
 from engine.runtime import EngineRuntime
 
 logger = structlog.get_logger()
@@ -31,7 +31,7 @@ async def get_all_positions(runtime: EngineRuntime = Depends(get_runtime)) -> li
 @router.get("/positions/global", response_model=GlobalPosition)
 async def get_global_position(runtime: EngineRuntime = Depends(get_runtime)) -> GlobalPosition:
     calculator = get_portfolio_exposure_calculator(runtime)
-    return await calculator.calculate_global_position()
+    return to_global_position_response(await calculator.calculate())
 
 
 @router.get("/positions/{venue}", response_model=Position)

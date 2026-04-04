@@ -34,12 +34,18 @@ class LPRebalancer:
         self._action_store = action_store
         self._auto_management_enabled = auto_management_enabled or (lambda: True)
         self._venue_locks: dict[str, asyncio.Lock] = {}
+        self._active_multi_position_incidents: dict[str, str] = {}
 
     def _get_venue_lock(self, venue_name: str) -> asyncio.Lock:
         return self._venue_locks.setdefault(venue_name, asyncio.Lock())
 
     def _auto_actions_allowed(self) -> bool:
         return self._auto_management_enabled()
+
+    @staticmethod
+    def _multi_position_incident_key(venue_name: str, token_ids: list[int]) -> str:
+        normalized = ",".join(str(token_id) for token_id in sorted(token_ids))
+        return f"{venue_name}:{normalized}"
 
     @staticmethod
     def _pool_source_name(venue: "V4LPAdapter") -> str:
@@ -71,6 +77,7 @@ class LPRebalancer:
         """Check position state; rebalance if out of range past threshold."""
         token_ids = venue.get_owned_positions()
         if len(token_ids) > 1:
+            incident_key = self._multi_position_incident_key(venue.name, token_ids)
             message = (
                 f"{venue.name} has multiple LP positions ({token_ids}); "
                 "automatic LP management halted until resolved."
@@ -83,9 +90,13 @@ class LPRebalancer:
                 error=message,
                 triggered_by="auto:multi_position_halt",
                 metadata={"token_ids": token_ids},
+                idempotency_key=f"lp_management_halted:{incident_key}",
             )
-            self.broadcast({"type": "alert", "severity": "warning", "message": message})
+            if self._active_multi_position_incidents.get(venue.name) != incident_key:
+                self.broadcast({"type": "alert", "severity": "warning", "message": message})
+            self._active_multi_position_incidents[venue.name] = incident_key
             return
+        self._active_multi_position_incidents.pop(venue.name, None)
         if not token_ids:
             amount0, amount1 = venue.calculate_mint_amounts()
             if amount0 > 0 or amount1 > 0:

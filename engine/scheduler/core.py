@@ -20,6 +20,10 @@ from engine.db.backend import (
 )
 from engine.lp.rebalancer import LPRebalancer
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
+from engine.market.portfolio_registry import (
+    DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
+    PortfolioSourceDescriptor,
+)
 from engine.market.price_aggregation import BlendedPriceCalculator
 from engine.market.venue_prices import VenuePriceAggregator
 from engine.scheduler.config import SchedulerConfig
@@ -53,6 +57,7 @@ class TradingScheduler:
         account_manager: "AccountManager | None" = None,
         token_contracts: TokenContracts | None = None,
         portfolio_exposure_calculator: PortfolioExposureCalculator | None = None,
+        portfolio_source_registry: tuple[PortfolioSourceDescriptor, ...] = DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         quidax_lp: Any | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         price_store: PriceStoreProtocol | None = None,
@@ -84,6 +89,7 @@ class TradingScheduler:
                 account_manager=account_manager,
                 token_contracts=token_contracts or {},
                 blended_calculator=blended_calculator,
+                portfolio_source_registry=portfolio_source_registry,
             )
         self.context = SchedulerContext(
             config=config,

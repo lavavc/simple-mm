@@ -60,7 +60,18 @@ class PositionJobs:
                         "delta_ratio": float(delta_ratio),
                         "target_delta": float(target),
                         "deviation_percent": float(deviation_percent),
-                        "sources": [source.model_dump(mode="json") for source in exposure.sources],
+                        "sources": [
+                            {
+                                "source": source.source,
+                                "kind": source.kind,
+                                "balances": {
+                                    token: float(amount)
+                                    for token, amount in source.balances.items()
+                                },
+                                "usd_value": float(source.usd_value),
+                            }
+                            for source in exposure.sources
+                        ],
                     },
                 }
             )
