@@ -1,8 +1,10 @@
-"""Tests for async SQLite database operations."""
+from decimal import Decimal
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
-import time
-from decimal import Decimal
 
 from engine.db.connection import SQLiteConnectionManager
 from engine.db.repository import DatabaseRepository
@@ -55,6 +57,21 @@ def sample_position():
 
 class TestConnection:
     """Test database connection lifecycle."""
+
+    def test_public_engine_db_import(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from engine.db import open_repository; print(open_repository.__name__)",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "open_repository"
 
     @pytest.mark.asyncio
     async def test_connect_creates_tables(self, db):
