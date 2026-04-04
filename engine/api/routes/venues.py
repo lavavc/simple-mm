@@ -114,15 +114,21 @@ async def update_venue_params(
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
 
-    await db.venue_config.update_venue_config(venue, params)
     venue_adapter = runtime.venues[venue]
     if hasattr(venue_adapter, "params"):
         if isinstance(venue_adapter, V4LPAdapter):
             merged = venue_adapter.params.model_dump()
             merged.update(params)
             venue_adapter.params = DexParams(**merged)
+            await db.venue_config.update_venue_config(
+                venue,
+                venue_adapter.params.model_dump(mode="json"),
+            )
         else:
             venue_adapter.params = CexParams(**params)
+            await db.venue_config.update_venue_config(venue, params)
+    else:
+        await db.venue_config.update_venue_config(venue, params)
 
     logger.info("venue_params_updated", venue=venue, params=params)
     return {"venue": venue, "params": params}
