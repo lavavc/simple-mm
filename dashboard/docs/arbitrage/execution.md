@@ -14,11 +14,11 @@ For directions where the sell leg is a DEX (Quidax → uni-base / uni-bsc), the 
 The actual execution steps:
 1. Simulate sell leg (DEX only) — abort if it would revert.
 2. Buy leg — either `executor.execute_cex_buy` (market order on Quidax) or `executor.execute_dex_buy` (on-chain swap), depending on direction.
-3. The buy trade returns the actual cNGN amount received (not the theoretical amount).
-4. Sell leg uses the exact cNGN amount from step 3.
+3. The buy trade records the actual cNGN amount received.
+4. If the sell leg is a CEX leg, execution uses the exact buy fill from step 3. If the sell leg is a DEX leg, execution uses the preflight cNGN estimate computed at execution time.
 5. `inventory.record_trade_start` is called after the preflight but before the buy.
 
-**DEX→CEX directions:** When the buy is on a DEX and the sell is on Quidax (UNI_BSC_TO_QUIDAX / UNI_BASE_TO_QUIDAX), the sell leg is a REST API call and cannot be simulated. If the Quidax sell fails after a successful on-chain buy, recovery is handled automatically — see Half-open trades below.
+**DEX→CEX directions:** When the buy is on a DEX and the sell is on Quidax (UNI_BSC_TO_QUIDAX / UNI_BASE_TO_QUIDAX), the sell leg is a REST API call and cannot be simulated. If the Quidax sell fails after a successful on-chain buy, the trade becomes half-open and must be recovered via the normal recovery flow — see Half-open trades below.
 
 ## DEX-DEX execution
 
@@ -30,7 +30,7 @@ Execution steps:
 1. Simulate sell leg (cNGN → stable on sell chain) — abort; see Preflight error classification for how failures are handled.
 2. Simulate buy leg (stable → cNGN on buy chain) — abort if it reverts.
 3. Execute buy leg; record `buy_filled` with the actual cNGN received (`buy_amount_cngn`).
-4. Execute sell leg using the actual cNGN amount from step 3.
+4. Execute sell leg using the preflight cNGN estimate from step 1. The actual buy fill from step 3 is persisted for recovery, not used for the live sell path.
 5. Record `completed` with `actual_profit_usd`.
 
 ## Preflight error classification
@@ -39,7 +39,7 @@ When a preflight simulation fails, the error string is classified into one of fi
 
 - **balance** — revert indicates insufficient cNGN balance (`transfer amount exceeds balance`, etc.). The venue's cNGN inventory is zeroed so the router stops sizing against it. Broadcasts a warning to Telegram.
 - **rpc** — network or node error (timeout, connection refused, max retries). Inventory is not touched; the failure is transient. Broadcasts a warning to Telegram so operators can check node connectivity.
-- **permit2** — Permit2 allowance expired or insufficient (`AllowanceExpired`, `InsufficientAllowance`). Inventory is not touched. Broadcasts a critical alert. In normal operation this cannot occur because Permit2 approvals are set to effectively infinite expiry. If it does occur, resetting the circuit breaker is sufficient — `ensure_trade_approvals` runs automatically before every live swap.
+- **permit2** — Permit2 allowance expired or insufficient (`AllowanceExpired`, `InsufficientAllowance`). Inventory is not touched. Broadcasts a critical alert. In normal operation this should be rare because approvals are seeded during arb inventory bootstrap and also checked before each live V4 swap.
 - **pool_paused** — pool is locked or not initialised (`LOK`, `PoolNotInitialized`, `paused`). Inventory is not touched. Trips the circuit breaker and broadcasts a critical alert for manual investigation.
 - **unknown** — any other revert. Inventory is not touched; the circuit breaker is not tripped. Broadcasts a warning for visibility.
 
@@ -48,9 +48,9 @@ When a preflight simulation fails, the error string is classified into one of fi
 If the buy leg succeeds but the sell leg fails, the engine is in a **half-open** position. The preflight simulation prevents the most common causes (balance and approval failures), but network errors, node timeouts, or unexpected contract state after the simulation can still produce half-opens.
 
 On sell-leg failure the engine:
-1. Records status `half_open` in the DB with the buy tx hash, sell error, and sell account address.
+1. Records status `half_open` in the DB together with the recovery-critical buy state, especially the buy tx hash and `buy_amount_cngn`.
 2. Trips the circuit breaker immediately, blocking all further trading until manually reset.
-3. Broadcasts a `critical` alert containing the opportunity ID and the `/recover <opp_id>` command.
+3. Broadcasts a `critical` alert containing the opportunity ID and the `/recover <opp_id>` command. For DEX-DEX half-opens the alert also includes the sell account address for operator visibility.
 
 **DEX-DEX recovery:** The `/recover` command attempts two paths in order: retry the sell if the simulation now passes, or reverse the buy (sell the cNGN back on the buy-side DEX) using the stored `buy_amount_cngn`. This ensures the reversal uses the actual received amount rather than a live balance query, preventing accidental sale of pre-existing inventory.
 
@@ -58,7 +58,7 @@ On sell-leg failure the engine:
 
 ## Circuit breaker
 
-`consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading. A DEX-DEX half-open trips it immediately regardless of the failure count. Reset via `/reset_breaker` in the Telegram bot.
+`consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading. Any half-open trade also trips it immediately regardless of the failure count. Reset via `/reset_breaker` in the Telegram bot.
 
 ## WebSocket broadcast
 

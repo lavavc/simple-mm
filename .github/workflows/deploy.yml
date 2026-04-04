@@ -1,6 +1,7 @@
 name: CI / Deploy
 
 on:
+  pull_request:
   push:
     branches: [main]
 
@@ -10,11 +11,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Run mypy
+        run: docker build --target typecheck .
+
       - name: Run tests
         run: docker build --target test .
 
   deploy:
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     permissions:
       contents: read

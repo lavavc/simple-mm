@@ -14,6 +14,14 @@ order: 3
 
 Mocks (`AsyncMock`) are reserved for the DB layer in scheduler tests only.
 
+## Static Checking
+
+```bash
+source .venv/bin/activate && python -m mypy engine --no-error-summary
+```
+
+`mypy` runs in strict mode on `engine/`, the production Python package. It intentionally excludes `tests/` and `dashboard/` because test doubles are looser by design and frontend code is checked by its own toolchain.
+
 ## Running the Suite
 
 ```bash
@@ -23,8 +31,11 @@ source .venv/bin/activate && python -m pytest -x -q --ignore=tests/test_dex_fork
 Fork tests (requires `anvil` CLI from Foundry):
 
 ```bash
-pytest tests/test_dex_fork.py -v
+source .venv/bin/activate && python -m pytest -q tests/test_dex_fork.py -v
 ```
+
+CI runs the strict `mypy` check above plus the default pytest command inside Docker.
+It intentionally skips `tests/test_dex_fork.py` because those tests require `anvil` and fork-capable RPC endpoints.
 
 ## Per-File Coverage
 
