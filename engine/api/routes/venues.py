@@ -64,16 +64,14 @@ async def withdraw_venue_position(
     if not isinstance(adapter, V4LPAdapter):
         raise HTTPException(status_code=400, detail=f"{venue} is not a DEX venue")
 
-    token_ids = adapter.get_owned_positions()
-    if not token_ids:
-        return {"venue": venue, "removed": [], "message": "No active positions"}
-
     results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
         adapter,
         recipient=body.to_address,
         action_type="manual_withdraw",
         triggered_by="api:withdraw",
     )
+    if not results:
+        return {"venue": venue, "removed": [], "message": "No active positions"}
     for item in results:
         if item["status"] != "confirmed":
             logger.error(

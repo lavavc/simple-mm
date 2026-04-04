@@ -269,6 +269,29 @@ class TestCheckDexRebalance:
         assert db.recent_price_queries == [("uni-base_pool", 100)]
 
     @pytest.mark.asyncio
+    async def test_pause_while_job_waits_on_lock_skips_auto_lp_management(self, fake_dex_adapter):
+        """A queued LP job must not remint after trading is paused."""
+        fake_dex_adapter._positions = []
+
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        venue_lock = sched.lp_rebalancer._get_venue_lock(fake_dex_adapter.name)
+        await venue_lock.acquire()
+        try:
+            check_task = asyncio.create_task(sched._check_dex_rebalance())
+            await asyncio.sleep(0)
+            await sched.pause()
+        finally:
+            venue_lock.release()
+
+        await check_task
+
+        assert len(fake_dex_adapter.minted) == 0
+        assert db.recent_price_queries == []
+
+    @pytest.mark.asyncio
     async def test_paused_venue_skipped(self, fake_dex_adapter):
         """Paused venue must not trigger rebalance."""
         fake_dex_adapter.paused = True

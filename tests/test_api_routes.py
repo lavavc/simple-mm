@@ -244,9 +244,44 @@ async def test_withdraw_route_uses_lp_rebalancer_path():
 
     assert response["removed"][0]["token_id"] == 1
     runtime.scheduler.lp_rebalancer.withdraw_positions.assert_awaited_once()
+    runtime.venues["uni-base"].get_owned_positions.assert_not_called()
     kwargs = runtime.scheduler.lp_rebalancer.withdraw_positions.await_args.kwargs
     assert kwargs["action_type"] == "manual_withdraw"
     assert kwargs["triggered_by"] == "api:withdraw"
+
+
+@pytest.mark.asyncio
+async def test_withdraw_route_does_not_short_circuit_on_stale_empty_positions_read():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "uni-base": _DummyLpVenue(
+            DexParams(
+                sd_multiplier=Decimal("2.75"),
+                min_tick_width=100,
+                max_tick_width=1000,
+                lookback_points=None,
+                rebalance_threshold_percent=Decimal("10.0"),
+                max_slippage_percent=Decimal("1.0"),
+                downside_skew=Decimal("0.45"),
+                ewma_lambda=Decimal("0.975"),
+            )
+        )
+    }
+    runtime.venues["uni-base"].get_owned_positions = MagicMock(return_value=[])
+    runtime.scheduler.lp_rebalancer.withdraw_positions = AsyncMock(
+        return_value=[{"token_id": 7, "status": "confirmed", "hash": "0xdef", "error": None}]
+    )
+
+    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
+        response = await venue_routes.withdraw_venue_position(
+            "uni-base",
+            venue_routes.WithdrawRequest(to_address="0x0000000000000000000000000000000000000001"),
+            runtime=runtime,
+        )
+
+    assert response["removed"][0]["token_id"] == 7
+    runtime.scheduler.lp_rebalancer.withdraw_positions.assert_awaited_once()
+    runtime.venues["uni-base"].get_owned_positions.assert_not_called()
 
 
 @pytest.mark.asyncio

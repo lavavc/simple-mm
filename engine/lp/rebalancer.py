@@ -26,15 +26,20 @@ class LPRebalancer:
         price_store: PriceStoreProtocol,
         venue_config_store: VenueConfigStoreProtocol,
         action_store: ActionStoreProtocol,
+        auto_management_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.broadcast = broadcast
         self._price_store = price_store
         self._venue_config_store = venue_config_store
         self._action_store = action_store
+        self._auto_management_enabled = auto_management_enabled or (lambda: True)
         self._venue_locks: dict[str, asyncio.Lock] = {}
 
     def _get_venue_lock(self, venue_name: str) -> asyncio.Lock:
         return self._venue_locks.setdefault(venue_name, asyncio.Lock())
+
+    def _auto_actions_allowed(self) -> bool:
+        return self._auto_management_enabled()
 
     @staticmethod
     def _pool_source_name(venue: "V4LPAdapter") -> str:
@@ -57,6 +62,9 @@ class LPRebalancer:
     async def check_and_rebalance(self, venue: "V4LPAdapter") -> None:
         """Check position state; rebalance if out of range past threshold."""
         async with self._get_venue_lock(venue.name):
+            if not self._auto_actions_allowed():
+                logger.info("lp_auto_management_skipped", venue=venue.name, reason="disabled")
+                return
             await self._check_and_rebalance_locked(venue)
 
     async def _check_and_rebalance_locked(self, venue: "V4LPAdapter") -> None:

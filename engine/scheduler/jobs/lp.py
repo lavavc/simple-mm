@@ -28,6 +28,8 @@ class LpJobs:
             return
 
         for name in ["uni-base", "uni-bsc"]:
+            if not self.state.trading_enabled:
+                return
             if name not in self.context.venues:
                 continue
             venue = self.context.venues[name]
