@@ -85,7 +85,6 @@ class Settings(BaseSettings):
     rebalance_threshold_percent: float = 5.0
     delta_alert_threshold_percent: float = 10.0  # Alert if delta deviates >10% from target
     portfolio_delta_interval: int = 120  # Check portfolio delta every 2 minutes
-    venue_divergence_rebalance_bps: int = 200  # Rebalance DEX if venue drifts >2% from fair value
 
     # Arbitrage settings
     arb_detection_enabled: bool = True       # master toggle for detection

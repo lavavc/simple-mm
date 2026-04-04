@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -23,9 +24,11 @@ async def insert_action(
     price: float | None = None,
     tx_hash: str | None = None,
     error: str | None = None,
+    metadata: dict[str, Any] | None = None,
     idempotency_key: str | None = None,
 ) -> int | None:
     now_ms = int(time.time() * 1000)
+    metadata_json = json.dumps(metadata) if metadata is not None else None
     if idempotency_key:
         cursor = await conn.execute(
             "SELECT id FROM actions WHERE idempotency_key = ?",
@@ -36,10 +39,10 @@ async def insert_action(
             await conn.execute(
                 """
                 UPDATE actions
-                SET timestamp_ms = ?, status = ?, error = ?, tx_hash = COALESCE(?, tx_hash), price = COALESCE(?, price)
+                SET timestamp_ms = ?, status = ?, error = ?, tx_hash = COALESCE(?, tx_hash), price = COALESCE(?, price), metadata_json = COALESCE(?, metadata_json)
                 WHERE id = ?
                 """,
-                (now_ms, status, error, tx_hash, price, row["id"]),
+                (now_ms, status, error, tx_hash, price, metadata_json, row["id"]),
             )
             await conn.commit()
             return int(row["id"])
@@ -48,8 +51,8 @@ async def insert_action(
         """
         INSERT INTO actions (
             timestamp_ms, venue, action_type, triggered_by, status, direction,
-            amount_in, token_in, amount_out, token_out, price, tx_hash, error, idempotency_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            amount_in, token_in, amount_out, token_out, price, tx_hash, error, metadata_json, idempotency_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             now_ms,
@@ -65,6 +68,7 @@ async def insert_action(
             price,
             tx_hash,
             error,
+            metadata_json,
             idempotency_key,
         ),
     )
@@ -106,6 +110,7 @@ async def get_actions(
             "status": row["status"],
             "error": row["error"],
             "triggered_by": row["triggered_by"],
+            "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else None,
         }
         for row in rows
     ]

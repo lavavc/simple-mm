@@ -1,13 +1,16 @@
 """Scheduler tests using FakeDexAdapter + mocked DB."""
 
+import asyncio
 import pytest
 from typing import Any
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from engine.api.schemas import TxResult
 from engine.venues.dex.shared import PositionState
 from engine.scheduler import TradingScheduler, SchedulerConfig
+from engine.venues.dex.lp_v4 import LPBalanceSwapResult
 from tests.fakes import FakeDexAdapter
 
 
@@ -40,8 +43,10 @@ def _make_position(
 class MockDB:
     """Minimal DB double for scheduler tests."""
 
-    def __init__(self, prices=None):
+    def __init__(self, prices=None, prices_by_source=None):
         self._prices = prices if prices is not None else [Decimal("0.000606")] * 20
+        self._prices_by_source = prices_by_source or {}
+        self.recent_price_queries: list[tuple[str, int]] = []
         self.insert_action = AsyncMock()
         self.update_venue_config = AsyncMock()
         self.insert_price_snapshot = AsyncMock()
@@ -51,6 +56,10 @@ class MockDB:
 
     async def get_recent_prices(self, limit=100):
         return self._prices[:limit]
+
+    async def get_recent_prices_for_source(self, source, limit=100):
+        self.recent_price_queries.append((source, limit))
+        return self._prices_by_source.get(source, self._prices)[:limit]
 
 
 def _build_scheduler(
@@ -79,6 +88,7 @@ def _build_scheduler(
         system_state_store=SimpleNamespace(set_system_state=db.set_system_state),
         price_store=SimpleNamespace(
             get_recent_prices=db.get_recent_prices,
+            get_recent_prices_for_source=db.get_recent_prices_for_source,
             insert_price_snapshot=db.insert_price_snapshot,
         ),
         position_store=SimpleNamespace(insert_position=db.insert_position),
@@ -256,6 +266,7 @@ class TestCheckDexRebalance:
         await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 1
+        assert db.recent_price_queries == [("uni-base_pool", 100)]
 
     @pytest.mark.asyncio
     async def test_paused_venue_skipped(self, fake_dex_adapter):
@@ -326,16 +337,16 @@ class TestRebalanceDexPosition:
 
         create_calls = []
 
-        async def fake_create(venue, recovery_price=None):
-            create_calls.append(recovery_price)
+        async def fake_create(venue, recovery_price=None, triggered_by="auto:range_exit_rebalance"):
+            create_calls.append((recovery_price, triggered_by))
             return True
 
-        sched.lp_rebalancer.create_position = fake_create
+        sched.lp_rebalancer._create_position_locked = fake_create
 
         await sched.lp_rebalancer.rebalance(fake_dex_adapter, pos.token_id, pos)
 
         assert len(create_calls) == 1
-        assert create_calls[0] == float(pos.current_price)
+        assert create_calls[0] == (float(pos.current_price), "auto:range_exit_rebalance")
 
 
 # =============================================================================
@@ -369,6 +380,7 @@ class TestCreateDexPosition:
         db.insert_action.assert_called_once()
         _, kwargs = db.insert_action.call_args
         assert kwargs.get("status") == "confirmed" or db.insert_action.call_args[0][2] == "confirmed"
+        assert db.recent_price_queries == [("uni-base_pool", 100)]
 
     @pytest.mark.asyncio
     async def test_mint_failure_calls_insert_action_failed(self, fake_dex_adapter):
@@ -396,8 +408,17 @@ class TestCreateDexPosition:
         assert any(b.get("data", {}).get("action") == "position_created" for b in action_broadcasts)
 
     @pytest.mark.asyncio
-    async def test_failed_prepare_lp_balance_skips_mint(self, fake_dex_adapter):
-        fake_dex_adapter.prepare_lp_balance = AsyncMock(return_value=False)
+    async def test_failed_prepare_lp_balance_records_failed_swap_and_skips_mint(self, fake_dex_adapter):
+        fake_dex_adapter.prepare_lp_balance = AsyncMock(
+            return_value=LPBalanceSwapResult(
+                direction="token0_to_token1",
+                token_in=fake_dex_adapter.config.token0_address,
+                token_out=fake_dex_adapter.config.token1_address,
+                amount_in_raw=100_000,
+                min_out_raw=99_000,
+                tx_result=TxResult(hash="", status="failed", error="swap reverted"),
+            )
+        )
 
         broadcasts = []
         db = MockDB(prices=[Decimal("0.000606")] * 20)
@@ -407,7 +428,36 @@ class TestCreateDexPosition:
 
         assert result is False
         assert len(fake_dex_adapter.minted) == 0
-        db.insert_action.assert_not_called()
+        db.insert_action.assert_awaited_once()
+        assert db.insert_action.await_args.kwargs["action_type"] == "lp_ratio_swap"
+        assert db.insert_action.await_args.kwargs["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_successful_prepare_lp_balance_records_swap_action(self, fake_dex_adapter):
+        fake_dex_adapter.prepare_lp_balance = AsyncMock(
+            return_value=LPBalanceSwapResult(
+                direction="token0_to_token1",
+                token_in=fake_dex_adapter.config.token0_address,
+                token_out=fake_dex_adapter.config.token1_address,
+                amount_in_raw=200_000,
+                min_out_raw=198_000,
+                tx_result=TxResult(hash="0xswap", status="confirmed", output_raw=199_000),
+            )
+        )
+
+        broadcasts = []
+        db = MockDB(prices=[Decimal("0.000606")] * 20)
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        result = await sched.lp_rebalancer.create_position(fake_dex_adapter)
+
+        assert result is True
+        assert db.insert_action.await_count == 2
+        first_call = db.insert_action.await_args_list[0].kwargs
+        second_call = db.insert_action.await_args_list[1].kwargs
+        assert first_call["action_type"] == "lp_ratio_swap"
+        assert first_call["status"] == "confirmed"
+        assert second_call["action_type"] == "mint_position"
 
     @pytest.mark.asyncio
     async def test_recovery_price_passed_through(self, fake_dex_adapter):
@@ -448,6 +498,106 @@ class TestCreateDexPosition:
         await sched.lp_rebalancer.create_position(fake_dex_adapter, recovery_price=None)
 
         db.update_venue_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bsc_create_uses_bsc_pool_history(self, fake_dex_adapter):
+        fake_dex_adapter.name = "uni-bsc"
+        broadcasts = []
+        db = MockDB(
+            prices=[Decimal("0.000606")] * 20,
+            prices_by_source={"uni-bsc_pool": [Decimal("0.000501")] * 20},
+        )
+        sched = _build_scheduler({"uni-bsc": fake_dex_adapter}, broadcasts, db)
+
+        result = await sched.lp_rebalancer.create_position(fake_dex_adapter)
+
+        assert result is True
+        assert db.recent_price_queries == [("uni-bsc_pool", 100)]
+
+
+class TestLpLifecycleLocking:
+
+    @pytest.mark.asyncio
+    async def test_same_venue_withdraws_serialize(self, fake_dex_adapter):
+        fake_dex_adapter._positions = [_make_position(token_id=77)]
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        active_calls = 0
+        max_active = 0
+        removed: list[int] = []
+
+        async def slow_remove(token_id: int, recipient: str | None = None):
+            nonlocal active_calls, max_active
+            active_calls += 1
+            max_active = max(max_active, active_calls)
+            await asyncio.sleep(0.02)
+            removed.append(token_id)
+            fake_dex_adapter._positions = [p for p in fake_dex_adapter._positions if p.token_id != token_id]
+            active_calls -= 1
+            return TxResult(hash="0xremove", status="confirmed")
+
+        fake_dex_adapter.remove_position = slow_remove
+
+        await asyncio.gather(
+            sched.lp_rebalancer.withdraw_positions(fake_dex_adapter, recipient="0xabc"),
+            sched.lp_rebalancer.withdraw_positions(fake_dex_adapter, recipient="0xabc"),
+        )
+
+        assert removed == [77]
+        assert max_active == 1
+
+    @pytest.mark.asyncio
+    async def test_different_venues_do_not_block_each_other(self):
+        base = FakeDexAdapter(name="uni-base", position=_make_position(token_id=1))
+        bsc = FakeDexAdapter(name="uni-bsc", position=_make_position(token_id=2))
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": base, "uni-bsc": bsc}, broadcasts, db)
+
+        active_calls = 0
+        max_active = 0
+
+        async def slow_remove_factory(adapter: FakeDexAdapter):
+            async def slow_remove(token_id: int, recipient: str | None = None):
+                nonlocal active_calls, max_active
+                active_calls += 1
+                max_active = max(max_active, active_calls)
+                await asyncio.sleep(0.02)
+                adapter._positions = [p for p in adapter._positions if p.token_id != token_id]
+                active_calls -= 1
+                return TxResult(hash=f"0x{adapter.name}", status="confirmed")
+            return slow_remove
+
+        base.remove_position = await slow_remove_factory(base)
+        bsc.remove_position = await slow_remove_factory(bsc)
+
+        await asyncio.gather(
+            sched.lp_rebalancer.withdraw_positions(base),
+            sched.lp_rebalancer.withdraw_positions(bsc),
+        )
+
+        assert max_active == 2
+
+    @pytest.mark.asyncio
+    async def test_manual_withdraw_persists_action(self, fake_dex_adapter):
+        fake_dex_adapter._positions = [_make_position(token_id=88)]
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        results = await sched.lp_rebalancer.withdraw_positions(
+            fake_dex_adapter,
+            recipient="0xabc",
+        )
+
+        assert results[0]["token_id"] == 88
+        db.insert_action.assert_awaited_once()
+        kwargs = db.insert_action.await_args.kwargs
+        assert kwargs["action_type"] == "manual_withdraw"
+        assert kwargs["triggered_by"] == "manual:withdraw"
+        assert kwargs["metadata"]["recipient"] == "0xabc"
 
 
 class TestDexArbCurveStream:

@@ -58,6 +58,8 @@ class FakeDexAdapter:
             token1_decimals = 6
             token0_symbol = "cNGN"
             token1_symbol = "USDC"
+            token0_address = "0xcngn"
+            token1_address = "0xusdc"
 
         self.config = _Config()
         self.config.tick_spacing = tick_spacing

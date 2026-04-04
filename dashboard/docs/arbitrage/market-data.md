@@ -57,7 +57,7 @@ Adding a new pair from any venue only requires adding its string to `CNGN_USD_PA
 
 ## Blended Price
 
-The blended price combines a VWAP (current snapshot) with two TWAP windows (5-minute and 1-hour). It is published on the prices WebSocket channel and used as the reference for LP tick-range calculations and portfolio delta management.
+The blended price combines a VWAP (current snapshot) with two TWAP windows (5-minute and 1-hour). It is published on the prices WebSocket channel and used for arbitrage and portfolio delta management. LP range-setting is intentionally separate and uses venue-local pool history only.
 
 ### VWAP
 

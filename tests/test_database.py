@@ -173,6 +173,28 @@ class TestPriceSnapshots:
             assert prices[i] <= prices[i + 1]
 
     @pytest.mark.asyncio
+    async def test_get_recent_prices_for_source_filters_to_one_pool(self, db):
+        for source, mid in [
+            ("uni-base_pool", "0.000601"),
+            ("quidax", "0.000700"),
+            ("uni-base_pool", "0.000602"),
+            ("uni-bsc_pool", "0.000603"),
+            ("uni-base_pool", "0.000604"),
+        ]:
+            q = PriceQuote(
+                source=source,
+                timestamp=int(time.time() * 1000),
+                bid=Decimal(mid),
+                ask=Decimal(mid),
+                mid=Decimal(mid),
+            )
+            await db.prices.insert_price_snapshot(q)
+            time.sleep(0.001)
+
+        prices = await db.prices.get_recent_prices_for_source("uni-base_pool", limit=10)
+        assert prices == [Decimal("0.000601"), Decimal("0.000602"), Decimal("0.000604")]
+
+    @pytest.mark.asyncio
     async def test_price_history_with_time_filter(self, db):
         """Should filter by timestamp range."""
         now_ms = int(time.time() * 1000)
@@ -352,6 +374,7 @@ class TestActions:
             status="completed",
             direction="buy",
             price=0.000697,
+            metadata={"order_id": "abc123"},
         )
 
         actions = await db.actions.get_actions(limit=10)
@@ -359,6 +382,7 @@ class TestActions:
         assert actions[0]["venue"] == "quidax"
         assert actions[0]["action_type"] == "order_placed"
         assert actions[0]["status"] == "completed"
+        assert actions[0]["metadata"] == {"order_id": "abc123"}
 
 
 # =============================================================================

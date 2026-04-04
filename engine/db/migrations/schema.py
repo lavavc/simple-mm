@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS actions (
     price REAL,
     tx_hash TEXT,
     error TEXT,
+    metadata_json TEXT,
     idempotency_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(timestamp_ms DESC);

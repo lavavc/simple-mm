@@ -35,7 +35,15 @@ def _make_runtime() -> EngineRuntime:
         system_state=SimpleNamespace(get_system_state=AsyncMock(return_value="true")),
         arbitrage=SimpleNamespace(get_arbitrage_opportunity=AsyncMock(return_value=None)),
     )
-    scheduler = SimpleNamespace(trading_enabled=True, broadcast=MagicMock())
+    scheduler = SimpleNamespace(
+        trading_enabled=True,
+        broadcast=MagicMock(),
+        pause=AsyncMock(),
+        lp_rebalancer=SimpleNamespace(
+            withdraw_positions=AsyncMock(return_value=[]),
+            unwind_all_positions=AsyncMock(return_value={}),
+        ),
+    )
     return EngineRuntime(
         db=db,
         scheduler=scheduler,
@@ -203,3 +211,73 @@ async def test_update_venue_params_persists_full_lp_params():
         "downside_skew",
         "ewma_lambda",
     }
+
+
+@pytest.mark.asyncio
+async def test_withdraw_route_uses_lp_rebalancer_path():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "uni-base": _DummyLpVenue(
+            DexParams(
+                sd_multiplier=Decimal("2.75"),
+                min_tick_width=100,
+                max_tick_width=1000,
+                lookback_points=None,
+                rebalance_threshold_percent=Decimal("10.0"),
+                max_slippage_percent=Decimal("1.0"),
+                downside_skew=Decimal("0.45"),
+                ewma_lambda=Decimal("0.975"),
+            )
+        )
+    }
+    runtime.scheduler.lp_rebalancer.withdraw_positions = AsyncMock(
+        return_value=[{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]
+    )
+    runtime.venues["uni-base"].get_owned_positions = MagicMock(return_value=[1])
+
+    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
+        response = await venue_routes.withdraw_venue_position(
+            "uni-base",
+            venue_routes.WithdrawRequest(to_address="0x0000000000000000000000000000000000000001"),
+            runtime=runtime,
+        )
+
+    assert response["removed"][0]["token_id"] == 1
+    runtime.scheduler.lp_rebalancer.withdraw_positions.assert_awaited_once()
+    kwargs = runtime.scheduler.lp_rebalancer.withdraw_positions.await_args.kwargs
+    assert kwargs["action_type"] == "manual_withdraw"
+    assert kwargs["triggered_by"] == "api:withdraw"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_unwind_pauses_and_uses_lp_rebalancer():
+    from engine.api.routes import system as system_routes
+
+    runtime = _make_runtime()
+    runtime.venues = {
+        "uni-base": _DummyLpVenue(
+            DexParams(
+                sd_multiplier=Decimal("2.75"),
+                min_tick_width=100,
+                max_tick_width=1000,
+                lookback_points=None,
+                rebalance_threshold_percent=Decimal("10.0"),
+                max_slippage_percent=Decimal("1.0"),
+                downside_skew=Decimal("0.45"),
+                ewma_lambda=Decimal("0.975"),
+            )
+        )
+    }
+    runtime.scheduler.lp_rebalancer.unwind_all_positions = AsyncMock(
+        return_value={"uni-base": [{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]}
+    )
+
+    fake_loop = SimpleNamespace(call_later=MagicMock())
+
+    with patch.object(system_routes, "V4LPAdapter", _DummyLpVenue), \
+         patch("asyncio.get_event_loop", return_value=fake_loop):
+        response = await system_routes.shutdown(unwind=True, runtime=runtime)
+
+    assert response == {"status": "shutting_down", "unwind": True}
+    runtime.scheduler.pause.assert_awaited_once()
+    runtime.scheduler.lp_rebalancer.unwind_all_positions.assert_awaited_once()

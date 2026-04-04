@@ -47,6 +47,24 @@ async def get_recent_prices(conn: aiosqlite.Connection, limit: int = 100) -> lis
     return [Decimal(str(row["mid"])) for row in reversed(rows)]
 
 
+async def get_recent_prices_for_source(
+    conn: aiosqlite.Connection,
+    source: str,
+    limit: int = 100,
+) -> list[Decimal]:
+    cursor = await conn.execute(
+        """
+        SELECT mid FROM price_snapshots
+        WHERE source = ?
+        ORDER BY timestamp_ms DESC
+        LIMIT ?
+        """,
+        (source, limit),
+    )
+    rows = list(await cursor.fetchall())
+    return [Decimal(str(row["mid"])) for row in reversed(rows)]
+
+
 async def get_price_history(
     conn: aiosqlite.Connection,
     from_ts: int | None = None,

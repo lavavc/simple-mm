@@ -68,12 +68,20 @@ async def withdraw_venue_position(
     if not token_ids:
         return {"venue": venue, "removed": [], "message": "No active positions"}
 
-    results: list[dict[str, Any]] = []
-    for token_id in token_ids:
-        result = await adapter.remove_position(token_id, recipient=body.to_address)
-        results.append({"token_id": token_id, "status": result.status, "hash": result.hash})
-        if result.status != "confirmed":
-            logger.error("withdraw_position_failed", venue=venue, token_id=token_id, error=result.error)
+    results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
+        adapter,
+        recipient=body.to_address,
+        action_type="manual_withdraw",
+        triggered_by="api:withdraw",
+    )
+    for item in results:
+        if item["status"] != "confirmed":
+            logger.error(
+                "withdraw_position_failed",
+                venue=venue,
+                token_id=item["token_id"],
+                error=item["error"],
+            )
 
     runtime.scheduler.broadcast(
         {

@@ -36,6 +36,9 @@ class PriceStore(_Store):
     async def get_recent_prices(self, limit: int = 100) -> list[Any]:
         return await prices.get_recent_prices(self._conn, limit)
 
+    async def get_recent_prices_for_source(self, source: str, limit: int = 100) -> list[Any]:
+        return await prices.get_recent_prices_for_source(self._conn, source, limit)
+
     async def get_price_history(
         self,
         from_ts: int | None = None,
