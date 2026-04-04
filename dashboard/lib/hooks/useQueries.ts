@@ -7,6 +7,8 @@ import { api } from '../api';
 // No refetchInterval — all updates are pushed via WebSocket (see useEventStream).
 // History queries use a short staleTime so they refresh on window focus.
 
+export const LAST_EVENT_PACKET_QUERY_KEY = ['eventStreamLastPacket'] as const;
+
 export function usePriceHistory(windowMinutes = 60) {
   const fromTs = Date.now() - windowMinutes * 60 * 1000;
   // Enough points for a smooth chart: ~2 per minute per venue × 5 venues
@@ -16,6 +18,15 @@ export function usePriceHistory(windowMinutes = 60) {
     queryFn: () => api.getPriceHistory({ from_ts: fromTs, limit }),
     // Re-fetch every 30s so the chart accumulates new points
     refetchInterval: 30_000,
+  });
+}
+
+export function useLastEventPacket() {
+  return useQuery<number | null>({
+    queryKey: LAST_EVENT_PACKET_QUERY_KEY,
+    queryFn: async () => null,
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 
