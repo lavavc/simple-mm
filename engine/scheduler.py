@@ -1,18 +1,20 @@
 """Trading scheduler and orchestrator using APScheduler."""
 
+from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Callable, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import structlog
 
 from engine.config import settings
+from engine.db.backend import AlertStoreProtocol, PositionStoreProtocol, PriceStoreProtocol, SystemStateStoreProtocol, VenueConfigStoreProtocol, ActionStoreProtocol
 from engine.market.venue_prices import VenuePriceAggregator
 from engine.market.price_aggregation import BlendedPriceCalculator
-from engine.db import get_db
 from engine.lp.rebalancer import LPRebalancer
 from engine.venues.base import VenueAdapter
 from engine.venues.dex.lp_v4 import V4LPAdapter
@@ -21,6 +23,20 @@ from engine.arb.listener import ArbitrageWebSocketListener, WalletActivitySubscr
 if TYPE_CHECKING:
     from engine.arb.engine import ArbitrageEngine
     from engine.accounts import AccountManager
+
+TokenContracts = dict[int, dict[str, str]]
+
+
+class SyncOrderLadderVenueProtocol(Protocol):
+    paused: bool
+
+    async def sync_order_ladder(self, reference_price_ngn: Decimal) -> None: ...
+
+
+class DepthVenueProtocol(Protocol):
+    async def get_order_book_depth(self, limit: int = 50) -> Any: ...
+    async def get_position(self) -> Any: ...
+
 
 logger = structlog.get_logger()
 
@@ -64,13 +80,19 @@ class TradingScheduler:
         price_aggregator: VenuePriceAggregator,
         venues: dict[str, VenueAdapter],
         config: SchedulerConfig,
-        broadcast: Callable[[dict], Any],
+        broadcast: Callable[[dict[str, Any]], Any],
         blended_calculator: BlendedPriceCalculator | None = None,
         arbitrage_engine: "ArbitrageEngine | None" = None,
         account_manager: "AccountManager | None" = None,
-        token_contracts: dict[str, str] | None = None,
-        quidax_lp=None,
-    ):
+        token_contracts: TokenContracts | None = None,
+        quidax_lp: Any | None = None,
+        system_state_store: SystemStateStoreProtocol | None = None,
+        price_store: PriceStoreProtocol | None = None,
+        position_store: PositionStoreProtocol | None = None,
+        alert_store: AlertStoreProtocol | None = None,
+        venue_config_store: VenueConfigStoreProtocol | None = None,
+        action_store: ActionStoreProtocol | None = None,
+    ) -> None:
         self.price_aggregator = price_aggregator
         self.venues = venues
         self.config = config
@@ -80,14 +102,32 @@ class TradingScheduler:
         self.account_manager = account_manager
         self.token_contracts = token_contracts or {}
         self.quidax_lp = quidax_lp
+        if (
+            system_state_store is None
+            or price_store is None
+            or position_store is None
+            or alert_store is None
+            or venue_config_store is None
+            or action_store is None
+        ):
+            raise ValueError("TradingScheduler requires system state, price, position, alert, venue config, and action stores")
+        self.system_state_store = system_state_store
+        self.price_store = price_store
+        self.position_store = position_store
+        self.alert_store = alert_store
 
         self.scheduler = AsyncIOScheduler()
-        self.lp_rebalancer = LPRebalancer(broadcast=self.broadcast, db_getter=get_db)
+        self.lp_rebalancer = LPRebalancer(
+            broadcast=self.broadcast,
+            price_store=price_store,
+            venue_config_store=venue_config_store,
+            action_store=action_store,
+        )
         self._trading_enabled = True
         self._started = False
         self._quidax_depth_ok = True  # tracks depth availability for alert transitions
         self._dex_bootstrap_pending = bool(arbitrage_engine)
-        self._dex_bootstrap_task = None
+        self._dex_bootstrap_task: asyncio.Task[None] | None = None
         self.ws_listener = ArbitrageWebSocketListener(
             broadcast=self.broadcast,
             on_update=self._update_price,
@@ -100,7 +140,7 @@ class TradingScheduler:
     def trading_enabled(self) -> bool:
         return self._trading_enabled
 
-    def start(self):
+    def start(self) -> None:
         """Start all scheduled jobs."""
         if self._started:
             return
@@ -207,7 +247,7 @@ class TradingScheduler:
             logger.info("blockradar_rate_sync_job_registered")
 
         # Start the WebSocket Event-Driven Listener
-        asyncio.create_task(self.ws_listener.start())
+            asyncio.create_task(self.ws_listener.start())  # type: ignore[no-untyped-call]
         self._schedule_dex_bootstrap()
 
         # DEX-DEX fallback loop. Base/BSC updates are primarily handled by the WS listener;
@@ -237,10 +277,10 @@ class TradingScheduler:
         self._started = True
         logger.info("scheduler_started")
 
-    def stop(self):
+    def stop(self) -> None:
         if self._started:
             import asyncio
-            asyncio.create_task(self.ws_listener.stop())
+            asyncio.create_task(self.ws_listener.stop())  # type: ignore[no-untyped-call]
             self.scheduler.shutdown(wait=False)
             self._started = False
             logger.info("scheduler_stopped")
@@ -279,7 +319,7 @@ class TradingScheduler:
             return
         self._dex_bootstrap_task = asyncio.create_task(self._bootstrap_dex_arb_curve())
 
-    async def _bootstrap_dex_arb_curve(self):
+    async def _bootstrap_dex_arb_curve(self) -> None:
         """Run one initial DEX-DEX evaluation on startup before waiting for fresh events."""
         if not self.arbitrage_engine or not self._dex_bootstrap_pending:
             return
@@ -287,7 +327,7 @@ class TradingScheduler:
             from engine.market import gas_oracle
             from engine.market.pool_state import seed_dex_pool_states
 
-            await seed_dex_pool_states()
+            await seed_dex_pool_states()  # type: ignore[no-untyped-call]
             await self._update_gas_oracle()
             if gas_oracle.gas_usd_base() is None or gas_oracle.gas_usd_bsc() is None:
                 logger.warning("dex_arb_bootstrap_waiting_for_gas")
@@ -297,17 +337,15 @@ class TradingScheduler:
         except Exception as e:
             logger.error("dex_arb_bootstrap_failed", error=str(e))
 
-    async def pause(self):
+    async def pause(self) -> None:
         self._trading_enabled = False
-        db = await get_db()
-        await db.set_system_state("trading_enabled", "false")
+        await self.system_state_store.set_system_state("trading_enabled", "false")
         self.broadcast({"type": "system", "status": "paused"})
         logger.info("trading_paused")
 
-    async def resume(self):
+    async def resume(self) -> None:
         self._trading_enabled = True
-        db = await get_db()
-        await db.set_system_state("trading_enabled", "true")
+        await self.system_state_store.set_system_state("trading_enabled", "true")
         self.broadcast({"type": "system", "status": "running"})
         logger.info("trading_resumed")
 
@@ -315,7 +353,7 @@ class TradingScheduler:
     # Gas oracle
     # ------------------------------------------------------------------
 
-    async def _update_gas_oracle(self):
+    async def _update_gas_oracle(self) -> None:
         from engine.market import gas_oracle
         try:
             await gas_oracle.update()
@@ -331,7 +369,7 @@ class TradingScheduler:
     # Price updates
     # ------------------------------------------------------------------
 
-    async def _update_price(self):
+    async def _update_price(self) -> None:
         """Fetch prices from all venues and broadcast."""
         try:
             venue_prices = await self.price_aggregator.fetch_all()
@@ -347,8 +385,7 @@ class TradingScheduler:
                 })
 
                 if price.quote:
-                    db = await get_db()
-                    await db.insert_price_snapshot(price.quote)
+                    await self.price_store.insert_price_snapshot(price.quote)
 
             self.broadcast({"type": "venue_prices", "data": prices_data})
 
@@ -371,15 +408,14 @@ class TradingScheduler:
     # Position sync
     # ------------------------------------------------------------------
 
-    async def _sync_positions(self):
+    async def _sync_positions(self) -> None:
         positions = []
-        db = await get_db()
 
         for name, venue in self.venues.items():
             try:
                 pos = await venue.get_position()
                 positions.append(pos)
-                await db.insert_position(pos)
+                await self.position_store.insert_position(pos)
             except Exception as e:
                 logger.error("position_sync_failed", venue=name, error=str(e))
 
@@ -392,7 +428,7 @@ class TradingScheduler:
     # DEX rebalance (out-of-range with minimum distance threshold)
     # ------------------------------------------------------------------
 
-    async def _check_dex_rebalance(self):
+    async def _check_dex_rebalance(self) -> None:
         """Check if DEX positions need rebalancing."""
         if not self._trading_enabled:
             return
@@ -412,7 +448,7 @@ class TradingScheduler:
     # CEX order ladder sync
     # ------------------------------------------------------------------
 
-    async def _sync_cex_orders(self):
+    async def _sync_cex_orders(self) -> None:
         if not self._trading_enabled:
             return
 
@@ -424,7 +460,7 @@ class TradingScheduler:
         try:
             reference_price = await self._get_reference_price_ngn()
             if reference_price:
-                await quidax_lp.sync_order_ladder(reference_price)
+                await cast(SyncOrderLadderVenueProtocol, quidax_lp).sync_order_ladder(reference_price)
         except Exception as e:
             logger.error("cex_sync_failed", error=str(e))
 
@@ -432,7 +468,7 @@ class TradingScheduler:
     # Portfolio delta monitoring
     # ------------------------------------------------------------------
 
-    async def _check_portfolio_delta(self):
+    async def _check_portfolio_delta(self) -> None:
         """Monitor portfolio delta-neutrality using blended price."""
         if not self.blended_calculator:
             return
@@ -508,8 +544,7 @@ class TradingScheduler:
                 )
                 logger.warning("portfolio_delta_alert", message=msg)
 
-                db = await get_db()
-                alert_id = await db.insert_alert(
+                alert_id = await self.alert_store.insert_alert(
                     severity="warning",
                     category="delta",
                     message=msg,
@@ -556,7 +591,7 @@ class TradingScheduler:
 
         return None
 
-    async def _stream_dex_arb_curve(self):
+    async def _stream_dex_arb_curve(self) -> None:
         """Fallback DEX-DEX refresh only when Base/BSC websocket coverage is unhealthy."""
         try:
             ws_healthy = {"base", "bsc"}.issubset(self.ws_listener.active_connections)
@@ -566,14 +601,14 @@ class TradingScheduler:
         except Exception as e:
             logger.error("dex_arb_curve_stream_failed", error=str(e))
 
-    async def _stream_quidax_depth(self):
+    async def _stream_quidax_depth(self) -> None:
         """Polls Quidax order book and hands off to the arb engine for CEX-DEX processing."""
         try:
             quidax = self.venues.get("quidax")
             if not quidax:
                 return
 
-            depth = await quidax.get_order_book_depth(limit=20)
+            depth = await cast(DepthVenueProtocol, quidax).get_order_book_depth(limit=20)
             if not depth:
                 if self._quidax_depth_ok:
                     self._quidax_depth_ok = False
@@ -596,7 +631,7 @@ class TradingScheduler:
             })
 
             if self.arbitrage_engine:
-                balances = await self._get_balances_for_valuation(quidax)
+                balances = await self._get_balances_for_valuation(cast(DepthVenueProtocol, quidax))
                 await self.arbitrage_engine.on_cex_dex_depth(depth, balances)
 
         except Exception as e:
@@ -605,7 +640,7 @@ class TradingScheduler:
                 self._quidax_depth_ok = False
                 logger.warning("quidax_depth_fetch_error", error=str(e))
 
-    async def _get_balances_for_valuation(self, quidax) -> list:
+    async def _get_balances_for_valuation(self, quidax: DepthVenueProtocol) -> list[Any]:
         """Assemble on-chain + CEX balances for portfolio valuation."""
         from decimal import Decimal
         from types import SimpleNamespace
@@ -619,7 +654,7 @@ class TradingScheduler:
             except Exception as seed_err:
                 logger.warning("balance_seed_failed_for_valuation", error=str(seed_err))
 
-        balances = list(last_balances) if last_balances else []
+        balances: list[Any] = list(last_balances) if last_balances else []
         try:
             qx_pos = await quidax.get_position()
             if qx_pos and qx_pos.balances:
@@ -655,7 +690,7 @@ class TradingScheduler:
         except Exception as e:
             logger.error("wallet_activity_balance_refresh_failed", venues=venue_names, error=str(e))
 
-    async def _broadcast_account_balances(self, balances) -> None:
+    async def _broadcast_account_balances(self, balances: list[Any]) -> None:
         """Broadcast account balances using AccountBalanceResponse as the canonical shape."""
         from engine.api.schemas import AccountBalanceResponse
 
@@ -699,14 +734,13 @@ class TradingScheduler:
             "data": payload,
         })
 
-    async def _check_balances(self):
+    async def _check_balances(self) -> None:
         if not self.account_manager:
             return
 
         try:
             balances = await self.account_manager.check_all_balances(self.token_contracts)
             self._last_balances = balances
-            db = await get_db()
 
             for balance in balances:
                 if balance.needs_refill:
@@ -717,7 +751,7 @@ class TradingScheduler:
                         reasons=balance.refill_reasons,
                     )
 
-                    await db.insert_alert(
+                    await self.alert_store.insert_alert(
                         severity="warning",
                         category="refill",
                         message=f"Account {balance.role} needs refill: {', '.join(balance.refill_reasons)}",
@@ -745,7 +779,7 @@ class TradingScheduler:
     # Quidax auto-funding
     # ------------------------------------------------------------------
 
-    async def _auto_fund_quidax(self, adapter, account_role_str: str) -> None:
+    async def _auto_fund_quidax(self, adapter: Any, account_role_str: str) -> None:
         """Top up Quidax CEX balance from the on-chain HD wallet if below threshold."""
         if not self.account_manager:
             return
@@ -788,8 +822,7 @@ class TradingScheduler:
                 else:
                     logger.warning("quidax_deposit_address_missing", role=account_role_str, token=cex_key)
             else:
-                db = await get_db()
-                await db.insert_alert(
+                await self.alert_store.insert_alert(
                     severity="warning",
                     category="refill",
                     message=(
@@ -807,7 +840,7 @@ class TradingScheduler:
     # Blockradar rate syncing
     # ------------------------------------------------------------------
 
-    async def _sync_blockradar_rates(self):
+    async def _sync_blockradar_rates(self) -> None:
         from engine.venues.wallet.blockradar import BlockradarAdapter, _ROUTES
 
         blockradar = self.venues.get("blockradar")

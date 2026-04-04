@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import httpx
 import structlog
@@ -42,7 +42,7 @@ class VenuePriceSource(ABC):
         """Fetch current price from this venue."""
         ...
 
-    async def close(self):
+    async def close(self) -> None:
         """Clean up resources."""
         pass
 
@@ -88,7 +88,7 @@ class BybitP2PPriceSource(VenuePriceSource):
     name = "bybit"
     pair = "USDT/NGN"
 
-    def __init__(self, config: BybitConfig | None = None):
+    def __init__(self, config: BybitConfig | None = None) -> None:
         self.config = config or BybitConfig()
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: Optional[tuple[PriceQuote, float]] = None
@@ -99,7 +99,7 @@ class BybitP2PPriceSource(VenuePriceSource):
             self._client = httpx.AsyncClient(timeout=30)
         return self._client
 
-    async def close(self):
+    async def close(self) -> None:
         if self._client:
             await self._client.aclose()
             self._client = None
@@ -204,7 +204,7 @@ class BybitP2PPriceSource(VenuePriceSource):
         client = await self._get_client()
         url = "https://api2.bybit.com/fiat/otc/item/online"
 
-        payload = {
+        payload: dict[str, Any] = {
             "tokenId": "USDT",
             "currencyId": "NGN",
             "side": "1" if side == "buy" else "0",
@@ -291,7 +291,7 @@ class QuidaxPriceSource(VenuePriceSource):
     name = "quidax"
     pair = "cNGN/USDT"  # Represents USD per cNGN
 
-    def __init__(self, config: QuidaxConfig | None = None):
+    def __init__(self, config: QuidaxConfig | None = None) -> None:
         self.config = config or QuidaxConfig()
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: Optional[tuple[PriceQuote, float]] = None
@@ -304,7 +304,7 @@ class QuidaxPriceSource(VenuePriceSource):
             )
         return self._client
 
-    async def close(self):
+    async def close(self) -> None:
         if self._client:
             await self._client.aclose()
             self._client = None
@@ -414,9 +414,9 @@ class BlockradarPriceSource(VenuePriceSource):
             logger.error("blockradar_fetch_failed", error=str(e))
             return None
 
-    async def close(self):
+    async def close(self) -> None:
         if hasattr(self._adapter, "close"):
-            await self._adapter.close()
+            await cast(Any, self._adapter).close()
 
 
 # =============================================================================
@@ -498,7 +498,7 @@ class VenuePrice:
 class VenuePriceAggregator:
     """Fetches prices from all venues in parallel."""
 
-    def __init__(self, sources: list[VenuePriceSource]):
+    def __init__(self, sources: list[VenuePriceSource]) -> None:
         self.sources = {s.name: s for s in sources}
         self._prices: dict[str, VenuePrice] = {}
         self._last_fetch: float = 0
@@ -524,7 +524,7 @@ class VenuePriceAggregator:
                     error=str(result),
                 )
             else:
-                prices[name] = result
+                prices[name] = cast(VenuePrice, result)
 
         self._prices = prices
         self._last_fetch = time.time()
@@ -567,7 +567,7 @@ class VenuePriceAggregator:
     def last_fetch_time(self) -> float:
         return self._last_fetch
 
-    async def close(self):
+    async def close(self) -> None:
         for source in self.sources.values():
             await source.close()
 

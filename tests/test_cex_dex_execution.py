@@ -1,11 +1,8 @@
 """Tests for CEX-DEX preflight gate and _clean_revert helper."""
 
 import pytest
-import tempfile
-import os
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from eth_abi import encode
 
@@ -14,7 +11,8 @@ from engine.arb.engine import ArbitrageEngine
 from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 from engine.arb.routing.router import RouteCandidate, SelectedRoute
 from engine.arb.execution.executor import _clean_revert, _classify_preflight_error
-from engine.db.database import Database
+from engine.db.connection import SQLiteConnectionManager
+from engine.db.repository import DatabaseRepository
 
 
 # =============================================================================
@@ -116,7 +114,7 @@ def _cex_dex_route_no_depth(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500"))
 
 @pytest.fixture
 async def test_db(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
+    db = DatabaseRepository(SQLiteConnectionManager(str(tmp_path / "test.db")))
     await db.connect()
     yield db
     await db.close()
@@ -129,13 +127,12 @@ def _make_engine(venues, test_db):
         params=_params(),
         broadcast=lambda e: alerts.append(e),
         execute_cex_dex_enabled=True,
+        arbitrage_store=test_db.arbitrage,
+        history_store=test_db.history,
+        price_store=test_db.prices,
     )
     engine._inventory_seeded = True
-
-    async def _fake_get_db():
-        return test_db
-
-    return engine, alerts, _fake_get_db
+    return engine, alerts
 
 
 # =============================================================================
@@ -150,10 +147,9 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            r = _cex_dex_route_no_depth()
-            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-missing-depth")
+        engine, alerts = _make_engine(venues, test_db)
+        r = _cex_dex_route_no_depth()
+        await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-missing-depth")
 
         assert cex_venue.buy_calls == [], "CEX buy must not be called when Quidax depth is missing"
         assert not engine._arb_executing
@@ -165,10 +161,9 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            r = _cex_dex_route()
-            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-1")
+        engine, alerts = _make_engine(venues, test_db)
+        r = _cex_dex_route()
+        await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-1")
 
         assert cex_venue.buy_calls == [], "CEX buy must not be called when sell preflight fails"
         assert not engine._arb_executing
@@ -180,11 +175,10 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine, alerts = _make_engine(venues, test_db)
         engine.inventory.reconcile_cngn({"uni-base": Decimal("26999")})
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            r = _cex_dex_route(size=Decimal("500"))
-            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-debug")
+        r = _cex_dex_route(size=Decimal("500"))
+        await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-debug")
 
         message = next(a["message"] for a in alerts if a.get("type") == "alert")
         assert "Trade size: $500.00" in message
@@ -199,10 +193,9 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            r = _cex_dex_route()
-            await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-2")
+        engine, alerts = _make_engine(venues, test_db)
+        r = _cex_dex_route()
+        await engine._execute_route(ROUTES_BY_DIRECTION[r.candidate.direction], r, "opp-cex-preflight-2")
 
         assert len(cex_venue.buy_calls) == 1, "CEX buy must be called when sell preflight passes"
         assert not engine._arb_executing
@@ -214,17 +207,16 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            route = _cex_dex_route()
-            await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-sell-alignment")
+        engine, alerts = _make_engine(venues, test_db)
+        route = _cex_dex_route()
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-sell-alignment")
 
         assert len(sell_venue.sim_calls) == 1
         assert len(sell_venue.swap_calls) == 1
         _, sim_amount_raw, sim_min_out_raw = sell_venue.sim_calls[0]
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, sim_amount_raw, sim_min_out_raw)
 
-        opp = await test_db.get_arbitrage_opportunity("opp-cex-sell-alignment")
+        opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-sell-alignment")
         assert opp is not None
         assert opp.buy_price == Decimal("0.00061")
         assert opp.sell_price == Decimal("0.00071")
@@ -236,15 +228,14 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine, alerts = _make_engine(venues, test_db)
         route = _cex_dex_route()
         route.expected_profit_usd = Decimal("0.42")
         route.candidate.expected_profit_usd = Decimal("1.50")
 
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-persist")
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-persist")
 
-        opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-persist")
+        opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-profit-persist")
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0.42")
 
@@ -255,15 +246,14 @@ class TestCexDexPreflightGate:
         cex_venue = FakeCexVenue(buy_ok=True)
         venues = {"quidax": cex_venue, "uni-base": sell_venue}
 
-        engine, alerts, fake_get_db = _make_engine(venues, test_db)
+        engine, alerts = _make_engine(venues, test_db)
         route = _cex_dex_route()
         route.expected_profit_usd = Decimal("0")
         route.candidate.expected_profit_usd = Decimal("1.50")
 
-        with patch("engine.arb.engine.get_db", fake_get_db):
-            await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-zero")
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, "opp-cex-profit-zero")
 
-        opp = await test_db.get_arbitrage_opportunity("opp-cex-profit-zero")
+        opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-profit-zero")
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0")
 
@@ -352,6 +342,9 @@ class TestHandlePreflightError:
             venues={},
             params=_params(),
             broadcast=lambda e: alerts.append(e),
+            arbitrage_store=object(),
+            history_store=object(),
+            price_store=object(),
         )
         engine._inventory_seeded = True
         return engine, alerts

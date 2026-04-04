@@ -4,7 +4,8 @@ import pytest
 import time
 from decimal import Decimal
 
-from engine.db.database import Database
+from engine.db.connection import SQLiteConnectionManager
+from engine.db.repository import DatabaseRepository
 from engine.api.schemas import (
     PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity,
     ArbitrageHistoryEvent, ArbitrageHistoryWalletSnapshot,
@@ -20,7 +21,7 @@ from engine.api.schemas import (
 async def db(tmp_path):
     """Create an in-memory database for testing."""
     db_path = str(tmp_path / "test.db")
-    database = Database(db_path)
+    database = DatabaseRepository(SQLiteConnectionManager(db_path))
     await database.connect()
     yield database
     await database.close()
@@ -65,14 +66,14 @@ class TestConnection:
 
         assert "system_state" in tables
         assert "price_snapshots" in tables
-        assert "positions" in tables
+        assert "position_snapshots" in tables
         assert "actions" in tables
         assert "venue_config" in tables
         assert "alerts" in tables
     @pytest.mark.asyncio
     async def test_connect_idempotent(self, tmp_path):
         """Calling connect twice should not error."""
-        db = Database(str(tmp_path / "test2.db"))
+        db = DatabaseRepository(SQLiteConnectionManager(str(tmp_path / "test2.db")))
         await db.connect()
         await db.connect()  # Should not raise
         await db.close()
@@ -88,20 +89,20 @@ class TestSystemState:
 
     @pytest.mark.asyncio
     async def test_set_and_get_state(self, db):
-        await db.set_system_state("trading_enabled", "true")
-        val = await db.get_system_state("trading_enabled")
+        await db.system_state.set_system_state("trading_enabled", "true")
+        val = await db.system_state.get_system_state("trading_enabled")
         assert val == "true"
 
     @pytest.mark.asyncio
     async def test_get_missing_state_returns_none(self, db):
-        val = await db.get_system_state("nonexistent")
+        val = await db.system_state.get_system_state("nonexistent")
         assert val is None
 
     @pytest.mark.asyncio
     async def test_update_state(self, db):
-        await db.set_system_state("key", "v1")
-        await db.set_system_state("key", "v2")
-        val = await db.get_system_state("key")
+        await db.system_state.set_system_state("key", "v1")
+        await db.system_state.set_system_state("key", "v2")
+        val = await db.system_state.get_system_state("key")
         assert val == "v2"
 
 
@@ -115,8 +116,8 @@ class TestPriceSnapshots:
 
     @pytest.mark.asyncio
     async def test_insert_and_retrieve(self, db, sample_quote):
-        await db.insert_price_snapshot(sample_quote)
-        history = await db.get_price_history(limit=10)
+        await db.prices.insert_price_snapshot(sample_quote)
+        history = await db.prices.get_price_history(limit=10)
 
         assert len(history) == 1
         assert history[0]["source"] == "quidax"
@@ -130,9 +131,9 @@ class TestPriceSnapshots:
                 timestamp=int(time.time() * 1000),
                 bid=Decimal(mid), ask=Decimal(mid), mid=Decimal(mid),
             )
-            await db.insert_price_snapshot(q)
+            await db.prices.insert_price_snapshot(q)
 
-        history = await db.get_price_history(limit=10)
+        history = await db.prices.get_price_history(limit=10)
         assert len(history) == 2
 
     @pytest.mark.asyncio
@@ -146,9 +147,9 @@ class TestPriceSnapshots:
                 ask=Decimal("0.000690") + Decimal(str(i)) * Decimal("0.000001"),
                 mid=Decimal("0.000690") + Decimal(str(i)) * Decimal("0.000001"),
             )
-            await db.insert_price_snapshot(q)
+            await db.prices.insert_price_snapshot(q)
 
-        prices = await db.get_recent_prices(limit=5)
+        prices = await db.prices.get_recent_prices(limit=5)
         assert len(prices) == 5
         # Should be in chronological order (ascending)
         for i in range(len(prices) - 1):
@@ -164,10 +165,10 @@ class TestPriceSnapshots:
                 timestamp=now_ms - offset,
                 bid=Decimal("0.000697"), ask=Decimal("0.000697"), mid=Decimal("0.000697"),
             )
-            await db.insert_price_snapshot(q)
+            await db.prices.insert_price_snapshot(q)
 
         # Only last 15 seconds
-        history = await db.get_price_history(from_ts=now_ms - 15000, limit=10)
+        history = await db.prices.get_price_history(from_ts=now_ms - 15000, limit=10)
         assert len(history) == 2  # 0ms and 10000ms ago
 
     @pytest.mark.asyncio
@@ -179,9 +180,9 @@ class TestPriceSnapshots:
                 source=source, timestamp=now_ms,
                 bid=Decimal("0.0007"), ask=Decimal("0.0007"), mid=Decimal("0.0007"),
             )
-            await db.insert_price_snapshot(q)
+            await db.prices.insert_price_snapshot(q)
 
-        snaps = await db.get_price_snapshots_in_window(
+        snaps = await db.prices.get_price_snapshots_in_window(
             from_ts=now_ms - 1000, to_ts=now_ms + 1000, source="quidax",
         )
         assert len(snaps) == 1
@@ -198,28 +199,28 @@ class TestAlerts:
 
     @pytest.mark.asyncio
     async def test_insert_and_retrieve_alert(self, db):
-        alert_id = await db.insert_alert(
+        alert_id = await db.alerts.insert_alert(
             severity="warning",
             category="refill",
             message="Low ETH balance on uni-base-lp",
         )
         assert alert_id > 0
 
-        alerts = await db.get_alerts(limit=10)
+        alerts = await db.alerts.get_alerts(limit=10)
         assert len(alerts) == 1
         assert alerts[0].severity == "warning"
         assert alerts[0].message == "Low ETH balance on uni-base-lp"
 
     @pytest.mark.asyncio
     async def test_acknowledge_alert(self, db):
-        alert_id = await db.insert_alert(
+        alert_id = await db.alerts.insert_alert(
             severity="critical",
             category="test",
             message="Test alert",
         )
 
-        await db.acknowledge_alert(alert_id)
-        alerts = await db.get_alerts(limit=10)
+        await db.alerts.acknowledge_alert(alert_id)
+        alerts = await db.alerts.get_alerts(limit=10)
         assert alerts[0].acknowledged is True
 
 
@@ -248,8 +249,8 @@ class TestDexArbOpportunities:
     @pytest.mark.asyncio
     async def test_insert_and_read_back(self, db):
         opp = self._sample_opp()
-        await db.insert_dex_arbitrage_opportunity(opp)
-        result = await db.get_dex_arbitrage_opportunity(opp.id)
+        await db.arbitrage.insert_dex_arbitrage_opportunity(opp)
+        result = await db.arbitrage.get_dex_arbitrage_opportunity(opp.id)
         assert result is not None
         assert result.direction == opp.direction
         assert result.optimal_size_usd == opp.optimal_size_usd
@@ -260,27 +261,27 @@ class TestDexArbOpportunities:
     @pytest.mark.asyncio
     async def test_execution_state_update_writes_profit_and_buy_amount(self, db):
         opp = self._sample_opp()
-        await db.insert_dex_arbitrage_opportunity(opp)
+        await db.arbitrage.insert_dex_arbitrage_opportunity(opp)
 
-        await db.update_dex_arbitrage_execution_state(
+        await db.arbitrage.update_dex_arbitrage_execution_state(
             opp.id,
             status="buy_filled",
             buy_tx_hash="0xabc",
             buy_amount_cngn=Decimal("798000"),
         )
-        mid = await db.get_dex_arbitrage_opportunity(opp.id)
+        mid = await db.arbitrage.get_dex_arbitrage_opportunity(opp.id)
         assert mid.status == "buy_filled"
         assert mid.buy_tx_hash == "0xabc"
         assert mid.buy_amount_cngn == Decimal("798000")
         assert mid.actual_profit_usd is None  # not yet completed
 
-        await db.update_dex_arbitrage_execution_state(
+        await db.arbitrage.update_dex_arbitrage_execution_state(
             opp.id,
             status="completed",
             sell_tx_hash="0xdef",
             actual_profit_usd=1.15,
         )
-        done = await db.get_dex_arbitrage_opportunity(opp.id)
+        done = await db.arbitrage.get_dex_arbitrage_opportunity(opp.id)
         assert done.status == "completed"
         assert done.sell_tx_hash == "0xdef"
         assert done.actual_profit_usd == Decimal("1.15")
@@ -304,18 +305,18 @@ class TestDexArbOpportunities:
             recommended_size_usd=Decimal("500"), expected_profit_usd=Decimal("1.50"),
             status="completed", actual_profit_usd=Decimal("1.50"),
         )
-        await db.insert_arbitrage_opportunity(cex_dex_opp)
+        await db.arbitrage.insert_arbitrage_opportunity(cex_dex_opp)
 
         # DEX-DEX trade: detected and completed, $2.00 profit
         dex_dex_opp = self._sample_opp("dex-1")
-        await db.insert_dex_arbitrage_opportunity(dex_dex_opp)
-        await db.update_dex_arbitrage_execution_state("dex-1", status="completed", actual_profit_usd=2.00)
+        await db.arbitrage.insert_dex_arbitrage_opportunity(dex_dex_opp)
+        await db.arbitrage.update_dex_arbitrage_execution_state("dex-1", status="completed", actual_profit_usd=2.00)
 
         # DEX-DEX opportunity that was detected but never executed — should not add to profit
         dex_dex_stale = self._sample_opp("dex-2")
-        await db.insert_dex_arbitrage_opportunity(dex_dex_stale)
+        await db.arbitrage.insert_dex_arbitrage_opportunity(dex_dex_stale)
 
-        stats = await db.get_arbitrage_stats(0)
+        stats = await db.arbitrage.get_arbitrage_stats(0)
 
         assert stats["opportunities_detected"] == 3
         assert stats["opportunities_executed"] == 2
@@ -327,7 +328,7 @@ class TestActions:
 
     @pytest.mark.asyncio
     async def test_insert_action(self, db):
-        await db.insert_action(
+        await db.actions.insert_action(
             venue="quidax",
             action_type="order_placed",
             triggered_by="scheduler",
@@ -336,7 +337,7 @@ class TestActions:
             price=0.000697,
         )
 
-        actions = await db.get_actions(limit=10)
+        actions = await db.actions.get_actions(limit=10)
         assert len(actions) == 1
         assert actions[0]["venue"] == "quidax"
         assert actions[0]["action_type"] == "order_placed"
@@ -393,9 +394,9 @@ class TestArbitrageHistory:
     @pytest.mark.asyncio
     async def test_upsert_inserts_event(self, db):
         event = _make_history_event("opp-1")
-        await db.upsert_arbitrage_history_event(event)
+        await db.history.upsert_arbitrage_history_event(event)
 
-        items = await db.get_arbitrage_history()
+        items = await db.history.get_arbitrage_history()
         assert len(items) == 1
         assert items[0].opportunity_id == "opp-1"
         assert items[0].latest_status == "routed"
@@ -403,22 +404,22 @@ class TestArbitrageHistory:
     @pytest.mark.asyncio
     async def test_upsert_updates_on_conflict(self, db):
         """Second upsert for same (opp_id, event_type) refreshes the record."""
-        await db.upsert_arbitrage_history_event(_make_history_event("opp-1", status="routed"))
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(_make_history_event("opp-1", status="routed"))
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-1", status="routed", reason="updated")
         )
 
-        items = await db.get_arbitrage_history()
+        items = await db.history.get_arbitrage_history()
         assert len(items) == 1
         assert items[0].reason == "updated"
 
     @pytest.mark.asyncio
     async def test_full_lifecycle_returns_correct_fields(self, db):
         """routed + executed events are grouped into one item with correct field sourcing."""
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-1", event_type="routed", status="routed", timestamp=1000)
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event(
                 "opp-1",
                 event_type="executed",
@@ -431,7 +432,7 @@ class TestArbitrageHistory:
             )
         )
 
-        items = await db.get_arbitrage_history()
+        items = await db.history.get_arbitrage_history()
         assert len(items) == 1
         item = items[0]
         assert item.routed_at == 1000
@@ -446,10 +447,10 @@ class TestArbitrageHistory:
     async def test_from_ts_includes_routed_event_before_window(self, db):
         """When from_ts is set, the 'routed' event timestamped before from_ts must still
         be returned so the item can be built correctly — only the opp selection is filtered."""
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-1", event_type="routed", status="routed", timestamp=100)
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event(
                 "opp-1",
                 event_type="executed",
@@ -461,7 +462,7 @@ class TestArbitrageHistory:
         )
 
         # from_ts=200 is after the routed event but before the executed event
-        items = await db.get_arbitrage_history(from_ts=200)
+        items = await db.history.get_arbitrage_history(from_ts=200)
         assert len(items) == 1
         item = items[0]
         # routed_at must come from the actual routed event, not the executed one
@@ -472,24 +473,24 @@ class TestArbitrageHistory:
     @pytest.mark.asyncio
     async def test_from_ts_excludes_fully_old_opps(self, db):
         """An opp whose latest event is before from_ts must not appear."""
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-old", event_type="routed", status="routed", timestamp=50)
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-new", event_type="routed", status="routed", timestamp=500)
         )
 
-        items = await db.get_arbitrage_history(from_ts=200)
+        items = await db.history.get_arbitrage_history(from_ts=200)
         assert len(items) == 1
         assert items[0].opportunity_id == "opp-new"
 
     @pytest.mark.asyncio
     async def test_to_ts_does_not_leak_later_terminal_events(self, db):
         """Grouped results should not pull in later events beyond the requested upper bound."""
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-1", event_type="routed", status="routed", timestamp=100)
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event(
                 "opp-1",
                 event_type="executed",
@@ -499,7 +500,7 @@ class TestArbitrageHistory:
                 executed_size_usd=Decimal("400"),
             )
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event(
                 "opp-1",
                 event_type="failed",
@@ -509,7 +510,7 @@ class TestArbitrageHistory:
             )
         )
 
-        items = await db.get_arbitrage_history(to_ts=250)
+        items = await db.history.get_arbitrage_history(to_ts=250)
         assert len(items) == 1
         item = items[0]
         assert item.latest_status == "completed"
@@ -520,24 +521,24 @@ class TestArbitrageHistory:
     @pytest.mark.asyncio
     async def test_pipeline_and_to_ts_combined(self, db):
         """pipeline filter on the detail query must not drop lifecycle events for matched opps."""
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("cex-1", pipeline="cex_dex", event_type="routed", status="routed", timestamp=100)
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event(
                 "cex-1", pipeline="cex_dex", event_type="executed", status="completed",
                 timestamp=200, actual_profit_usd=Decimal("2"), executed_size_usd=Decimal("400"),
             )
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("cex-1", pipeline="cex_dex", event_type="failed", status="execution_error", timestamp=500)
         )
         # Unrelated opp on a different pipeline — must not appear.
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("dex-1", pipeline="dex_dex", direction="UNI_BSC_TO_UNI_BASE_DELTA_BALANCE")
         )
 
-        items = await db.get_arbitrage_history(pipeline="cex_dex", to_ts=300)
+        items = await db.history.get_arbitrage_history(pipeline="cex_dex", to_ts=300)
         assert len(items) == 1
         item = items[0]
         assert item.opportunity_id == "cex-1"
@@ -546,10 +547,10 @@ class TestArbitrageHistory:
 
     @pytest.mark.asyncio
     async def test_pipeline_filter(self, db):
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("cex-1", pipeline="cex_dex")
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event(
                 "dex-1",
                 pipeline="dex_dex",
@@ -557,22 +558,22 @@ class TestArbitrageHistory:
             )
         )
 
-        cex_items = await db.get_arbitrage_history(pipeline="cex_dex")
+        cex_items = await db.history.get_arbitrage_history(pipeline="cex_dex")
         assert len(cex_items) == 1
         assert cex_items[0].opportunity_id == "cex-1"
 
-        dex_items = await db.get_arbitrage_history(pipeline="dex_dex")
+        dex_items = await db.history.get_arbitrage_history(pipeline="dex_dex")
         assert len(dex_items) == 1
         assert dex_items[0].opportunity_id == "dex-1"
 
     @pytest.mark.asyncio
     async def test_limit(self, db):
         for i in range(5):
-            await db.upsert_arbitrage_history_event(
+            await db.history.upsert_arbitrage_history_event(
                 _make_history_event(f"opp-{i}", timestamp=i * 100)
             )
 
-        items = await db.get_arbitrage_history(limit=3)
+        items = await db.history.get_arbitrage_history(limit=3)
         assert len(items) == 3
 
     @pytest.mark.asyncio
@@ -582,12 +583,54 @@ class TestArbitrageHistory:
             stable_balance=Decimal("1000"),
             cngn_balance=Decimal("500000"),
         )
-        await db.upsert_arbitrage_history_event(
+        await db.history.upsert_arbitrage_history_event(
             _make_history_event("opp-1", buy_wallet=wallet, sell_wallet=wallet)
         )
 
-        items = await db.get_arbitrage_history()
+        items = await db.history.get_arbitrage_history()
         assert items[0].buy_wallet is not None
         assert items[0].buy_wallet.stable_symbol == "USDT"
         assert items[0].buy_wallet.stable_balance == Decimal("1000")
         assert items[0].buy_wallet.cngn_balance == Decimal("500000")
+
+    @pytest.mark.asyncio
+    async def test_cex_history_roundtrip_preserves_route_direction(self, db):
+        opp = ArbitrageOpportunity(
+            id="cex-roundtrip-1",
+            timestamp=100,
+            buy_venue="quidax",
+            sell_venue="uni-bsc",
+            buy_price=Decimal("0.00061"),
+            sell_price=Decimal("0.00071"),
+            gross_spread_bps=164,
+            net_spread_bps=92,
+            recommended_size_usd=Decimal("500"),
+            expected_profit_usd=Decimal("4.50"),
+            status="executing",
+        )
+        await db.arbitrage.insert_arbitrage_opportunity(opp)
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event(
+                opp.id,
+                event_type="routed",
+                status="routed",
+                timestamp=120,
+                direction="QUIDAX_TO_UNI_BSC",
+            )
+        )
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event(
+                opp.id,
+                event_type="executed",
+                status="completed",
+                timestamp=180,
+                direction="QUIDAX_TO_UNI_BSC",
+                actual_profit_usd=Decimal("4.25"),
+                executed_size_usd=Decimal("500"),
+            )
+        )
+
+        items = await db.history.get_arbitrage_history()
+
+        assert len(items) == 1
+        assert items[0].direction == "QUIDAX_TO_UNI_BSC"

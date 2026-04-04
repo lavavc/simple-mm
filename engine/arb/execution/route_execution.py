@@ -19,7 +19,7 @@ logger = structlog.get_logger()
 async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp_id: str) -> None:
     """Execute a routed arbitrage trade (CEX-DEX or DEX-DEX)."""
     engine._arb_executing = True
-    db = await engine._get_db()
+    arbitrage_store = engine.arbitrage_store
     buy_trade = None
     sell_tx_hash = None
     sell_cngn_amount = None
@@ -89,7 +89,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                         direction=direction,
                         size_usd=float(size_usd),
                     )
-                    await db.update_dex_arbitrage_execution_state(
+                    await arbitrage_store.update_dex_arbitrage_execution_state(
                         opp_id,
                         status="abandoned",
                         reason="Pool cache cold at execution",
@@ -126,7 +126,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                     wallet_asset="cngn",
                 )
                 if not buy_is_cex:
-                    await db.update_dex_arbitrage_execution_state(
+                    await arbitrage_store.update_dex_arbitrage_execution_state(
                         opp_id,
                         status="abandoned",
                         reason=clean_sell_err,
@@ -162,7 +162,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                     else getattr(getattr(buy_venue, "config", None), "token1_symbol", None),
                     required_amount=float(size_usd),
                 )
-                await db.update_dex_arbitrage_execution_state(
+                await arbitrage_store.update_dex_arbitrage_execution_state(
                     opp_id,
                     status="abandoned",
                     reason=clean_buy_err,
@@ -179,7 +179,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
             net_spread_bps = c.signal.get("optimal_arb", {}).get("net_spread_bps", 0)
             from engine.api.schemas import ArbitrageOpportunity as ArbOpp
 
-            await db.insert_arbitrage_opportunity(ArbOpp(
+            await arbitrage_store.insert_arbitrage_opportunity(ArbOpp(
                 id=opp_id,
                 timestamp=int(time.time() * 1000),
                 buy_venue=buy_venue_name,
@@ -193,7 +193,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                 status="executing",
             ))
         else:
-            await db.update_dex_arbitrage_execution_state(opp_id, status="executing")
+            await arbitrage_store.update_dex_arbitrage_execution_state(opp_id, status="executing")
 
         engine.inventory.record_trade_start(opp_id, size_usd, buy_venue_name, sell_venue_name)
 
@@ -207,14 +207,14 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
             logger.error("arb_buy_failed", direction=direction, error=err)
             engine.inventory.record_trade_failure(opp_id, err)
             if buy_is_cex or sell_is_cex:
-                await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
+                await arbitrage_store.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
             else:
-                await db.expire_old_dex_arbitrage_opportunities(0)
+                await arbitrage_store.expire_old_dex_arbitrage_opportunities(0)
             await engine.history.record_failed(opp_id, route, status="buy_failed", reason=err)
             return
 
         if not (buy_is_cex or sell_is_cex):
-            await db.update_dex_arbitrage_execution_state(
+            await arbitrage_store.update_dex_arbitrage_execution_state(
                 opp_id,
                 status="buy_filled",
                 buy_tx_hash=buy_trade.tx_hash,
@@ -245,7 +245,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
             actual_buy_price = buy_trade.price or buy_signal_price
             actual_sell_price = sell_trade.price or sell_signal_price
             actual_profit = sell_trade.amount * actual_sell_price - buy_trade.amount * actual_buy_price
-            await db.update_arbitrage_opportunity(
+            await arbitrage_store.update_arbitrage_opportunity(
                 opp_id,
                 status="completed",
                 actual_profit_usd=float(actual_profit),
@@ -254,7 +254,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
         else:
             cngn_price = Decimal(str(c.signal.get("prices", {}).get(sell_venue_name, "0")))
             actual_profit = sell_trade.amount * (sell_trade.price or cngn_price) - size_usd
-            await db.update_dex_arbitrage_execution_state(
+            await arbitrage_store.update_dex_arbitrage_execution_state(
                 opp_id,
                 status="completed",
                 buy_tx_hash=buy_trade.tx_hash,
@@ -283,7 +283,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
         if buy_trade and buy_trade.status != "failed":
             buy_tx = buy_trade.tx_hash or ""
             if buy_is_cex or sell_is_cex:
-                await db.update_arbitrage_opportunity(
+                await arbitrage_store.update_arbitrage_opportunity(
                     opp_id,
                     status="half_open",
                     reason=f"HALF_OPEN:{buy_tx}:{e}",
@@ -301,7 +301,7 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
                     "address",
                     "unknown",
                 )
-                await db.update_dex_arbitrage_execution_state(
+                await arbitrage_store.update_dex_arbitrage_execution_state(
                     opp_id,
                     status="half_open",
                     buy_tx_hash=buy_tx or None,
@@ -331,9 +331,9 @@ async def execute_route(engine, route_def: TradeRoute, route: SelectedRoute, opp
             logger.error("arb_execution_error", opp_id=opp_id, error=err)
             engine.inventory.record_trade_failure(opp_id, err)
             if buy_is_cex or sell_is_cex:
-                await db.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
+                await arbitrage_store.update_arbitrage_opportunity(opp_id, status="abandoned", reason=err)
             else:
-                await db.update_dex_arbitrage_execution_state(opp_id, status="abandoned", reason=err)
+                await arbitrage_store.update_dex_arbitrage_execution_state(opp_id, status="abandoned", reason=err)
             await engine.history.record_failed(opp_id, route, status="execution_error", reason=err)
     finally:
         engine._arb_executing = False

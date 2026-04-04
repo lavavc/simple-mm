@@ -26,8 +26,7 @@ from engine.arb.wallet_state import (
     refresh_inventory_for_venues as _refresh_inventory_for_venues_impl,
     seed_account_inventory as _seed_account_inventory_impl,
 )
-from engine.db import get_db
-from engine.db.backend import StorageBackend
+from engine.db.backend import ArbitrageStoreProtocol, HistoryStoreProtocol, PriceStoreProtocol
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
@@ -51,18 +50,24 @@ class ArbitrageEngine:
         broadcast: Callable[[dict], Any],
         execute_cex_dex_enabled: bool = False,
         execute_dex_dex_enabled: bool = False,
-        storage: StorageBackend | None = None,
+        arbitrage_store: ArbitrageStoreProtocol | None = None,
+        history_store: HistoryStoreProtocol | None = None,
+        price_store: PriceStoreProtocol | None = None,
     ):
         self.venues = venues
         self.params = params
         self.broadcast = broadcast
         self.execute_cex_dex_enabled = execute_cex_dex_enabled
         self.execute_dex_dex_enabled = execute_dex_dex_enabled
-        self._storage = storage
+        if arbitrage_store is None or history_store is None or price_store is None:
+            raise ValueError("ArbitrageEngine requires arbitrage, history, and price stores")
+        self.arbitrage_store = arbitrage_store
+        self.history_store = history_store
+        self.price_store = price_store
 
         self.inventory = InventoryTracker(params)
         self.executor = ArbitrageExecutor(venues)
-        self.history = ArbitrageHistoryRecorder(self.inventory, broadcast, db_getter=lambda: self._get_db())
+        self.history = ArbitrageHistoryRecorder(self.inventory, broadcast, history_store=self.history_store)
 
         self._enabled = True
         self._arb_executing = False
@@ -238,12 +243,11 @@ class ArbitrageEngine:
         if optimal.get("expected_profit_usd", -1) < settings.arbitrage_min_profit_usd:
             return f"dex-arb-{uuid.uuid4()}"
 
-        db = await self._get_db()
         cutoff_ts = int(time.time() * 1000) - 60000
-        await db.expire_old_dex_arbitrage_opportunities(cutoff_ts)
+        await self.arbitrage_store.expire_old_dex_arbitrage_opportunities(cutoff_ts)
 
         direction = optimal["direction"]
-        existing_id = await db.get_active_dex_opportunity(direction)
+        existing_id = await self.arbitrage_store.get_active_dex_opportunity(direction)
         if existing_id:
             opp_id = existing_id
         else:
@@ -265,7 +269,7 @@ class ArbitrageEngine:
                 uni_base_fee_bps=optimal.get("uni_base_fee_bps"),
                 gas_usd=optimal.get("gas_usd"),
             )
-            await db.insert_dex_arbitrage_opportunity(opportunity)
+            await self.arbitrage_store.insert_dex_arbitrage_opportunity(opportunity)
 
         broadcast_data = {**optimal, "id": opp_id}
         self.broadcast({"type": "dex_arb_opportunity", "data": broadcast_data})
@@ -280,12 +284,11 @@ class ArbitrageEngine:
             if curve_data:
                 # Persist pool prices to DB for history charts
                 from engine.api.schemas import PriceQuote
-                db = await self._get_db()
                 now_ms = int(time.time() * 1000)
                 for key in ("uni-bsc", "uni-base"):
                     price_val = curve_data.get("prices", {}).get(key)
                     if price_val is not None:
-                        await db.insert_price_snapshot(PriceQuote(
+                        await self.price_store.insert_price_snapshot(PriceQuote(
                             source=f"{key}_pool",
                             timestamp=now_ms,
                             bid=price_val,
@@ -301,9 +304,8 @@ class ArbitrageEngine:
     # ------------------------------------------------------------------
 
     async def get_status(self) -> ArbitrageStatus:
-        db = await self._get_db()
         now = int(time.time() * 1000)
-        stats = await db.get_arbitrage_stats(now - 86400000)
+        stats = await self.arbitrage_store.get_arbitrage_stats(now - 86400000)
         inv = self.inventory.get_status_dict()
 
         return ArbitrageStatus(
@@ -332,11 +334,6 @@ class ArbitrageEngine:
 
     def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal, cngn_price_usd: Decimal = Decimal("0")):
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
-
-    async def _get_db(self):
-        if self._storage is not None:
-            return self._storage
-        return await get_db()
 
     async def recover_dex_half_open(self, opp_id: str) -> dict:
         return await _recover_dex_half_open_impl(self, opp_id)

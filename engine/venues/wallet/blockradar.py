@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional, cast
 
 import httpx
 import structlog
@@ -78,7 +78,7 @@ class SwapQuote:
     order_type: str
     fee: Decimal
     expires_at: Optional[int] = None
-    raw_response: Optional[dict] = None
+    raw_response: Optional[dict[str, Any]] = None
 
     @property
     def spread_bps(self) -> int:
@@ -125,7 +125,7 @@ class BlockradarAdapter(VenueAdapter):
             )
         return self._client
 
-    async def close(self):
+    async def close(self) -> None:
         """Close HTTP client."""
         if self._client:
             await self._client.aclose()
@@ -145,13 +145,13 @@ class BlockradarAdapter(VenueAdapter):
             rates=dict(self._current_rates_raw) or None,
         )
 
-    async def get_assets(self) -> list[dict]:
+    async def get_assets(self) -> list[dict[str, Any]]:
         """Get assets available in the master wallet."""
         client = await self._get_client()
         response = await client.get(f"{self.base_url}/assets")
         response.raise_for_status()
         data = response.json()
-        return data.get("data", [])
+        return cast(list[dict[str, Any]], data.get("data", []))
 
     async def get_current_price(self) -> Optional[PriceQuote]:
         """Fetch all 4 rate routes in parallel and return blended mid."""
@@ -174,10 +174,10 @@ class BlockradarAdapter(VenueAdapter):
                 return None
 
         results = await asyncio.gather(*[_fetch(r) for r in _ROUTES])
-        valid = [r for r in results if r]
+        valid = [r for r in results if r is not None]
         if not valid:
             return None
-        mid = sum(valid) / len(valid)
+        mid: Decimal = sum(valid) / Decimal(len(valid))
         return PriceQuote(
             source="blockradar",
             timestamp=int(time.time() * 1000),
@@ -362,4 +362,3 @@ class BlockradarAdapter(VenueAdapter):
             amount=amount,
             order_type=order_type,
         )
-

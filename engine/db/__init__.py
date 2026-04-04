@@ -1,5 +1,10 @@
-"""Database module."""
+"""Database package exports."""
 
-from .database import Database, get_db
+from .connection import SQLiteConnectionManager
+from .repository import DatabaseRepository, open_repository
 
-__all__ = ["Database", "get_db"]
+__all__ = [
+    "DatabaseRepository",
+    "SQLiteConnectionManager",
+    "open_repository",
+]

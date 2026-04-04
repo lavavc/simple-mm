@@ -1,8 +1,9 @@
 """Pydantic models for API request/response validation."""
 
-from pydantic import BaseModel
-from typing import Optional, Literal
 from decimal import Decimal
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel
 
 from engine.config import settings
 
@@ -36,7 +37,7 @@ class Position(BaseModel):
     timestamp: int
     balances: dict[str, Decimal]
     lp_position: Optional[LPPosition] = None
-    open_orders: Optional[dict] = None
+    open_orders: Optional[dict[str, Any]] = None
     position_value_usd: Optional[Decimal] = None
     volume_24h_usd: Optional[Decimal] = None
     rates: Optional[dict[str, Decimal]] = None  # per-route cNGN/USD rates (blockradar only)
@@ -83,7 +84,7 @@ class VenueStatus(BaseModel):
     last_action: Optional[int] = None
     position: Optional[Position] = None
     price: Optional[VenuePriceResponse] = None  # Current price at this venue
-    params: Optional[dict] = None  # Live venue parameters (DexParams, CexParams, etc.)
+    params: Optional[dict[str, Any]] = None  # Live venue parameters (DexParams, CexParams, etc.)
 
 
 class SystemStatus(BaseModel):

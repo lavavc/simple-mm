@@ -43,6 +43,10 @@ class MockDB:
         self._prices = prices if prices is not None else [Decimal("0.000606")] * 20
         self.insert_action = AsyncMock()
         self.update_venue_config = AsyncMock()
+        self.insert_price_snapshot = AsyncMock()
+        self.insert_position = AsyncMock()
+        self.insert_alert = AsyncMock()
+        self.set_system_state = AsyncMock()
 
     async def get_recent_prices(self, limit=100):
         return self._prices[:limit]
@@ -62,12 +66,23 @@ def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingSched
     sched.account_manager = None
     sched.token_contracts = {}
     sched.quidax_lp = None
+    sched.system_state_store = SimpleNamespace(set_system_state=db.set_system_state)
+    sched.price_store = SimpleNamespace(
+        get_recent_prices=db.get_recent_prices,
+        insert_price_snapshot=db.insert_price_snapshot,
+    )
+    sched.position_store = SimpleNamespace(insert_position=db.insert_position)
+    sched.alert_store = SimpleNamespace(insert_alert=db.insert_alert)
     sched._started = False
     sched._dex_bootstrap_pending = True
     sched._dex_bootstrap_task = None
-    sched._db = db  # store for patching
     sched.ws_listener = MagicMock(active_connections=set())
-    sched.lp_rebalancer = LPRebalancer(broadcast=sched.broadcast, db_getter=AsyncMock(return_value=db))
+    sched.lp_rebalancer = LPRebalancer(
+        broadcast=sched.broadcast,
+        price_store=sched.price_store,
+        venue_config_store=SimpleNamespace(update_venue_config=db.update_venue_config),
+        action_store=SimpleNamespace(insert_action=db.insert_action),
+    )
     return sched
 
 
@@ -88,8 +103,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
 
         # No mint happened (no rebalance triggered)
         assert len(fake_dex_adapter.minted) == 0
@@ -110,8 +124,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
 
@@ -131,8 +144,7 @@ class TestCheckDexRebalance:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
 
         # Rebalance triggered: old position removed, new one minted
         assert len(fake_dex_adapter._positions) == 1  # removed old, added new
@@ -149,8 +161,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
 
@@ -164,8 +175,7 @@ class TestCheckDexRebalance:
         db = MockDB(prices=[Decimal("0.000606")] * 20)
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 1
 
@@ -183,8 +193,7 @@ class TestCheckDexRebalance:
         db = MockDB()
         sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
 
-        with patch("engine.scheduler.get_db", AsyncMock(return_value=db)):
-            await sched._check_dex_rebalance()
+        await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
 
