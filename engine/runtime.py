@@ -10,6 +10,7 @@ from engine.db.repository import DatabaseRepository
 if TYPE_CHECKING:
     from engine.accounts import AccountManager
     from engine.arb import ArbitrageEngine
+    from engine.market.portfolio_exposure import PortfolioExposureCalculator
     from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
     from engine.market.venue_prices import VenuePriceAggregator
     from engine.scheduler import TradingScheduler
@@ -28,4 +29,5 @@ class EngineRuntime:
     token_contracts: dict[int, dict[str, str]]
     blended_calculator: "BlendedPriceCalculator | None"
     normalizer: "PriceNormalizer | None"
+    portfolio_exposure_calculator: "PortfolioExposureCalculator | None"
     quidax_lp: Any | None

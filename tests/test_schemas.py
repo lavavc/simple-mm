@@ -13,6 +13,8 @@ from engine.api.schemas import (
     CexParams,
     WalletParams,
     GlobalPosition,
+    PortfolioExposure,
+    PortfolioExposureSource,
     Alert,
     ArbitrageParams,
     ArbitrageOpportunity,
@@ -168,6 +170,28 @@ class TestGlobalPosition:
         )
         assert gp.total_cngn == Decimal("100000")
         assert gp.delta_ratio == Decimal("0.47")
+
+
+class TestPortfolioExposure:
+
+    def test_create(self):
+        exposure = PortfolioExposure(
+            total_cngn=Decimal("100000"),
+            total_usdt=Decimal("50"),
+            total_usdc=Decimal("30"),
+            total_usd_value=Decimal("150"),
+            delta_ratio=Decimal("0.47"),
+            target_delta=Decimal("0.50"),
+            sources=[
+                PortfolioExposureSource(
+                    source="uni-base-lp",
+                    kind="account",
+                    balances={"cngn": Decimal("100"), "usdt": Decimal("0"), "usdc": Decimal("10")},
+                    usd_value=Decimal("10.07"),
+                )
+            ],
+        )
+        assert exposure.sources[0].source == "uni-base-lp"
 
 
 # =============================================================================

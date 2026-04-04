@@ -4,7 +4,7 @@ import math
 import pytest
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import TxResult
 from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
@@ -84,43 +84,56 @@ def _make_position_state(
     )
 
 
-def _make_lp_snapshot_adapter(pos_state: PositionState | None) -> SimpleNamespace:
-    return SimpleNamespace(
-        config=SimpleNamespace(
-            pool_id="0x" + "ab" * 32,
-            token0_decimals=6,
-            token1_decimals=6,
-            token0_symbol="cNGN",
-            token1_symbol="USDC",
-            cngn_is_token0=True,
-        ),
-        get_owned_positions=lambda: [pos_state.token_id] if pos_state is not None else [],
-        get_position_state=lambda token_id: pos_state if pos_state and token_id == pos_state.token_id else None,
-        _compute_lp_token_amounts=lambda current_pos, sqrt_p: V4LPAdapter._compute_lp_token_amounts(
-            SimpleNamespace(config=SimpleNamespace(token0_decimals=6, token1_decimals=6)),
-            current_pos,
-            sqrt_p,
-        ),
-        _build_lp_position_snapshot=lambda current_pos, *, sqrt_price_x96, pool_liquidity: V4LPAdapter._build_lp_position_snapshot(
-            SimpleNamespace(
-                config=SimpleNamespace(
-                    token0_decimals=6,
-                    token1_decimals=6,
-                    token0_symbol="cNGN",
-                    token1_symbol="USDC",
-                    cngn_is_token0=True,
-                ),
-                _compute_lp_token_amounts=lambda inner_pos, inner_sqrt_p: V4LPAdapter._compute_lp_token_amounts(
-                    SimpleNamespace(config=SimpleNamespace(token0_decimals=6, token1_decimals=6)),
-                    inner_pos,
-                    inner_sqrt_p,
-                ),
-            ),
-            current_pos,
-            sqrt_price_x96=sqrt_price_x96,
-            pool_liquidity=pool_liquidity,
+def _make_lp_snapshot_adapter(
+    pos_states: list[PositionState] | None,
+    *,
+    sqrt_price_x96: int,
+    current_price: Decimal = Decimal("1"),
+    pool_liquidity: Decimal = Decimal("5000000"),
+) -> SimpleNamespace:
+    positions = pos_states or []
+    config = SimpleNamespace(
+        pool_id="0x" + "ab" * 32,
+        token0_decimals=6,
+        token1_decimals=6,
+        token0_symbol="cNGN",
+        token1_symbol="USDC",
+        cngn_is_token0=True,
+    )
+    adapter = SimpleNamespace(
+        name="uni-base",
+        config=config,
+        get_owned_positions=lambda: [pos.token_id for pos in positions],
+        _get_live_pool_snapshot=lambda: (Decimal(sqrt_price_x96), 0, current_price, pool_liquidity),
+        _get_position_state_from_market=lambda token_id, *, current_tick, current_price: next(
+            (pos for pos in positions if pos.token_id == token_id),
+            None,
         ),
     )
+    adapter._compute_lp_token_amounts = lambda current_pos, sqrt_p: V4LPAdapter._compute_lp_token_amounts(
+        adapter,
+        current_pos,
+        sqrt_p,
+    )
+    adapter._build_lp_position_snapshot = lambda current_pos, *, sqrt_price_x96, pool_liquidity: V4LPAdapter._build_lp_position_snapshot(
+        adapter,
+        current_pos,
+        sqrt_price_x96=sqrt_price_x96,
+        pool_liquidity=pool_liquidity,
+    )
+    adapter._aggregate_lp_position_snapshots = lambda snapshots: V4LPAdapter._aggregate_lp_position_snapshots(
+        adapter,
+        snapshots,
+    )
+    adapter._empty_position_balances = lambda: V4LPAdapter._empty_position_balances(adapter)
+    adapter._add_symbol_balance = lambda balances, symbol, amount: V4LPAdapter._add_symbol_balance(
+        adapter,
+        balances,
+        symbol,
+        amount,
+    )
+    adapter.get_active_lp_position_snapshot = lambda: V4LPAdapter.get_active_lp_position_snapshot(adapter)
+    return adapter
 
 
 class TestComputeRequiredRatio:
@@ -241,7 +254,7 @@ class TestActiveLpPositionSnapshot:
     """Tests for V4LPAdapter.get_active_lp_position_snapshot."""
 
     def test_returns_none_when_no_active_position(self):
-        adapter = _make_lp_snapshot_adapter(None)
+        adapter = _make_lp_snapshot_adapter([], sqrt_price_x96=_price_to_sqrt_x96(1.0))
 
         result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
 
@@ -249,11 +262,8 @@ class TestActiveLpPositionSnapshot:
 
     def test_snapshot_below_range_is_all_token0(self):
         pos_state = _make_position_state(tick_lower=1000, tick_upper=2000, in_range=False)
-        adapter = _make_lp_snapshot_adapter(pos_state)
-        sqrt_p = Decimal(_price_to_sqrt_x96(0.5))
-
-        with patch("engine.market.pool_state.get_cached_pool_state", return_value=(sqrt_p, Decimal("5000000"), None, None)):
-            result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(0.5))
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token0_amount > 0
@@ -261,11 +271,8 @@ class TestActiveLpPositionSnapshot:
 
     def test_snapshot_above_range_is_all_token1(self):
         pos_state = _make_position_state(tick_lower=-2000, tick_upper=-1000, in_range=False)
-        adapter = _make_lp_snapshot_adapter(pos_state)
-        sqrt_p = Decimal(_price_to_sqrt_x96(2.0))
-
-        with patch("engine.market.pool_state.get_cached_pool_state", return_value=(sqrt_p, Decimal("5000000"), None, None)):
-            result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(2.0))
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token0_amount == 0
@@ -273,12 +280,48 @@ class TestActiveLpPositionSnapshot:
 
     def test_snapshot_in_range_has_both_tokens(self):
         pos_state = _make_position_state(in_range=True)
-        adapter = _make_lp_snapshot_adapter(pos_state)
-        sqrt_p = Decimal(_price_to_sqrt_x96(1.0))
-
-        with patch("engine.market.pool_state.get_cached_pool_state", return_value=(sqrt_p, Decimal("5000000"), None, None)):
-            result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token0_amount > 0
         assert result.token1_amount > 0
+
+    def test_snapshot_aggregates_multiple_positions(self):
+        adapter = _make_lp_snapshot_adapter(
+            [_make_position_state(token_id=77), _make_position_state(token_id=78)],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+        )
+
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+
+        assert result is not None
+        assert result.token_id is None
+        assert result.position_count == 2
+        assert result.token_ids == (77, 78)
+        assert result.token0_amount > 0
+        assert result.token1_amount > 0
+
+
+class TestV4GetPosition:
+    @pytest.mark.asyncio
+    async def test_get_position_returns_deployed_lp_only(self):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
+
+        result = await V4LPAdapter.get_position(adapter)
+
+        assert result.balances["cngn"] > 0
+        assert result.balances["usdc"] > 0
+        assert result.lp_position is not None
+        assert result.lp_position.token_id == "77"
+        assert result.lp_position.token_ids == ["77"]
+
+    @pytest.mark.asyncio
+    async def test_get_position_returns_zero_balances_when_no_nft(self):
+        adapter = _make_lp_snapshot_adapter([], sqrt_price_x96=_price_to_sqrt_x96(1.0))
+
+        result = await V4LPAdapter.get_position(adapter)
+
+        assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+        assert result.lp_position is None

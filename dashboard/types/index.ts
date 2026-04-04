@@ -9,7 +9,9 @@ export interface PriceQuote {
 }
 
 export interface LPPosition {
-  token_id: string;
+  token_id?: string;
+  token_ids: string[];
+  position_count: number;
   liquidity: string;
   range_min: number;
   range_max: number;

@@ -72,6 +72,7 @@ def _build_scheduler(
     arbitrage_engine: Any = None,
     account_manager: Any = None,
     token_contracts: dict | None = None,
+    portfolio_exposure_calculator: Any = None,
     quidax_lp: Any = None,
 ) -> TradingScheduler:
     """Build a minimal TradingScheduler through the real constructor."""
@@ -84,6 +85,7 @@ def _build_scheduler(
         arbitrage_engine=arbitrage_engine,
         account_manager=account_manager,
         token_contracts=token_contracts or {},
+        portfolio_exposure_calculator=portfolio_exposure_calculator,
         quidax_lp=quidax_lp,
         system_state_store=SimpleNamespace(set_system_state=db.set_system_state),
         price_store=SimpleNamespace(
@@ -308,6 +310,20 @@ class TestCheckDexRebalance:
         await sched._check_dex_rebalance()
 
         assert len(fake_dex_adapter.minted) == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_positions_halt_auto_management(self, fake_dex_adapter):
+        fake_dex_adapter._positions = [_make_position(token_id=41), _make_position(token_id=42)]
+
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        await sched._check_dex_rebalance()
+
+        assert len(fake_dex_adapter.minted) == 0
+        assert any("multiple LP positions" in b.get("message", "") for b in broadcasts if b.get("type") == "alert")
+        assert db.insert_action.await_args.kwargs["action_type"] == "lp_management_halted"
 
 
 # =============================================================================
@@ -536,6 +552,43 @@ class TestCreateDexPosition:
 
         assert result is True
         assert db.recent_price_queries == [("uni-bsc_pool", 100)]
+
+
+class TestPortfolioDelta:
+
+    @pytest.mark.asyncio
+    async def test_portfolio_delta_uses_portfolio_exposure_calculator(self):
+        broadcasts = []
+        db = MockDB()
+        exposure = SimpleNamespace(
+            total_cngn=Decimal("1000"),
+            total_usdt=Decimal("50"),
+            total_usdc=Decimal("25"),
+            total_usd_value=Decimal("75.7"),
+            delta_ratio=Decimal("0.009247027741083223"),
+            target_delta=Decimal("0.5"),
+            sources=[],
+        )
+        portfolio_calculator = SimpleNamespace(calculate=AsyncMock(return_value=exposure))
+        arb_engine = SimpleNamespace(
+            update_portfolio_snapshot=MagicMock(),
+            on_dex_dex_update=AsyncMock(),
+        )
+        sched = _build_scheduler(
+            {},
+            broadcasts,
+            db,
+            blended_calculator=MagicMock(),
+            arbitrage_engine=arb_engine,
+            portfolio_exposure_calculator=portfolio_calculator,
+        )
+
+        await sched._check_portfolio_delta()
+
+        portfolio_calculator.calculate.assert_awaited_once()
+        arb_engine.update_portfolio_snapshot.assert_called_once()
+        payload = next(item for item in broadcasts if item.get("type") == "portfolio_delta")
+        assert payload["data"]["total_usd_value"] == float(exposure.total_usd_value)
 
 
 class TestLpLifecycleLocking:

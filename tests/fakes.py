@@ -6,7 +6,7 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.api.schemas import TxResult
+from engine.api.schemas import LPPosition, Position, TxResult
 from tests.conftest_params import make_dex_params
 from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.venues.dex.shared import PositionState
@@ -52,6 +52,7 @@ class FakeDexAdapter:
         self._mint_fails = mint_fails
         self.params = make_dex_params(rebalance_threshold_percent=Decimal("2.0"))
         self.minted: list[dict] = []
+        self._position_balances = {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
 
         class _Config:
             token0_decimals = 6
@@ -76,6 +77,29 @@ class FakeDexAdapter:
 
     def get_position_state(self, token_id: int) -> "PositionState | None":
         return next((p for p in self._positions if p.token_id == token_id), None)
+
+    async def get_position(self) -> Position:
+        lp_position = None
+        if self._positions:
+            token_ids = [str(p.token_id) for p in self._positions]
+            lp_position = LPPosition(
+                token_id=token_ids[0] if len(token_ids) == 1 else None,
+                token_ids=token_ids,
+                position_count=len(token_ids),
+                liquidity=str(sum(p.liquidity for p in self._positions)),
+                range_min=min(p.price_lower for p in self._positions),
+                range_max=max(p.price_upper for p in self._positions),
+                in_range=any(p.in_range for p in self._positions),
+                our_share_pct=None,
+            )
+        return Position(
+            venue=self.name,
+            pair="cNGN/USDC",
+            timestamp=0,
+            balances=dict(self._position_balances),
+            lp_position=lp_position,
+            position_value_usd=None,
+        )
 
     def calculate_mint_amounts(self) -> tuple[int, int]:
         return (

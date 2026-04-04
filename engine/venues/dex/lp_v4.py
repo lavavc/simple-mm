@@ -13,8 +13,7 @@ from web3.types import TxParams, Wei
 from engine.api.schemas import LPPosition, Position, TxResult
 from engine.config import DexParams
 from .shared import (
-    ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, PositionState,
-    _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal,
+    ERC20_ABI, PositionState, sqrt_price_x96_to_decimal,
     _Q96, _tick_to_sqrt_x96, tick_to_price, compute_required_ratio,
 )
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
@@ -92,7 +91,10 @@ class LPBalanceSwapResult:
 
 @dataclass(slots=True)
 class LPPositionSnapshot:
-    token_id: int
+    token_id: int | None
+    token_ids: tuple[int, ...]
+    position_count: int
+    liquidity: int
     token0_amount: Decimal
     token1_amount: Decimal
     token0_symbol: str
@@ -101,7 +103,7 @@ class LPPositionSnapshot:
     range_max: Decimal
     in_range: bool
     position_value_usd: Decimal
-    our_share_pct: Decimal
+    our_share_pct: Decimal | None
 
 
 def _sign_extend_24(v: int) -> int:
@@ -169,13 +171,39 @@ class V4LPAdapter(BaseV4DexAdapter):
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
 
-    def get_position_state(self, token_id: int) -> Optional[PositionState]:
-        """Get position details via PositionManager.getPositionInfo + StateView."""
+    def _get_live_pool_snapshot(self) -> tuple[Decimal, int, Decimal, Decimal | None] | None:
+        """Return the latest live market state needed to evaluate LP positions."""
+        try:
+            pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
+            slot0 = self.state_view.functions.getSlot0(pool_id_bytes).call()
+            sqrt_price_x96 = Decimal(int(slot0[0]))
+            current_tick = int(slot0[1])
+            current_price = sqrt_price_x96_to_decimal(
+                int(sqrt_price_x96),
+                self.config.token0_decimals,
+                self.config.token1_decimals,
+            )
+            if self.config.invert_price and current_price > 0:
+                current_price = Decimal(1) / current_price
+
+            pool_liquidity = Decimal(self.state_view.functions.getLiquidity(pool_id_bytes).call())
+            return sqrt_price_x96, current_tick, current_price, pool_liquidity
+        except Exception as e:
+            logger.warning("get_v4_live_pool_snapshot_failed", venue=self.name, error=str(e))
+            return None
+
+    def _get_position_state_from_market(
+        self,
+        token_id: int,
+        *,
+        current_tick: int,
+        current_price: Decimal,
+    ) -> Optional[PositionState]:
+        """Get position details using a shared live market snapshot."""
         if not self.position_manager_contract:
             return None
         try:
             result = self.position_manager_contract.functions.getPositionInfo(token_id).call()
-            # result = (poolKey tuple, info bytes32)
             info_bytes32: bytes = result[1]
             tick_lower, tick_upper = _decode_position_info(info_bytes32)
 
@@ -190,18 +218,6 @@ class V4LPAdapter(BaseV4DexAdapter):
 
             if liquidity == 0:
                 return None
-
-            slot0 = self.state_view.functions.getSlot0(pool_id_bytes).call()
-            sqrt_price_x96 = int(slot0[0])
-            current_tick = int(slot0[1])
-
-            current_price = sqrt_price_x96_to_decimal(
-                sqrt_price_x96,
-                self.config.token0_decimals,
-                self.config.token1_decimals,
-            )
-            if self.config.invert_price and current_price > 0:
-                current_price = Decimal(1) / current_price
 
             return PositionState(
                 token_id=token_id,
@@ -219,25 +235,66 @@ class V4LPAdapter(BaseV4DexAdapter):
             logger.warning("get_v4_position_state_failed", venue=self.name, token_id=token_id, error=str(e))
             return None
 
+    def get_position_state(self, token_id: int) -> Optional[PositionState]:
+        """Get position details via PositionManager.getPositionInfo + StateView."""
+        market = self._get_live_pool_snapshot()
+        if market is None:
+            return None
+        _, current_tick, current_price, _ = market
+        return self._get_position_state_from_market(
+            token_id,
+            current_tick=current_tick,
+            current_price=current_price,
+        )
+
+    def _empty_position_balances(self) -> dict[str, Decimal]:
+        return {"cngn": Decimal(0), "usdt": Decimal(0), "usdc": Decimal(0)}
+
+    def _add_symbol_balance(
+        self,
+        balances: dict[str, Decimal],
+        symbol: str,
+        amount: Decimal,
+    ) -> None:
+        key = symbol.lower()
+        if key in balances:
+            balances[key] += amount
+        else:
+            balances["usdt"] += amount
+
     # === Position override ===
 
     async def get_position(self) -> Position:
-        """Get current position including real LP data."""
-        pos = await super().get_position()
-        token_ids = self.get_owned_positions()
-        pos_state = self.get_position_state(token_ids[0]) if token_ids else None
-        position_value_usd, _, our_share_pct = self.get_pool_metrics(pos_state)
+        """Get the currently deployed LP position(s) on this venue only."""
+        snapshot = self.get_active_lp_position_snapshot()
+        balances = self._empty_position_balances()
         lp_position = None
-        if pos_state:
+        position_value_usd = None
+
+        if snapshot is not None:
+            self._add_symbol_balance(balances, snapshot.token0_symbol, snapshot.token0_amount)
+            self._add_symbol_balance(balances, snapshot.token1_symbol, snapshot.token1_amount)
             lp_position = LPPosition(
-                token_id=str(pos_state.token_id),
-                liquidity=str(pos_state.liquidity),
-                range_min=pos_state.price_lower,
-                range_max=pos_state.price_upper,
-                in_range=pos_state.in_range,
-                our_share_pct=our_share_pct,
+                token_id=str(snapshot.token_id) if snapshot.token_id is not None else None,
+                token_ids=[str(token_id) for token_id in snapshot.token_ids],
+                position_count=snapshot.position_count,
+                liquidity=str(snapshot.liquidity),
+                range_min=snapshot.range_min,
+                range_max=snapshot.range_max,
+                in_range=snapshot.in_range,
+                our_share_pct=snapshot.our_share_pct,
             )
-        return pos.model_copy(update={"lp_position": lp_position, "position_value_usd": position_value_usd})
+            position_value_usd = snapshot.position_value_usd
+
+        return Position(
+            venue=self.name,
+            pair=f"{self.config.token0_symbol}/{self.config.token1_symbol}",
+            timestamp=int(_time.time() * 1000),
+            balances=balances,
+            lp_position=lp_position,
+            position_value_usd=position_value_usd,
+            volume_24h_usd=None,
+        )
 
     def _compute_lp_token_amounts(
         self,
@@ -274,9 +331,9 @@ class V4LPAdapter(BaseV4DexAdapter):
         pos_state: PositionState,
         *,
         sqrt_price_x96: Decimal,
-        pool_liquidity: Decimal,
+        pool_liquidity: Decimal | None,
     ) -> LPPositionSnapshot:
-        """Build a stable LP snapshot from the active NFT state and cached pool state."""
+        """Build a stable LP snapshot from one active NFT and live pool state."""
         amount0, amount1 = self._compute_lp_token_amounts(pos_state, sqrt_price_x96)
 
         if self.config.cngn_is_token0:
@@ -287,14 +344,19 @@ class V4LPAdapter(BaseV4DexAdapter):
             cngn_price_usd = Decimal(1) / ((sqrt_price_x96 / _Q96) ** 2 * dec_adj)
             position_value_usd = amount0 + amount1 * cngn_price_usd
 
-        our_share_pct = (
-            Decimal(pos_state.liquidity) / pool_liquidity * Decimal(100)
-            if pos_state.in_range
-            else Decimal(0)
-        )
+        our_share_pct: Decimal | None = None
+        if pool_liquidity is not None and pool_liquidity > 0:
+            our_share_pct = (
+                Decimal(pos_state.liquidity) / pool_liquidity * Decimal(100)
+                if pos_state.in_range
+                else Decimal(0)
+            )
 
         return LPPositionSnapshot(
             token_id=pos_state.token_id,
+            token_ids=(pos_state.token_id,),
+            position_count=1,
+            liquidity=pos_state.liquidity,
             token0_amount=amount0,
             token1_amount=amount1,
             token0_symbol=self.config.token0_symbol,
@@ -306,27 +368,69 @@ class V4LPAdapter(BaseV4DexAdapter):
             our_share_pct=our_share_pct,
         )
 
+    def _aggregate_lp_position_snapshots(
+        self,
+        snapshots: list[LPPositionSnapshot],
+    ) -> LPPositionSnapshot | None:
+        """Combine one or more LP NFT snapshots into a single venue-local position view."""
+        if not snapshots:
+            return None
+
+        token_ids = tuple(snapshot.token_ids[0] for snapshot in snapshots)
+        multi_position = len(token_ids) > 1
+        if multi_position:
+            logger.warning("multiple_lp_positions_detected", venue=self.name, token_ids=list(token_ids))
+
+        have_share = all(snapshot.our_share_pct is not None for snapshot in snapshots)
+        return LPPositionSnapshot(
+            token_id=token_ids[0] if len(token_ids) == 1 else None,
+            token_ids=token_ids,
+            position_count=len(token_ids),
+            liquidity=sum(snapshot.liquidity for snapshot in snapshots),
+            token0_amount=sum(snapshot.token0_amount for snapshot in snapshots),
+            token1_amount=sum(snapshot.token1_amount for snapshot in snapshots),
+            token0_symbol=self.config.token0_symbol,
+            token1_symbol=self.config.token1_symbol,
+            range_min=min(snapshot.range_min for snapshot in snapshots),
+            range_max=max(snapshot.range_max for snapshot in snapshots),
+            in_range=any(snapshot.in_range for snapshot in snapshots),
+            position_value_usd=sum(snapshot.position_value_usd for snapshot in snapshots),
+            our_share_pct=(
+                sum(snapshot.our_share_pct or Decimal(0) for snapshot in snapshots)
+                if have_share
+                else None
+            ),
+        )
+
     def get_active_lp_position_snapshot(self) -> LPPositionSnapshot | None:
-        """Return the currently deployed LP NFT composition from cached pool state."""
+        """Return the aggregated deployed LP composition from live pool state."""
         token_ids = self.get_owned_positions()
         if not token_ids:
             return None
 
-        pos_state = self.get_position_state(token_ids[0])
-        if pos_state is None:
+        market = self._get_live_pool_snapshot()
+        if market is None:
             return None
+        sqrt_price_x96, current_tick, current_price, pool_liquidity = market
 
-        from engine.market.pool_state import get_cached_pool_state
+        snapshots: list[LPPositionSnapshot] = []
+        for token_id in token_ids:
+            pos_state = self._get_position_state_from_market(
+                token_id,
+                current_tick=current_tick,
+                current_price=current_price,
+            )
+            if pos_state is None:
+                continue
+            snapshots.append(
+                self._build_lp_position_snapshot(
+                    pos_state,
+                    sqrt_price_x96=sqrt_price_x96,
+                    pool_liquidity=pool_liquidity,
+                )
+            )
 
-        sqrt_price_x96, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
-        if sqrt_price_x96 is None or pool_liquidity is None or pool_liquidity <= 0:
-            return None
-
-        return self._build_lp_position_snapshot(
-            pos_state,
-            sqrt_price_x96=sqrt_price_x96,
-            pool_liquidity=pool_liquidity,
-        )
+        return self._aggregate_lp_position_snapshots(snapshots)
 
     # === LP operations ===
 

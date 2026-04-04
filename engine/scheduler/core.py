@@ -19,6 +19,7 @@ from engine.db.backend import (
     VenueConfigStoreProtocol,
 )
 from engine.lp.rebalancer import LPRebalancer
+from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.price_aggregation import BlendedPriceCalculator
 from engine.market.venue_prices import VenuePriceAggregator
 from engine.scheduler.config import SchedulerConfig
@@ -51,6 +52,7 @@ class TradingScheduler:
         arbitrage_engine: "ArbitrageEngine | None" = None,
         account_manager: "AccountManager | None" = None,
         token_contracts: TokenContracts | None = None,
+        portfolio_exposure_calculator: PortfolioExposureCalculator | None = None,
         quidax_lp: Any | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         price_store: PriceStoreProtocol | None = None,
@@ -75,6 +77,14 @@ class TradingScheduler:
         self.broadcast = broadcast
         self.scheduler = AsyncIOScheduler()
         self.state = SchedulerState(dex_bootstrap_pending=bool(arbitrage_engine))
+        portfolio_calculator = portfolio_exposure_calculator
+        if portfolio_calculator is None and blended_calculator is not None:
+            portfolio_calculator = PortfolioExposureCalculator(
+                venues=venues,
+                account_manager=account_manager,
+                token_contracts=token_contracts or {},
+                blended_calculator=blended_calculator,
+            )
         self.context = SchedulerContext(
             config=config,
             price_aggregator=price_aggregator,
@@ -84,6 +94,7 @@ class TradingScheduler:
             arbitrage_engine=arbitrage_engine,
             account_manager=account_manager,
             token_contracts=token_contracts or {},
+            portfolio_exposure_calculator=portfolio_calculator,
             quidax_lp=quidax_lp,
             system_state_store=system_state_store,
             price_store=price_store,
@@ -217,7 +228,7 @@ class TradingScheduler:
                 )
                 logger.info("auto_fund_quidax_lp_job_registered")
 
-        if self.context.blended_calculator:
+        if self.context.portfolio_exposure_calculator:
             self.scheduler.add_job(
                 self._check_portfolio_delta,
                 IntervalTrigger(seconds=self.config.portfolio_delta_interval),

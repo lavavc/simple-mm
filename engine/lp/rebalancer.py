@@ -70,6 +70,22 @@ class LPRebalancer:
     async def _check_and_rebalance_locked(self, venue: "V4LPAdapter") -> None:
         """Check position state; rebalance if out of range past threshold."""
         token_ids = venue.get_owned_positions()
+        if len(token_ids) > 1:
+            message = (
+                f"{venue.name} has multiple LP positions ({token_ids}); "
+                "automatic LP management halted until resolved."
+            )
+            logger.warning("multiple_lp_positions_halt_auto_management", venue=venue.name, token_ids=token_ids)
+            await self._action_store.insert_action(
+                venue=venue.name,
+                action_type="lp_management_halted",
+                status="failed",
+                error=message,
+                triggered_by="auto:multi_position_halt",
+                metadata={"token_ids": token_ids},
+            )
+            self.broadcast({"type": "alert", "severity": "warning", "message": message})
+            return
         if not token_ids:
             amount0, amount1 = venue.calculate_mint_amounts()
             if amount0 > 0 or amount1 > 0:

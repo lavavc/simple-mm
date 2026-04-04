@@ -20,6 +20,7 @@ from engine.api.schemas import ArbitrageParams, CexParams
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
 from engine.db import open_repository
+from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
 from engine.market.venue_prices import VenuePriceAggregator, create_venue_aggregator
 from engine.runtime import EngineRuntime
@@ -186,6 +187,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         price_store=db.prices,
     )
     logger.info("blended_price_calculator_initialized")
+    portfolio_exposure_calculator = PortfolioExposureCalculator(
+        venues=venues,
+        account_manager=account_manager,
+        token_contracts=TOKEN_CONTRACTS,
+        blended_calculator=blended_calculator,
+    )
+    logger.info("portfolio_exposure_calculator_initialized")
 
     arbitrage_engine: ArbitrageEngine | None = None
     if settings.arb_detection_enabled:
@@ -215,6 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         arbitrage_engine=arbitrage_engine,
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
+        portfolio_exposure_calculator=portfolio_exposure_calculator,
         quidax_lp=quidax_lp,
         system_state_store=db.system_state,
         price_store=db.prices,
@@ -235,6 +244,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         token_contracts=TOKEN_CONTRACTS,
         blended_calculator=blended_calculator,
         normalizer=normalizer,
+        portfolio_exposure_calculator=portfolio_exposure_calculator,
         quidax_lp=quidax_lp,
     )
     app.state.runtime = runtime

@@ -3,7 +3,7 @@
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from engine.config import settings
 
@@ -21,7 +21,9 @@ class PriceQuote(BaseModel):
 class LPPosition(BaseModel):
     """DEX liquidity position details."""
 
-    token_id: str
+    token_id: Optional[str] = None
+    token_ids: list[str] = Field(default_factory=list)
+    position_count: int = 0
     liquidity: str  # BigInt as string
     range_min: Decimal
     range_max: Decimal
@@ -132,6 +134,21 @@ class GlobalPosition(BaseModel):
     total_usd_value: Decimal
     delta_ratio: Decimal
     target_delta: Decimal
+
+
+class PortfolioExposureSource(BaseModel):
+    """One contributing balance source in the global portfolio view."""
+
+    source: str
+    kind: Literal["account", "venue_position", "exchange"]
+    balances: dict[str, Decimal]
+    usd_value: Decimal
+
+
+class PortfolioExposure(GlobalPosition):
+    """Expanded global portfolio position with per-source breakdown."""
+
+    sources: list[PortfolioExposureSource] = Field(default_factory=list)
 
 
 class Alert(BaseModel):

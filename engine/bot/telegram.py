@@ -15,7 +15,6 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from engine.config import Settings
 from engine.runtime import EngineRuntime
-from engine.venues.dex.lp_v4 import V4LPAdapter
 
 logger = structlog.get_logger()
 
@@ -108,30 +107,26 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     lines = ["*Positions*"]
     for name, venue in runtime.venues.items():
         try:
-            lines.append(f"\n*{name}*")
-            if isinstance(venue, V4LPAdapter):
-                snapshot = venue.get_active_lp_position_snapshot()
-                if snapshot is None:
-                    if venue.get_owned_positions():
-                        lines.append("  Active LP position, live composition unavailable")
-                    else:
-                        lines.append("  No active LP position")
-                    continue
-
-                lines.append(f"  token_id: {snapshot.token_id}")
-                lines.append(f"  {snapshot.token0_symbol.lower()}: {snapshot.token0_amount:.4f}")
-                lines.append(f"  {snapshot.token1_symbol.lower()}: {snapshot.token1_amount:.4f}")
-                lines.append(
-                    f"  range: {snapshot.range_min:.6f} -> {snapshot.range_max:.6f}"
-                )
-                lines.append(f"  in_range: {'yes' if snapshot.in_range else 'no'}")
-                lines.append(f"  value_usd: {snapshot.position_value_usd:.4f}")
-                lines.append(f"  our_share_pct: {snapshot.our_share_pct:.4f}")
-                continue
-
             pos = await venue.get_position()
+            lines.append(f"\n*{name}*")
             for token, amt in pos.balances.items():
                 lines.append(f"  {token}: {amt:.4f}")
+            if pos.lp_position:
+                label = (
+                    f"token_id: {pos.lp_position.token_id}"
+                    if pos.lp_position.token_id is not None
+                    else f"token_ids: {', '.join(pos.lp_position.token_ids)}"
+                )
+                lines.append(f"  {label}")
+                lines.append(f"  position_count: {pos.lp_position.position_count}")
+                lines.append(
+                    f"  range: {pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
+                )
+                lines.append(f"  in_range: {'yes' if pos.lp_position.in_range else 'no'}")
+                if pos.position_value_usd is not None:
+                    lines.append(f"  value_usd: {pos.position_value_usd:.4f}")
+                if pos.lp_position.our_share_pct is not None:
+                    lines.append(f"  our_share_pct: {pos.lp_position.our_share_pct:.4f}")
         except Exception as e:
             lines.append(f"\n*{name}*: error ({e})")
     await message.reply_text("\n".join(lines), parse_mode="Markdown")
