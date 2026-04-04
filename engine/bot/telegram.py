@@ -281,7 +281,13 @@ async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # --- Callback handler ---
 
-async def _do_withdraw(venue: str, to_address: str | None = None) -> str:
+async def _do_withdraw(
+    venue: str,
+    to_address: str | None = None,
+    *,
+    action_type: str = "manual_withdraw",
+    triggered_by: str = "telegram:withdraw",
+) -> str:
     from engine.venues.dex.lp_v4 import V4LPAdapter
     runtime = _require_runtime()
     if venue == "all":
@@ -292,9 +298,14 @@ async def _do_withdraw(venue: str, to_address: str | None = None) -> str:
         return f"❌ Venue {venue} not found or not a DEX."
     results = []
     for name, adapter in targets.items():
-        for token_id in adapter.get_owned_positions():
-            result = await adapter.remove_position(token_id, recipient=to_address)
-            results.append(f"{name}#{token_id}: {result.status}")
+        venue_results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
+            adapter,
+            recipient=to_address,
+            action_type=action_type,
+            triggered_by=triggered_by,
+        )
+        for item in venue_results:
+            results.append(f"{name}#{item['token_id']}: {item['status']}")
     return ("✅ Withdrawn:\n" + "\n".join(results)) if results else f"ℹ️ No positions on {venue}."
 
 
@@ -332,7 +343,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await reply_message.reply_text(msg)
     elif data == "confirm:shutdown:unwind":
         await query.edit_message_text("⏳ Unwinding positions and stopping...")
-        msg = await _do_withdraw("all")
+        await runtime.scheduler.pause()
+        msg = await _do_withdraw(
+            "all",
+            action_type="shutdown_unwind",
+            triggered_by="telegram:shutdown_unwind",
+        )
         if reply_message is not None:
             await reply_message.reply_text(f"{msg}\n🛑 Shutting down.")
         asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))

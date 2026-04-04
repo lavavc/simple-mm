@@ -27,4 +27,6 @@ When an LP position moves outside its tick range and the price has drifted more 
 2. Swap LP wallet tokens to the ratio required by the pool at the new range (using exact tick math — the trade account is not involved).
 3. Remint the position at a freshly calculated tick range.
 
+All three steps are persisted in the action log so the LP lifecycle can be reconstructed from the database without relying on runtime logs.
+
 The `downside_skew` adapts to mean-reversion probability: if the current price is 1σ above the EWMA mean, skew shifts up by 0.15 (more range above); if 1σ below, it shifts down. This is capped at ±0.8.

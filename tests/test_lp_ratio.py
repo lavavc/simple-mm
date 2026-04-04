@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from engine.api.schemas import TxResult
 from engine.venues.dex.shared import _Q96, compute_required_ratio
-from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.venues.dex.lp_v4 import LPBalanceSwapResult, V4LPAdapter
 
 
 def _price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
@@ -156,7 +156,8 @@ class TestPrepareLpBalance:
         adapter = _make_balance_adapter(sqrt_p, 1_000_000_000, 0, swap_result=failed)
         result = await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_called_once()
-        assert result is False
+        assert isinstance(result, LPBalanceSwapResult)
+        assert result.tx_result.status == "failed"
 
     @pytest.mark.asyncio
     async def test_target1_never_negative_near_upper_bound(self):

@@ -105,21 +105,20 @@ async def shutdown(
     import signal
 
     if unwind:
+        await runtime.scheduler.pause()
         dex_venues = {k: v for k, v in runtime.venues.items() if isinstance(v, V4LPAdapter)}
-        unwind_results: dict[str, list[dict[str, Any]]] = {}
-        for venue_name, adapter in dex_venues.items():
-            token_ids = adapter.get_owned_positions()
-            removed = []
-            for token_id in token_ids:
-                result = await adapter.remove_position(token_id)
-                removed.append({"token_id": token_id, "status": result.status, "hash": result.hash})
+        unwind_results = await runtime.scheduler.lp_rebalancer.unwind_all_positions(
+            list(dex_venues.values()),
+            triggered_by="api:shutdown_unwind",
+        )
+        for venue_name, removed in unwind_results.items():
+            for item in removed:
                 logger.info(
                     "shutdown_unwind_position",
                     venue=venue_name,
-                    token_id=token_id,
-                    status=result.status,
+                    token_id=item["token_id"],
+                    status=item["status"],
                 )
-            unwind_results[venue_name] = removed
 
         runtime.scheduler.broadcast(
             {

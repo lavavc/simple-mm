@@ -27,6 +27,8 @@ The DB layer is intentionally split into a thin container plus focused stores.
 
 This split matters operationally too: most subsystems now depend on narrow store protocols from `engine/db/backend.py` rather than on a catch-all repository surface.
 
+For LP specifically, the `actions` table is the canonical audit surface. Ratio-prep swaps, mints, removals, manual withdraws, and shutdown unwinds are stored there with structured metadata so the LP package does not need a second bespoke audit trail.
+
 ## Fresh-schema approach
 
 We no longer maintain a historical migration chain. The schema is defined directly in `engine/db/migrations/schema.py` and bootstrapped into an empty or already-compatible SQLite file.

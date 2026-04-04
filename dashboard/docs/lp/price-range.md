@@ -3,13 +3,18 @@ title: Price Range Management
 order: 2
 ---
 
-## Why TWAP, not VWAP
+## Venue-local history
 
-The LP range is set using a **TWAP** (time-weighted average price) over a rolling window of recent swap prices, not the VWAP used for arb blended price. TWAP weights all time periods equally; VWAP weights by volume. For LP range-setting, TWAP is preferable because a single large-volume spike does not shift the range dramatically, preventing unnecessary resets after transient volatility.
+LP range-setting is based only on the venue's own pool history:
+
+- `uni-base` uses `uni-base_pool` snapshots
+- `uni-bsc` uses `uni-bsc_pool` snapshots
+
+The LP subsystem does not use blended pricing or cross-venue fair-value estimates to decide when or how to rerange. That boundary is deliberate so LP can remain a separately shippable package.
 
 ## EWMA volatility estimation
 
-Volatility is estimated using an **online EWMA** (exponentially weighted moving average) over the same price history:
+Volatility is estimated using an **online EWMA** (exponentially weighted moving average) over that venue-local pool history:
 
 The EWMA being "online" means it is not pre-seeded from historical data, so it adapts from startup. We use it to weigh recent prices more heavily, while old prices decay exponentially. A lower λ adapts faster to volatility changes but is noisier. Backtesting suggests using a high lambda, which means that we don't pay much attention to recent prices, therefore avoiding volatility spikes as this is a more profitable setup when looking at the data. Current values:
 
@@ -52,7 +57,11 @@ A rerange is considered when:
 
 The second condition prevents churning on brief range exits caused by momentary volatility. The check runs on the scheduler's LP management cycle.
 
-A separate trigger fires if the live pool price diverges from the engine's fair-value estimate by more than `venue_divergence_rebalance_bps` (default 200 bps = 2%).
+## Future improvement: local early reranging
+
+A venue-local early-rerange trigger is still a legitimate future improvement if ranges get tighter, pool trading gets heavier, or churn economics justify acting before price fully exits the range. The likely form would be a local EWMA or local historical-average trigger using the same venue-local pool history.
+
+That is intentionally out of scope for the current production LP rollout. The live implementation today remains range-exit-only.
 
 ## Pool fees and their effects
 
@@ -84,6 +93,5 @@ LP strategy parameters are defined in `engine/config.py` as `uni_base_*` / `uni_
 | `min_tick_width` | 100 | 100 | Floor on range width in ticks |
 | `max_tick_width` | 1000 | 1000 | Ceiling on range width in ticks |
 | `lookback_points` | None (all) | None (all) | Number of recent prices used for EWMA. None = full history |
-| `venue_divergence_rebalance_bps` | 200 | 200 | Price divergence from fair value that triggers rerange |
 
-> **Not yet implemented**: `preemptive_rebalance` — trigger a rerange before price exits range, based on velocity or predicted trajectory. Noted here as a planned parameter.
+> Potential future enhancement: a venue-local early-rerange trigger based on EWMA drift or local historical divergence. Not enabled in the current implementation.

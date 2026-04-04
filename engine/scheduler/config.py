@@ -23,4 +23,3 @@ class SchedulerConfig:
 
     target_delta_ratio: Decimal = Decimal(str(settings.target_delta_ratio))
     delta_alert_threshold_percent: Decimal = Decimal(str(settings.delta_alert_threshold_percent))
-    venue_divergence_rebalance_bps: int = settings.venue_divergence_rebalance_bps

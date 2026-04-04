@@ -1,5 +1,6 @@
 """Uniswap V4 LP adapter — extends BaseV4DexAdapter with position management."""
 
+from dataclasses import dataclass
 import time as _time
 from decimal import Decimal
 from typing import Any, Optional
@@ -77,6 +78,16 @@ POSITION_MANAGER_ABI = [
         "type": "function",
     },
 ]
+
+
+@dataclass(slots=True)
+class LPBalanceSwapResult:
+    direction: str
+    token_in: str
+    token_out: str
+    amount_in_raw: int
+    min_out_raw: int
+    tx_result: TxResult
 
 
 def _sign_extend_24(v: int) -> int:
@@ -433,7 +444,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         return await self._send_transaction(tx, self.lp_account, output_token=token_out)
 
 
-    async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> bool | None:
+    async def prepare_lp_balance(self, tick_lower: int, tick_upper: int) -> LPBalanceSwapResult | None:
         """Swap LP wallet tokens to the ratio required by the pool at the current price.
 
         Reads the current sqrtPriceX96 from pool Slot0, computes the target token0/token1
@@ -482,22 +493,34 @@ class V4LPAdapter(BaseV4DexAdapter):
             surplus = balance0 - target0
             surplus_raw = int(surplus * Decimal(10 ** self.config.token0_decimals))
             min_out = int(surplus * price * Decimal("0.99") * Decimal(10 ** self.config.token1_decimals))
+            token_in = self.config.token0_address
+            token_out = self.config.token1_address
+            direction = "token0_to_token1"
             logger.info("lp_swap_to_ratio", venue=self.name, direction="token0→token1",
                         surplus=float(surplus), min_out=min_out)
-            result = await self._swap_from_lp(self.config.token0_address, surplus_raw, min_out)
+            result = await self._swap_from_lp(token_in, surplus_raw, min_out)
         else:
             surplus = balance1 - target1
             surplus_raw = int(surplus * Decimal(10 ** self.config.token1_decimals))
             min_out_dec = surplus / price * Decimal("0.99")
             min_out = int(min_out_dec * Decimal(10 ** self.config.token0_decimals))
+            token_in = self.config.token1_address
+            token_out = self.config.token0_address
+            direction = "token1_to_token0"
             logger.info("lp_swap_to_ratio", venue=self.name, direction="token1→token0",
                         surplus=float(surplus), min_out=min_out)
-            result = await self._swap_from_lp(self.config.token1_address, surplus_raw, min_out)
+            result = await self._swap_from_lp(token_in, surplus_raw, min_out)
 
         if result.status != "confirmed":
             logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
-            return False
-        return None
+        return LPBalanceSwapResult(
+            direction=direction,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in_raw=surplus_raw,
+            min_out_raw=min_out,
+            tx_result=result,
+        )
 
     # === Helpers ===
 

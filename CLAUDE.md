@@ -37,6 +37,18 @@ These boundaries are intentional and should stay sharp:
 - `engine/scheduler/core.py` is a wiring shell. Timers, APScheduler lifecycle, and websocket wiring belong there; job behavior belongs in `engine/scheduler/jobs/` or the domain modules they call.
 - `engine/main.py` is the wiring edge. It builds runtime state and connects long-lived services. Do not move business logic there.
 
+The engine should also stay easy to split into separately shippable packages:
+
+- Prices/dashboard
+- LP / market-maker-in-a-box
+- Arbitrage
+
+That means cross-subsystem dependencies should be avoided by default and added only with explicit justification. In particular:
+
+- LP core decisions must stay LP-local. Range setting, rerange triggers, and LP lifecycle control should not depend on blended fair value or arb components.
+- LP may depend on shared neutral infrastructure such as venue adapters, scheduler wiring, DB store protocols, and pool-state/cache utilities.
+- Venue-local EWMA or other venue-local historical triggers are acceptable LP enhancements because they preserve packageability.
+
 When adding a new dependency edge, preserve the current layer model unless there is a deliberate architectural change.
 
 ## Code Style

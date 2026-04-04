@@ -56,4 +56,6 @@ The engine always deploys the full LP wallet balance. Before minting, it reads t
 
 Single-token deposits work: fund the LP account with only cNGN or only USDC/USDT and the engine will swap to the correct ratio automatically on the next rebalance cycle.
 
+The tick range itself is calculated from each venue's own pool history only. `uni-base` uses `uni-base_pool` snapshots and `uni-bsc` uses `uni-bsc_pool` snapshots. LP does not depend on blended fair value for rerange decisions.
+
 See [Operations](operations) for how to fund and withdraw.

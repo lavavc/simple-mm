@@ -11,7 +11,7 @@ The engine is organised in layers. Each layer depends only on layers below it.
 
 **`engine/market/`** — shared market data: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), and gas cost oracle (`gas_oracle.py`). No business logic — only data collection and normalisation.
 
-**`engine/lp/`** — LP strategy layer. `strategy.py` contains pure math functions (EWMA stats, tick range calculation). `rebalancer.py` orchestrates the position lifecycle: check→remove→remint. Nothing here knows arb exists. `DexParams` lives in `engine/config.py` (shared configuration type); tick/ratio protocol math lives in `venues/dex/shared.py`.
+**`engine/lp/`** — LP strategy layer. `strategy.py` contains pure math functions (EWMA stats, tick range calculation). `rebalancer.py` orchestrates the position lifecycle: check→remove→remint. Nothing here knows arb exists. `DexParams` lives in `engine/config.py` (shared configuration type); tick/ratio protocol math lives in `venues/dex/shared.py`. LP range-setting and rerange decisions are venue-local and should stay extractable into a standalone market-maker package.
 
 **`engine/arb/`** — arbitrage layer. Internally grouped into four subdirectories: `detection/` (opportunity finding for CEX-DEX and DEX-DEX paths), `execution/` (route execution, preflight checks, half-open recovery), `risk/` (inventory tracking, trade history), `routing/` (route registry and size selection). Nothing here knows LP exists.
 
@@ -80,6 +80,14 @@ These invariants keep layers independently testable and extractable:
 - `lp/` and `arb/` never import from each other
 - `venues/` never imports from `lp/` or `arb/`
 - All layers may import from `engine/config.py` (shared configuration types)
+
+This is also the packageability rule:
+
+- prices/dashboard should be easy to ship independently
+- LP / market-maker-in-a-box should be easy to ship independently
+- arbitrage should be easy to ship independently
+
+Cross-subsystem dependencies should therefore stay rare and deliberate. Shared infrastructure is fine; shared business logic is not.
 
 At the wiring edge:
 
