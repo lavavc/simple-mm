@@ -9,6 +9,7 @@ Covers the three behaviours that half-open trades exposed:
 import time
 import pytest
 from decimal import Decimal
+from types import SimpleNamespace
 
 import engine.arb.detection.dex_dex as _dex_dex_module
 
@@ -51,6 +52,9 @@ class FakeV4Venue:
         self.cngn_address = "0xcngn"
         self.stable_decimals = 6
         self.cngn_decimals = 6
+        self.trade_account = SimpleNamespace(address="0xDEXDEXFAKE000000000000000000000000000001")
+        self.stable_token = SimpleNamespace(functions=SimpleNamespace(balanceOf=lambda _address: SimpleNamespace(call=lambda: 0)))
+        self.cngn_token = SimpleNamespace(functions=SimpleNamespace(balanceOf=lambda _address: SimpleNamespace(call=lambda: 0)))
         self._sim_result = sim_result   # None = passes, str = error message
         self._swap_ok = swap_ok
         self.swap_calls = []
@@ -69,6 +73,9 @@ class FakeV4Venue:
     async def get_current_price(self):
         return PriceQuote(source=self.name, timestamp=0,
                           bid=Decimal("0.00061"), ask=Decimal("0.00061"), mid=Decimal("0.00061"))
+
+    async def ensure_trade_approvals(self) -> None:
+        return None
 
 
 def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("500")):

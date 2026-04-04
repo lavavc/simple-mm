@@ -4,12 +4,12 @@ import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
-from web3.middleware import geth_poa_middleware
+from web3.middleware import geth_poa_middleware  # type: ignore[attr-defined]
 import structlog
 
 from engine.config import settings
@@ -17,7 +17,7 @@ from engine.config import settings
 logger = structlog.get_logger()
 
 # Enable HD wallet features
-Account.enable_unaudited_hdwallet_features()
+Account.enable_unaudited_hdwallet_features()  # type: ignore[no-untyped-call]
 
 # Anvil's default test mnemonic
 ANVIL_TEST_MNEMONIC = "test test test test test test test test test test test junk"
@@ -173,7 +173,7 @@ class AccountManager:
         # Derive all accounts
         self._derive_accounts()
 
-    def _derive_accounts(self):
+    def _derive_accounts(self) -> None:
         """Derive all configured accounts from the mnemonic."""
         for role, config in self._configs.items():
             account = Account.from_mnemonic(
@@ -206,12 +206,12 @@ class AccountManager:
     def get_private_key(self, role: AccountRole) -> str:
         """Get the private key for a specific role (hex string with 0x prefix)."""
         account = self.get_account(role)
-        return account.key.hex()
+        return str(account.key.hex())
 
     def get_address(self, role: AccountRole) -> str:
         """Get the address for a specific role."""
         account = self.get_account(role)
-        return account.address
+        return str(account.address)
 
     def get_config(self, role: AccountRole) -> AccountConfig:
         """Get the configuration for a specific role."""
@@ -226,7 +226,7 @@ class AccountManager:
     async def get_balance(
         self,
         role: AccountRole,
-        token_contracts: Optional[dict] = None,
+        token_contracts: Optional[dict[Any, Any]] = None,
     ) -> AccountBalance:
         """
         Get balance for an account including native and token balances.
@@ -328,7 +328,7 @@ class AccountManager:
 
     async def check_all_balances(
         self,
-        token_contracts: Optional[dict] = None,
+        token_contracts: Optional[dict[Any, Any]] = None,
     ) -> list[AccountBalance]:
         """
         Check balances for all accounts.
@@ -406,7 +406,7 @@ class AccountManager:
             amount=str(amount),
             tx_hash=tx_hash.hex(),
         )
-        return tx_hash.hex()
+        return str(tx_hash.hex())
 
     async def transfer_native(
         self,
@@ -439,14 +439,14 @@ class AccountManager:
             amount=str(amount),
             tx_hash=tx_hash.hex(),
         )
-        return tx_hash.hex()
+        return str(tx_hash.hex())
 
     def update_thresholds(
         self,
         role: AccountRole,
         min_balance_eth: Optional[Decimal] = None,
         min_balance_tokens: Optional[dict[str, Decimal]] = None,
-    ):
+    ) -> None:
         """
         Update refill thresholds for an account.
 

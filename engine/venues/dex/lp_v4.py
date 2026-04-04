@@ -2,11 +2,12 @@
 
 import time as _time
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
-from eth_abi import encode
+from eth_abi import encode  # type: ignore[attr-defined]
 from web3 import Web3
+from web3.types import TxParams, Wei
 
 from engine.api.schemas import LPPosition, Position, TxResult
 from engine.config import DexParams
@@ -112,6 +113,7 @@ class V4LPAdapter(BaseV4DexAdapter):
     ):
         super().__init__(config, lp_private_key, trade_private_key, strategy_params)
 
+        self.position_manager_contract: Any | None
         if config.position_manager:
             self.position_manager_contract = self.w3.eth.contract(
                 address=Web3.to_checksum_address(config.position_manager),
@@ -256,12 +258,18 @@ class V4LPAdapter(BaseV4DexAdapter):
 
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
         tx_params = self._get_tx_params(self.lp_account)
-        tx_params["value"] = 0
+        tx_params["value"] = Wei(0)
         tx_params["gas"] = 2_000_000  # placeholder; replaced by estimate below
         tx = self.position_manager_contract.functions.modifyLiquidities(
             unlock_data, deadline
         ).build_transaction(tx_params)
-        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": 0})
+        estimate_params: TxParams = {
+            "from": tx["from"],
+            "to": tx["to"],
+            "data": tx["data"],
+            "value": Wei(0),
+        }
+        estimated = self.w3.eth.estimate_gas(estimate_params)
         tx["gas"] = int(estimated * 1.2)
 
         logger.info(
@@ -311,12 +319,18 @@ class V4LPAdapter(BaseV4DexAdapter):
 
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
         tx_params = self._get_tx_params(self.lp_account)
-        tx_params["value"] = 0
+        tx_params["value"] = Wei(0)
         tx_params["gas"] = 2_000_000  # placeholder; replaced by estimate below
         tx = self.position_manager_contract.functions.modifyLiquidities(
             unlock_data, deadline
         ).build_transaction(tx_params)
-        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": 0})
+        estimate_params: TxParams = {
+            "from": tx["from"],
+            "to": tx["to"],
+            "data": tx["data"],
+            "value": Wei(0),
+        }
+        estimated = self.w3.eth.estimate_gas(estimate_params)
         tx["gas"] = int(estimated * 1.2)
 
         logger.info("v4_remove_position", venue=self.name, token_id=token_id, liquidity=pos.liquidity, recipient=to_addr)
@@ -403,7 +417,13 @@ class V4LPAdapter(BaseV4DexAdapter):
         """Swap from the LP account using the same V4 pool (preparatory ratio correction)."""
         await self._ensure_lp_swap_approvals(token_in)
         tx, _ = self._build_swap_tx(token_in, amount_in, min_out, account=self.lp_account)
-        estimated = self.w3.eth.estimate_gas({"from": tx["from"], "to": tx["to"], "data": tx["data"], "value": 0})
+        estimate_params: TxParams = {
+            "from": tx["from"],
+            "to": tx["to"],
+            "data": tx["data"],
+            "value": Wei(0),
+        }
+        estimated = self.w3.eth.estimate_gas(estimate_params)
         tx["gas"] = int(estimated * 1.2)
         token_out = (
             self.config.token1_address
@@ -430,7 +450,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         balance1 = Decimal(balance1_raw) / Decimal(10 ** self.config.token1_decimals)
 
         if balance0 == 0 and balance1 == 0:
-            return
+            return None
 
         r0, r1 = compute_required_ratio(tick_lower, tick_upper, sqrt_price_x96, self.config.token0_decimals, self.config.token1_decimals)
 
@@ -442,7 +462,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         # Total value in token1 units
         total_value = balance0 * price + balance1
         if total_value == 0:
-            return
+            return None
 
         # Target allocations
         denom = r0 * price + r1 if (r0 * price + r1) > 0 else Decimal(1)
@@ -456,7 +476,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             logger.info("lp_balance_already_correct", venue=self.name,
                         balance0=float(balance0), balance1=float(balance1),
                         target0=float(target0), target1=float(target1))
-            return
+            return None
 
         if balance0 > target0:
             surplus = balance0 - target0
@@ -477,6 +497,7 @@ class V4LPAdapter(BaseV4DexAdapter):
         if result.status != "confirmed":
             logger.warning("lp_ratio_swap_failed_skipping_mint", venue=self.name, error=result.error)
             return False
+        return None
 
     # === Helpers ===
 
@@ -508,7 +529,7 @@ class V4LPAdapter(BaseV4DexAdapter):
                 return min(L0, L1)
             return max(L0, L1)
 
-    async def _approve_lp_tokens_if_needed(self):
+    async def _approve_lp_tokens_if_needed(self) -> None:
         """Approve ERC20 tokens to PositionManager from LP account."""
         if not self.position_manager_contract:
             return
@@ -528,7 +549,7 @@ class V4LPAdapter(BaseV4DexAdapter):
                 self._lp_approvals_done.add(cache_key)
                 continue
             tx_params = self._get_tx_params(self.lp_account)
-            tx_params["value"] = 0
+            tx_params["value"] = Wei(0)
             tx_params["gas"] = 100_000
             tx = token.functions.approve(
                 Web3.to_checksum_address(pm_addr), 2 ** 256 - 1

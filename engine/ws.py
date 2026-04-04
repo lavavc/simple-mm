@@ -55,7 +55,7 @@ class ConnectionManager:
         self._connections.discard(ws)
         logger.info("ws_client_disconnected", clients=self.client_count)
 
-    def broadcast(self, event: dict) -> None:
+    def broadcast(self, event: dict[str, Any]) -> None:
         """Broadcast an event dict to all connected clients.
 
         Safe to call from both sync and async contexts — the scheduler

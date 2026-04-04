@@ -3,15 +3,19 @@ Pool state cache: fetch and store on-chain state for the arb engine.
 Supports V3-compatible pools (AssetChain) and V4 pools (Uniswap Base/BSC).
 """
 
-from decimal import Decimal, getcontext
 import asyncio
 import time
+from decimal import Decimal, getcontext
+from typing import Any
+
+import structlog
+from web3 import AsyncWeb3
+
 from engine.config import settings
 from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
 from engine.venues.dex.pool_reader_v3 import PoolReadConfig
 from engine.venues.dex.shared import V4PoolReadConfig
-from web3 import AsyncWeb3
-import structlog
+from engine.web3_utils import as_hexstr
 
 logger = structlog.get_logger()
 getcontext().prec = 50
@@ -30,7 +34,7 @@ async def _fetch_fee_with_retry(w3: AsyncWeb3, pool: str, pool_address: str) -> 
     last_err: Exception | None = None
     for attempt in range(_FEE_MAX_ATTEMPTS):
         try:
-            fee_raw = await w3.eth.call({"to": pool, "data": FEE_SELECTOR})
+            fee_raw = await w3.eth.call({"to": pool, "data": as_hexstr(FEE_SELECTOR)})
             return Decimal(int.from_bytes(fee_raw[:32], "big")) / Decimal(1000000)
         except Exception as e:
             last_err = e
@@ -72,7 +76,7 @@ STATE_VIEW_ABI = [
 
 # Cache to prevent making duplicate RPC calls for liquidity if the tick hasn't changed.
 # Structure: { pool_address: {"tick": int, "liquidity": Decimal, "sqrt_p": Decimal, "timestamp": float} }
-_POOL_CACHE: dict[str, dict] = {}
+_POOL_CACHE: dict[str, dict[str, Any]] = {}
 
 def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | None, float | None, Decimal | None]:
     """Retrieve the latest known state from memory without network calls."""
@@ -81,14 +85,14 @@ def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | 
         return data["sqrt_p"], data["liquidity"], data.get("timestamp"), data.get("fee")
     return None, None, None, None
 
-async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str = None) -> bool:
+async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str | None = None) -> bool:
     """Fetches the state for a single V3-compatible pool and updates the cache. Returns True if successful."""
     rpc_url = rpc_url_override or config.rpc_url
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
     pool = w3.to_checksum_address(config.pool_address)
 
     try:
-        slot0_raw = await w3.eth.call({"to": pool, "data": SLOT0_SELECTOR})
+        slot0_raw = await w3.eth.call({"to": pool, "data": as_hexstr(SLOT0_SELECTOR)})
         sqrt_price_x96 = Decimal(int.from_bytes(slot0_raw[:32], "big"))
 
         tick_bytes = slot0_raw[32:64][-3:]
@@ -114,7 +118,7 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
                 )
                 fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
         else:
-            liquidity_raw = await w3.eth.call({"to": pool, "data": LIQUIDITY_SELECTOR})
+            liquidity_raw = await w3.eth.call({"to": pool, "data": as_hexstr(LIQUIDITY_SELECTOR)})
             liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
             fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
             logger.debug("pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
@@ -181,7 +185,7 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
         return False
 
 
-def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick: int, fee: int):
+def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick: int, fee: int) -> None:
     """Update cache from a V4 Swap event — zero RPC calls."""
     _POOL_CACHE[pool_id] = {
         "tick": tick,
@@ -192,14 +196,14 @@ def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick
     }
 
 
-async def seed_pool_states():
+async def seed_pool_states() -> None:
     """Initializes the memory state manager by fetching all pools once."""
     logger.info("seeding_initial_pool_states")
     await seed_dex_pool_states()
     await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
 
 
-async def seed_dex_pool_states():
+async def seed_dex_pool_states() -> None:
     """Initializes only the Base/BSC DEX pool cache used by DEX-DEX arbitrage."""
     logger.info("seeding_initial_dex_pool_states")
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG

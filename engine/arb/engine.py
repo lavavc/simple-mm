@@ -18,7 +18,7 @@ from engine.arb.execution.recovery import (
     recover_dex_half_open as _recover_dex_half_open_impl,
 )
 from engine.arb.execution.route_execution import execute_route as _execute_route_impl
-from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION, TradeRoute
+from engine.arb.routing.route_registry import Pipeline, ROUTES_BY_DIRECTION, TradeRoute
 from engine.arb.routing.router import RouteCandidate, SelectedRoute, select_route
 from engine.arb.wallet_state import (
     fetch_venue_wallet_snapshot as _fetch_venue_wallet_snapshot_impl,
@@ -47,7 +47,7 @@ class ArbitrageEngine:
         self,
         venues: dict[str, VenueAdapter],
         params: ArbitrageParams,
-        broadcast: Callable[[dict], Any],
+        broadcast: Callable[[dict[str, Any]], Any],
         execute_cex_dex_enabled: bool = False,
         execute_dex_dex_enabled: bool = False,
         arbitrage_store: ArbitrageStoreProtocol | None = None,
@@ -73,23 +73,23 @@ class ArbitrageEngine:
         self._arb_executing = False
         self._inventory_seeded = False
         self._trade_approvals_seeded = False
-        self._cex_curve_task: Optional[asyncio.Task] = None
-        self._dex_curve_task: Optional[asyncio.Task] = None
-        self._pool_seed_task: Optional[asyncio.Task] = None
+        self._cex_curve_task: Optional[asyncio.Task[Any]] = None
+        self._dex_curve_task: Optional[asyncio.Task[Any]] = None
+        self._pool_seed_task: Optional[asyncio.Task[Any]] = None
 
     @property
     def enabled(self) -> bool:
         return self._enabled
 
-    def enable(self):
+    def enable(self) -> None:
         self._enabled = True
         logger.info("arbitrage_engine_enabled")
 
-    def disable(self):
+    def disable(self) -> None:
         self._enabled = False
         logger.info("arbitrage_engine_disabled")
 
-    def set_execution_enabled(self, pipeline: str, enabled: bool) -> None:
+    def set_execution_enabled(self, pipeline: Pipeline, enabled: bool) -> None:
         if pipeline == "cex_dex":
             self.execute_cex_dex_enabled = enabled
         elif pipeline == "dex_dex":
@@ -102,7 +102,7 @@ class ArbitrageEngine:
     # CEX-DEX pipeline
     # ------------------------------------------------------------------
 
-    async def on_cex_dex_depth(self, depth, balances: list) -> None:
+    async def on_cex_dex_depth(self, depth: Any, balances: list[Any]) -> None:
         """
         Entry point for CEX-DEX arb. Called by scheduler on every Quidax depth update.
         Computes optimal arb + portfolio valuation, broadcasts both, optionally executes.
@@ -154,7 +154,7 @@ class ArbitrageEngine:
         if not self._cex_curve_task or self._cex_curve_task.done():
             self._cex_curve_task = asyncio.create_task(self._broadcast_cex_curve(depth, signal))
 
-    async def _broadcast_cex_curve(self, depth, signal) -> None:
+    async def _broadcast_cex_curve(self, depth: Any, signal: dict[str, Any] | None) -> None:
         """Background: compute full CEX-DEX curve and broadcast."""
         from engine.arb.detection.cex_dex import compute_arb_curve
         from engine.market.pool_state import seed_pool_states
@@ -236,7 +236,7 @@ class ArbitrageEngine:
 
         await self._refresh_inventory_for_venues(*venue_names)
 
-    async def _record_dex_opportunity(self, fast: dict) -> str:
+    async def _record_dex_opportunity(self, fast: dict[str, Any]) -> str:
         """Persist the DEX-DEX opportunity to DB and broadcast it. Returns opp_id."""
         from engine.config import settings
         optimal = fast.get("optimal_arb", {})
@@ -324,27 +324,32 @@ class ArbitrageEngine:
             low_inventory_venues=inv["low_inventory_venues"],
         )
 
-    def update_params(self, params: ArbitrageParams):
+    def update_params(self, params: ArbitrageParams) -> None:
         self.params = params
         self.inventory.params = params
         logger.info("arbitrage_params_updated")
 
-    def reset_circuit_breaker(self):
+    def reset_circuit_breaker(self) -> None:
         self.inventory.reset_circuit_breaker()
 
-    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal, cngn_price_usd: Decimal = Decimal("0")):
+    def update_portfolio_snapshot(
+        self,
+        cngn_value_usd: Decimal,
+        total_usd: Decimal,
+        cngn_price_usd: Decimal = Decimal("0"),
+    ) -> None:
         self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
 
-    async def recover_dex_half_open(self, opp_id: str) -> dict:
+    async def recover_dex_half_open(self, opp_id: str) -> dict[str, Any]:
         return await _recover_dex_half_open_impl(self, opp_id)
 
-    async def _recover_dex_half_open_inner(self, opp_id: str) -> dict:
+    async def _recover_dex_half_open_inner(self, opp_id: str) -> dict[str, Any]:
         return await _recover_dex_half_open_inner_impl(self, opp_id)
 
-    async def recover_cex_half_open(self, opp_id: str) -> dict:
+    async def recover_cex_half_open(self, opp_id: str) -> dict[str, Any]:
         return await _recover_cex_half_open_impl(self, opp_id)
 
-    def _reconcile_balances(self, balances: list) -> None:
+    def _reconcile_balances(self, balances: list[Any]) -> None:
         _reconcile_balances_impl(self, balances)
 
     def _fetch_venue_wallet_snapshot(self, venue_name: str) -> tuple[str, Decimal, Decimal] | None:
@@ -353,5 +358,5 @@ class ArbitrageEngine:
     async def _refresh_inventory_for_venues(self, *venue_names: str) -> None:
         await _refresh_inventory_for_venues_impl(self, *venue_names)
 
-    async def _seed_account_inventory(self, *, ensure_approvals: bool = True):
+    async def _seed_account_inventory(self, *, ensure_approvals: bool = True) -> None:
         await _seed_account_inventory_impl(self, ensure_approvals=ensure_approvals)

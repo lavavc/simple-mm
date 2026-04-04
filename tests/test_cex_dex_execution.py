@@ -39,6 +39,8 @@ class FakeV4Venue:
         self.stable_decimals = 6
         self.cngn_decimals = 6
         self.trade_account = SimpleNamespace(address="0x23DF63FAKE0000000000000000000000002e14E4")
+        self.stable_token = SimpleNamespace(functions=SimpleNamespace(balanceOf=lambda _address: SimpleNamespace(call=lambda: 0)))
+        self.cngn_token = SimpleNamespace(functions=SimpleNamespace(balanceOf=lambda _address: SimpleNamespace(call=lambda: 0)))
         self._sim_result = sim_result
         self._swap_ok = swap_ok
         self.sim_calls = []
@@ -57,6 +59,9 @@ class FakeV4Venue:
     async def get_current_price(self):
         return PriceQuote(source=self.name, timestamp=0,
                           bid=Decimal("0.00061"), ask=Decimal("0.00061"), mid=Decimal("0.00061"))
+
+    async def ensure_trade_approvals(self) -> None:
+        return None
 
 
 class FakeCexVenue:

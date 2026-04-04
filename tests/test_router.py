@@ -30,7 +30,16 @@ def _make_candidate(
     signal: dict | None = None,
 ) -> RouteCandidate:
     if signal is None:
-        signal = {"depth": {buy_venue: _default_depth()}} if direction in {"QUIDAX_TO_UNI_BASE", "QUIDAX_TO_UNI_BSC"} else {}
+        signal = (
+            {"depth": {"quidax": _default_depth()}}
+            if direction in {
+                "QUIDAX_TO_UNI_BASE",
+                "QUIDAX_TO_UNI_BSC",
+                "UNI_BASE_TO_QUIDAX",
+                "UNI_BSC_TO_QUIDAX",
+            }
+            else {}
+        )
     return RouteCandidate(
         direction=direction,
         buy_venue=buy_venue,
@@ -327,8 +336,18 @@ class TestSelectRouteTiebreak:
         assert result is not None
         assert result.candidate.direction == "QUIDAX_TO_UNI_BASE"
 
-    def test_inventory_alignment_tiebreak_long_cngn(self):
+    def test_inventory_alignment_tiebreak_long_cngn(self, monkeypatch):
         """When long cNGN (imbalance > threshold), prefer selling cNGN to CEX."""
+        monkeypatch.setattr(_router, "estimate_max_cex_buy_usd_for_cngn", lambda depth, wallet_cngn: Decimal("200"))
+        monkeypatch.setattr(
+            _router,
+            "estimate_max_cex_dex_buy_usd_for_cngn",
+            lambda direction, depth, wallet_cngn: {
+                "optimal_size_usd": Decimal("200"),
+                "expected_profit_usd": Decimal("5"),
+                "cngn_transferred": Decimal("100"),
+            },
+        )
         inv = _make_inventory(
             imbalance=50.0,  # above $10 threshold
             per_account={"uni-base": 500, "quidax": 500},
@@ -338,15 +357,15 @@ class TestSelectRouteTiebreak:
         c_sell = _make_candidate(
             direction="UNI_BASE_TO_QUIDAX",  # in _SELLS_CNGN_TO_CEX
             buy_venue="uni-base", sell_venue="quidax",
-            profit_usd=5.0, gas_usd=0.07,
+            size_usd=200.0, profit_usd=5.0, gas_usd=0.07,
         )
         # buy-from-CEX direction (misaligned): buy on quidax, sell on uni-base
         c_buy = _make_candidate(
             direction="QUIDAX_TO_UNI_BASE",  # in _BUYS_CNGN_FROM_CEX
             buy_venue="quidax", sell_venue="uni-base",
-            profit_usd=5.0, gas_usd=0.07,
+            size_usd=200.0, profit_usd=5.0, gas_usd=0.07,
         )
         result = select_route([c_sell, c_buy], inv)
-        if result:
-            # Tiebreak should prefer the aligned sell direction
-            assert result.candidate.direction == "UNI_BASE_TO_QUIDAX"
+        assert result is not None
+        # Tiebreak should prefer the aligned sell direction
+        assert result.candidate.direction == "UNI_BASE_TO_QUIDAX"
