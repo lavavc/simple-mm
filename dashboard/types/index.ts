@@ -12,11 +12,14 @@ export interface LPPosition {
   token_id?: string;
   token_ids: string[];
   position_count: number;
-  liquidity: string;
-  range_min: number;
-  range_max: number;
-  in_range: boolean;
-  our_share_pct?: number;
+  liquidity?: string | null;
+  range_min?: number | null;
+  range_max?: number | null;
+  in_range?: boolean | null;
+  our_share_pct?: number | null;
+  snapshot_status: 'live' | 'stale' | 'degraded';
+  snapshot_timestamp?: number | null;
+  snapshot_message?: string | null;
 }
 
 export interface Position {

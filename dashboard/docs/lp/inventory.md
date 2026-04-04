@@ -7,7 +7,21 @@ order: 3
 
 The portfolio targets a **50/50 split** between USD-denominated assets (USDC, USDT) and NGN-denominated assets (cNGN).
 
-`portfolio_value()` computes the USD value of all positions across all venues — LP token amounts (from tick math), trade account balances, and CEX balances — and returns the aggregate delta ratio. This runs on a timer (default every 2 minutes) and on each CEX-DEX signal.
+The engine now computes one canonical global portfolio snapshot from three additive buckets:
+
+1. **Managed on-chain wallets** from `account_manager.check_all_balances(...)`
+2. **Deployed LP inventory** from explicitly registered LP venues
+3. **Off-chain exchange balances** from explicitly registered exchange venues
+
+Today that means:
+
+- on-chain inventory includes `uni-base-trade`, `uni-bsc-trade`, `quidax-trade-fund`, `quidax-lp`, `blockradar`, and any rare residual balances still sitting in `uni-base-lp` / `uni-bsc-lp`
+- deployed LP inventory is added from `uni-base` and `uni-bsc`
+- off-chain exchange inventory is added from `quidax` only
+
+This snapshot is exposed through both `/positions/global` and `/portfolio/exposure`, and the scheduler broadcasts it as `portfolio_delta` every 2 minutes by default.
+
+The inclusion rule is explicit by design: if a new venue should affect global totals, it must get one entry in `engine/market/portfolio_registry.py`. Unregistered venue positions remain visible for diagnostics, but they do not silently change portfolio totals.
 
 If delta deviates by more than `delta_alert_threshold_percent` (default 10%) from target, an alert is broadcast. If it exceeds `max_delta_ratio` (default 60% cNGN), `can_trade()` blocks new arb trades entirely.
 

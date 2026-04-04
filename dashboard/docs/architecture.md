@@ -9,7 +9,7 @@ The engine is organised in layers. Each layer depends only on layers below it.
 
 **`engine/venues/`** — thin adapters over on-chain contracts and CEX APIs. No strategy logic lives here. Adapters expose a uniform interface: `get_position()`, `execute_swap()`, `mint_position()`, etc.
 
-**`engine/market/`** — shared market data: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), and gas cost oracle (`gas_oracle.py`). No business logic — only data collection and normalisation.
+**`engine/market/`** — shared market data and layer-safe shared services: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), gas cost oracle (`gas_oracle.py`), and the global portfolio snapshot service (`portfolio_exposure.py` + `portfolio_registry.py`). These modules must stay importable in isolation: no FastAPI schemas, no concrete venue adapters, and no eager package exports that pull in higher layers.
 
 **`engine/lp/`** — LP strategy layer. `strategy.py` contains pure math functions (EWMA stats, tick range calculation). `rebalancer.py` orchestrates the position lifecycle: check→remove→remint. Nothing here knows arb exists. `DexParams` lives in `engine/config.py` (shared configuration type); tick/ratio protocol math lives in `venues/dex/shared.py`. LP range-setting and rerange decisions are venue-local and should stay extractable into a standalone market-maker package.
 
@@ -34,6 +34,8 @@ At startup the app constructs a single `EngineRuntime` in `engine/runtime.py`. I
 - `blended_calculator`
 - `normalizer`
 - `token_contracts`
+- `portfolio_exposure_calculator`
+- `portfolio_source_registry`
 - `quidax_lp`
 
 FastAPI routes resolve everything from `app.state.runtime` via shared dependencies in `engine/api/deps.py`. There is no parallel `app.state.db` or module-global route state.
@@ -66,6 +68,8 @@ The scheduler follows the same pattern:
 
 **API read path:** HTTP request → `api/deps.get_runtime` → domain router in `engine/api/routes/` → runtime service or DB store → response model.
 
+**Global portfolio path:** HTTP request or scheduler tick → `market/portfolio_exposure.py` → all account-manager balances + registered additive sources from `market/portfolio_registry.py` → `/positions/global`, `/portfolio/exposure`, or `portfolio_delta` broadcast.
+
 **Scheduler job path:** `TradingScheduler.start()` registers timers → delegated job coordinator in `engine/scheduler/jobs/` executes the business logic → events are broadcast over websocket/Telegram and persisted via domain stores.
 
 ---
@@ -80,6 +84,7 @@ These invariants keep layers independently testable and extractable:
 - `lp/` and `arb/` never import from each other
 - `venues/` never imports from `lp/` or `arb/`
 - All layers may import from `engine/config.py` (shared configuration types)
+- `engine/market/portfolio_exposure.py` must not import API schema modules, concrete venue adapters, or eager package exports from `engine.db`
 
 This is also the packageability rule:
 
@@ -122,7 +127,7 @@ Arbitrage thresholds use the `ARBITRAGE_*` prefix (e.g. `ARBITRAGE_MIN_PROFIT_US
 
 | Goal | Start reading here |
 |---|---|
-| Add a venue | `engine/venues/base.py` → `engine/venues/dex/uniswap_base.py` |
+| Add a venue | `engine/venues/base.py` → venue adapter → route registry; if it contributes to global totals, also add one explicit entry in `engine/market/portfolio_registry.py` |
 | Tune LP strategy | `engine/lp/strategy.py` + `engine/config.py` LP section |
 | Understand arb detection | `engine/arb/detection/cex_dex.py` and `dex_dex.py` |
 | Trace an arb execution | `engine/arb/routing/route_registry.py` → `engine/arb/execution/route_execution.py` |

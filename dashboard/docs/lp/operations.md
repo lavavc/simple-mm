@@ -7,11 +7,19 @@ order: 4
 
 The dashboard LP tab shows position state for each venue in real time via WebSocket. Use the Telegram bot for quick operational checks:
 
-- `/positions` — tick range, token amounts, and in-range status per venue
+- `/positions` — token IDs, balances, tick range, and LP snapshot status per venue
 - `/balances` — account balances across all HD wallet roles
 - `/status` — engine state, arb mode, circuit breaker
 
-Portfolio delta is broadcast as `portfolio_value` WebSocket events every 2 minutes.
+Portfolio delta is broadcast as `portfolio_delta` WebSocket events every 2 minutes.
+
+LP status surfaces use the same contract everywhere:
+
+- **`live`** — current composition and value are available
+- **`stale`** — last successful composition/value is shown, with a warning
+- **`degraded`** — the LP NFT still exists, but composition/value are unavailable
+
+This matters operationally: a transient RPC or cache failure should not be read as “no LP position”.
 
 ## Balance alerts
 

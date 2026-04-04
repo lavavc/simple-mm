@@ -23,6 +23,16 @@ To view all derived addresses and funding requirements:
 docker run --rm --env-file /opt/repo/.env ghcr.io/lavavc/automated-infra:latest python3 scripts/show_accounts.py
 ```
 
+## Inventory model
+
+Global portfolio totals treat account roles and venue positions differently:
+
+- on-chain inventory comes from the managed HD-wallet roles above
+- deployed LP inventory is added separately from the `uni-base` and `uni-bsc` LP NFTs
+- off-chain exchange inventory is added from `quidax` only
+
+In practice that means `quidax-trade-fund`, `quidax-lp`, the trade accounts, the Blockradar account, and any rare residual balances left on the LP wallets are all on-chain inventory. `quidax-lp` is not a separate off-chain exchange source.
+
 ## What needs funding and when
 
 ### Phase 1 (now) — price feeds + LP on Uniswap Base
@@ -107,16 +117,13 @@ Every pull request and every push to `main` on [lavavc/automated-infra](https://
 
 ## Capital allocation
 
-Each DEX venue has two explicit fields controlling how much to deploy as liquidity:
+The engine deploys the full LP wallet balance for each venue. There are no separate `deploy_token0` / `deploy_token1` knobs in the live LP path.
 
-| Field | Default | Meaning |
-|---|---|---|
-| `deploy_token0` | `0` | Absolute cNGN amount to use for LP |
-| `deploy_token1` | `0` | Absolute USDC/USDT amount to use for LP |
+Operationally that means:
 
-Defaults to `0` — nothing is deployed until you explicitly configure amounts. The engine caps each value to the actual wallet balance, so you can safely set large numbers without risk of overdraft.
-
-Configure in `engine/config.py` under `DexParams` defaults and restart the engine.
+- fund the LP wallet with however much capital should be deployed
+- keep trade wallets separate for arb execution
+- if tokens remain on an LP wallet after an unwind or failed mint, they count as on-chain inventory until redeployed
 
 ## Stopping and starting trading
 
