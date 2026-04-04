@@ -90,6 +90,20 @@ class LPBalanceSwapResult:
     tx_result: TxResult
 
 
+@dataclass(slots=True)
+class LPPositionSnapshot:
+    token_id: int
+    token0_amount: Decimal
+    token1_amount: Decimal
+    token0_symbol: str
+    token1_symbol: str
+    range_min: Decimal
+    range_max: Decimal
+    in_range: bool
+    position_value_usd: Decimal
+    our_share_pct: Decimal
+
+
 def _sign_extend_24(v: int) -> int:
     """Sign-extend a 24-bit integer."""
     if v & 0x800000:
@@ -224,6 +238,95 @@ class V4LPAdapter(BaseV4DexAdapter):
                 our_share_pct=our_share_pct,
             )
         return pos.model_copy(update={"lp_position": lp_position, "position_value_usd": position_value_usd})
+
+    def _compute_lp_token_amounts(
+        self,
+        pos_state: PositionState,
+        sqrt_price_x96: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        """Compute the exact token amounts held inside the LP NFT at the current price."""
+        liquidity = pos_state.liquidity
+        sqrt_lower = int(_tick_to_sqrt_x96(pos_state.tick_lower))
+        sqrt_upper = int(_tick_to_sqrt_x96(pos_state.tick_upper))
+        sqrt_price = int(sqrt_price_x96)
+
+        t0_scale = Decimal(10 ** self.config.token0_decimals)
+        t1_scale = Decimal(10 ** self.config.token1_decimals)
+
+        if sqrt_price <= sqrt_lower:
+            amount0 = Decimal(
+                liquidity * _Q96 * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)
+            ) / t0_scale
+            amount1 = Decimal(0)
+        elif sqrt_price >= sqrt_upper:
+            amount0 = Decimal(0)
+            amount1 = Decimal(liquidity * (sqrt_upper - sqrt_lower) // _Q96) / t1_scale
+        else:
+            amount0 = Decimal(
+                liquidity * _Q96 * (sqrt_upper - sqrt_price) // (sqrt_price * sqrt_upper)
+            ) / t0_scale
+            amount1 = Decimal(liquidity * (sqrt_price - sqrt_lower) // _Q96) / t1_scale
+
+        return amount0, amount1
+
+    def _build_lp_position_snapshot(
+        self,
+        pos_state: PositionState,
+        *,
+        sqrt_price_x96: Decimal,
+        pool_liquidity: Decimal,
+    ) -> LPPositionSnapshot:
+        """Build a stable LP snapshot from the active NFT state and cached pool state."""
+        amount0, amount1 = self._compute_lp_token_amounts(pos_state, sqrt_price_x96)
+
+        if self.config.cngn_is_token0:
+            cngn_price_usd = (sqrt_price_x96 / _Q96) ** 2
+            position_value_usd = amount0 * cngn_price_usd + amount1
+        else:
+            dec_adj = Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals))
+            cngn_price_usd = Decimal(1) / ((sqrt_price_x96 / _Q96) ** 2 * dec_adj)
+            position_value_usd = amount0 + amount1 * cngn_price_usd
+
+        our_share_pct = (
+            Decimal(pos_state.liquidity) / pool_liquidity * Decimal(100)
+            if pos_state.in_range
+            else Decimal(0)
+        )
+
+        return LPPositionSnapshot(
+            token_id=pos_state.token_id,
+            token0_amount=amount0,
+            token1_amount=amount1,
+            token0_symbol=self.config.token0_symbol,
+            token1_symbol=self.config.token1_symbol,
+            range_min=pos_state.price_lower,
+            range_max=pos_state.price_upper,
+            in_range=pos_state.in_range,
+            position_value_usd=position_value_usd,
+            our_share_pct=our_share_pct,
+        )
+
+    def get_active_lp_position_snapshot(self) -> LPPositionSnapshot | None:
+        """Return the currently deployed LP NFT composition from cached pool state."""
+        token_ids = self.get_owned_positions()
+        if not token_ids:
+            return None
+
+        pos_state = self.get_position_state(token_ids[0])
+        if pos_state is None:
+            return None
+
+        from engine.market.pool_state import get_cached_pool_state
+
+        sqrt_price_x96, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
+        if sqrt_price_x96 is None or pool_liquidity is None or pool_liquidity <= 0:
+            return None
+
+        return self._build_lp_position_snapshot(
+            pos_state,
+            sqrt_price_x96=sqrt_price_x96,
+            pool_liquidity=pool_liquidity,
+        )
 
     # === LP operations ===
 
@@ -370,40 +473,16 @@ class V4LPAdapter(BaseV4DexAdapter):
         from engine.market.pool_state import get_cached_pool_state
 
         sqrt_p, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
-        if not sqrt_p or not pool_liquidity:
+        if sqrt_p is None or pool_liquidity is None or pool_liquidity <= 0:
             return None, None, None
 
-        L = pos_state.liquidity
-        sqrt_lower = int(_tick_to_sqrt_x96(pos_state.tick_lower))
-        sqrt_upper = int(_tick_to_sqrt_x96(pos_state.tick_upper))
-        sp = int(sqrt_p)
+        snapshot = self._build_lp_position_snapshot(
+            pos_state,
+            sqrt_price_x96=sqrt_p,
+            pool_liquidity=pool_liquidity,
+        )
 
-        t0_scale = Decimal(10 ** self.config.token0_decimals)
-        t1_scale = Decimal(10 ** self.config.token1_decimals)
-
-        if sp <= sqrt_lower:
-            amount0 = Decimal(L * _Q96 * (sqrt_upper - sqrt_lower) // (sqrt_lower * sqrt_upper)) / t0_scale
-            amount1 = Decimal(0)
-        elif sp >= sqrt_upper:
-            amount0 = Decimal(0)
-            amount1 = Decimal(L * (sqrt_upper - sqrt_lower) // _Q96) / t1_scale
-        else:
-            amount0 = Decimal(L * _Q96 * (sqrt_upper - sp) // (sp * sqrt_upper)) / t0_scale
-            amount1 = Decimal(L * (sp - sqrt_lower) // _Q96) / t1_scale
-
-        if self.config.cngn_is_token0:
-            # Base: token0=cNGN (6 dec), token1=USDC (6 dec)
-            cngn_price_usd = (sqrt_p / _Q96) ** 2
-            position_value_usd = amount0 * cngn_price_usd + amount1
-        else:
-            # BSC: token0=USDT (18 dec), token1=cNGN (6 dec)
-            dec_adj = Decimal(10 ** (self.config.token0_decimals - self.config.token1_decimals))
-            cngn_price_usd = Decimal(1) / ((sqrt_p / _Q96) ** 2 * dec_adj)
-            position_value_usd = amount0 + amount1 * cngn_price_usd
-
-        our_share_pct = Decimal(L) / pool_liquidity * Decimal(100) if pos_state.in_range else Decimal(0)
-
-        return position_value_usd, None, our_share_pct
+        return snapshot.position_value_usd, None, snapshot.our_share_pct
 
     # === Capital allocation ===
 

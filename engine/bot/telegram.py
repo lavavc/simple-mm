@@ -15,6 +15,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from engine.config import Settings
 from engine.runtime import EngineRuntime
+from engine.venues.dex.lp_v4 import V4LPAdapter
 
 logger = structlog.get_logger()
 
@@ -104,11 +105,31 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not runtime.venues:
         await message.reply_text("No venues configured.")
         return
-    lines = ["*LP Positions*"]
+    lines = ["*Positions*"]
     for name, venue in runtime.venues.items():
         try:
-            pos = await venue.get_position()
             lines.append(f"\n*{name}*")
+            if isinstance(venue, V4LPAdapter):
+                snapshot = venue.get_active_lp_position_snapshot()
+                if snapshot is None:
+                    if venue.get_owned_positions():
+                        lines.append("  Active LP position, live composition unavailable")
+                    else:
+                        lines.append("  No active LP position")
+                    continue
+
+                lines.append(f"  token_id: {snapshot.token_id}")
+                lines.append(f"  {snapshot.token0_symbol.lower()}: {snapshot.token0_amount:.4f}")
+                lines.append(f"  {snapshot.token1_symbol.lower()}: {snapshot.token1_amount:.4f}")
+                lines.append(
+                    f"  range: {snapshot.range_min:.6f} -> {snapshot.range_max:.6f}"
+                )
+                lines.append(f"  in_range: {'yes' if snapshot.in_range else 'no'}")
+                lines.append(f"  value_usd: {snapshot.position_value_usd:.4f}")
+                lines.append(f"  our_share_pct: {snapshot.our_share_pct:.4f}")
+                continue
+
+            pos = await venue.get_position()
             for token, amt in pos.balances.items():
                 lines.append(f"  {token}: {amt:.4f}")
         except Exception as e:
