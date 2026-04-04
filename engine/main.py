@@ -15,7 +15,7 @@ import structlog
 import uvicorn
 
 from engine.accounts import AccountManager, AccountRole
-from engine.api import routes
+from engine.api import api_router
 from engine.api.schemas import ArbitrageParams, CexParams
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
@@ -241,7 +241,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     trading_state = await db.system_state.get_system_state("trading_enabled")
     if trading_state == "false":
-        scheduler._trading_enabled = False
+        scheduler.state.trading_enabled = False
         logger.info("trading_restored_paused")
 
     scheduler.start()
@@ -288,7 +288,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(routes.router, prefix="/api")
+app.include_router(api_router, prefix="/api")
 
 
 @app.websocket("/ws")

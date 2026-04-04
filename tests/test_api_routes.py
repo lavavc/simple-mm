@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from engine.api import routes
+from engine.api import api_router
 from engine.api.schemas import ArbitrageOpportunity
 from engine.runtime import EngineRuntime
 
@@ -44,7 +44,7 @@ def _make_runtime() -> EngineRuntime:
 
 def _make_app(runtime: EngineRuntime | None) -> FastAPI:
     app = FastAPI()
-    app.include_router(routes.router, prefix="/api")
+    app.include_router(api_router, prefix="/api")
     if runtime is not None:
         app.state.runtime = runtime
     return app

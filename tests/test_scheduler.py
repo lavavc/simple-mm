@@ -5,6 +5,13 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from engine.scheduler.context import SchedulerContext
+from engine.scheduler.jobs.accounts import AccountJobs
+from engine.scheduler.jobs.arbitrage import ArbitrageJobs
+from engine.scheduler.jobs.lp import LpJobs
+from engine.scheduler.jobs.market import MarketJobs
+from engine.scheduler.jobs.positions import PositionJobs
+from engine.scheduler.types import SchedulerState
 from engine.venues.dex.shared import PositionState
 from engine.scheduler import TradingScheduler, SchedulerConfig
 from tests.fakes import FakeDexAdapter
@@ -55,16 +62,16 @@ class MockDB:
 def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingScheduler:
     """Build a minimal TradingScheduler without calling __init__ or start()."""
     from engine.lp.rebalancer import LPRebalancer
+
     sched = TradingScheduler.__new__(TradingScheduler)
-    sched._trading_enabled = True
-    sched.venues = venues
-    sched.broadcast = broadcasts.append
     sched.config = SchedulerConfig()
+    sched.broadcast = broadcasts.append
     sched.price_aggregator = MagicMock()
     sched.blended_calculator = None
     sched.arbitrage_engine = None
     sched.account_manager = None
     sched.token_contracts = {}
+    sched.venues = venues
     sched.quidax_lp = None
     sched.system_state_store = SimpleNamespace(set_system_state=db.set_system_state)
     sched.price_store = SimpleNamespace(
@@ -73,16 +80,49 @@ def _build_scheduler(venues: dict, broadcasts: list, db: MockDB) -> TradingSched
     )
     sched.position_store = SimpleNamespace(insert_position=db.insert_position)
     sched.alert_store = SimpleNamespace(insert_alert=db.insert_alert)
-    sched._started = False
-    sched._dex_bootstrap_pending = True
-    sched._dex_bootstrap_task = None
+    sched.venue_config_store = SimpleNamespace(update_venue_config=db.update_venue_config)
+    sched.action_store = SimpleNamespace(insert_action=db.insert_action)
+    sched.state = SchedulerState(trading_enabled=True, dex_bootstrap_pending=True)
+    sched.context = SchedulerContext(
+        config=sched.config,
+        price_aggregator=sched.price_aggregator,
+        venues=sched.venues,
+        broadcast=sched.broadcast,
+        blended_calculator=sched.blended_calculator,
+        arbitrage_engine=sched.arbitrage_engine,
+        account_manager=sched.account_manager,
+        token_contracts=sched.token_contracts,
+        quidax_lp=sched.quidax_lp,
+        system_state_store=sched.system_state_store,
+        price_store=sched.price_store,
+        position_store=sched.position_store,
+        alert_store=sched.alert_store,
+        venue_config_store=sched.venue_config_store,
+        action_store=sched.action_store,
+    )
     sched.ws_listener = MagicMock(active_connections=set())
     sched.lp_rebalancer = LPRebalancer(
         broadcast=sched.broadcast,
         price_store=sched.price_store,
-        venue_config_store=SimpleNamespace(update_venue_config=db.update_venue_config),
-        action_store=SimpleNamespace(insert_action=db.insert_action),
+        venue_config_store=sched.venue_config_store,
+        action_store=sched.action_store,
     )
+    sched.position_jobs = PositionJobs(sched.context, sched.state)
+    sched.account_jobs = AccountJobs(sched.context, sched.state)
+    sched.arbitrage_jobs = ArbitrageJobs(
+        sched.context,
+        sched.state,
+        update_gas_oracle=sched._update_gas_oracle,
+        get_balances_for_valuation=sched.position_jobs.get_balances_for_valuation,
+        broadcast_account_balances=sched.account_jobs.broadcast_account_balances,
+    )
+    sched.market_jobs = MarketJobs(
+        sched.context,
+        sched.state,
+        schedule_dex_bootstrap=sched.arbitrage_jobs.schedule_dex_bootstrap,
+    )
+    sched.lp_jobs = LpJobs(sched.context, sched.state, sched.lp_rebalancer)
+    sched.arbitrage_jobs.ws_listener = sched.ws_listener
     return sched
 
 
@@ -379,10 +419,10 @@ class TestDexArbCurveStream:
         broadcasts = []
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
-        sched.arbitrage_engine = MagicMock()
+        sched.context.arbitrage_engine = MagicMock()
         call_order = []
-        sched.arbitrage_engine.on_dex_dex_update = AsyncMock(side_effect=lambda: call_order.append("arb"))
-        sched._update_gas_oracle = AsyncMock(side_effect=lambda: call_order.append("gas"))
+        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock(side_effect=lambda: call_order.append("arb"))
+        sched.arbitrage_jobs._update_gas_oracle = AsyncMock(side_effect=lambda: call_order.append("gas"))
 
         with patch("engine.market.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
              patch("engine.market.gas_oracle.gas_usd_base", return_value=Decimal("1")), \
@@ -390,19 +430,19 @@ class TestDexArbCurveStream:
             await sched._bootstrap_dex_arb_curve()
 
         seed_mock.assert_awaited_once()
-        sched._update_gas_oracle.assert_awaited_once()
-        sched.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+        sched.arbitrage_jobs._update_gas_oracle.assert_awaited_once()
+        sched.context.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
         assert call_order == ["gas", "arb"]
-        assert sched._dex_bootstrap_pending is False
+        assert sched.state.dex_bootstrap_pending is False
 
     @pytest.mark.asyncio
     async def test_bootstrap_waits_when_gas_missing(self):
         broadcasts = []
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
-        sched.arbitrage_engine = MagicMock()
-        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
-        sched._update_gas_oracle = AsyncMock()
+        sched.context.arbitrage_engine = MagicMock()
+        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched.arbitrage_jobs._update_gas_oracle = AsyncMock()
 
         with patch("engine.market.pool_state.seed_dex_pool_states", AsyncMock()) as seed_mock, \
              patch("engine.market.gas_oracle.gas_usd_base", return_value=None), \
@@ -410,21 +450,21 @@ class TestDexArbCurveStream:
             await sched._bootstrap_dex_arb_curve()
 
         seed_mock.assert_awaited_once()
-        sched._update_gas_oracle.assert_awaited_once()
-        sched.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
-        assert sched._dex_bootstrap_pending is True
+        sched.arbitrage_jobs._update_gas_oracle.assert_awaited_once()
+        sched.context.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
+        assert sched.state.dex_bootstrap_pending is True
 
     @pytest.mark.asyncio
     async def test_gas_update_schedules_pending_bootstrap(self):
         broadcasts = []
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
-        sched._schedule_dex_bootstrap = MagicMock()
+        sched.market_jobs._schedule_dex_bootstrap = MagicMock()
 
         with patch("engine.market.gas_oracle.update", AsyncMock()):
             await sched._update_gas_oracle()
 
-        sched._schedule_dex_bootstrap.assert_called_once()
+        sched.market_jobs._schedule_dex_bootstrap.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skips_dex_recalc_when_ws_healthy(self):
@@ -432,12 +472,12 @@ class TestDexArbCurveStream:
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
         sched.ws_listener.active_connections = {"base", "bsc"}
-        sched.arbitrage_engine = MagicMock()
-        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched.context.arbitrage_engine = MagicMock()
+        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock()
 
         await sched._stream_dex_arb_curve()
 
-        sched.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
+        sched.context.arbitrage_engine.on_dex_dex_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_runs_dex_recalc_when_ws_unhealthy(self):
@@ -445,24 +485,24 @@ class TestDexArbCurveStream:
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
         sched.ws_listener.active_connections = {"base"}
-        sched.arbitrage_engine = MagicMock()
-        sched.arbitrage_engine.on_dex_dex_update = AsyncMock()
+        sched.context.arbitrage_engine = MagicMock()
+        sched.context.arbitrage_engine.on_dex_dex_update = AsyncMock()
 
         await sched._stream_dex_arb_curve()
 
-        sched.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+        sched.context.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_wallet_activity_broadcasts_account_balances(self):
         broadcasts = []
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
-        sched.arbitrage_engine = MagicMock()
-        sched.arbitrage_engine.on_wallet_activity = AsyncMock()
-        sched.account_manager = MagicMock()
-        sched.token_contracts = {"USDT": "0x123"}
-        sched.venues = {}
-        sched.account_manager.check_all_balances = AsyncMock(return_value=[
+        sched.context.arbitrage_engine = MagicMock()
+        sched.context.arbitrage_engine.on_wallet_activity = AsyncMock()
+        sched.context.account_manager = MagicMock()
+        sched.context.token_contracts = {"USDT": "0x123"}
+        sched.context.venues = {}
+        sched.context.account_manager.check_all_balances = AsyncMock(return_value=[
             SimpleNamespace(
                 role="uni-bsc-trade",
                 address="0xabc",
@@ -477,8 +517,8 @@ class TestDexArbCurveStream:
 
         await sched._handle_wallet_activity(["uni-bsc"])
 
-        sched.arbitrage_engine.on_wallet_activity.assert_awaited_once_with(["uni-bsc"])
-        sched.account_manager.check_all_balances.assert_awaited_once_with({"USDT": "0x123"})
+        sched.context.arbitrage_engine.on_wallet_activity.assert_awaited_once_with(["uni-bsc"])
+        sched.context.account_manager.check_all_balances.assert_awaited_once_with({"USDT": "0x123"})
         assert broadcasts[-1]["type"] == "account_balances"
         assert broadcasts[-1]["data"][0]["role"] == "uni-bsc-trade"
         assert broadcasts[-1]["data"][0]["refill_reasons"] == []
