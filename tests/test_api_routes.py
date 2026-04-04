@@ -2,14 +2,17 @@
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 import engine.api as api_module
 from engine.api import api_router
+from engine.api.routes import venues as venue_routes
 from engine.api.schemas import ArbitrageOpportunity
+from engine.config import DexParams
 from engine.runtime import EngineRuntime
 
 
@@ -20,6 +23,11 @@ class _DummyVenue:
 
     async def get_position(self):
         return None
+
+
+class _DummyLpVenue(_DummyVenue):
+    def __init__(self, params: DexParams):
+        self.params = params
 
 
 def _make_runtime() -> EngineRuntime:
@@ -150,3 +158,48 @@ def test_missing_runtime_returns_503():
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Engine runtime not configured"
+
+
+@pytest.mark.asyncio
+async def test_update_venue_params_persists_full_lp_params():
+    runtime = _make_runtime()
+    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
+    runtime.venues = {
+        "uni-base": _DummyLpVenue(
+            DexParams(
+                sd_multiplier=Decimal("2.75"),
+                min_tick_width=100,
+                max_tick_width=1000,
+                lookback_points=None,
+                rebalance_threshold_percent=Decimal("10.0"),
+                max_slippage_percent=Decimal("1.0"),
+                downside_skew=Decimal("0.45"),
+                ewma_lambda=Decimal("0.975"),
+            )
+        )
+    }
+
+    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
+        response = await venue_routes.update_venue_params(
+            "uni-base",
+            {"downside_skew": "0.55"},
+            runtime=runtime,
+            db=runtime.db,
+        )
+
+    assert response == {"venue": "uni-base", "params": {"downside_skew": "0.55"}}
+    runtime.db.venue_config.update_venue_config.assert_awaited_once()
+    venue_arg, saved_params = runtime.db.venue_config.update_venue_config.await_args.args
+    assert venue_arg == "uni-base"
+    assert saved_params["downside_skew"] == "0.55"
+    assert DexParams(**saved_params).downside_skew == Decimal("0.55")
+    assert set(saved_params) == {
+        "sd_multiplier",
+        "min_tick_width",
+        "max_tick_width",
+        "lookback_points",
+        "rebalance_threshold_percent",
+        "max_slippage_percent",
+        "downside_skew",
+        "ewma_lambda",
+    }
