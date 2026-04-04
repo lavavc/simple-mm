@@ -57,7 +57,7 @@ class LPRebalancer:
     def _normalize_amount(raw_amount: int | None, decimals: int) -> float | None:
         if raw_amount is None:
             return None
-        return raw_amount / (10 ** decimals)
+        return float(raw_amount) / float(10 ** decimals)
 
     async def check_and_rebalance(self, venue: "V4LPAdapter") -> None:
         """Check position state; rebalance if out of range past threshold."""
