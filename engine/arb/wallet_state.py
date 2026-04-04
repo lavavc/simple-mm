@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from typing import Any
 
 import structlog
+
+from engine.venues.base import is_dex_execution_venue
 
 
 logger = structlog.get_logger()
 
 
-def reconcile_balances(engine, balances: list) -> None:
+def reconcile_balances(engine: Any, balances: list[Any]) -> None:
     """Refresh per-account stablecoin and cNGN from periodic balance fetches."""
     venue_stables: dict[str, Decimal] = {}
     venue_cngn: dict[str, Decimal] = {}
@@ -33,14 +36,13 @@ def reconcile_balances(engine, balances: list) -> None:
         engine.inventory.reconcile_cngn(venue_cngn)
 
 
-def fetch_venue_wallet_snapshot(engine, venue_name: str) -> tuple[str, Decimal, Decimal] | None:
+def fetch_venue_wallet_snapshot(
+    engine: Any,
+    venue_name: str,
+) -> tuple[str, Decimal, Decimal] | None:
     """Read a venue trade wallet's live stable/cNGN balances."""
     venue = engine.venues.get(venue_name)
-    if not venue:
-        return None
-
-    required_attrs = ("stable_token", "cngn_token", "trade_account", "stable_decimals", "cngn_decimals")
-    if not all(hasattr(venue, attr) for attr in required_attrs):
+    if venue is None or not is_dex_execution_venue(venue):
         return None
 
     try:
@@ -54,7 +56,7 @@ def fetch_venue_wallet_snapshot(engine, venue_name: str) -> tuple[str, Decimal, 
         return None
 
 
-async def refresh_inventory_for_venues(engine, *venue_names: str) -> None:
+async def refresh_inventory_for_venues(engine: Any, *venue_names: str) -> None:
     """Refresh live stable/cNGN inventory for the given venues."""
     names = sorted({name for name in venue_names if name in engine.venues})
     if not names:
@@ -69,7 +71,7 @@ async def refresh_inventory_for_venues(engine, *venue_names: str) -> None:
     venue_stables: dict[str, Decimal] = {}
     venue_cngn: dict[str, Decimal] = {}
     for snapshot in snapshots:
-        if isinstance(snapshot, Exception):
+        if isinstance(snapshot, BaseException):
             logger.warning("wallet_snapshot_refresh_task_failed", error=str(snapshot))
             continue
         if snapshot is None:
@@ -93,19 +95,16 @@ async def refresh_inventory_for_venues(engine, *venue_names: str) -> None:
         )
 
 
-async def seed_account_inventory(engine, *, ensure_approvals: bool = True) -> None:
+async def seed_account_inventory(engine: Any, *, ensure_approvals: bool = True) -> None:
     """Seed wallet balances, and optionally ensure trade approvals for execution paths."""
     tradeable = {
         name: venue for name, venue in engine.venues.items()
-        if all(hasattr(venue, attr) for attr in (
-            "stable_token", "cngn_token", "trade_account",
-            "stable_decimals", "cngn_decimals", "ensure_trade_approvals",
-        ))
+        if is_dex_execution_venue(venue)
     }
 
     loop = asyncio.get_running_loop()
 
-    def _read_balances(name: str, venue) -> tuple[str, Decimal | None, Decimal | None]:
+    def _read_balances(name: str, venue: Any) -> tuple[str, Decimal | None, Decimal | None]:
         try:
             raw_s = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
             stable = Decimal(raw_s) / Decimal(10 ** venue.stable_decimals)
@@ -128,7 +127,7 @@ async def seed_account_inventory(engine, *, ensure_approvals: bool = True) -> No
     stable_balances: dict[str, Decimal] = {}
     cngn_balances: dict[str, Decimal] = {}
     for result in balance_results:
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             logger.warning("account_balance_seed_task_failed", error=str(result))
             continue
         name, stable, cngn = result

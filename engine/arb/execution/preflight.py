@@ -40,12 +40,13 @@ def _infer_wallet_symbol(venue: Any, wallet_asset: str) -> str:
     if wallet_asset == "stable":
         config = getattr(venue, "config", None)
         if config:
-            return config.token0_symbol if getattr(config, "invert_price", False) else config.token1_symbol
+            symbol = config.token0_symbol if getattr(config, "invert_price", False) else config.token1_symbol
+            return str(symbol)
         return "stable"
     return "cNGN"
 
 
-def _build_preflight_context(engine, venue_name: str, log_ctx: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     details: dict[str, Any] = {}
     lines: list[str] = []
 
@@ -137,7 +138,7 @@ def _build_preflight_context(engine, venue_name: str, log_ctx: dict[str, Any]) -
     return "\n" + "\n".join(lines), details
 
 
-def _handle_preflight_error(engine, venue_name: str, err: str | None, log_key: str, **log_ctx) -> None:
+def _handle_preflight_error(engine: Any, venue_name: str, err: str | None, log_key: str, **log_ctx: Any) -> None:
     """Classify a simulate_swap failure and take the appropriate action.
 
     Only a confirmed balance revert zeros the venue's cNGN inventory.

@@ -8,14 +8,18 @@ from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Deque
+from typing import Any, Deque
+from collections.abc import Mapping
 
 import structlog
+from eth_typing import HexStr
+from web3.types import LogReceipt
 from web3 import AsyncWeb3
-from web3.middleware import async_geth_poa_middleware
+from web3.middleware import async_geth_poa_middleware  # type: ignore[attr-defined]
 
 from engine.config import settings
 from engine.venues.dex.shared import V4PoolReadConfig
+from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
 
 logger = structlog.get_logger()
 
@@ -34,11 +38,7 @@ def _int128_from_word(word: bytes) -> int:
 
 def stable_volume_usd_from_v4_swap(raw_data: bytes | str, pool_config: V4PoolReadConfig) -> Decimal:
     """Return absolute stable-side USD volume from a V4 swap event payload."""
-    if isinstance(raw_data, str):
-        raw_data = raw_data[2:] if raw_data.startswith("0x") else raw_data
-        data_bytes = bytes.fromhex(raw_data)
-    else:
-        data_bytes = raw_data
+    data_bytes = coerce_hex_bytes(raw_data)
 
     if len(data_bytes) < 64:
         return Decimal("0")
@@ -229,13 +229,11 @@ def _log_chunk_size(config: V4PoolReadConfig) -> int:
     return 50_000
 
 
-def event_id_from_log(log: dict) -> str | None:
+def event_id_from_log(log: Mapping[str, Any] | LogReceipt) -> str | None:
     tx_hash = log.get("transactionHash")
     if tx_hash is None:
         return None
-    if hasattr(tx_hash, "hex"):
-        tx_hash = tx_hash.hex()
-    tx_hash = str(tx_hash)
+    tx_hash_str = coerce_hex_str(tx_hash)
 
     log_index = log.get("logIndex")
     if log_index is None:
@@ -244,7 +242,7 @@ def event_id_from_log(log: dict) -> str | None:
         log_index = int(log_index, 16)
     else:
         log_index = int(log_index)
-    return f"{tx_hash}:{log_index}"
+    return f"{tx_hash_str}:{log_index}"
 
 
 async def _block_timestamp_ms(w3: AsyncWeb3, block_number: int, cache: dict[int, int]) -> int:
@@ -290,14 +288,13 @@ async def _scan_pool_window_from_rpc(
         chunk_end = min(chunk_start + chunk_size - 1, latest_number)
         logs = await w3.eth.get_logs({
             "address": AsyncWeb3.to_checksum_address(config.pool_manager),
-            "topics": [V4_SWAP_TOPIC, config.pool_address],
+            "topics": [as_hexstr(V4_SWAP_TOPIC), as_hexstr(config.pool_address)],
             "fromBlock": chunk_start,
             "toBlock": chunk_end,
         })
 
         for log in logs:
-            raw_data = log["data"].hex() if hasattr(log["data"], "hex") else log["data"]
-            usd_volume = stable_volume_usd_from_v4_swap(raw_data, config)
+            usd_volume = stable_volume_usd_from_v4_swap(coerce_hex_bytes(log["data"]), config)
             if usd_volume <= 0:
                 continue
             block_number = int(log["blockNumber"])

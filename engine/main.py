@@ -1,10 +1,12 @@
 """Main application entry point."""
 
+from __future__ import annotations
+
 import asyncio
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator, cast
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,25 +14,25 @@ from fastapi.staticfiles import StaticFiles
 import structlog
 import uvicorn
 
-from engine.config import settings
-from engine.ws import ws_manager
-from engine.db import get_db
-from engine.market.venue_prices import create_venue_aggregator, VenuePriceAggregator
-from engine.market.price_aggregation import PriceNormalizer, BlendedPriceCalculator
-from engine.scheduler import TradingScheduler, SchedulerConfig
-from engine.arb import ArbitrageEngine
 from engine.accounts import AccountManager, AccountRole
+from engine.api import api_router
+from engine.api.schemas import ArbitrageParams, CexParams
+from engine.bot import telegram as bot
+from engine.config import DexParams, settings
+from engine.db import open_repository
+from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
+from engine.market.venue_prices import VenuePriceAggregator, create_venue_aggregator
+from engine.runtime import EngineRuntime
+from engine.scheduler import SchedulerConfig, TradingScheduler
+from engine.arb import ArbitrageEngine
+from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.dex.lp_v4 import V4LPAdapter
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
-from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.config import DexParams
-from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
-from engine.api import routes
-from engine.api.schemas import CexParams, ArbitrageParams
-from engine.bot import telegram as bot
+from engine.ws import ws_manager
 
-# Configure structured logging
+
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -49,40 +51,33 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Global state
-venues: dict[str, Any] = {}
-price_aggregator: VenuePriceAggregator | None = None
-blended_calculator: BlendedPriceCalculator | None = None
-normalizer: PriceNormalizer | None = None
-scheduler: TradingScheduler | None = None
-arbitrage_engine: ArbitrageEngine | None = None
-account_manager: AccountManager | None = None
-
-# Token contract addresses for balance monitoring, keyed by chain_id
 TOKEN_CONTRACTS: dict[int, dict[str, str]] = {
-    8453: {  # Base
+    8453: {
         "cNGN": settings.cngn_base_address,
         "USDC": settings.usdc_base_address,
         "USDT": settings.usdt_base_address,
     },
-    56: {  # BSC (Uniswap V4 LP/trade + Quidax arb/lp on-chain wallets)
+    56: {
         "cNGN": settings.cngn_bsc_address,
         "USDT": settings.usdt_bsc_address,
     },
 }
 
 
-def broadcast_event(event: dict):
-    """Broadcast event to all connected WebSocket clients."""
+def broadcast_event(event: dict[str, Any]) -> None:
+    """Broadcast event to all connected WebSocket clients and Telegram."""
     ws_manager.broadcast(event)
     asyncio.create_task(bot.forward_alert(event))
 
 
-async def init_venues(acct_manager: AccountManager | None = None):
+async def init_venues(
+    acct_manager: AccountManager | None,
+    *,
+    alert_store: Any,
+) -> dict[str, Any]:
     """Initialize venue adapters. All secrets come from env vars."""
-    global venues
+    venues: dict[str, Any] = {}
 
-    # Uniswap V4 Base (uni-base) — requires HD wallet
     if acct_manager:
         try:
             lp_key = acct_manager.get_private_key(AccountRole.UNI_BASE_LP)
@@ -93,10 +88,9 @@ async def init_venues(acct_manager: AccountManager | None = None):
                 rpc_url=settings.base_rpc_url,
             )
             logger.info("venue_initialized", venue="uni-base")
-        except ValueError as e:
-            logger.warning("uni_base_init_skipped", reason=str(e))
+        except ValueError as exc:
+            logger.warning("uni_base_init_skipped", reason=str(exc))
 
-    # Uniswap V4 BSC (uni-bsc) — requires HD wallet
     if acct_manager:
         try:
             lp_key = acct_manager.get_private_key(AccountRole.UNI_BSC_LP)
@@ -106,50 +100,47 @@ async def init_venues(acct_manager: AccountManager | None = None):
                 trade_private_key=trade_key,
             )
             logger.info("venue_initialized", venue="uni-bsc")
-        except ValueError as e:
-            logger.warning("uni_bsc_init_skipped", reason=str(e))
+        except ValueError as exc:
+            logger.warning("uni_bsc_init_skipped", reason=str(exc))
 
-    # Quidax arb adapter (used only by arb engine)
     if settings.quidax_api_key:
         venues["quidax"] = QuidaxAdapter(
             api_key=settings.quidax_api_key,
             params=CexParams(),
             name="quidax",
             funding_role="quidax-trade-fund",
+            alert_store=alert_store,
         )
         logger.info("venue_initialized", venue="quidax")
 
-    # Quidax LP adapter (used by order ladder; separate funds from arb)
     if settings.quidax_lp_api_key:
         venues["quidax-lp"] = QuidaxAdapter(
             api_key=settings.quidax_lp_api_key,
             params=CexParams(),
             name="quidax-lp",
             funding_role="quidax-lp",
+            alert_store=alert_store,
         )
         logger.info("venue_initialized", venue="quidax-lp")
 
-    # Blockradar (wallet system) — public rate endpoints need no key
     venues["blockradar"] = BlockradarAdapter(
         api_key=settings.blockradar_api_key,
         wallet_id=settings.blockradar_wallet_id,
     )
     logger.info("venue_initialized", venue="blockradar", rate_setting=bool(settings.blockradar_api_key))
+    return venues
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
-    global price_aggregator, blended_calculator, normalizer
-    global scheduler, arbitrage_engine, account_manager
-
     start_time = time.time()
     logger.info("application_starting")
 
-    db = await get_db()
+    db = await open_repository(settings.db_path)
     logger.info("database_connected")
 
-    # Account manager (HD wallet)
+    account_manager: AccountManager | None = None
     if settings.use_test_accounts or settings.wallet_mnemonic:
         try:
             account_manager = AccountManager(
@@ -161,55 +152,52 @@ async def lifespan(app: FastAPI):
                 test_mode=settings.use_test_accounts,
                 accounts=list(account_manager.list_accounts().keys()),
             )
-        except Exception as e:
-            logger.error("account_manager_init_failed", error=str(e))
-            account_manager = None
+        except Exception as exc:
+            logger.error("account_manager_init_failed", error=str(exc))
     else:
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
-    await init_venues(account_manager)
+    venues = await init_venues(account_manager, alert_store=db.alerts)
 
-    # Restore any persisted LP params (operator overrides, dynamic skew adjustments)
-    _db = await get_db()
-    for _vname, _vadapter in venues.items():
-        if isinstance(_vadapter, V4LPAdapter):
-            _config = await _db.get_venue_config(_vname)
-            if _config and _config.get("params"):
-                _vadapter.params = DexParams(**_config["params"])
-                logger.info("venue_params_restored", venue=_vname)
+    for venue_name, venue_adapter in venues.items():
+        if isinstance(venue_adapter, V4LPAdapter):
+            config = await db.venue_config.get_venue_config(venue_name)
+            if config and config.get("params"):
+                venue_adapter.params = DexParams(**config["params"])
+                logger.info("venue_params_restored", venue=venue_name)
 
-    # Seed the globally cached DEX pool states first so the aggregator zero-latency hook works instantly
-    from engine.market.pool_state import seed_pool_states
     from engine.market.dex_volume import seed_dex_volume_24h
+    from engine.market.pool_state import seed_pool_states
+
     await seed_pool_states()
     await seed_dex_volume_24h()
 
-    # Price aggregator: reads directly from the simulator cache for DEXs
-    price_aggregator = create_venue_aggregator(
+    price_aggregator: VenuePriceAggregator = create_venue_aggregator(
         bybit_enabled=True,
         quidax_enabled=True,
         blockradar_adapter=venues.get("blockradar"),
     )
     logger.info("price_aggregator_initialized", venues=list(price_aggregator.sources.keys()))
 
-    # Blended price calculator
     normalizer = PriceNormalizer()
     blended_calculator = BlendedPriceCalculator(
         price_aggregator=price_aggregator,
         normalizer=normalizer,
+        price_store=db.prices,
     )
     logger.info("blended_price_calculator_initialized")
 
-    # Arbitrage engine
+    arbitrage_engine: ArbitrageEngine | None = None
     if settings.arb_detection_enabled:
-        arb_params = ArbitrageParams()
-
         arbitrage_engine = ArbitrageEngine(
             venues=venues,
-            params=arb_params,
+            params=ArbitrageParams(),
             broadcast=broadcast_event,
             execute_cex_dex_enabled=settings.arb_execute_cex_dex_enabled,
             execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
+            arbitrage_store=db.arbitrage,
+            history_store=db.history,
+            price_store=db.prices,
         )
         logger.info(
             "arbitrage_engine_initialized",
@@ -217,76 +205,74 @@ async def lifespan(app: FastAPI):
             execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
         )
 
-    _quidax_lp = venues.get("quidax-lp")
-
-    # Scheduler
-    scheduler_config = SchedulerConfig()
-
+    quidax_lp = venues.get("quidax-lp")
     scheduler = TradingScheduler(
         price_aggregator=price_aggregator,
         venues=venues,
-        config=scheduler_config,
+        config=SchedulerConfig(),
         broadcast=broadcast_event,
         blended_calculator=blended_calculator,
         arbitrage_engine=arbitrage_engine,
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
-        quidax_lp=_quidax_lp,
+        quidax_lp=quidax_lp,
+        system_state_store=db.system_state,
+        price_store=db.prices,
+        position_store=db.positions,
+        alert_store=db.alerts,
+        venue_config_store=db.venue_config,
+        action_store=db.actions,
     )
 
-    routes.init_routes(
-        scheduler,
-        venues,
-        price_aggregator,
-        start_time,
-        arbitrage_engine,
-        account_manager,
-        TOKEN_CONTRACTS,
+    runtime = EngineRuntime(
+        db=db,
+        scheduler=scheduler,
+        venues=venues,
+        price_aggregator=price_aggregator,
+        start_time=start_time,
+        arbitrage_engine=arbitrage_engine,
+        account_manager=account_manager,
+        token_contracts=TOKEN_CONTRACTS,
         blended_calculator=blended_calculator,
         normalizer=normalizer,
-        quidax_lp=_quidax_lp,
+        quidax_lp=quidax_lp,
     )
+    app.state.runtime = runtime
 
-    # Restore trading state
-    trading_state = await db.get_system_state("trading_enabled")
+    trading_state = await db.system_state.get_system_state("trading_enabled")
     if trading_state == "false":
-        scheduler._trading_enabled = False
+        scheduler.state.trading_enabled = False
         logger.info("trading_restored_paused")
 
     scheduler.start()
 
     if settings.telegram_bot_token:
         try:
-            await bot.start(settings, scheduler, venues, arbitrage_engine, account_manager, TOKEN_CONTRACTS)
-        except Exception as e:
-            logger.error("telegram_bot_start_failed", error=str(e))
+            await bot.start(settings, runtime)
+        except Exception as exc:
+            logger.error("telegram_bot_start_failed", error=str(exc))
 
     logger.info("application_started", startup_time=time.time() - start_time)
 
     yield
 
-    # Shutdown
     logger.info("application_stopping")
 
     await bot.stop()
-
-    if scheduler:
-        scheduler.stop()
-
-    if price_aggregator:
-        await price_aggregator.close()
-        logger.info("price_aggregator_closed")
+    scheduler.stop()
+    await price_aggregator.close()
+    logger.info("price_aggregator_closed")
 
     for name, venue in venues.items():
         if hasattr(venue, "close"):
-            await venue.close()
+            await cast(Any, venue).close()
             logger.info("venue_closed", venue=name)
 
     await db.close()
+    app.state.runtime = None
     logger.info("application_stopped")
 
 
-# Create FastAPI app
 app = FastAPI(
     title="CNGN Trading Engine",
     description="Automated trading engine for CNGN stablecoin management",
@@ -302,11 +288,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(routes.router, prefix="/api")
+app.include_router(api_router, prefix="/api")
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket) -> None:
     """Stream real-time events (prices, positions, alerts, arbitrage) to clients."""
     await ws_manager.handle(ws)
 
@@ -316,7 +302,7 @@ if dashboard_path.exists():
     app.mount("/", StaticFiles(directory=str(dashboard_path), html=True), name="dashboard")
 
 
-def main():
+def main() -> None:
     """Run the application."""
     uvicorn.run(
         "engine.main:app",

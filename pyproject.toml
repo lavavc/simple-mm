@@ -48,3 +48,8 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+files = ["engine"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true

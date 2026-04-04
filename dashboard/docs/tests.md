@@ -14,6 +14,14 @@ order: 3
 
 Mocks (`AsyncMock`) are reserved for the DB layer in scheduler tests only.
 
+## Static Checking
+
+```bash
+source .venv/bin/activate && python -m mypy engine --no-error-summary
+```
+
+`mypy` runs in strict mode on `engine/`, the production Python package. It intentionally excludes `tests/` and `dashboard/` because test doubles are looser by design and frontend code is checked by its own toolchain.
+
 ## Running the Suite
 
 ```bash
@@ -23,8 +31,11 @@ source .venv/bin/activate && python -m pytest -x -q --ignore=tests/test_dex_fork
 Fork tests (requires `anvil` CLI from Foundry):
 
 ```bash
-pytest tests/test_dex_fork.py -v
+source .venv/bin/activate && python -m pytest -q tests/test_dex_fork.py -v
 ```
+
+CI runs the strict `mypy` check above plus the default pytest command inside Docker.
+It intentionally skips `tests/test_dex_fork.py` because those tests require `anvil` and fork-capable RPC endpoints.
 
 ## Per-File Coverage
 
@@ -45,7 +56,7 @@ pytest tests/test_dex_fork.py -v
 | `test_dex_dex.py` | `core/arbitrage/dex_dex.py` | `find_optimal_dex_arb` null cases and result structure |
 | `test_router.py` | `core/arbitrage/router.py` | `select_route` sizing, filtering, tiebreak |
 | `test_valuation.py` | `core/arbitrage/valuation.py` | `portfolio_value`, CEX/DEX holdings valuation |
-| `test_scheduler.py` | `core/scheduler.py` | `_check_dex_rebalance`, `_rebalance_dex_position`, `_create_dex_position` |
+| `test_scheduler.py` | `scheduler/core.py` + `scheduler/jobs/*` | Shell wiring plus `_check_dex_rebalance`, `_rebalance_dex_position`, `_create_dex_position`, DEX bootstrap and wallet activity delegation |
 | `test_executor.py` | `core/arbitrage/executor.py` | Detection mode, CEX-CEX, half-open, unknown venue |
 | `test_dex_fork.py` | V4 pool state + lifecycle | Section A: reads; Section B: funded wallet; Section C: rebalance |
 

@@ -100,9 +100,10 @@ The dashboard is then accessible only after Cloudflare identity verification. Th
 
 ## CI/CD pipeline
 
-Every push to `main` on [lavavc/automated-infra](https://github.com/lavavc/automated-infra):
-1. **test** job — builds the `test` Docker target; runs `pytest` inside the container.
-2. **deploy** job (only if tests pass) — builds and pushes the `production` image to `ghcr.io/lavavc/automated-infra:latest`, then SSHs to the server and runs `docker compose pull && docker compose up -d`.
+Every pull request and every push to `main` on [lavavc/automated-infra](https://github.com/lavavc/automated-infra):
+1. **test** job — builds the `typecheck` Docker target to run strict `mypy` on `engine/`, then builds the `test` Docker target to run the default pytest suite.
+2. The default pytest run intentionally skips `tests/test_dex_fork.py`, because those tests require Foundry's `anvil` plus fork-capable RPC endpoints.
+3. **deploy** job (only on pushes to `main`, and only if the checks pass) — builds and pushes the `production` image to `ghcr.io/lavavc/automated-infra:latest`, then SSHs to the server and runs `docker compose pull && docker compose up -d`.
 
 ## Capital allocation
 

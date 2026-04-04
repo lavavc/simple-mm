@@ -21,7 +21,7 @@ Read on to find out how we decide between the three routes, how we think about r
 
 ## Configuration reference
 
-All thresholds are set in `engine/config.py` which is where you need to go to chang how the engine behaves:
+All thresholds are set in `engine/config.py` which is where you need to go to change how the engine behaves:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -34,5 +34,5 @@ All thresholds are set in `engine/config.py` which is where you need to go to ch
 | `ARBITRAGE_MAX_DELTA_RATIO` | 0.60 | Portfolio cNGN% ceiling |
 | `ARBITRAGE_MIN_ACCOUNT_STABLECOIN_USD` | 10 | Min stablecoin per venue before pausing |
 | `ARBITRAGE_CROSS_CHAIN_REBALANCE_BPS` | 10 | Max rebalance penalty in route scoring |
-| `ARBITRAGE_CEX_TAKER_FEE_BPS` | 10 | Quidax taker fee (0.1%) |
-| `ARBITRAGE_DEX_SWAP_FEE_BPS` | 30 | Fallback DEX fee if pool read fails |
+
+Fee assumptions for arb detection are not currently environment-configurable. Quidax taker fee and route-specific on-chain fee assumptions live in the detection modules and route math, not in `engine/config.py`.

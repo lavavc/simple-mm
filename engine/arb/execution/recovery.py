@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
 from engine.arb.routing.route_registry import ROUTES, ROUTES_BY_DIRECTION
+from engine.venues.base import is_dex_execution_venue
 
 
 logger = structlog.get_logger()
 
 
-async def recover_dex_half_open(engine, opp_id: str) -> dict:
+async def recover_dex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
     """Recover a half-open DEX-DEX arb."""
     if engine._arb_executing:
         raise ValueError("execution in progress")
@@ -24,10 +26,10 @@ async def recover_dex_half_open(engine, opp_id: str) -> dict:
         engine._arb_executing = False
 
 
-async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
+async def _recover_dex_half_open_inner(engine: Any, opp_id: str) -> dict[str, Any]:
     """Inner implementation of recover_dex_half_open, called with _arb_executing held."""
-    db = await engine._get_db()
-    opp = await db.get_dex_arbitrage_opportunity(opp_id)
+    arbitrage_store = engine.arbitrage_store
+    opp = await arbitrage_store.get_dex_arbitrage_opportunity(opp_id)
     if opp is None:
         raise ValueError(f"Unknown DEX arbitrage opportunity: {opp_id}")
     if opp.status not in ("buy_filled", "half_open"):
@@ -51,7 +53,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
         )
 
     can_retry_sell = False
-    if hasattr(sell_venue, "simulate_swap"):
+    if is_dex_execution_venue(sell_venue):
         sell_amount_raw = int(sell_cngn * Decimal(10 ** sell_venue.cngn_decimals))
         sell_sim_err = await loop.run_in_executor(
             None, sell_venue.simulate_swap, sell_venue.cngn_address, sell_amount_raw, 0
@@ -69,7 +71,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
         if sell_trade and sell_trade.status != "failed":
             cost_basis = opp.executed_size_usd if opp.executed_size_usd is not None else opp.optimal_size_usd
             actual_profit = sell_trade.amount * (sell_trade.price or Decimal("0")) - cost_basis
-            await db.update_dex_arbitrage_execution_state(
+            await arbitrage_store.update_dex_arbitrage_execution_state(
                 opp_id,
                 status="completed",
                 sell_tx_hash=sell_trade.tx_hash,
@@ -125,7 +127,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
         err = _clean_revert((reverse_trade.error if reverse_trade else None) or "reverse sell failed")
         recovery_reason = f"RECOVERY_FAILED:{err}"
         cost_basis = opp.executed_size_usd if opp.executed_size_usd is not None else opp.optimal_size_usd
-        await db.update_dex_arbitrage_execution_state(
+        await arbitrage_store.update_dex_arbitrage_execution_state(
             opp_id,
             status="half_open",
             reason=recovery_reason,
@@ -152,7 +154,7 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
 
     cost_basis = opp.executed_size_usd if opp.executed_size_usd is not None else opp.optimal_size_usd
     actual_loss = reverse_trade.amount * (reverse_trade.price or Decimal("0")) - cost_basis
-    await db.update_dex_arbitrage_execution_state(
+    await arbitrage_store.update_dex_arbitrage_execution_state(
         opp_id,
         status="completed",
         sell_tx_hash=reverse_trade.tx_hash,
@@ -192,14 +194,14 @@ async def _recover_dex_half_open_inner(engine, opp_id: str) -> dict:
     }
 
 
-async def recover_cex_half_open(engine, opp_id: str) -> dict:
+async def recover_cex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
     """Recover a half-open CEX-DEX arb."""
     if engine._arb_executing:
         raise ValueError("execution in progress")
     engine._arb_executing = True
     try:
-        db = await engine._get_db()
-        opp = await db.get_arbitrage_opportunity(opp_id)
+        arbitrage_store = engine.arbitrage_store
+        opp = await arbitrage_store.get_arbitrage_opportunity(opp_id)
         if opp is None:
             raise ValueError(f"Unknown CEX-DEX arbitrage opportunity: {opp_id}")
         if opp.status != "half_open":
@@ -221,12 +223,20 @@ async def recover_cex_half_open(engine, opp_id: str) -> dict:
                 f"(old record — check buy tx {opp.buy_tx_hash} manually)"
             )
 
-        return await _reverse_cex_recovery(engine, db, opp_id, opp, cex_direction, buy_is_cex, buy_amount_cngn)
+        return await _reverse_cex_recovery(engine, arbitrage_store, opp_id, opp, cex_direction, buy_is_cex, buy_amount_cngn)
     finally:
         engine._arb_executing = False
 
 
-async def _reverse_cex_recovery(engine, db, opp_id: str, opp, cex_direction: str, buy_is_cex: bool, buy_amount_cngn: Decimal) -> dict:
+async def _reverse_cex_recovery(
+    engine: Any,
+    arbitrage_store: Any,
+    opp_id: str,
+    opp: Any,
+    cex_direction: str,
+    buy_is_cex: bool,
+    buy_amount_cngn: Decimal,
+) -> dict[str, Any]:
     """Execute a reversal trade to recover a half-open CEX arb and record the outcome."""
     buy_venue_name = opp.buy_venue
     if buy_is_cex:
@@ -263,7 +273,7 @@ async def _reverse_cex_recovery(engine, db, opp_id: str, opp, cex_direction: str
     if not reverse_trade or reverse_trade.status == "failed":
         err = (reverse_trade.error if reverse_trade else None) or "reverse sell failed"
         recovery_reason = f"RECOVERY_FAILED:{err}"
-        await db.update_arbitrage_opportunity(opp_id, status="half_open", reason=recovery_reason)
+        await arbitrage_store.update_arbitrage_opportunity(opp_id, status="half_open", reason=recovery_reason)
         await engine.history.record_failed_raw(
             opp_id=opp_id,
             pipeline="cex_dex",
@@ -288,7 +298,7 @@ async def _reverse_cex_recovery(engine, db, opp_id: str, opp, cex_direction: str
 
     reason = f"Recovered: reversed {'CEX' if buy_is_cex else 'DEX'} buy leg"
     actual_loss = reverse_trade.amount * (reverse_trade.price or fallback_price) - opp.recommended_size_usd
-    await db.update_arbitrage_opportunity(
+    await arbitrage_store.update_arbitrage_opportunity(
         opp_id,
         status="completed",
         actual_profit_usd=float(actual_loss),

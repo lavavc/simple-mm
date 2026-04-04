@@ -3,7 +3,7 @@
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -17,7 +17,7 @@ class InventoryState:
     """Current inventory state for risk management."""
 
     # Rolling trade log: list of (timestamp_ms, size_usd) for 24h volume tracking
-    trade_log: list = field(default_factory=list)
+    trade_log: list[tuple[int, Decimal]] = field(default_factory=list)
 
     # Daily P&L (resets at midnight; volume uses rolling window instead)
     daily_profit_usd: Decimal = Decimal("0")
@@ -77,7 +77,7 @@ class InventoryTracker:
         self._reset_daily_if_needed()
         return self._state
 
-    def _reset_daily_if_needed(self):
+    def _reset_daily_if_needed(self) -> None:
         """Reset daily counters at midnight UTC."""
         now = int(time.time() * 1000)
         day_start = (now // 86400000) * 86400000  # Start of day in ms
@@ -169,7 +169,7 @@ class InventoryTracker:
         size_usd: Decimal,
         buy_venue: str,
         sell_venue: str,
-    ):
+    ) -> None:
         """
         Record that a trade has started (for tracking).
 
@@ -196,7 +196,7 @@ class InventoryTracker:
         profit_usd: Decimal,
         cngn_delta: Decimal,
         cngn_price_usd: Decimal | None = None,
-    ):
+    ) -> None:
         """
         Record a completed trade for daily tracking.
 
@@ -250,7 +250,7 @@ class InventoryTracker:
                 f"Daily loss limit reached: ${float(self._state.daily_loss_usd):.2f}"
             )
 
-    def record_trade_failure(self, opportunity_id: str, error: str):
+    def record_trade_failure(self, opportunity_id: str, error: str) -> None:
         """
         Record a failed trade for circuit breaker tracking.
 
@@ -272,7 +272,7 @@ class InventoryTracker:
                 f"Too many consecutive failures: {self._state.consecutive_failures}"
             )
 
-    def _trigger_circuit_breaker(self, reason: str):
+    def _trigger_circuit_breaker(self, reason: str) -> None:
         """
         Activate circuit breaker to stop trading.
 
@@ -290,34 +290,34 @@ class InventoryTracker:
             consecutive_failures=self._state.consecutive_failures,
         )
 
-    def reset_circuit_breaker(self):
+    def reset_circuit_breaker(self) -> None:
         """Manually reset circuit breaker (for operator intervention)."""
         self._state.circuit_breaker_active = False
         self._state.circuit_breaker_reason = None
         self._state.consecutive_failures = 0
         logger.info("circuit_breaker_manually_reset")
 
-    def trip_circuit_breaker(self, reason: str):
+    def trip_circuit_breaker(self, reason: str) -> None:
         """Manually trip the circuit breaker for operator safety conditions."""
         self._trigger_circuit_breaker(reason)
 
-    def initialize_account_stable(self, venue_balances: dict[str, Decimal]):
+    def initialize_account_stable(self, venue_balances: dict[str, Decimal]) -> None:
         """Seed per-account stablecoin from on-chain balances (called once at startup)."""
         self._state.per_account_stable = dict(venue_balances)
         self._state.initial_account_stable = dict(venue_balances)
         logger.info("account_stable_initialized", venues=list(venue_balances.keys()))
 
-    def initialize_account_cngn(self, venue_balances: dict[str, Decimal]):
+    def initialize_account_cngn(self, venue_balances: dict[str, Decimal]) -> None:
         """Seed per-account cNGN from on-chain balances (called once at startup)."""
         self._state.per_account_cngn = dict(venue_balances)
         logger.info("account_cngn_initialized", venues=list(venue_balances.keys()))
 
-    def reconcile_cngn(self, venue_balances: dict[str, Decimal]):
+    def reconcile_cngn(self, venue_balances: dict[str, Decimal]) -> None:
         """Refresh per-account cNGN from a periodic balance fetch."""
         for venue, amount in venue_balances.items():
             self._state.per_account_cngn[venue] = amount
 
-    def reconcile_stables(self, venue_balances: dict[str, Decimal]):
+    def reconcile_stables(self, venue_balances: dict[str, Decimal]) -> None:
         """Refresh per-account stablecoin from a periodic balance fetch.
 
         Unlike initialize_account_stable, does not touch initial_account_stable
@@ -330,7 +330,7 @@ class InventoryTracker:
             else:
                 self._state.low_inventory_venues.discard(venue)
 
-    def update_account_inventory(self, venue: str, delta_usd: Decimal, is_buy: bool):
+    def update_account_inventory(self, venue: str, delta_usd: Decimal, is_buy: bool) -> None:
         """Adjust estimated stablecoin balance after a trade leg. Flags low inventory."""
         current = self._state.per_account_stable.get(venue, Decimal("0"))
         if is_buy:
@@ -355,14 +355,19 @@ class InventoryTracker:
         cost = self.params.cross_chain_rebalance_bps * (1 - float(fraction))
         return round(cost)
 
-    def update_portfolio_snapshot(self, cngn_value_usd: Decimal, total_usd: Decimal, cngn_price_usd: Decimal = Decimal("0")):
+    def update_portfolio_snapshot(
+        self,
+        cngn_value_usd: Decimal,
+        total_usd: Decimal,
+        cngn_price_usd: Decimal = Decimal("0"),
+    ) -> None:
         """Called by scheduler every 120s to keep delta ratio check current."""
         self._state.cngn_value_usd = cngn_value_usd
         self._state.total_portfolio_usd = total_usd
         if cngn_price_usd > 0:
             self._state.cngn_price_usd = cngn_price_usd
 
-    def get_status_dict(self) -> dict:
+    def get_status_dict(self) -> dict[str, Any]:
         """Get current status as a dict for API responses."""
         self._reset_daily_if_needed()
         return {
