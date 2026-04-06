@@ -115,10 +115,9 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 label = (
                     f"token_id: {pos.lp_position.token_id}"
                     if pos.lp_position.token_id is not None
-                    else f"token_ids: {', '.join(pos.lp_position.token_ids)}"
+                    else "token_id: unavailable"
                 )
                 lines.append(f"  {label}")
-                lines.append(f"  position_count: {pos.lp_position.position_count}")
                 lines.append(f"  snapshot_status: {pos.lp_position.snapshot_status}")
                 if pos.lp_position.snapshot_message:
                     lines.append(f"  snapshot_message: {pos.lp_position.snapshot_message}")

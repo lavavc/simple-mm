@@ -108,6 +108,13 @@ class LPRebalancer:
 
         position = venue.get_position_state(token_ids[0])
         if not position:
+            logger.warning(
+                "lp_rebalance_skipped",
+                venue=venue.name,
+                token_id=token_ids[0],
+                owned_token_ids=token_ids,
+                reason="position_state_unavailable",
+            )
             return
 
         if not position.in_range:

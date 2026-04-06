@@ -22,8 +22,6 @@ class LPPosition(BaseModel):
     """DEX liquidity position details."""
 
     token_id: Optional[str] = None
-    token_ids: list[str] = Field(default_factory=list)
-    position_count: int = 0
     liquidity: Optional[str] = None  # BigInt as string
     range_min: Optional[Decimal] = None
     range_max: Optional[Decimal] = None

@@ -89,6 +89,7 @@ class TradingScheduler:
                 account_manager=account_manager,
                 token_contracts=token_contracts or {},
                 blended_calculator=blended_calculator,
+                price_aggregator=price_aggregator,
                 portfolio_source_registry=portfolio_source_registry,
             )
         self.context = SchedulerContext(

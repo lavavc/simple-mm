@@ -79,20 +79,29 @@ class FakeDexAdapter:
     def get_position_state(self, token_id: int) -> "PositionState | None":
         return next((p for p in self._positions if p.token_id == token_id), None)
 
+    def get_portfolio_balances(self) -> dict[str, Decimal]:
+        if len(self._positions) > 1:
+            return {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+        return dict(self._position_balances)
+
     async def get_position(self) -> Position:
         lp_position = None
         if self._positions:
-            token_ids = [str(p.token_id) for p in self._positions]
+            token_id = str(self._positions[0].token_id) if len(self._positions) == 1 else None
+            snapshot_message = None
+            if len(self._positions) > 1:
+                snapshot_message = (
+                    "Multiple LP NFTs detected; automatic LP management is halted until manual cleanup."
+                )
             lp_position = LPPosition(
-                token_id=token_ids[0] if len(token_ids) == 1 else None,
-                token_ids=token_ids,
-                position_count=len(token_ids),
-                liquidity=str(sum(p.liquidity for p in self._positions)),
-                range_min=min(p.price_lower for p in self._positions),
-                range_max=max(p.price_upper for p in self._positions),
-                in_range=any(p.in_range for p in self._positions),
+                token_id=token_id,
+                liquidity=str(self._positions[0].liquidity) if len(self._positions) == 1 else None,
+                range_min=self._positions[0].price_lower if len(self._positions) == 1 else None,
+                range_max=self._positions[0].price_upper if len(self._positions) == 1 else None,
+                in_range=self._positions[0].in_range if len(self._positions) == 1 else None,
                 our_share_pct=None,
-                snapshot_status="live",
+                snapshot_status="live" if len(self._positions) == 1 else "degraded",
+                snapshot_message=snapshot_message,
             )
         return Position(
             venue=self.name,

@@ -24,8 +24,6 @@ async def test_cmd_positions_shows_true_lp_snapshot_for_dex_and_balances_for_non
             balances={"cngn": 1.25, "usdc": 198.75, "usdt": 0},
             lp_position=LPPosition(
                 token_id="77",
-                token_ids=["77"],
-                position_count=1,
                 liquidity="1000000",
                 range_min=0.0005,
                 range_max=0.0007,
@@ -69,7 +67,6 @@ async def test_cmd_positions_shows_true_lp_snapshot_for_dex_and_balances_for_non
     assert "  cngn: 1.2500" in reply_text
     assert "  usdc: 198.7500" in reply_text
     assert "token_id: 77" in reply_text
-    assert "position_count: 1" in reply_text
     assert "snapshot_status: live" in reply_text
     assert "range: 0.000500 -> 0.000700" in reply_text
     assert "in_range: yes" in reply_text
@@ -82,26 +79,25 @@ async def test_cmd_positions_shows_true_lp_snapshot_for_dex_and_balances_for_non
 
 
 @pytest.mark.asyncio
-async def test_cmd_positions_shows_multi_position_summary(monkeypatch):
+async def test_cmd_positions_shows_multi_position_degraded_message(monkeypatch):
     lp_venue = FakeDexAdapter(name="uni-base")
     lp_venue.get_position = AsyncMock(
         return_value=Position(
             venue="uni-base",
             pair="cNGN/USDC",
             timestamp=0,
-            balances={"cngn": 5, "usdc": 10, "usdt": 0},
+            balances={"cngn": 0, "usdc": 0, "usdt": 0},
             lp_position=LPPosition(
                 token_id=None,
-                token_ids=["77", "78"],
-                position_count=2,
-                liquidity="2000000",
-                range_min=0.0005,
-                range_max=0.0008,
-                in_range=False,
+                liquidity=None,
+                range_min=None,
+                range_max=None,
+                in_range=None,
                 our_share_pct=None,
-                snapshot_status="live",
+                snapshot_status="degraded",
+                snapshot_message="Multiple LP NFTs detected; automatic LP management is halted until manual cleanup.",
             ),
-            position_value_usd=15.0,
+            position_value_usd=None,
         )
     )
 
@@ -121,8 +117,9 @@ async def test_cmd_positions_shows_multi_position_summary(monkeypatch):
     await telegram.cmd_positions(update, SimpleNamespace())
 
     reply_text = message.reply_text.await_args.args[0]
-    assert "token_ids: 77, 78" in reply_text
-    assert "position_count: 2" in reply_text
+    assert "token_id: unavailable" in reply_text
+    assert "snapshot_status: degraded" in reply_text
+    assert "snapshot_message: Multiple LP NFTs detected; automatic LP management is halted until manual cleanup." in reply_text
 
 
 @pytest.mark.asyncio
@@ -136,8 +133,6 @@ async def test_cmd_positions_shows_degraded_snapshot_without_hiding_lp(monkeypat
             balances={"cngn": 0, "usdc": 0, "usdt": 0},
             lp_position=LPPosition(
                 token_id="77",
-                token_ids=["77"],
-                position_count=1,
                 liquidity=None,
                 range_min=None,
                 range_max=None,

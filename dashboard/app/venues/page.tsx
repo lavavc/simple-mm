@@ -281,13 +281,9 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
               </CardHeader>
               <CardContent className="p-4 space-y-4">
                 <div className="flex justify-between items-center bg-black/40 p-2.5 rounded-sm border border-white/[0.02]">
-                  <div className="text-[10px] text-white/50 uppercase tracking-widest">
-                    {lpPosition.position_count > 1 ? 'Vector Position IDs' : 'Vector Position ID'}
-                  </div>
+                  <div className="text-[10px] text-white/50 uppercase tracking-widest">Vector Position ID</div>
                   <div className="text-sm font-mono text-white">
-                    {lpPosition.token_id
-                      ? `#${lpPosition.token_id}`
-                      : `${lpPosition.position_count} positions`}
+                    {lpPosition.token_id ? `#${lpPosition.token_id}` : 'Unavailable'}
                   </div>
                 </div>
 

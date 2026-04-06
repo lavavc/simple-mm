@@ -19,6 +19,7 @@ def get_portfolio_exposure_calculator(runtime: EngineRuntime) -> PortfolioExposu
             account_manager=runtime.account_manager,
             token_contracts=runtime.token_contracts,
             blended_calculator=runtime.blended_calculator,
+            price_aggregator=runtime.price_aggregator,
             portfolio_source_registry=runtime.portfolio_source_registry,
         )
     return runtime.portfolio_exposure_calculator

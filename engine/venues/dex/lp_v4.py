@@ -92,8 +92,6 @@ class LPBalanceSwapResult:
 @dataclass(slots=True)
 class LPPositionSnapshot:
     token_id: int | None
-    token_ids: tuple[int, ...]
-    position_count: int
     liquidity: int | None
     token0_amount: Decimal | None
     token1_amount: Decimal | None
@@ -206,7 +204,12 @@ class V4LPAdapter(BaseV4DexAdapter):
             if self.config.invert_price and current_price > 0:
                 current_price = Decimal(1) / current_price
 
-            pool_liquidity = Decimal(self.state_view.functions.getLiquidity(pool_id_bytes).call())
+            pool_liquidity: Decimal | None
+            try:
+                pool_liquidity = Decimal(self.state_view.functions.getLiquidity(pool_id_bytes).call())
+            except Exception as e:
+                logger.warning("get_v4_pool_liquidity_failed", venue=self.name, error=str(e))
+                pool_liquidity = None
             return LPMarketSnapshot(
                 sqrt_price_x96=sqrt_price_x96,
                 current_tick=current_tick,
@@ -326,6 +329,57 @@ class V4LPAdapter(BaseV4DexAdapter):
         else:
             balances["usdt"] += amount
 
+    def _compute_lp_token_amounts_from_metadata(
+        self,
+        metadata: LPStaticPositionMetadata,
+        sqrt_price_x96: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        pos_state = PositionState(
+            token_id=metadata.token_id,
+            liquidity=metadata.liquidity,
+            tick_lower=metadata.tick_lower,
+            tick_upper=metadata.tick_upper,
+            tokens_owed_0=0,
+            tokens_owed_1=0,
+            price_lower=metadata.range_min,
+            price_upper=metadata.range_max,
+            current_price=Decimal("0"),
+            in_range=False,
+        )
+        return self._compute_lp_token_amounts(pos_state, sqrt_price_x96)
+
+    def get_portfolio_balances(self) -> dict[str, Decimal]:
+        """Return LP token balances for portfolio exposure accounting only."""
+        balances = self._empty_position_balances()
+        token_ids = self.get_owned_positions()
+        if not token_ids:
+            return balances
+        if len(token_ids) > 1:
+            logger.warning(
+                "multiple_lp_positions_portfolio_balances_unsupported",
+                venue=self.name,
+                token_ids=token_ids,
+            )
+            return balances
+
+        metadata = self._get_static_position_metadata(token_ids[0])
+        if metadata is None or metadata.liquidity == 0:
+            return balances
+
+        market = self._get_live_pool_snapshot()
+        sqrt_price_x96 = market.sqrt_price_x96 if market is not None else None
+        if sqrt_price_x96 is None:
+            from engine.market.pool_state import get_cached_pool_state
+
+            sqrt_price_x96, _, _, _ = get_cached_pool_state(self.config.pool_id)
+        if sqrt_price_x96 is None:
+            return balances
+
+        amount0, amount1 = self._compute_lp_token_amounts_from_metadata(metadata, sqrt_price_x96)
+        self._add_symbol_balance(balances, self.config.token0_symbol, amount0)
+        self._add_symbol_balance(balances, self.config.token1_symbol, amount1)
+        return balances
+
     # === Position override ===
 
     async def get_position(self) -> Position:
@@ -342,8 +396,6 @@ class V4LPAdapter(BaseV4DexAdapter):
                 self._add_symbol_balance(balances, snapshot.token1_symbol, snapshot.token1_amount)
             lp_position = LPPosition(
                 token_id=str(snapshot.token_id) if snapshot.token_id is not None else None,
-                token_ids=[str(token_id) for token_id in snapshot.token_ids],
-                position_count=snapshot.position_count,
                 liquidity=str(snapshot.liquidity) if snapshot.liquidity is not None else None,
                 range_min=snapshot.range_min,
                 range_max=snapshot.range_max,
@@ -422,8 +474,6 @@ class V4LPAdapter(BaseV4DexAdapter):
 
         return LPPositionSnapshot(
             token_id=pos_state.token_id,
-            token_ids=(pos_state.token_id,),
-            position_count=1,
             liquidity=pos_state.liquidity,
             token0_amount=amount0,
             token1_amount=amount1,
@@ -436,98 +486,22 @@ class V4LPAdapter(BaseV4DexAdapter):
             our_share_pct=our_share_pct,
         )
 
-    def _aggregate_lp_position_snapshots(
-        self,
-        snapshots: list[LPPositionSnapshot],
-    ) -> LPPositionSnapshot | None:
-        """Combine one or more LP NFT snapshots into a single venue-local position view."""
-        if not snapshots:
-            return None
-
-        token_ids = tuple(snapshot.token_ids[0] for snapshot in snapshots)
-        multi_position = len(token_ids) > 1
-        if multi_position:
-            logger.warning("multiple_lp_positions_detected", venue=self.name, token_ids=list(token_ids))
-
-        have_share = all(snapshot.our_share_pct is not None for snapshot in snapshots)
-        return LPPositionSnapshot(
-            token_id=token_ids[0] if len(token_ids) == 1 else None,
-            token_ids=token_ids,
-            position_count=len(token_ids),
-            liquidity=sum((snapshot.liquidity or 0) for snapshot in snapshots),
-            token0_amount=sum(
-                (
-                    (
-                        snapshot.token0_amount
-                        if snapshot.token0_amount is not None
-                        else Decimal("0")
-                    )
-                    for snapshot in snapshots
-                ),
-                start=Decimal("0"),
-            ),
-            token1_amount=sum(
-                (
-                    (
-                        snapshot.token1_amount
-                        if snapshot.token1_amount is not None
-                        else Decimal("0")
-                    )
-                    for snapshot in snapshots
-                ),
-                start=Decimal("0"),
-            ),
-            token0_symbol=self.config.token0_symbol,
-            token1_symbol=self.config.token1_symbol,
-            range_min=min(snapshot.range_min for snapshot in snapshots if snapshot.range_min is not None),
-            range_max=max(snapshot.range_max for snapshot in snapshots if snapshot.range_max is not None),
-            in_range=any(bool(snapshot.in_range) for snapshot in snapshots),
-            position_value_usd=sum(
-                (
-                    (
-                        snapshot.position_value_usd
-                        if snapshot.position_value_usd is not None
-                        else Decimal("0")
-                    )
-                    for snapshot in snapshots
-                ),
-                start=Decimal("0"),
-            ),
-            our_share_pct=(
-                sum(
-                    (
-                        (
-                            snapshot.our_share_pct
-                            if snapshot.our_share_pct is not None
-                            else Decimal("0")
-                        )
-                        for snapshot in snapshots
-                    ),
-                    start=Decimal("0"),
-                )
-                if have_share
-                else None
-            ),
-        )
-
     def _build_degraded_lp_snapshot(
         self,
-        token_ids: tuple[int, ...],
-        metadata: list[LPStaticPositionMetadata],
+        metadata: LPStaticPositionMetadata | None,
         *,
+        token_id: int | None,
         message: str,
     ) -> LPPositionSnapshot:
         return LPPositionSnapshot(
-            token_id=token_ids[0] if len(token_ids) == 1 else None,
-            token_ids=token_ids,
-            position_count=len(token_ids),
-            liquidity=sum(item.liquidity for item in metadata) if metadata else None,
+            token_id=token_id,
+            liquidity=metadata.liquidity if metadata is not None else None,
             token0_amount=None,
             token1_amount=None,
             token0_symbol=self.config.token0_symbol,
             token1_symbol=self.config.token1_symbol,
-            range_min=min((item.range_min for item in metadata), default=None),
-            range_max=max((item.range_max for item in metadata), default=None),
+            range_min=metadata.range_min if metadata is not None else None,
+            range_max=metadata.range_max if metadata is not None else None,
             in_range=None,
             position_value_usd=None,
             our_share_pct=None,
@@ -535,51 +509,53 @@ class V4LPAdapter(BaseV4DexAdapter):
             snapshot_message=message,
         )
 
-    def _build_snapshots_from_market(
-        self,
-        metadata: list[LPStaticPositionMetadata],
-        market: LPMarketSnapshot,
-    ) -> list[LPPositionSnapshot]:
-        snapshots: list[LPPositionSnapshot] = []
-        for item in metadata:
-            if item.liquidity == 0:
-                continue
-            pos_state = self._build_position_state_from_metadata(
-                item,
-                current_price=market.current_price,
-                current_tick=market.current_tick,
-            )
-            snapshots.append(
-                self._build_lp_position_snapshot(
-                    pos_state,
-                    sqrt_price_x96=market.sqrt_price_x96,
-                    pool_liquidity=market.pool_liquidity,
-                )
-            )
-        return snapshots
-
     def get_active_lp_position_snapshot(self) -> LPPositionSnapshot | None:
         """Return the deployed LP composition, or a degraded presence-only summary."""
-        token_ids = tuple(self.get_owned_positions())
+        token_ids = self.get_owned_positions()
         if not token_ids:
             return None
-
-        metadata: list[LPStaticPositionMetadata] = []
-        for token_id in token_ids:
-            item = self._get_static_position_metadata(token_id)
-            if item is not None:
-                metadata.append(item)
-
-        market = self._get_live_pool_snapshot()
-        if market is not None and len(metadata) == len(token_ids):
-            return self._aggregate_lp_position_snapshots(
-                self._build_snapshots_from_market(metadata, market)
+        if len(token_ids) > 1:
+            logger.warning("multiple_lp_positions_detected", venue=self.name, token_ids=token_ids)
+            return self._build_degraded_lp_snapshot(
+                None,
+                token_id=None,
+                message=(
+                    "Multiple LP NFTs detected; automatic LP management is halted until manual cleanup."
+                ),
             )
 
-        return self._build_degraded_lp_snapshot(
-            token_ids,
+        token_id = token_ids[0]
+        metadata = self._get_static_position_metadata(token_id)
+        if metadata is None:
+            return self._build_degraded_lp_snapshot(
+                None,
+                token_id=token_id,
+                message="LP position exists, but live composition is unavailable.",
+            )
+        if metadata.liquidity == 0:
+            return self._build_degraded_lp_snapshot(
+                metadata,
+                token_id=token_id,
+                message="LP NFT exists, but has no active liquidity.",
+            )
+
+        market = self._get_live_pool_snapshot()
+        if market is None:
+            return self._build_degraded_lp_snapshot(
+                metadata,
+                token_id=token_id,
+                message="LP position exists, but live composition is unavailable.",
+            )
+
+        pos_state = self._build_position_state_from_metadata(
             metadata,
-            message="LP position exists, but live composition is unavailable.",
+            current_price=market.current_price,
+            current_tick=market.current_tick,
+        )
+        return self._build_lp_position_snapshot(
+            pos_state,
+            sqrt_price_x96=market.sqrt_price_x96,
+            pool_liquidity=market.pool_liquidity,
         )
 
     # === LP operations ===
@@ -662,27 +638,36 @@ class V4LPAdapter(BaseV4DexAdapter):
             return TxResult(hash="", status="failed", error="no position_manager configured")
 
         metadata = self._get_static_position_metadata(token_id)
-        if metadata is None or metadata.liquidity == 0:
+        if metadata is None:
             return TxResult(hash="", status="failed", error="position not found")
 
         currency0, currency1, _, _, _ = self._resolve_pool_key()
         to_addr = Web3.to_checksum_address(recipient or self.lp_account.address)
 
-        actions = bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR])
-        params = [
-            encode(
-                ["uint256", "uint256", "uint128", "uint128", "bytes"],
-                [token_id, metadata.liquidity, 0, 0, b""],
-            ),
-            encode(
-                ["uint256", "uint128", "uint128", "bytes"],
-                [token_id, 0, 0, b""],
-            ),
-            encode(
-                ["address", "address", "address"],
-                [currency0, currency1, to_addr],
-            ),
-        ]
+        if metadata.liquidity > 0:
+            actions = bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR])
+            params = [
+                encode(
+                    ["uint256", "uint256", "uint128", "uint128", "bytes"],
+                    [token_id, metadata.liquidity, 0, 0, b""],
+                ),
+                encode(
+                    ["uint256", "uint128", "uint128", "bytes"],
+                    [token_id, 0, 0, b""],
+                ),
+                encode(
+                    ["address", "address", "address"],
+                    [currency0, currency1, to_addr],
+                ),
+            ]
+        else:
+            actions = bytes([_V4_LP_BURN_POSITION])
+            params = [
+                encode(
+                    ["uint256", "uint128", "uint128", "bytes"],
+                    [token_id, 0, 0, b""],
+                ),
+            ]
         unlock_data = encode(["bytes", "bytes[]"], [actions, params])
 
         deadline = self.w3.eth.get_block("latest")["timestamp"] + 300
@@ -706,6 +691,7 @@ class V4LPAdapter(BaseV4DexAdapter):
             venue=self.name,
             token_id=token_id,
             liquidity=metadata.liquidity,
+            burn_only=metadata.liquidity == 0,
             recipient=to_addr,
         )
         return await self._send_transaction(tx, self.lp_account)

@@ -178,8 +178,6 @@ class TestLPPosition:
     def test_degraded_snapshot_allows_optional_live_fields(self):
         lp = LPPosition(
             token_id="77",
-            token_ids=["77"],
-            position_count=1,
             snapshot_status="degraded",
             snapshot_message="LP position exists, but composition is unavailable.",
         )

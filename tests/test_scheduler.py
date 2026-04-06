@@ -352,6 +352,27 @@ class TestCheckDexRebalance:
         alert_messages = [b.get("message", "") for b in broadcasts if b.get("type") == "alert"]
         assert len(alert_messages) == 2
 
+    @pytest.mark.asyncio
+    async def test_missing_live_position_state_logs_warning_and_skips(self, fake_dex_adapter):
+        fake_dex_adapter._positions = [_make_position(token_id=41)]
+        fake_dex_adapter.get_position_state = MagicMock(return_value=None)
+
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({"uni-base": fake_dex_adapter}, broadcasts, db)
+
+        with patch("engine.lp.rebalancer.logger.warning") as warning_mock:
+            await sched._check_dex_rebalance()
+
+        assert len(fake_dex_adapter.minted) == 0
+        warning_mock.assert_any_call(
+            "lp_rebalance_skipped",
+            venue="uni-base",
+            token_id=41,
+            owned_token_ids=[41],
+            reason="position_state_unavailable",
+        )
+
 
 # =============================================================================
 # _rebalance_dex_position

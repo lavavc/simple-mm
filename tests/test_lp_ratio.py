@@ -1,10 +1,11 @@
 """Unit tests for compute_required_ratio and prepare_lp_balance."""
 
 import math
-import pytest
 from decimal import Decimal
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from eth_abi import decode  # type: ignore[attr-defined]
+import pytest
 
 from engine.api.schemas import TxResult
 from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
@@ -144,19 +145,19 @@ def _make_lp_snapshot_adapter(
         state_view=MagicMock(),
     )
     adapter._compute_lp_token_amounts = MethodType(V4LPAdapter._compute_lp_token_amounts, adapter)
+    adapter._compute_lp_token_amounts_from_metadata = MethodType(
+        V4LPAdapter._compute_lp_token_amounts_from_metadata,
+        adapter,
+    )
     adapter._build_position_state_from_metadata = MethodType(
         V4LPAdapter._build_position_state_from_metadata,
         adapter,
     )
     adapter._build_lp_position_snapshot = MethodType(V4LPAdapter._build_lp_position_snapshot, adapter)
-    adapter._aggregate_lp_position_snapshots = MethodType(
-        V4LPAdapter._aggregate_lp_position_snapshots,
-        adapter,
-    )
     adapter._build_degraded_lp_snapshot = MethodType(V4LPAdapter._build_degraded_lp_snapshot, adapter)
-    adapter._build_snapshots_from_market = MethodType(V4LPAdapter._build_snapshots_from_market, adapter)
     adapter._empty_position_balances = MethodType(V4LPAdapter._empty_position_balances, adapter)
     adapter._add_symbol_balance = MethodType(V4LPAdapter._add_symbol_balance, adapter)
+    adapter.get_portfolio_balances = MethodType(V4LPAdapter.get_portfolio_balances, adapter)
     adapter.get_active_lp_position_snapshot = MethodType(V4LPAdapter.get_active_lp_position_snapshot, adapter)
     adapter.get_position = MethodType(V4LPAdapter.get_position, adapter)
     return adapter
@@ -279,6 +280,33 @@ class TestPrepareLpBalance:
 class TestActiveLpPositionSnapshot:
     """Tests for V4LPAdapter.get_active_lp_position_snapshot."""
 
+    def test_live_pool_snapshot_keeps_slot0_when_liquidity_read_fails(self):
+        state_view = MagicMock()
+        state_view.functions.getSlot0.return_value.call.return_value = [
+            _price_to_sqrt_x96(1.0),
+            0,
+            0,
+            0,
+        ]
+        state_view.functions.getLiquidity.return_value.call.side_effect = RuntimeError("liquidity unavailable")
+        adapter = SimpleNamespace(
+            name="uni-base",
+            config=SimpleNamespace(
+                pool_id="0x" + "ab" * 32,
+                token0_decimals=6,
+                token1_decimals=6,
+                invert_price=False,
+            ),
+            state_view=state_view,
+        )
+
+        result = V4LPAdapter._get_live_pool_snapshot(adapter)
+
+        assert result is not None
+        assert result.current_tick == 0
+        assert result.current_price == Decimal("1")
+        assert result.pool_liquidity is None
+
     def test_returns_none_when_no_active_position(self):
         adapter = _make_lp_snapshot_adapter(
             [],
@@ -319,7 +347,7 @@ class TestActiveLpPositionSnapshot:
         assert result.token1_amount > 0
         assert result.snapshot_status == "live"
 
-    def test_snapshot_aggregates_multiple_positions(self):
+    def test_snapshot_returns_degraded_summary_for_multiple_positions(self):
         adapter = _make_lp_snapshot_adapter(
             [_make_position_state(token_id=77), _make_position_state(token_id=78)],
             sqrt_price_x96=_price_to_sqrt_x96(1.0),
@@ -329,10 +357,14 @@ class TestActiveLpPositionSnapshot:
 
         assert result is not None
         assert result.token_id is None
-        assert result.position_count == 2
-        assert result.token_ids == (77, 78)
-        assert result.token0_amount > 0
-        assert result.token1_amount > 0
+        assert result.snapshot_status == "degraded"
+        assert result.liquidity is None
+        assert result.range_min is None
+        assert result.token0_amount is None
+        assert (
+            result.snapshot_message
+            == "Multiple LP NFTs detected; automatic LP management is halted until manual cleanup."
+        )
 
     def test_snapshot_returns_degraded_summary_when_live_pool_state_unavailable(self):
         pos_state = _make_position_state(token_id=77, in_range=True)
@@ -346,11 +378,93 @@ class TestActiveLpPositionSnapshot:
 
         assert result is not None
         assert result.snapshot_status == "degraded"
-        assert result.token_ids == (77,)
+        assert result.token_id == 77
         assert result.token0_amount is None
         assert result.position_value_usd is None
         assert result.range_min == Decimal("0.9")
         assert result.snapshot_message == "LP position exists, but live composition is unavailable."
+
+    def test_snapshot_returns_degraded_summary_for_zero_liquidity_nft(self):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        pos_state.liquidity = 0
+        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
+
+        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+
+        assert result is not None
+        assert result.token_id == 77
+        assert result.liquidity == 0
+        assert result.snapshot_status == "degraded"
+        assert result.token0_amount is None
+        assert result.snapshot_message == "LP NFT exists, but has no active liquidity."
+
+    def test_portfolio_balances_use_shared_pool_cache_when_live_unavailable(self, monkeypatch):
+        pos_state = _make_position_state(token_id=77, in_range=True)
+        adapter = _make_lp_snapshot_adapter(
+            [pos_state],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+            include_live_market=False,
+        )
+
+        monkeypatch.setattr(
+            "engine.market.pool_state.get_cached_pool_state",
+            lambda _pool_id: (Decimal(_price_to_sqrt_x96(1.0)), Decimal("5000000"), 123.0, None),
+        )
+
+        balances = V4LPAdapter.get_portfolio_balances(adapter)
+
+        assert balances["cngn"] > 0
+        assert balances["usdc"] > 0
+        assert balances["usdt"] == 0
+
+    def test_portfolio_balances_skip_multiple_positions(self):
+        adapter = _make_lp_snapshot_adapter(
+            [_make_position_state(token_id=77), _make_position_state(token_id=78)],
+            sqrt_price_x96=_price_to_sqrt_x96(1.0),
+        )
+
+        balances = V4LPAdapter.get_portfolio_balances(adapter)
+
+        assert balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+
+    @pytest.mark.asyncio
+    async def test_remove_position_burns_zero_liquidity_shell(self):
+        token_id = 77
+        recipient = "0x" + "ee" * 20
+        position_manager_contract = MagicMock()
+        position_manager_contract.functions.modifyLiquidities.return_value.build_transaction.return_value = {
+            "from": "0x" + "cc" * 20,
+            "to": "0x" + "dd" * 20,
+            "data": "0xabc",
+        }
+        adapter = SimpleNamespace(
+            name="uni-base",
+            position_manager_contract=position_manager_contract,
+            _get_static_position_metadata=lambda _token_id: LPStaticPositionMetadata(
+                token_id=token_id,
+                liquidity=0,
+                tick_lower=-1000,
+                tick_upper=1000,
+                range_min=Decimal("0.9"),
+                range_max=Decimal("1.1"),
+            ),
+            _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 0, 0, "0x" + "00" * 20),
+            lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+            w3=MagicMock(),
+            _get_tx_params=lambda account: {"from": account.address},
+            _send_transaction=AsyncMock(return_value=TxResult(hash="0xremove", status="confirmed")),
+        )
+        adapter.w3.eth.get_block.return_value = {"timestamp": 100}
+        adapter.w3.eth.estimate_gas.return_value = 100_000
+
+        result = await V4LPAdapter.remove_position(adapter, token_id, recipient=recipient)
+
+        assert result.status == "confirmed"
+        unlock_data, deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
+        actions, params = decode(["bytes", "bytes[]"], unlock_data)
+        assert actions == bytes([3])
+        assert len(params) == 1
+        assert deadline == 400
 
 
 class TestV4GetPosition:
@@ -365,7 +479,6 @@ class TestV4GetPosition:
         assert result.balances["usdc"] > 0
         assert result.lp_position is not None
         assert result.lp_position.token_id == "77"
-        assert result.lp_position.token_ids == ["77"]
         assert result.lp_position.snapshot_status == "live"
 
     @pytest.mark.asyncio

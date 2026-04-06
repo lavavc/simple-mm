@@ -14,6 +14,7 @@ from engine.market.portfolio_registry import PortfolioSourceDescriptor
 if TYPE_CHECKING:
     from engine.accounts import AccountManager
     from engine.market.price_aggregation import BlendedPriceCalculator
+    from engine.market.venue_prices import VenuePriceAggregator
     from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
@@ -53,12 +54,14 @@ class PortfolioExposureCalculator:
         account_manager: "AccountManager | None",
         token_contracts: dict[int, dict[str, str]],
         blended_calculator: "BlendedPriceCalculator | None",
+        price_aggregator: "VenuePriceAggregator | None",
         portfolio_source_registry: Sequence[PortfolioSourceDescriptor],
     ) -> None:
         self.venues = venues
         self.account_manager = account_manager
         self.token_contracts = token_contracts
         self.blended_calculator = blended_calculator
+        self.price_aggregator = price_aggregator
         self.portfolio_source_registry = tuple(portfolio_source_registry)
 
     async def calculate(self) -> PortfolioExposureSnapshot:
@@ -99,13 +102,33 @@ class PortfolioExposureCalculator:
             if venue is None:
                 continue
 
-            try:
-                position = await venue.get_position()
-            except Exception as exc:
-                logger.warning("portfolio_venue_position_failed", venue=descriptor.venue, error=str(exc))
-                continue
+            raw_balances: dict[str, Any] | None
+            if descriptor.source_kind == "lp_position":
+                get_portfolio_balances = getattr(venue, "get_portfolio_balances", None)
+                if get_portfolio_balances is None:
+                    logger.warning(
+                        "portfolio_lp_balance_helper_missing",
+                        venue=descriptor.venue,
+                    )
+                    continue
+                try:
+                    raw_balances = get_portfolio_balances()
+                except Exception as exc:
+                    logger.warning(
+                        "portfolio_lp_balances_failed",
+                        venue=descriptor.venue,
+                        error=str(exc),
+                    )
+                    continue
+            else:
+                try:
+                    position = await venue.get_position()
+                except Exception as exc:
+                    logger.warning("portfolio_venue_position_failed", venue=descriptor.venue, error=str(exc))
+                    continue
+                raw_balances = getattr(position, "balances", {})
 
-            normalized = self._normalize_balances(getattr(position, "balances", {}))
+            normalized = self._normalize_balances(raw_balances)
             if not self._has_meaningful_balance(normalized):
                 continue
             self._accumulate(total_balances, normalized)
@@ -139,17 +162,24 @@ class PortfolioExposureCalculator:
         )
 
     async def _get_cngn_usd_rate(self) -> Decimal:
-        if self.blended_calculator is None:
-            return Decimal("0")
-        try:
-            blended = await self.blended_calculator.get_blended_price()
-        except Exception as exc:
-            logger.warning("portfolio_blended_price_unavailable", error=str(exc))
-            return Decimal("0")
+        if self.blended_calculator is not None:
+            try:
+                blended = await self.blended_calculator.get_blended_price()
+                for candidate in (blended.vwap, blended.twap_5m, blended.twap_1h):
+                    if candidate > 0:
+                        return candidate
+            except Exception as exc:
+                logger.warning("portfolio_blended_price_unavailable", error=str(exc))
 
-        for candidate in (blended.vwap, blended.twap_5m, blended.twap_1h):
-            if candidate > 0:
-                return candidate
+        if self.price_aggregator is not None:
+            quidax = self.price_aggregator.get_price("quidax")
+            if quidax and quidax.quote and quidax.quote.mid > 0:
+                return quidax.quote.mid
+
+            bybit = self.price_aggregator.get_price("bybit")
+            if bybit and bybit.quote and bybit.quote.mid > 0:
+                return Decimal("1") / bybit.quote.mid
+
         return Decimal("0")
 
     def _normalize_balances(self, raw_balances: dict[str, Any] | None) -> dict[str, Decimal]:
