@@ -251,6 +251,33 @@ async def test_update_venue_params_persists_full_lp_params():
 
 
 @pytest.mark.asyncio
+async def test_pause_venue_cancels_open_orders_when_supported():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.cancel_all_orders = AsyncMock(return_value=2)
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.pause_venue("quidax", runtime=runtime)
+
+    assert response == {"venue": "quidax", "paused": True, "cancelled_orders": 2}
+    assert runtime.venues["quidax"].paused is True
+    venue.cancel_all_orders.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_venue_orders_uses_debug_when_supported():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.get_orders_debug = AsyncMock(return_value={"market": "usdtcngn", "attempts": []})
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.get_venue_orders("quidax", runtime=runtime)
+
+    assert response == {"market": "usdtcngn", "attempts": []}
+    venue.get_orders_debug.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_withdraw_route_uses_lp_rebalancer_path():
     runtime = _make_runtime()
     runtime.venues = {

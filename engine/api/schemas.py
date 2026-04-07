@@ -98,6 +98,9 @@ class SystemStatus(BaseModel):
     venues: list[VenueStatus]
 
 
+CexAnchorSource = Literal["dex_vwap", "blended", "quidax"]
+
+
 class CexParams(BaseModel):
     """Parameters for CEX order ladder."""
 
@@ -105,6 +108,9 @@ class CexParams(BaseModel):
     # NGN offsets from current rate, one order placed per offset on each side
     # e.g. [1, 3, 5, 10] → orders at rate±1, rate±3, rate±5, rate±10 NGN
     ladder_offsets_ngn: list[int] = [1, 3, 5, 10]
+    anchor_source: CexAnchorSource = "blended"
+    anchor_requote_threshold_bps: int = 0
+    anchor_requote_cooldown_seconds: int = 30
     order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
     order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
 

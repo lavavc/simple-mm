@@ -111,6 +111,7 @@ async def init_venues(
             params=CexParams(),
             name="quidax",
             funding_role="quidax-trade-fund",
+            order_user_id=settings.quidax_user_id,
             alert_store=alert_store,
         )
         logger.info("venue_initialized", venue="quidax")
@@ -121,6 +122,7 @@ async def init_venues(
             params=CexParams(),
             name="quidax-lp",
             funding_role="quidax-lp",
+            order_user_id=settings.quidax_lp_user_id,
             alert_store=alert_store,
         )
         logger.info("venue_initialized", venue="quidax-lp")
@@ -162,11 +164,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     venues = await init_venues(account_manager, alert_store=db.alerts)
 
     for venue_name, venue_adapter in venues.items():
+        config = await db.venue_config.get_venue_config(venue_name)
+        if not config or not config.get("params") or not hasattr(venue_adapter, "params"):
+            continue
+
         if isinstance(venue_adapter, V4LPAdapter):
-            config = await db.venue_config.get_venue_config(venue_name)
-            if config and config.get("params"):
-                venue_adapter.params = DexParams(**config["params"])
-                logger.info("venue_params_restored", venue=venue_name)
+            venue_adapter.params = DexParams(**config["params"])
+        else:
+            venue_adapter.params = CexParams(**config["params"])
+        logger.info("venue_params_restored", venue=venue_name)
 
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states

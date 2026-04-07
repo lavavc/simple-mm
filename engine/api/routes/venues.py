@@ -96,9 +96,23 @@ async def withdraw_venue_position(
 async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
-    runtime.venues[venue].paused = True
-    logger.info("venue_paused", venue=venue)
-    return {"venue": venue, "paused": True}
+    venue_adapter = runtime.venues[venue]
+    venue_adapter.paused = True
+
+    cancelled_orders: int | None = None
+    cancel_all_orders = getattr(venue_adapter, "cancel_all_orders", None)
+    if callable(cancel_all_orders):
+        try:
+            cancelled_orders = await cancel_all_orders()
+        except Exception as exc:
+            logger.error("venue_pause_cancel_failed", venue=venue, error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail="Venue paused, but failed to cancel open orders",
+            ) from exc
+
+    logger.info("venue_paused", venue=venue, cancelled_orders=cancelled_orders)
+    return {"venue": venue, "paused": True, "cancelled_orders": cancelled_orders}
 
 
 @router.post("/venues/{venue}/resume", dependencies=[Depends(verify_token)])
@@ -131,8 +145,13 @@ async def update_venue_params(
                 venue_adapter.params.model_dump(mode="json"),
             )
         else:
-            venue_adapter.params = CexParams(**params)
-            await db.venue_config.update_venue_config(venue, params)
+            merged = venue_adapter.params.model_dump(mode="json")
+            merged.update(params)
+            venue_adapter.params = CexParams(**merged)
+            await db.venue_config.update_venue_config(
+                venue,
+                venue_adapter.params.model_dump(mode="json"),
+            )
     else:
         await db.venue_config.update_venue_config(venue, params)
 
@@ -216,6 +235,35 @@ async def trigger_venue_sync(
     except Exception as exc:
         logger.error("manual_sync_failed", venue=venue, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/venues/{venue}/orders", dependencies=[Depends(verify_token)])
+async def get_venue_orders(
+    venue: str,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> dict[str, Any]:
+    if venue not in runtime.venues:
+        raise HTTPException(status_code=404, detail="Venue not found")
+
+    venue_adapter = runtime.venues[venue]
+    get_orders_debug = getattr(venue_adapter, "get_orders_debug", None)
+    if callable(get_orders_debug):
+        try:
+            return await get_orders_debug()
+        except Exception as exc:
+            logger.error("venue_orders_debug_failed", venue=venue, error=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    get_open_orders = getattr(venue_adapter, "get_open_orders", None)
+    if callable(get_open_orders):
+        try:
+            orders = await get_open_orders()
+            return {"venue": venue, "open_orders": orders, "count": len(orders)}
+        except Exception as exc:
+            logger.error("venue_open_orders_failed", venue=venue, error=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    raise HTTPException(status_code=400, detail="Venue does not expose order inspection")
 
 
 @router.get("/venues/quidax/depth", response_model=OrderBookDepthResponse)

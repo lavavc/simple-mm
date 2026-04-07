@@ -82,6 +82,9 @@ class TestCexParamsValidation:
 
         assert params.ladder_enabled is False
         assert params.ladder_offsets_ngn == [1, 3, 5, 10]
+        assert params.anchor_source == "blended"
+        assert params.anchor_requote_threshold_bps == 0
+        assert params.anchor_requote_cooldown_seconds == 30
         assert params.order_size_cngn == Decimal("0")
         assert params.order_size_usdt == Decimal("0")
 
@@ -89,12 +92,18 @@ class TestCexParamsValidation:
         params = CexParams(
             ladder_enabled=True,
             ladder_offsets_ngn=[1, 3, 5],
+            anchor_source="quidax",
+            anchor_requote_threshold_bps=15,
+            anchor_requote_cooldown_seconds=12,
             order_size_cngn=Decimal("10000"),
             order_size_usdt=Decimal("100"),
         )
 
         assert params.ladder_enabled is True
         assert params.ladder_offsets_ngn == [1, 3, 5]
+        assert params.anchor_source == "quidax"
+        assert params.anchor_requote_threshold_bps == 15
+        assert params.anchor_requote_cooldown_seconds == 12
         assert params.order_size_cngn == Decimal("10000")
         assert params.order_size_usdt == Decimal("100")
 
@@ -104,6 +113,8 @@ class TestCexParamsValidation:
 
         assert data["order_size_cngn"] == Decimal("5000")
         assert data["ladder_enabled"] is False
+        assert data["anchor_source"] == "blended"
+        assert data["anchor_requote_cooldown_seconds"] == 30
 
 
 class TestWalletParamsValidation:
