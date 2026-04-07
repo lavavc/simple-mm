@@ -76,6 +76,8 @@ async def init_venues(
     acct_manager: AccountManager | None,
     *,
     alert_store: Any,
+    system_state_store: Any,
+    broadcast: Any,
 ) -> dict[str, Any]:
     """Initialize venue adapters. All secrets come from env vars."""
     venues: dict[str, Any] = {}
@@ -113,6 +115,8 @@ async def init_venues(
             funding_role="quidax-trade-fund",
             order_user_id=settings.quidax_user_id,
             alert_store=alert_store,
+            system_state_store=system_state_store,
+            broadcast=broadcast,
         )
         logger.info("venue_initialized", venue="quidax")
 
@@ -124,6 +128,8 @@ async def init_venues(
             funding_role="quidax-lp",
             order_user_id=settings.quidax_lp_user_id,
             alert_store=alert_store,
+            system_state_store=system_state_store,
+            broadcast=broadcast,
         )
         logger.info("venue_initialized", venue="quidax-lp")
 
@@ -161,7 +167,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
-    venues = await init_venues(account_manager, alert_store=db.alerts)
+    venues = await init_venues(
+        account_manager,
+        alert_store=db.alerts,
+        system_state_store=db.system_state,
+        broadcast=broadcast_event,
+    )
 
     for venue_name, venue_adapter in venues.items():
         config = await db.venue_config.get_venue_config(venue_name)
@@ -173,6 +184,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             venue_adapter.params = CexParams(**config["params"])
         logger.info("venue_params_restored", venue=venue_name)
+
+    for venue_name, venue_adapter in venues.items():
+        if not isinstance(venue_adapter, QuidaxAdapter):
+            continue
+        try:
+            await venue_adapter.seed_orders_ws_state()
+            logger.info("venue_orders_ws_state_seeded", venue=venue_name)
+        except Exception as exc:
+            logger.warning("venue_orders_ws_state_seed_failed", venue=venue_name, error=str(exc))
 
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states

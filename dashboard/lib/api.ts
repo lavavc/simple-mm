@@ -14,6 +14,7 @@ import type {
   BlendedPriceResponse,
   NormalizedPriceResponse,
   PoolMetricPoint,
+  VenueOrdersResponse,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
@@ -40,6 +41,9 @@ export const api = {
 
   getVenuePrice: (venue: string): Promise<VenuePriceResponse> =>
     fetchJson(`${API_BASE}/prices/${venue}`),
+
+  getVenueOrders: (venue: string): Promise<VenueOrdersResponse> =>
+    fetchJson(`${API_BASE}/venues/${venue}/orders`),
 
   getBlendedPrice: (): Promise<BlendedPriceResponse> =>
     fetchJson(`${API_BASE}/prices/blended`),

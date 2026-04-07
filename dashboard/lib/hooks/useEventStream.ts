@@ -84,6 +84,11 @@ export function useEventStream() {
           qc.setQueryData(['accountBalances'], event.data);
         }
 
+        if (event.type === 'venue_orders' && event.data?.venue) {
+          qc.invalidateQueries({ queryKey: ['status'] });
+          qc.invalidateQueries({ queryKey: ['venueOrders', event.data.venue] });
+        }
+
         if (event.type === 'arbitrage_opportunity' && event.data) {
           const d = event.data;
           addNotification({

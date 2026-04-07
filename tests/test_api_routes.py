@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 import engine.api as api_module
+import engine.api.deps as api_deps
 from engine.api import api_router
 from engine.api.routes import venues as venue_routes
-from engine.api.schemas import ArbitrageOpportunity
+from engine.api.schemas import ArbitrageOpportunity, CexParams
 from engine.config import DexParams
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
@@ -21,6 +22,7 @@ class _DummyVenue:
     enabled = True
     paused = False
     params = None
+    market = None
 
     async def get_position(self):
         return None
@@ -28,6 +30,11 @@ class _DummyVenue:
 
 class _DummyLpVenue(_DummyVenue):
     def __init__(self, params: DexParams):
+        self.params = params
+
+
+class _DummyCexVenue(_DummyVenue):
+    def __init__(self, params: CexParams):
         self.params = params
 
 
@@ -99,6 +106,30 @@ def test_status_route_reads_db_and_runtime_services():
     assert body["last_price_update"] == 123000
     assert body["venues"][0]["name"] == "quidax"
     runtime.db.system_state.get_system_state.assert_awaited_once_with("trading_enabled")
+
+
+def test_status_route_preserves_non_uniform_legacy_cex_ladder_params():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "quidax": _DummyCexVenue(
+            CexParams(
+                ladder_enabled=True,
+                ladder_offsets_ngn=[1, 3, 5, 10],
+                order_size_usdt=Decimal("10"),
+            )
+        )
+    }
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    params = response.json()["venues"][0]["params"]
+    assert params["ladder_offsets_ngn"] == [1, 3, 5, 10]
+    assert "spread_offset_ngn" not in params
+    assert "ladder_step_ngn" not in params
+    assert "ladder_levels_per_side" not in params
 
 
 def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
@@ -251,6 +282,106 @@ async def test_update_venue_params_persists_full_lp_params():
 
 
 @pytest.mark.asyncio
+async def test_update_venue_params_preserves_non_uniform_legacy_cex_ladder():
+    runtime = _make_runtime()
+    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
+    runtime.venues = {
+        "quidax": _DummyCexVenue(
+            CexParams(
+                ladder_enabled=True,
+                ladder_offsets_ngn=[1, 3, 5, 10],
+                order_size_usdt=Decimal("10"),
+            )
+        )
+    }
+
+    response = await venue_routes.update_venue_params(
+        "quidax",
+        {"anchor_requote_threshold_bps": 25},
+        runtime=runtime,
+        db=runtime.db,
+    )
+
+    assert response == {"venue": "quidax", "params": {"anchor_requote_threshold_bps": 25}}
+    runtime.db.venue_config.update_venue_config.assert_awaited_once()
+    venue_arg, saved_params = runtime.db.venue_config.update_venue_config.await_args.args
+    assert venue_arg == "quidax"
+    assert saved_params["ladder_offsets_ngn"] == [1, 3, 5, 10]
+    assert "spread_offset_ngn" not in saved_params
+    assert "ladder_step_ngn" not in saved_params
+    assert "ladder_levels_per_side" not in saved_params
+    assert saved_params["anchor_requote_threshold_bps"] == 25
+
+
+@pytest.mark.asyncio
+async def test_update_venue_params_rejects_partial_migration_of_non_uniform_legacy_cex_ladder():
+    runtime = _make_runtime()
+    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
+    runtime.venues = {
+        "quidax": _DummyCexVenue(
+            CexParams(
+                ladder_enabled=True,
+                ladder_offsets_ngn=[1, 3, 5, 10],
+                order_size_usdt=Decimal("10"),
+            )
+        )
+    }
+
+    with pytest.raises(venue_routes.HTTPException) as exc_info:
+        await venue_routes.update_venue_params(
+            "quidax",
+            {"ladder_step_ngn": 2},
+            runtime=runtime,
+            db=runtime.db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Legacy custom ladder offsets must be migrated" in str(exc_info.value.detail)
+    runtime.db.venue_config.update_venue_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_venue_params_allows_full_migration_of_non_uniform_legacy_cex_ladder():
+    runtime = _make_runtime()
+    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
+    runtime.venues = {
+        "quidax": _DummyCexVenue(
+            CexParams(
+                ladder_enabled=True,
+                ladder_offsets_ngn=[1, 3, 5, 10],
+                order_size_usdt=Decimal("10"),
+            )
+        )
+    }
+
+    response = await venue_routes.update_venue_params(
+        "quidax",
+        {
+            "spread_offset_ngn": 50,
+            "ladder_step_ngn": 1,
+            "ladder_levels_per_side": 20,
+        },
+        runtime=runtime,
+        db=runtime.db,
+    )
+
+    assert response == {
+        "venue": "quidax",
+        "params": {
+            "spread_offset_ngn": 50,
+            "ladder_step_ngn": 1,
+            "ladder_levels_per_side": 20,
+        },
+    }
+    runtime.db.venue_config.update_venue_config.assert_awaited_once()
+    _venue_arg, saved_params = runtime.db.venue_config.update_venue_config.await_args.args
+    assert saved_params["spread_offset_ngn"] == 50
+    assert saved_params["ladder_step_ngn"] == 1
+    assert saved_params["ladder_levels_per_side"] == 20
+    assert "ladder_offsets_ngn" not in saved_params
+
+
+@pytest.mark.asyncio
 async def test_pause_venue_cancels_open_orders_when_supported():
     runtime = _make_runtime()
     venue = _DummyVenue()
@@ -265,16 +396,90 @@ async def test_pause_venue_cancels_open_orders_when_supported():
 
 
 @pytest.mark.asyncio
-async def test_get_venue_orders_uses_debug_when_supported():
+async def test_get_venue_orders_returns_normalized_summaries_when_supported():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.market = "usdtcngn"
+    venue.get_open_order_summaries = AsyncMock(
+        return_value=[
+            venue_routes.VenueOrderSummary(
+                id="ord-1",
+                market="usdtcngn",
+                side="buy",
+                status="wait",
+                price=Decimal("1345.56"),
+                volume=Decimal("1.48"),
+                remaining_volume=Decimal("1.48"),
+                executed_volume=Decimal("0"),
+                notional=Decimal("1991.4288"),
+                created_at=1712520000000,
+            )
+        ]
+    )
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.get_venue_orders("quidax", runtime=runtime)
+
+    assert response.venue == "quidax"
+    assert response.market == "usdtcngn"
+    assert response.count == 1
+    assert response.orders[0].id == "ord-1"
+    venue.get_open_order_summaries.assert_awaited_once()
+
+
+def test_normalize_generic_order_summary_uses_origin_volume_when_volume_is_zero():
+    summary = venue_routes._normalize_generic_order_summary(
+        {
+            "id": "ord-1",
+            "market": {"id": "usdtcngn"},
+            "side": "sell",
+            "status": "wait",
+            "price": {"amount": "100"},
+            "volume": {"amount": "0"},
+            "origin_volume": {"amount": "2"},
+            "executed_volume": {"amount": "0"},
+        },
+        "quidax",
+    )
+
+    assert summary is not None
+    assert summary.volume == Decimal("2")
+    assert summary.remaining_volume == Decimal("2")
+    assert summary.notional == Decimal("200")
+
+
+@pytest.mark.asyncio
+async def test_get_venue_orders_debug_uses_debug_when_supported():
     runtime = _make_runtime()
     venue = _DummyVenue()
     venue.get_orders_debug = AsyncMock(return_value={"market": "usdtcngn", "attempts": []})
     runtime.venues = {"quidax": venue}
 
-    response = await venue_routes.get_venue_orders("quidax", runtime=runtime)
+    response = await venue_routes.get_venue_orders_debug("quidax", runtime=runtime)
 
     assert response == {"market": "usdtcngn", "attempts": []}
     venue.get_orders_debug.assert_awaited_once()
+
+
+def test_get_venue_orders_http_requires_token(monkeypatch):
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.market = "usdtcngn"
+    venue.get_open_order_summaries = AsyncMock(return_value=[])
+    runtime.venues = {"quidax": venue}
+    app = _make_app(runtime)
+    monkeypatch.setattr(api_deps.settings, "engine_api_token", "test-token")
+
+    with TestClient(app) as client:
+        unauthenticated = client.get("/api/venues/quidax/orders")
+        authenticated = client.get(
+            "/api/venues/quidax/orders",
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200
+    assert authenticated.json()["count"] == 0
 
 
 @pytest.mark.asyncio

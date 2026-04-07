@@ -25,7 +25,7 @@ export interface Position {
   timestamp: number;
   balances: Record<string, number>;
   lp_position?: LPPosition;
-  open_orders?: Record<string, unknown>;
+  open_orders?: VenueOrdersResponse;
   position_value_usd?: number;
   volume_24h_usd?: number;
   rates?: Record<string, number>;  // per-route cNGN/USD rates (blockradar only)
@@ -162,6 +162,26 @@ export interface OrderBookDepth {
   timestamp: number;
   bids: OrderBookLevel[];
   asks: OrderBookLevel[];
+}
+
+export interface VenueOrder {
+  id?: string;
+  market?: string | null;
+  side: string;
+  status?: string | null;
+  price: number;
+  volume: number;
+  remaining_volume: number;
+  executed_volume: number;
+  notional: number;
+  created_at?: number | null;
+}
+
+export interface VenueOrdersResponse {
+  venue: string;
+  market?: string | null;
+  count: number;
+  orders: VenueOrder[];
 }
 
 export interface AccountInfo {

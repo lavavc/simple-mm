@@ -47,7 +47,11 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
                 paused=venue.paused,
                 position=position,
                 price=price_response,
-                params=venue.params.model_dump() if hasattr(venue, "params") and venue.params else None,
+                params=(
+                    venue.params.to_params_payload()
+                    if hasattr(venue, "params") and venue.params and hasattr(venue.params, "to_params_payload")
+                    else venue.params.model_dump() if hasattr(venue, "params") and venue.params else None
+                ),
             )
         )
 

@@ -13,7 +13,13 @@ import structlog
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
 from engine.api.helpers.pricing import get_reference_price_ngn
 from engine.api.protocols import DepthVenue, SyncOrderLadderVenue, WebhookVenue
-from engine.api.schemas import CexParams, OrderBookDepthResponse, OrderBookLevel
+from engine.api.schemas import (
+    CexParams,
+    OrderBookDepthResponse,
+    OrderBookLevel,
+    VenueOrderSummary,
+    VenueOrdersResponse,
+)
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime
@@ -49,6 +55,51 @@ def get_deposit_token_address(token: str) -> str:
     if not address:
         raise HTTPException(status_code=400, detail=f"Unsupported token: {token}. Use USDC or cNGN.")
     return address
+
+
+def _decimal_from_order_value(value: Any) -> Decimal:
+    if isinstance(value, dict):
+        for key in ("amount", "value"):
+            nested = value.get(key)
+            if nested is not None:
+                return Decimal(str(nested))
+        return Decimal("0")
+    if value is None:
+        return Decimal("0")
+    return Decimal(str(value))
+
+
+def _normalize_generic_order_summary(order: dict[str, Any], venue: str) -> VenueOrderSummary | None:
+    price = _decimal_from_order_value(order.get("price"))
+    if price <= 0:
+        return None
+
+    volume = _decimal_from_order_value(order.get("volume"))
+    origin_volume = _decimal_from_order_value(order.get("origin_volume"))
+    remaining_volume = _decimal_from_order_value(order.get("remaining_volume"))
+    executed_volume = _decimal_from_order_value(order.get("executed_volume"))
+    if volume <= 0:
+        volume = origin_volume
+    if remaining_volume <= 0:
+        base_volume = origin_volume if origin_volume > 0 else volume
+        remaining_volume = base_volume - executed_volume if base_volume > executed_volume else base_volume
+    if remaining_volume < 0:
+        remaining_volume = Decimal("0")
+    if volume <= 0:
+        volume = origin_volume if origin_volume > 0 else remaining_volume + executed_volume
+
+    return VenueOrderSummary(
+        id=str(order.get("id", "")),
+        market=str(order.get("market")) if order.get("market") is not None else None,
+        side=str(order.get("side", "")).lower() or "unknown",
+        status=str(order.get("state") or order.get("status") or "").lower() or None,
+        price=price,
+        volume=volume,
+        remaining_volume=remaining_volume,
+        executed_volume=executed_volume,
+        notional=price * (remaining_volume if remaining_volume > 0 else volume),
+        created_at=None,
+    )
 
 
 @router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])
@@ -145,12 +196,26 @@ async def update_venue_params(
                 venue_adapter.params.model_dump(mode="json"),
             )
         else:
-            merged = venue_adapter.params.model_dump(mode="json")
+            merged = venue_adapter.params.to_params_payload(mode="json")
+            ladder_migration_fields = {"spread_offset_ngn", "ladder_step_ngn", "ladder_levels_per_side"}
+            provided_ladder_migration_fields = ladder_migration_fields.intersection(params)
+            if (
+                merged.get("ladder_offsets_ngn")
+                and provided_ladder_migration_fields
+                and provided_ladder_migration_fields != ladder_migration_fields
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Legacy custom ladder offsets must be migrated by setting "
+                        "spread_offset_ngn, ladder_step_ngn, and ladder_levels_per_side together."
+                    ),
+                )
             merged.update(params)
             venue_adapter.params = CexParams(**merged)
             await db.venue_config.update_venue_config(
                 venue,
-                venue_adapter.params.model_dump(mode="json"),
+                venue_adapter.params.to_params_payload(mode="json"),
             )
     else:
         await db.venue_config.update_venue_config(venue, params)
@@ -237,8 +302,53 @@ async def trigger_venue_sync(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/venues/{venue}/orders", dependencies=[Depends(verify_token)])
+@router.get("/venues/{venue}/orders", response_model=VenueOrdersResponse, dependencies=[Depends(verify_token)])
 async def get_venue_orders(
+    venue: str,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> VenueOrdersResponse:
+    if venue not in runtime.venues:
+        raise HTTPException(status_code=404, detail="Venue not found")
+
+    venue_adapter = runtime.venues[venue]
+    get_open_order_summaries = getattr(venue_adapter, "get_open_order_summaries", None)
+    if callable(get_open_order_summaries):
+        try:
+            orders = await get_open_order_summaries()
+            return VenueOrdersResponse(
+                venue=venue,
+                market=getattr(venue_adapter, "market", None),
+                count=len(orders),
+                orders=orders,
+            )
+        except Exception as exc:
+            logger.error("venue_order_summaries_failed", venue=venue, error=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    get_open_orders = getattr(venue_adapter, "get_open_orders", None)
+    if callable(get_open_orders):
+        try:
+            raw_orders = await get_open_orders()
+            orders = [
+                summary
+                for order in raw_orders
+                if (summary := _normalize_generic_order_summary(order, venue)) is not None
+            ]
+            return VenueOrdersResponse(
+                venue=venue,
+                market=getattr(venue_adapter, "market", None),
+                count=len(orders),
+                orders=orders,
+            )
+        except Exception as exc:
+            logger.error("venue_open_orders_failed", venue=venue, error=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    raise HTTPException(status_code=400, detail="Venue does not expose order inspection")
+
+
+@router.get("/venues/{venue}/orders/debug", dependencies=[Depends(verify_token)])
+async def get_venue_orders_debug(
     venue: str,
     runtime: EngineRuntime = Depends(get_runtime),
 ) -> dict[str, Any]:
@@ -247,23 +357,14 @@ async def get_venue_orders(
 
     venue_adapter = runtime.venues[venue]
     get_orders_debug = getattr(venue_adapter, "get_orders_debug", None)
-    if callable(get_orders_debug):
-        try:
-            return await get_orders_debug()
-        except Exception as exc:
-            logger.error("venue_orders_debug_failed", venue=venue, error=str(exc))
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not callable(get_orders_debug):
+        raise HTTPException(status_code=400, detail="Venue does not expose order debug inspection")
 
-    get_open_orders = getattr(venue_adapter, "get_open_orders", None)
-    if callable(get_open_orders):
-        try:
-            orders = await get_open_orders()
-            return {"venue": venue, "open_orders": orders, "count": len(orders)}
-        except Exception as exc:
-            logger.error("venue_open_orders_failed", venue=venue, error=str(exc))
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    raise HTTPException(status_code=400, detail="Venue does not expose order inspection")
+    try:
+        return await get_orders_debug()
+    except Exception as exc:
+        logger.error("venue_orders_debug_failed", venue=venue, error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/venues/quidax/depth", response_model=OrderBookDepthResponse)

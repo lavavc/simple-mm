@@ -3,7 +3,7 @@
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from engine.config import settings
 
@@ -77,6 +77,30 @@ class OrderBookDepthResponse(BaseModel):
     asks: list[OrderBookLevel]
 
 
+class VenueOrderSummary(BaseModel):
+    """Normalized venue order row for monitoring surfaces."""
+
+    id: str
+    market: Optional[str] = None
+    side: str
+    status: Optional[str] = None
+    price: Decimal
+    volume: Decimal
+    remaining_volume: Decimal
+    executed_volume: Decimal
+    notional: Decimal
+    created_at: Optional[int] = None
+
+
+class VenueOrdersResponse(BaseModel):
+    """Normalized open-order snapshot for a venue."""
+
+    venue: str
+    market: Optional[str] = None
+    count: int
+    orders: list[VenueOrderSummary]
+
+
 class VenueStatus(BaseModel):
     """Status of a trading venue."""
 
@@ -105,14 +129,65 @@ class CexParams(BaseModel):
     """Parameters for CEX order ladder."""
 
     ladder_enabled: bool = False
-    # NGN offsets from current rate, one order placed per offset on each side
-    # e.g. [1, 3, 5, 10] → orders at rate±1, rate±3, rate±5, rate±10 NGN
-    ladder_offsets_ngn: list[int] = [1, 3, 5, 10]
+    spread_offset_ngn: int = Field(default=50, ge=0)
+    ladder_step_ngn: int = Field(default=1, ge=1)
+    ladder_levels_per_side: int = Field(default=1, ge=1)
+    # Legacy compatibility for persisted configs that stored explicit offsets.
+    ladder_offsets_ngn: Optional[list[int]] = Field(default=None, exclude=True, repr=False)
     anchor_source: CexAnchorSource = "blended"
     anchor_requote_threshold_bps: int = 0
     anchor_requote_cooldown_seconds: int = 30
     order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
     order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
+
+    @staticmethod
+    def _offsets_form_uniform_ladder(offsets: list[int]) -> bool:
+        if len(offsets) <= 1:
+            return True
+        deltas = [curr - prev for prev, curr in zip(offsets, offsets[1:])]
+        return bool(deltas) and len(set(deltas)) == 1 and deltas[0] > 0
+
+    @model_validator(mode="after")
+    def _hydrate_new_ladder_fields_from_legacy_offsets(self) -> "CexParams":
+        legacy_offsets = [int(offset) for offset in (self.ladder_offsets_ngn or [])]
+        if not legacy_offsets:
+            return self
+
+        new_fields = {"spread_offset_ngn", "ladder_step_ngn", "ladder_levels_per_side"}
+        if self.model_fields_set.intersection(new_fields):
+            self.ladder_offsets_ngn = None
+            return self
+
+        self.spread_offset_ngn = legacy_offsets[0]
+        self.ladder_levels_per_side = len(legacy_offsets)
+        if self._offsets_form_uniform_ladder(legacy_offsets):
+            if len(legacy_offsets) > 1:
+                self.ladder_step_ngn = legacy_offsets[1] - legacy_offsets[0]
+            self.ladder_offsets_ngn = None
+        return self
+
+    @property
+    def resolved_ladder_offsets_ngn(self) -> list[int]:
+        legacy_offsets = [int(offset) for offset in (self.ladder_offsets_ngn or [])]
+        if legacy_offsets:
+            return legacy_offsets
+        return [
+            self.spread_offset_ngn + (index * self.ladder_step_ngn)
+            for index in range(self.ladder_levels_per_side)
+        ]
+
+    def to_params_payload(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
+        payload = self.model_dump(mode=mode)
+        legacy_offsets = [int(offset) for offset in (self.ladder_offsets_ngn or [])]
+        if not legacy_offsets:
+            return payload
+
+        payload["ladder_offsets_ngn"] = legacy_offsets
+        if not self._offsets_form_uniform_ladder(legacy_offsets):
+            payload.pop("spread_offset_ngn", None)
+            payload.pop("ladder_step_ngn", None)
+            payload.pop("ladder_levels_per_side", None)
+        return payload
 
 
 class WalletParams(BaseModel):
