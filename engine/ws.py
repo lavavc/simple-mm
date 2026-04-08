@@ -55,6 +55,13 @@ class ConnectionManager:
         self._connections.discard(ws)
         logger.info("ws_client_disconnected", clients=self.client_count)
 
+    def _retained_event_key(self, event: dict[str, Any]) -> str | None:
+        event_type = event.get("type")
+        if event_type not in RETAINED_EVENT_TYPES:
+            return None
+
+        return str(event_type)
+
     def broadcast(self, event: dict[str, Any]) -> None:
         """Broadcast an event dict to all connected clients.
 
@@ -62,9 +69,9 @@ class ConnectionManager:
         calls this synchronously from APScheduler job threads.
         """
         payload = json.dumps(event, cls=_DecimalEncoder)
-        event_type = event.get("type")
-        if event_type in RETAINED_EVENT_TYPES:
-            self._retained_events[event_type] = payload
+        retained_key = self._retained_event_key(event)
+        if retained_key is not None:
+            self._retained_events[retained_key] = payload
 
         if not self._connections:
             return

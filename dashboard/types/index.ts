@@ -25,7 +25,6 @@ export interface Position {
   timestamp: number;
   balances: Record<string, number>;
   lp_position?: LPPosition;
-  open_orders?: Record<string, unknown>;
   position_value_usd?: number;
   volume_24h_usd?: number;
   rates?: Record<string, number>;  // per-route cNGN/USD rates (blockradar only)

@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # Venue API keys
     quidax_api_key: str = Field(default="", description="Quidax arb account secret key (Bearer token)")
     quidax_lp_api_key: str = Field(default="", description="Quidax LP account secret key (Bearer token)")
+    quidax_user_id: str = Field(default="me", description="Quidax user or sub-account id for order APIs")
+    quidax_lp_user_id: str = Field(default="me", description="Quidax LP user or sub-account id for order APIs")
     quidax_deposit_address: str = Field(default="", description="Quidax static deposit address")
     blockradar_api_key: str = Field(default="", description="Blockradar API key")
     blockradar_wallet_id: str = Field(default="", description="Blockradar wallet ID for swaps")

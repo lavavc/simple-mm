@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 import engine.api as api_module
+import engine.api.deps as api_deps
 from engine.api import api_router
 from engine.api.routes import venues as venue_routes
-from engine.types import ArbitrageOpportunity
+from engine.types import ArbitrageOpportunity, CexParams
 from engine.config import DexParams
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
@@ -21,6 +22,7 @@ class _DummyVenue:
     enabled = True
     paused = False
     params = None
+    market = None
 
     async def get_position(self):
         return None
@@ -28,6 +30,11 @@ class _DummyVenue:
 
 class _DummyLpVenue(_DummyVenue):
     def __init__(self, params: DexParams):
+        self.params = params
+
+
+class _DummyCexVenue(_DummyVenue):
+    def __init__(self, params: CexParams):
         self.params = params
 
 
@@ -100,6 +107,7 @@ def test_status_route_reads_db_and_runtime_services():
     assert body["last_price_update"] == 123000
     assert body["venues"][0]["name"] == "quidax"
     runtime.db.system_state.get_system_state.assert_awaited_once_with("trading_enabled")
+
 
 
 def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
@@ -248,6 +256,108 @@ async def test_update_venue_params_persists_full_lp_params():
         "downside_skew",
         "ewma_lambda",
     }
+
+
+
+@pytest.mark.asyncio
+async def test_pause_venue_cancels_open_orders_when_supported():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.cancel_all_orders = AsyncMock(return_value=2)
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.pause_venue("quidax", runtime=runtime)
+
+    assert response == {"venue": "quidax", "paused": True, "cancelled_orders": 2}
+    assert runtime.venues["quidax"].paused is True
+    venue.cancel_all_orders.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_venue_orders_returns_normalized_summaries_when_supported():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.market = "usdtcngn"
+    venue.get_open_order_summaries = AsyncMock(
+        return_value=[
+            venue_routes.VenueOrderSummary(
+                id="ord-1",
+                market="usdtcngn",
+                side="buy",
+                status="wait",
+                price=Decimal("1345.56"),
+                volume=Decimal("1.48"),
+                remaining_volume=Decimal("1.48"),
+                executed_volume=Decimal("0"),
+                notional=Decimal("1991.4288"),
+                created_at=1712520000000,
+            )
+        ]
+    )
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.get_venue_orders("quidax", runtime=runtime)
+
+    assert response.venue == "quidax"
+    assert response.market == "usdtcngn"
+    assert response.count == 1
+    assert response.orders[0].id == "ord-1"
+    venue.get_open_order_summaries.assert_awaited_once()
+
+
+def test_normalize_generic_order_summary_uses_origin_volume_when_volume_is_zero():
+    summary = venue_routes._normalize_generic_order_summary(
+        {
+            "id": "ord-1",
+            "market": {"id": "usdtcngn"},
+            "side": "sell",
+            "status": "wait",
+            "price": {"amount": "100"},
+            "volume": {"amount": "0"},
+            "origin_volume": {"amount": "2"},
+            "executed_volume": {"amount": "0"},
+        },
+        "quidax",
+    )
+
+    assert summary is not None
+    assert summary.volume == Decimal("2")
+    assert summary.remaining_volume == Decimal("2")
+    assert summary.notional == Decimal("200")
+
+
+@pytest.mark.asyncio
+async def test_get_venue_orders_debug_uses_debug_when_supported():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.get_orders_debug = AsyncMock(return_value={"market": "usdtcngn", "attempts": []})
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.get_venue_orders_debug("quidax", runtime=runtime)
+
+    assert response == {"market": "usdtcngn", "attempts": []}
+    venue.get_orders_debug.assert_awaited_once()
+
+
+def test_get_venue_orders_http_requires_token(monkeypatch):
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.market = "usdtcngn"
+    venue.get_open_order_summaries = AsyncMock(return_value=[])
+    runtime.venues = {"quidax": venue}
+    app = _make_app(runtime)
+    monkeypatch.setattr(api_deps.settings, "engine_api_token", "test-token")
+
+    with TestClient(app) as client:
+        unauthenticated = client.get("/api/venues/quidax/orders")
+        authenticated = client.get(
+            "/api/venues/quidax/orders",
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200
+    assert authenticated.json()["count"] == 0
 
 
 @pytest.mark.asyncio

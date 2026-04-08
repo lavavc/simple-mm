@@ -6,8 +6,9 @@ from typing import Any
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-
-from engine.types import TxResult
+from engine.market.price_aggregation import PriceNormalizer
+from engine.market.venue_prices import VenuePrice
+from engine.types import TxResult, CexParams, PriceQuote
 from engine.venues.dex.shared import PositionState
 from engine.scheduler import TradingScheduler, SchedulerConfig
 from engine.lp.types import LPBalanceSwapResult
@@ -176,6 +177,115 @@ class TestSchedulerConstruction:
         ]
         db.set_system_state.assert_any_await("trading_enabled", "false")
         db.set_system_state.assert_any_await("trading_enabled", "true")
+
+
+class TestCexOrderSync:
+
+    @pytest.mark.asyncio
+    async def test_sync_cex_orders_falls_back_to_main_quidax_when_lp_venue_missing(self):
+        broadcasts = []
+        db = MockDB()
+        quidax = MagicMock(paused=False)
+        quidax.sync_order_ladder = AsyncMock()
+        sched = _build_scheduler({"quidax": quidax}, broadcasts, db)
+        sched.market_jobs.get_reference_price_ngn = AsyncMock(return_value=Decimal("1600"))
+
+        await sched._sync_cex_orders()
+
+        quidax.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+
+    @pytest.mark.asyncio
+    async def test_sync_cex_orders_prefers_dedicated_quidax_lp_when_available(self):
+        broadcasts = []
+        db = MockDB()
+        quidax = MagicMock(paused=False)
+        quidax.sync_order_ladder = AsyncMock()
+        quidax_lp = MagicMock(paused=False)
+        quidax_lp.sync_order_ladder = AsyncMock()
+        sched = _build_scheduler(
+            {"quidax": quidax, "quidax-lp": quidax_lp},
+            broadcasts,
+            db,
+            quidax_lp=quidax_lp,
+        )
+        sched.market_jobs.get_reference_price_ngn = AsyncMock(return_value=Decimal("1600"))
+
+        await sched._sync_cex_orders()
+
+        quidax_lp.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+        quidax.sync_order_ladder.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_cex_orders_uses_anchor_source_from_cex_params(self):
+        broadcasts = []
+        db = MockDB()
+        quidax = MagicMock(paused=False)
+        quidax.params = CexParams(anchor_source="quidax")
+        quidax.sync_order_ladder = AsyncMock()
+        sched = _build_scheduler({"quidax": quidax}, broadcasts, db)
+        sched.market_jobs.get_reference_price_ngn = AsyncMock(return_value=Decimal("1600"))
+
+        await sched._sync_cex_orders()
+
+        sched.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
+        quidax.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+
+    @pytest.mark.asyncio
+    async def test_get_reference_price_ngn_uses_dex_vwap_anchor(self):
+        broadcasts = []
+        db = MockDB()
+        price_aggregator = MagicMock()
+        price_aggregator.get_all_prices.return_value = {
+            "uni-base": VenuePrice(
+                venue="uni-base",
+                pair="cNGN/USDC",
+                quote=PriceQuote(source="uni-base_pool", timestamp=1, bid=Decimal("0.00062"), ask=Decimal("0.00063"), mid=Decimal("0.000625")),
+                volume_24h_usd=Decimal("100"),
+            ),
+            "uni-bsc": VenuePrice(
+                venue="uni-bsc",
+                pair="cNGN/USDT",
+                quote=PriceQuote(source="uni-bsc_pool", timestamp=1, bid=Decimal("0.00049"), ask=Decimal("0.00051"), mid=Decimal("0.00050")),
+                volume_24h_usd=Decimal("300"),
+            ),
+            "quidax": VenuePrice(
+                venue="quidax",
+                pair="cNGN/USDT",
+                quote=PriceQuote(source="quidax", timestamp=1, bid=Decimal("0.00070"), ask=Decimal("0.00071"), mid=Decimal("0.000705")),
+                volume_24h_usd=Decimal("999"),
+            ),
+        }
+        compute_vwap = MagicMock(return_value=Decimal("0.00053125"))
+        blended_calculator = SimpleNamespace(
+            normalizer=PriceNormalizer(),
+            compute_vwap=compute_vwap,
+        )
+        sched = _build_scheduler(
+            {},
+            broadcasts,
+            db,
+            price_aggregator=price_aggregator,
+            blended_calculator=blended_calculator,
+        )
+
+        reference = await sched.market_jobs.get_reference_price_ngn(anchor_source="dex_vwap")
+
+        assert reference == Decimal("1") / Decimal("0.00053125")
+        filtered = compute_vwap.call_args.args[0]
+        assert set(filtered.keys()) == {"uni-base", "uni-bsc"}
+
+    @pytest.mark.asyncio
+    async def test_update_price_triggers_cex_sync_check(self):
+        broadcasts = []
+        db = MockDB()
+        price_aggregator = MagicMock()
+        price_aggregator.fetch_all = AsyncMock(return_value={})
+        sched = _build_scheduler({}, broadcasts, db, price_aggregator=price_aggregator)
+        sched.market_jobs.sync_cex_orders = AsyncMock()
+
+        await sched.market_jobs.update_price()
+
+        sched.market_jobs.sync_cex_orders.assert_awaited_once()
 
 
 # =============================================================================

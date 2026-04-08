@@ -411,7 +411,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
           )}
         </div>
 
-
         {/* LP Position Value History (DEX venues only) */}
         {['uni-base', 'uni-bsc'].includes(venue.name) && (
           <PoolMetricsChart venue={venue.name} />
@@ -464,7 +463,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
               )}
               {venue.name === 'quidax' && (
                 <>
-
                   <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
                     <div>
                       <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Order Ladder Tiers</div>
@@ -485,7 +483,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                       <div className="text-[10px] font-mono text-white/50 mt-1">Capital assigned to each generated order tier</div>
                     </div>
                     <div className="text-sm font-mono text-blue-400 bg-blue-500/10 px-3 py-1 rounded-sm border border-blue-500/20">5.0%</div>
-
                   </div>
                 </>
               )}

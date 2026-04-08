@@ -77,6 +77,7 @@ async def init_venues(
     acct_manager: AccountManager | None,
     *,
     alert_store: Any,
+    system_state_store: Any,
 ) -> dict[str, Any]:
     """Initialize venue adapters. All secrets come from env vars."""
     venues: dict[str, Any] = {}
@@ -112,7 +113,9 @@ async def init_venues(
             params=CexParams(),
             name="quidax",
             funding_role="quidax-trade-fund",
+            order_user_id=settings.quidax_user_id,
             alert_store=alert_store,
+            system_state_store=system_state_store,
         )
         logger.info("venue_initialized", venue="quidax")
 
@@ -122,7 +125,9 @@ async def init_venues(
             params=CexParams(),
             name="quidax-lp",
             funding_role="quidax-lp",
+            order_user_id=settings.quidax_lp_user_id,
             alert_store=alert_store,
+            system_state_store=system_state_store,
         )
         logger.info("venue_initialized", venue="quidax-lp")
 
@@ -186,7 +191,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
-    venues = await init_venues(account_manager, alert_store=db.alerts)
+    venues = await init_venues(account_manager, alert_store=db.alerts, system_state_store=db.system_state)
     lp_managers = init_lp_managers(venues)
 
     for venue_name, lp_manager in lp_managers.items():

@@ -10,11 +10,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from engine.types import LPPosition, OrderBookLevel, Position, PriceQuote
+from engine.types import LPPosition, OrderBookLevel, Position, PriceQuote, VenueOrderSummary
 
 __all__ = [
     "VenuePriceResponse",
     "OrderBookDepthResponse",
+    "VenueOrderSummary",
+    "VenueOrdersResponse",
     "VenueStatus",
     "SystemStatus",
     "GlobalPosition",
@@ -43,6 +45,15 @@ class OrderBookDepthResponse(BaseModel):
     timestamp: int
     bids: list[OrderBookLevel]
     asks: list[OrderBookLevel]
+
+
+class VenueOrdersResponse(BaseModel):
+    """Normalized open-order snapshot for a venue."""
+
+    venue: str
+    market: Optional[str] = None
+    count: int
+    orders: list[VenueOrderSummary]
 
 
 class VenueStatus(BaseModel):
