@@ -468,6 +468,38 @@ class TestActiveLpPositionSnapshot:
 
         assert owned == token_ids
 
+    def test_static_position_metadata_uses_position_manager_liquidity_by_token_id(self):
+        token_id = 77
+        tick_lower = -120
+        tick_upper = 120
+        raw = ((tick_lower & 0xFFFFFF) << 8) | ((tick_upper & 0xFFFFFF) << 32)
+        info_bytes32 = raw.to_bytes(32, "big")
+
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.getPositionInfo.return_value.call.return_value = [
+            ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
+            info_bytes32,
+        ]
+        position_manager_contract.functions.getPositionLiquidity.return_value.call.return_value = 123456
+
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            config=SimpleNamespace(
+                pool_id="0x" + "ab" * 32,
+                token0_decimals=6,
+                token1_decimals=6,
+            ),
+        )
+
+        metadata = V4PositionManager._get_static_position_metadata(adapter, token_id)
+
+        assert metadata is not None
+        assert metadata.token_id == token_id
+        assert metadata.liquidity == 123456
+        position_manager_contract.functions.getPositionLiquidity.assert_called_once_with(token_id)
+
     @pytest.mark.asyncio
     async def test_lp_token_approvals_include_permit2_for_position_manager(self):
         token0 = MagicMock()

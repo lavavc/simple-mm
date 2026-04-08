@@ -59,6 +59,13 @@ POSITION_MANAGER_ABI = [
         "type": "function",
     },
     {
+        "inputs": [{"name": "tokenId", "type": "uint256"}],
+        "name": "getPositionLiquidity",
+        "outputs": [{"name": "liquidity", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
         "inputs": [
             {"name": "owner", "type": "address"},
             {"name": "index", "type": "uint256"},
@@ -378,14 +385,19 @@ class V4PositionManager:
             info_bytes32: bytes = result[1]
             tick_lower, tick_upper = _decode_position_info(info_bytes32)
 
-            pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
-            liquidity = self._state_view.functions.getPositionLiquidity(
-                pool_id_bytes,
-                self._lp_account.address,
-                tick_lower,
-                tick_upper,
-                b"\x00" * 32,
-            ).call()
+            try:
+                liquidity = self._position_manager_contract.functions.getPositionLiquidity(
+                    token_id
+                ).call()
+            except Exception:
+                pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
+                liquidity = self._state_view.functions.getPositionLiquidity(
+                    pool_id_bytes,
+                    self._position_manager_contract.address,
+                    tick_lower,
+                    tick_upper,
+                    token_id.to_bytes(32, "big"),
+                ).call()
 
             return LPStaticPositionMetadata(
                 token_id=token_id,
