@@ -274,6 +274,85 @@ async def test_pause_venue_cancels_open_orders_when_supported():
 
 
 @pytest.mark.asyncio
+async def test_resume_venue_triggers_sync_when_reference_price_available():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.params = CexParams(anchor_source="quidax")
+    venue.sync_order_ladder = AsyncMock()
+    venue.get_position = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(get_reference_price_ngn=AsyncMock(return_value=Decimal("1600")))
+    runtime.venues = {"quidax": venue}
+
+    with patch.object(venue_routes, "get_reference_price_ngn", AsyncMock(return_value=Decimal("1700"))):
+        response = await venue_routes.resume_venue("quidax", runtime=runtime)
+
+    assert response == {"venue": "quidax", "paused": False, "sync_triggered": True}
+    assert venue.paused is False
+    venue.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+    venue.get_position.assert_not_awaited()
+    runtime.scheduler.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
+
+
+@pytest.mark.asyncio
+async def test_resume_venue_falls_back_to_position_when_reference_price_unavailable():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.sync_order_ladder = AsyncMock()
+    venue.get_position = AsyncMock()
+    runtime.venues = {"quidax": venue}
+
+    with patch.object(venue_routes, "get_reference_price_ngn", AsyncMock(return_value=None)):
+        response = await venue_routes.resume_venue("quidax", runtime=runtime)
+
+    assert response == {"venue": "quidax", "paused": False, "sync_triggered": False}
+    assert venue.paused is False
+    venue.sync_order_ladder.assert_not_awaited()
+    venue.get_position.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_venue_skips_auto_sync_when_global_trading_is_paused():
+    runtime = _make_runtime()
+    runtime.scheduler.trading_enabled = False
+    venue = _DummyVenue()
+    venue.sync_order_ladder = AsyncMock()
+    venue.get_position = AsyncMock()
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.resume_venue("quidax", runtime=runtime)
+
+    assert response == {
+        "venue": "quidax",
+        "paused": False,
+        "sync_triggered": False,
+        "sync_skipped": "trading_paused",
+    }
+    assert venue.paused is False
+    venue.sync_order_ladder.assert_not_awaited()
+    venue.get_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resume_venue_reports_sync_failure_without_repausing_venue():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.sync_order_ladder = AsyncMock(side_effect=RuntimeError("boom"))
+    venue.get_position = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(get_reference_price_ngn=AsyncMock(return_value=Decimal("1600")))
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.resume_venue("quidax", runtime=runtime)
+
+    assert response == {
+        "venue": "quidax",
+        "paused": False,
+        "sync_triggered": False,
+        "sync_error": "boom",
+    }
+    assert venue.paused is False
+
+
+@pytest.mark.asyncio
 async def test_get_venue_orders_returns_normalized_summaries_when_supported():
     runtime = _make_runtime()
     venue = _DummyVenue()

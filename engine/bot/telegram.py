@@ -7,12 +7,13 @@ import os
 import secrets
 import signal
 import time
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import structlog
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
+from engine.api.helpers.pricing import get_reference_price_ngn
 from engine.config import Settings
 from engine.runtime import EngineRuntime
 
@@ -54,6 +55,80 @@ def _confirm_kb(action: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("✅ Yes", callback_data=f"confirm:{action}"),
         InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
     ]])
+
+
+async def _sync_venue_now(
+    runtime: EngineRuntime,
+    venue_name: str,
+) -> Literal["sync_triggered", "position_refreshed"]:
+    venue = runtime.venues.get(venue_name)
+    if venue is None:
+        raise ValueError(f"Venue not found: {venue_name}")
+
+    anchor_source = getattr(getattr(venue, "params", None), "anchor_source", "blended")
+    market_jobs = getattr(runtime.scheduler, "market_jobs", None)
+    get_anchor_reference_price = getattr(market_jobs, "get_reference_price_ngn", None)
+    if callable(get_anchor_reference_price):
+        ref_price = await get_anchor_reference_price(anchor_source=anchor_source)
+    else:
+        ref_price = await get_reference_price_ngn(runtime)
+
+    sync_order_ladder = getattr(venue, "sync_order_ladder", None)
+    if callable(sync_order_ladder) and ref_price:
+        await sync_order_ladder(ref_price)
+        return "sync_triggered"
+
+    await venue.get_position()
+    return "position_refreshed"
+
+
+async def _pause_venue_now(runtime: EngineRuntime, venue_name: str, *, set_paused: bool) -> int | None:
+    venue = runtime.venues.get(venue_name)
+    if venue is None:
+        raise ValueError(f"Venue not found: {venue_name}")
+
+    if set_paused:
+        venue.paused = True
+
+    cancel_all_orders = getattr(venue, "cancel_all_orders", None)
+    if callable(cancel_all_orders):
+        return await cancel_all_orders()
+    return None
+
+
+async def _pause_all_trading_now(runtime: EngineRuntime) -> tuple[dict[str, int | None], dict[str, str]]:
+    await runtime.scheduler.pause()
+
+    cancelled: dict[str, int | None] = {}
+    errors: dict[str, str] = {}
+    for venue_name, venue in runtime.venues.items():
+        cancel_all_orders = getattr(venue, "cancel_all_orders", None)
+        if not callable(cancel_all_orders):
+            continue
+        try:
+            cancelled[venue_name] = await _pause_venue_now(runtime, venue_name, set_paused=False)
+        except Exception as exc:
+            errors[venue_name] = str(exc)
+    return cancelled, errors
+
+
+async def _resume_venue_now(
+    runtime: EngineRuntime,
+    venue_name: str,
+) -> tuple[Literal["sync_triggered", "position_refreshed"] | None, str | None]:
+    venue = runtime.venues.get(venue_name)
+    if venue is None:
+        raise ValueError(f"Venue not found: {venue_name}")
+
+    venue.paused = False
+    if not runtime.scheduler.trading_enabled:
+        return None, "trading_paused"
+
+    try:
+        sync_outcome = await _sync_venue_now(runtime, venue_name)
+        return sync_outcome, None
+    except Exception as exc:
+        return None, str(exc)
 
 
 # --- Read-only commands ---
@@ -210,17 +285,106 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+def _default_orders_venue(runtime: EngineRuntime) -> tuple[str, Any | None]:
+    preferred = getattr(runtime, "quidax_lp", None)
+    if preferred is not None:
+        for venue_name, venue in runtime.venues.items():
+            if venue is preferred:
+                return venue_name, venue
+        return "quidax-lp", preferred
+    if "quidax-lp" in runtime.venues:
+        return "quidax-lp", runtime.venues["quidax-lp"]
+    return "quidax", runtime.venues.get("quidax")
+
+
+def _resolve_operator_venue(runtime: EngineRuntime, requested_name: str) -> tuple[str, Any | None]:
+    if requested_name == "quidax":
+        venue_name, venue = _default_orders_venue(runtime)
+        if venue is not None:
+            return venue_name, venue
+    return requested_name, runtime.venues.get(requested_name)
+
+
+async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    message = _get_message(update)
+    if message is None:
+        return
+
+    runtime = _require_runtime()
+    args = getattr(context, "args", None) or []
+    if args:
+        venue_name = args[0]
+        venue = runtime.venues.get(venue_name)
+    else:
+        venue_name, venue = _default_orders_venue(runtime)
+    if venue is None:
+        await message.reply_text(f"Venue not found: {venue_name}")
+        return
+
+    get_open_order_summaries = getattr(venue, "get_open_order_summaries", None)
+    if not callable(get_open_order_summaries):
+        await message.reply_text(f"{venue_name} does not expose open orders.")
+        return
+
+    try:
+        orders = await get_open_order_summaries()
+    except Exception as exc:
+        await message.reply_text(f"Error: {exc}")
+        return
+
+    if not orders:
+        await message.reply_text(f"No open orders on {venue_name}.")
+        return
+
+    visible_orders = orders[:20]
+    lines = [f"*Open Orders · {venue_name}*", f"count: {len(orders)}"]
+    for order in visible_orders:
+        market = order.market or "-"
+        status = order.status or "unknown"
+        lines.append(
+            "\n"
+            f"`{order.side.upper()}` `{status}` `{market}` "
+            f"{order.remaining_volume:.4f} @ {order.price:.4f} "
+            f"(filled {order.executed_volume:.4f}) "
+            f"`{order.id}`"
+        )
+    if len(orders) > len(visible_orders):
+        lines.append(f"\nshowing first {len(visible_orders)} of {len(orders)} orders")
+
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 # --- Destructive commands (require inline keyboard confirm) ---
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    del context
     message = _get_message(update)
     if message is None:
         return
+    runtime = _require_runtime()
+    args = getattr(context, "args", None) or []
+    if args:
+        requested_name = args[0]
+        venue_name, venue = _resolve_operator_venue(runtime, requested_name)
+        if venue is None:
+            await message.reply_text(f"Venue not found: {requested_name}")
+            return
+        label = (
+            venue_name
+            if venue_name == requested_name
+            else f"{requested_name} (effective venue: {venue_name})"
+        )
+        await message.reply_text(
+            f"⚠️ Pause *{label}* and cancel open orders. Confirm?",
+            reply_markup=_confirm_kb(f"pause_venue:{venue_name}"),
+            parse_mode="Markdown",
+        )
+        return
     await message.reply_text(
-        "⚠️ Pause all trading globally. Confirm?",
+        "⚠️ Pause all trading globally and cancel open CEX orders. Confirm?",
         reply_markup=_confirm_kb("pause"),
     )
 
@@ -228,9 +392,27 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    del context
     message = _get_message(update)
     if message is None:
+        return
+    runtime = _require_runtime()
+    args = getattr(context, "args", None) or []
+    if args:
+        requested_name = args[0]
+        venue_name, venue = _resolve_operator_venue(runtime, requested_name)
+        if venue is None:
+            await message.reply_text(f"Venue not found: {requested_name}")
+            return
+        label = (
+            venue_name
+            if venue_name == requested_name
+            else f"{requested_name} (effective venue: {venue_name})"
+        )
+        await message.reply_text(
+            f"⚠️ Resume *{label}*. Confirm?",
+            reply_markup=_confirm_kb(f"resume_venue:{venue_name}"),
+            parse_mode="Markdown",
+        )
         return
     await message.reply_text(
         "⚠️ Resume all trading. Confirm?",
@@ -352,11 +534,53 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "cancel":
         await query.edit_message_text("❌ Cancelled.")
     elif data == "confirm:pause":
-        await runtime.scheduler.pause()
-        await query.edit_message_text("⏸ Trading paused.")
+        cancelled, errors = await _pause_all_trading_now(runtime)
+        parts = ["⏸ Trading paused."]
+        if cancelled:
+            details = ", ".join(
+                f"{venue}={count if count is not None else 0}"
+                for venue, count in cancelled.items()
+            )
+            parts.append(f"Cancelled open orders: {details}.")
+        if errors:
+            details = ", ".join(f"{venue}: {error}" for venue, error in errors.items())
+            parts.append(f"Cancel errors: {details}.")
+        await query.edit_message_text(" ".join(parts))
     elif data == "confirm:resume":
         await runtime.scheduler.resume()
         await query.edit_message_text("▶️ Trading resumed.")
+    elif data.startswith("confirm:pause_venue:"):
+        venue_name = data.split(":", 2)[2]
+        try:
+            cancelled_orders = await _pause_venue_now(runtime, venue_name, set_paused=True)
+            await query.edit_message_text(
+                f"⏸ {venue_name} paused. "
+                f"Cancelled open orders: {cancelled_orders if cancelled_orders is not None else 0}."
+            )
+        except ValueError as exc:
+            await query.edit_message_text(f"❌ {exc}")
+        except Exception as exc:
+            await query.edit_message_text(f"❌ Failed to pause {venue_name}: {exc}")
+    elif data.startswith("confirm:resume_venue:"):
+        venue_name = data.split(":", 2)[2]
+        try:
+            sync_outcome, sync_error = await _resume_venue_now(runtime, venue_name)
+        except ValueError as exc:
+            await query.edit_message_text(f"❌ {exc}")
+            return
+
+        if sync_error == "trading_paused":
+            await query.edit_message_text(
+                f"▶️ {venue_name} resumed, but global trading is still paused so sync was skipped."
+            )
+        elif sync_error is not None:
+            await query.edit_message_text(
+                f"▶️ {venue_name} resumed, but sync failed: {sync_error}"
+            )
+        elif sync_outcome == "sync_triggered":
+            await query.edit_message_text(f"▶️ {venue_name} resumed. Sync triggered.")
+        else:
+            await query.edit_message_text(f"▶️ {venue_name} resumed.")
     elif data.startswith("confirm:wd:"):
         token = data.split(":", 2)[2]
         pending = _pending_withdrawals.pop(token, None)
@@ -461,6 +685,7 @@ async def start(s: Settings, runtime: EngineRuntime) -> None:
     _app.add_handler(CommandHandler("balances", cmd_balances))
     _app.add_handler(CommandHandler("arb", cmd_arb))
     _app.add_handler(CommandHandler("alerts", cmd_alerts))
+    _app.add_handler(CommandHandler("orders", cmd_orders))
     _app.add_handler(CommandHandler("pause", cmd_pause))
     _app.add_handler(CommandHandler("resume", cmd_resume))
     _app.add_handler(CommandHandler("withdraw", cmd_withdraw))

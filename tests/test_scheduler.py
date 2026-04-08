@@ -166,6 +166,7 @@ class TestSchedulerConstruction:
         broadcasts = []
         db = MockDB()
         sched = _build_scheduler({}, broadcasts, db)
+        sched.market_jobs.sync_cex_orders = AsyncMock()
 
         await sched.pause()
         await sched.resume()
@@ -177,6 +178,21 @@ class TestSchedulerConstruction:
         ]
         db.set_system_state.assert_any_await("trading_enabled", "false")
         db.set_system_state.assert_any_await("trading_enabled", "true")
+        sched.market_jobs.sync_cex_orders.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resume_keeps_trading_enabled_when_immediate_cex_sync_fails(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.market_jobs.sync_cex_orders = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await sched.resume()
+
+        assert sched.trading_enabled is True
+        assert broadcasts == [{"type": "system", "status": "running"}]
+        db.set_system_state.assert_awaited_once_with("trading_enabled", "true")
+        sched.market_jobs.sync_cex_orders.assert_awaited_once()
 
 
 class TestCexOrderSync:

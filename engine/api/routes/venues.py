@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
@@ -85,6 +85,22 @@ def _normalize_generic_order_summary(order: dict[str, Any], venue: str) -> Venue
     )
 
 
+async def _sync_venue_now(venue: str, runtime: EngineRuntime) -> Literal["sync_triggered", "position_refreshed"]:
+    venue_adapter = runtime.venues[venue]
+    anchor_source = getattr(getattr(venue_adapter, "params", None), "anchor_source", "blended")
+    market_jobs = getattr(runtime.scheduler, "market_jobs", None)
+    get_anchor_reference_price = getattr(market_jobs, "get_reference_price_ngn", None)
+    if callable(get_anchor_reference_price):
+        ref_price = await get_anchor_reference_price(anchor_source=anchor_source)
+    else:
+        ref_price = await get_reference_price_ngn(runtime)
+    if hasattr(venue_adapter, "sync_order_ladder") and ref_price:
+        await cast(SyncOrderLadderVenue, venue_adapter).sync_order_ladder(ref_price)
+        return "sync_triggered"
+    await venue_adapter.get_position()
+    return "position_refreshed"
+
+
 @router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])
 async def withdraw_venue_position(
     venue: str,
@@ -153,9 +169,21 @@ async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime))
 async def resume_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
-    runtime.venues[venue].paused = False
-    logger.info("venue_resumed", venue=venue)
-    return {"venue": venue, "paused": False}
+    venue_adapter = runtime.venues[venue]
+    venue_adapter.paused = False
+    if not runtime.scheduler.trading_enabled:
+        logger.info("venue_resumed_sync_skipped_global_pause", venue=venue)
+        return {"venue": venue, "paused": False, "sync_triggered": False, "sync_skipped": "trading_paused"}
+
+    try:
+        sync_outcome = await _sync_venue_now(venue, runtime)
+    except Exception as exc:
+        logger.warning("venue_resume_sync_failed", venue=venue, error=str(exc))
+        return {"venue": venue, "paused": False, "sync_triggered": False, "sync_error": str(exc)}
+
+    sync_triggered = sync_outcome == "sync_triggered"
+    logger.info("venue_resumed", venue=venue, sync_outcome=sync_outcome, sync_triggered=sync_triggered)
+    return {"venue": venue, "paused": False, "sync_triggered": sync_triggered}
 
 
 @router.put("/venues/{venue}/params", dependencies=[Depends(verify_token)])
@@ -254,15 +282,9 @@ async def trigger_venue_sync(
         raise HTTPException(status_code=404, detail="Venue not found")
 
     try:
-        ref_price = await get_reference_price_ngn(runtime)
-        venue_adapter = runtime.venues[venue]
-        if hasattr(venue_adapter, "sync_order_ladder") and ref_price:
-            await cast(SyncOrderLadderVenue, venue_adapter).sync_order_ladder(ref_price)
-        else:
-            await venue_adapter.get_position()
-
-        logger.info("manual_sync_triggered", venue=venue)
-        return {"status": "synced", "venue": venue}
+        sync_outcome = await _sync_venue_now(venue, runtime)
+        logger.info("manual_sync_triggered", venue=venue, sync_outcome=sync_outcome)
+        return {"status": sync_outcome, "venue": venue}
     except Exception as exc:
         logger.error("manual_sync_failed", venue=venue, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
