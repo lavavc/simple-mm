@@ -1,8 +1,7 @@
-"""Uniswap V4 Base configs and LP/execution adapter."""
+"""Uniswap V4 Base configs and swap execution adapter."""
 
 from .shared import V4PoolReadConfig
-from .v4 import V4ExecutionConfig
-from .lp_v4 import V4LPAdapter
+from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 from engine.config import DexParams
 from engine.config import settings, Settings
 
@@ -48,7 +47,7 @@ UNISWAP_BASE_EXECUTION_CONFIG = V4ExecutionConfig(
 )
 
 
-class UniswapBaseV4Adapter(V4LPAdapter):
+class UniswapBaseV4Adapter(BaseV4DexAdapter):
     name = "uni-base"
 
     def __init__(

@@ -59,6 +59,7 @@ class TradingScheduler:
         portfolio_exposure_calculator: PortfolioExposureCalculator | None = None,
         portfolio_source_registry: tuple[PortfolioSourceDescriptor, ...] = DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         quidax_lp: Any | None = None,
+        lp_managers: dict[str, Any] | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         price_store: PriceStoreProtocol | None = None,
         position_store: PositionStoreProtocol | None = None,
@@ -82,6 +83,7 @@ class TradingScheduler:
         self.broadcast = broadcast
         self.scheduler = AsyncIOScheduler()
         self.state = SchedulerState(dex_bootstrap_pending=bool(arbitrage_engine))
+        _lp_managers = lp_managers or {}
         portfolio_calculator = portfolio_exposure_calculator
         if portfolio_calculator is None and blended_calculator is not None:
             portfolio_calculator = PortfolioExposureCalculator(
@@ -91,6 +93,7 @@ class TradingScheduler:
                 blended_calculator=blended_calculator,
                 price_aggregator=price_aggregator,
                 portfolio_source_registry=portfolio_source_registry,
+                lp_managers=_lp_managers,
             )
         self.context = SchedulerContext(
             config=config,
@@ -103,6 +106,7 @@ class TradingScheduler:
             token_contracts=token_contracts or {},
             portfolio_exposure_calculator=portfolio_calculator,
             quidax_lp=quidax_lp,
+            lp_managers=_lp_managers,
             system_state_store=system_state_store,
             price_store=price_store,
             position_store=position_store,

@@ -56,7 +56,7 @@ async def test_cmd_positions_shows_true_lp_snapshot_for_dex_and_balances_for_non
     monkeypatch.setattr(
         telegram,
         "_runtime",
-        SimpleNamespace(venues={"uni-base": lp_venue, "quidax": non_lp_venue}),
+        SimpleNamespace(venues={"uni-base": lp_venue, "quidax": non_lp_venue}, lp_managers={}),
     )
 
     await telegram.cmd_positions(update, SimpleNamespace())
@@ -111,7 +111,7 @@ async def test_cmd_positions_shows_multi_position_degraded_message(monkeypatch):
     monkeypatch.setattr(
         telegram,
         "_runtime",
-        SimpleNamespace(venues={"uni-base": lp_venue}),
+        SimpleNamespace(venues={"uni-base": lp_venue}, lp_managers={}),
     )
 
     await telegram.cmd_positions(update, SimpleNamespace())
@@ -155,7 +155,7 @@ async def test_cmd_positions_shows_degraded_snapshot_without_hiding_lp(monkeypat
     monkeypatch.setattr(
         telegram,
         "_runtime",
-        SimpleNamespace(venues={"uni-base": lp_venue}),
+        SimpleNamespace(venues={"uni-base": lp_venue}, lp_managers={}),
     )
 
     await telegram.cmd_positions(update, SimpleNamespace())
@@ -190,7 +190,7 @@ async def test_cmd_positions_shows_no_active_lp_position(monkeypatch):
     monkeypatch.setattr(
         telegram,
         "_runtime",
-        SimpleNamespace(venues={"uni-base": lp_venue}),
+        SimpleNamespace(venues={"uni-base": lp_venue}, lp_managers={}),
     )
 
     await telegram.cmd_positions(update, SimpleNamespace())

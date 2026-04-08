@@ -21,7 +21,11 @@ async def get_all_positions(runtime: EngineRuntime = Depends(get_runtime)) -> li
     positions: list[dict[str, Any]] = []
     for name, venue in runtime.venues.items():
         try:
-            pos = await venue.get_position()
+            lp_manager = runtime.lp_managers.get(name)
+            if lp_manager is not None:
+                pos = await lp_manager.get_position_as_schema()
+            else:
+                pos = await venue.get_position()
             positions.append(pos.model_dump())
         except Exception as exc:
             logger.error("position_fetch_failed", venue=name, error=str(exc))
@@ -43,6 +47,9 @@ async def get_venue_position(
         raise HTTPException(status_code=404, detail="Venue not found")
 
     try:
+        lp_manager = runtime.lp_managers.get(venue)
+        if lp_manager is not None:
+            return await lp_manager.get_position_as_schema()
         return await runtime.venues[venue].get_position()
     except Exception as exc:
         logger.error("position_fetch_failed", venue=venue, error=str(exc))

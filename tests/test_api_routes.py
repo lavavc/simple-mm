@@ -59,6 +59,7 @@ def _make_runtime() -> EngineRuntime:
         portfolio_exposure_calculator=None,
         portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         quidax_lp=None,
+        lp_managers={},
     )
 
 
@@ -209,23 +210,22 @@ def test_missing_runtime_returns_503():
 async def test_update_venue_params_persists_full_lp_params():
     runtime = _make_runtime()
     runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
 
-    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
-        response = await venue_routes.update_venue_params(
+    response = await venue_routes.update_venue_params(
             "uni-base",
             {"downside_skew": "0.55"},
             runtime=runtime,
@@ -253,27 +253,26 @@ async def test_update_venue_params_persists_full_lp_params():
 @pytest.mark.asyncio
 async def test_withdraw_route_uses_lp_rebalancer_path():
     runtime = _make_runtime()
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
     runtime.scheduler.lp_rebalancer.withdraw_positions = AsyncMock(
         return_value=[{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]
     )
-    runtime.venues["uni-base"].get_owned_positions = MagicMock(return_value=[1])
+    lp_venue.get_owned_positions = MagicMock(return_value=[1])
 
-    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
-        response = await venue_routes.withdraw_venue_position(
+    response = await venue_routes.withdraw_venue_position(
             "uni-base",
             venue_routes.WithdrawRequest(to_address="0x0000000000000000000000000000000000000001"),
             runtime=runtime,
@@ -290,27 +289,26 @@ async def test_withdraw_route_uses_lp_rebalancer_path():
 @pytest.mark.asyncio
 async def test_withdraw_route_does_not_short_circuit_on_stale_empty_positions_read():
     runtime = _make_runtime()
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
-    runtime.venues["uni-base"].get_owned_positions = MagicMock(return_value=[])
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
+    lp_venue.get_owned_positions = MagicMock(return_value=[])
     runtime.scheduler.lp_rebalancer.withdraw_positions = AsyncMock(
         return_value=[{"token_id": 7, "status": "confirmed", "hash": "0xdef", "error": None}]
     )
 
-    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
-        response = await venue_routes.withdraw_venue_position(
+    response = await venue_routes.withdraw_venue_position(
             "uni-base",
             venue_routes.WithdrawRequest(to_address="0x0000000000000000000000000000000000000001"),
             runtime=runtime,
@@ -326,28 +324,27 @@ async def test_shutdown_unwind_pauses_and_uses_lp_rebalancer():
     from engine.api.routes import system as system_routes
 
     runtime = _make_runtime()
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
     runtime.scheduler.lp_rebalancer.unwind_all_positions = AsyncMock(
         return_value={"uni-base": [{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]}
     )
 
     fake_loop = SimpleNamespace(call_later=MagicMock())
 
-    with patch.object(system_routes, "V4LPAdapter", _DummyLpVenue), \
-         patch("asyncio.get_event_loop", return_value=fake_loop):
+    with patch("asyncio.get_event_loop", return_value=fake_loop):
         response = await system_routes.shutdown(unwind=True, runtime=runtime)
 
     assert response == {"status": "shutting_down", "unwind": True}

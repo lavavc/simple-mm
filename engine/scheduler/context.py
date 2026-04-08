@@ -24,6 +24,7 @@ from engine.scheduler.types import TokenContracts
 if TYPE_CHECKING:
     from engine.accounts import AccountManager
     from engine.arb.engine import ArbitrageEngine
+    from engine.lp.uniswap_v4 import V4PositionManager
 
 
 @dataclass
@@ -38,6 +39,7 @@ class SchedulerContext:
     token_contracts: TokenContracts
     portfolio_exposure_calculator: PortfolioExposureCalculator | None
     quidax_lp: Any | None
+    lp_managers: "dict[str, V4PositionManager]"
     system_state_store: SystemStateStoreProtocol
     price_store: PriceStoreProtocol
     position_store: PositionStoreProtocol

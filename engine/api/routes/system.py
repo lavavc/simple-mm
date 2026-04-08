@@ -10,7 +10,6 @@ from engine.api.deps import get_runtime, require_scheduler, verify_token
 from engine.api.schemas import SystemStatus, VenuePriceResponse, VenueStatus
 from engine.runtime import EngineRuntime
 from engine.scheduler import TradingScheduler
-from engine.venues.dex.lp_v4 import V4LPAdapter
 import structlog
 
 logger = structlog.get_logger()
@@ -106,9 +105,8 @@ async def shutdown(
 
     if unwind:
         await runtime.scheduler.pause()
-        dex_venues = {k: v for k, v in runtime.venues.items() if isinstance(v, V4LPAdapter)}
         unwind_results = await runtime.scheduler.lp_rebalancer.unwind_all_positions(
-            list(dex_venues.values()),
+            list(runtime.lp_managers.values()),
             triggered_by="api:shutdown_unwind",
         )
         for venue_name, removed in unwind_results.items():

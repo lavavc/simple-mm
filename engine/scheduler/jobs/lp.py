@@ -7,7 +7,6 @@ import structlog
 from engine.lp.rebalancer import LPRebalancer
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import SchedulerState
-from engine.venues.dex.lp_v4 import V4LPAdapter
 
 logger = structlog.get_logger()
 
@@ -27,15 +26,13 @@ class LpJobs:
         if not self.state.trading_enabled:
             return
 
-        for name in ["uni-base", "uni-bsc"]:
+        for name, lp_manager in self.context.lp_managers.items():
             if not self.state.trading_enabled:
                 return
-            if name not in self.context.venues:
-                continue
-            venue = self.context.venues[name]
-            if not isinstance(venue, V4LPAdapter) or venue.paused:
+            venue = self.context.venues.get(name)
+            if venue is None or venue.paused:
                 continue
             try:
-                await self.lp_rebalancer.check_and_rebalance(venue)
+                await self.lp_rebalancer.check_and_rebalance(lp_manager)
             except Exception as exc:
                 logger.error("dex_rebalance_check_failed", venue=name, error=str(exc))

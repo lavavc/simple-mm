@@ -64,7 +64,7 @@ The scheduler follows the same pattern:
 
 **Arb signal out:** Detection signal → `arb/routing/router.select_route` → `arb/execution/route_execution.execute_route` → on-chain transaction → DB insert.
 
-**LP cycle:** Scheduler timer → `lp/rebalancer.check_and_rebalance` → `lp/strategy.calculate_tick_range` → `venues/dex/lp_v4.mint_position`.
+**LP cycle:** Scheduler timer → `lp/rebalancer.check_and_rebalance` → `lp/strategy.calculate_tick_range` → `lp/uniswap_v4.V4PositionManager.mint_position`.
 
 **API read path:** HTTP request → `api/deps.get_runtime` → domain router in `engine/api/routes/` → runtime service or DB store → response model.
 

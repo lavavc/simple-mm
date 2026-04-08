@@ -107,7 +107,11 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     lines = ["*Positions*"]
     for name, venue in runtime.venues.items():
         try:
-            pos = await venue.get_position()
+            lp_manager = runtime.lp_managers.get(name)
+            if lp_manager is not None:
+                pos = await lp_manager.get_position_as_schema()
+            else:
+                pos = await venue.get_position()
             lines.append(f"\n*{name}*")
             for token, amt in pos.balances.items():
                 lines.append(f"  {token}: {amt:.4f}")
@@ -312,18 +316,17 @@ async def _do_withdraw(
     action_type: str = "manual_withdraw",
     triggered_by: str = "telegram:withdraw",
 ) -> str:
-    from engine.venues.dex.lp_v4 import V4LPAdapter
     runtime = _require_runtime()
     if venue == "all":
-        targets = {k: v for k, v in runtime.venues.items() if isinstance(v, V4LPAdapter)}
-    elif venue in runtime.venues and isinstance(runtime.venues[venue], V4LPAdapter):
-        targets = {venue: cast(V4LPAdapter, runtime.venues[venue])}
+        targets = dict(runtime.lp_managers)
+    elif venue in runtime.lp_managers:
+        targets = {venue: runtime.lp_managers[venue]}
     else:
         return f"❌ Venue {venue} not found or not a DEX."
     results = []
-    for name, adapter in targets.items():
+    for name, lp_manager in targets.items():
         venue_results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
-            adapter,
+            lp_manager,
             recipient=to_address,
             action_type=action_type,
             triggered_by=triggered_by,

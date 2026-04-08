@@ -10,6 +10,7 @@ from engine.db.repository import DatabaseRepository
 if TYPE_CHECKING:
     from engine.accounts import AccountManager
     from engine.arb import ArbitrageEngine
+    from engine.lp.uniswap_v4 import V4PositionManager
     from engine.market.portfolio_exposure import PortfolioExposureCalculator
     from engine.market.portfolio_registry import PortfolioSourceDescriptor
     from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
@@ -33,3 +34,4 @@ class EngineRuntime:
     portfolio_exposure_calculator: "PortfolioExposureCalculator | None"
     portfolio_source_registry: tuple["PortfolioSourceDescriptor", ...]
     quidax_lp: Any | None
+    lp_managers: dict[str, "V4PositionManager"]

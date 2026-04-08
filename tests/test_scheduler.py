@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from engine.api.schemas import TxResult
 from engine.venues.dex.shared import PositionState
 from engine.scheduler import TradingScheduler, SchedulerConfig
-from engine.venues.dex.lp_v4 import LPBalanceSwapResult
+from engine.lp.types import LPBalanceSwapResult
 from tests.fakes import FakeDexAdapter
 
 
@@ -74,6 +74,7 @@ def _build_scheduler(
     token_contracts: dict | None = None,
     portfolio_exposure_calculator: Any = None,
     quidax_lp: Any = None,
+    lp_managers: dict | None = None,
 ) -> TradingScheduler:
     """Build a minimal TradingScheduler through the real constructor."""
     return TradingScheduler(
@@ -87,6 +88,7 @@ def _build_scheduler(
         token_contracts=token_contracts or {},
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         quidax_lp=quidax_lp,
+        lp_managers=lp_managers if lp_managers is not None else venues,
         system_state_store=SimpleNamespace(set_system_state=db.set_system_state),
         price_store=SimpleNamespace(
             get_recent_prices=db.get_recent_prices,
