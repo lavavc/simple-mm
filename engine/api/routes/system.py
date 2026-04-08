@@ -46,7 +46,8 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
         if lp_manager is not None:
             params = lp_manager.params.model_dump()
         elif hasattr(venue, "params") and venue.params:
-            params = venue.params.model_dump()
+            p = venue.params
+            params = p.to_params_payload() if hasattr(p, "to_params_payload") else p.model_dump()
         else:
             params = None
 

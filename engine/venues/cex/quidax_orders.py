@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from engine.api.schemas import VenueOrderSummary
+from engine.types import VenueOrderSummary
 from engine.venues.cex.order_values import coerce_timestamp_ms, decimal_from_order_value
 
 

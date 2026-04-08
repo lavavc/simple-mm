@@ -13,8 +13,9 @@ import structlog
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
 from engine.api.helpers.pricing import get_reference_price_ngn
 from engine.api.protocols import DepthVenue, SyncOrderLadderVenue, WebhookVenue
-from engine.api.schemas import OrderBookDepthResponse
-from engine.types import CexParams, OrderBookLevel
+from engine.api.schemas import OrderBookDepthResponse, VenueOrdersResponse
+from engine.types import CexParams, OrderBookLevel, VenueOrderSummary
+from engine.venues.cex.order_values import coerce_timestamp_ms, decimal_from_order_value
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime
@@ -178,8 +179,27 @@ async def update_venue_params(
             lp_manager.params.model_dump(mode="json"),
         )
     elif hasattr(venue_adapter, "params"):
-        venue_adapter.params = CexParams(**params)
-        await db.venue_config.update_venue_config(venue, params)
+        merged = venue_adapter.params.to_params_payload(mode="json")
+        ladder_migration_fields = {"spread_offset_ngn", "ladder_step_ngn", "ladder_levels_per_side"}
+        provided_ladder_migration_fields = ladder_migration_fields.intersection(params)
+        if (
+            merged.get("ladder_offsets_ngn")
+            and provided_ladder_migration_fields
+            and provided_ladder_migration_fields != ladder_migration_fields
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Legacy custom ladder offsets must be migrated by setting "
+                    "spread_offset_ngn, ladder_step_ngn, and ladder_levels_per_side together."
+                ),
+            )
+        merged.update(params)
+        venue_adapter.params = CexParams(**merged)
+        await db.venue_config.update_venue_config(
+            venue,
+            venue_adapter.params.to_params_payload(mode="json"),
+        )
     else:
         await db.venue_config.update_venue_config(venue, params)
 

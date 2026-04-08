@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
-from engine.api.schemas import CexParams
+from engine.types import CexParams
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.venues.cex.quidax_orders import normalize_order_summary, order_market_matches
 

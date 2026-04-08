@@ -9,9 +9,14 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from engine.config import settings
+from engine.venues.cex.ladder_config import (
+    cex_params_payload,
+    hydrate_ladder_fields_from_legacy_offsets,
+    resolve_ladder_offsets,
+)
 
 
 # === Venue / position types ===
@@ -48,7 +53,6 @@ class Position(BaseModel):
     timestamp: int
     balances: dict[str, Decimal]
     lp_position: Optional[LPPosition] = None
-    open_orders: Optional[dict[str, Any]] = None
     position_value_usd: Optional[Decimal] = None
     volume_24h_usd: Optional[Decimal] = None
     rates: Optional[dict[str, Decimal]] = None  # per-route cNGN/USD rates (blockradar only)
@@ -87,21 +91,76 @@ class OrderBookDepth(BaseModel):
 # === Venue parameter types ===
 
 
+CexAnchorSource = Literal["dex_vwap", "blended", "quidax"]
+
+
 class CexParams(BaseModel):
     """Parameters for CEX order ladder."""
 
     ladder_enabled: bool = False
-    # NGN offsets from current rate, one order placed per offset on each side
-    # e.g. [1, 3, 5, 10] → orders at rate±1, rate±3, rate±5, rate±10 NGN
-    ladder_offsets_ngn: list[int] = Field(default_factory=lambda: [1, 3, 5, 10])
+    spread_offset_ngn: int = Field(default=50, ge=0)
+    ladder_step_ngn: int = Field(default=1, ge=1)
+    ladder_levels_per_side: int = Field(default=1, ge=1)
+    # Legacy compatibility for persisted configs that stored explicit offsets.
+    ladder_offsets_ngn: Optional[list[int]] = Field(default=None, exclude=True, repr=False)
+    anchor_source: CexAnchorSource = "blended"
+    anchor_requote_threshold_bps: int = 0
+    anchor_requote_cooldown_seconds: int = 30
     order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
     order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
+
+    @model_validator(mode="after")
+    def _hydrate_new_ladder_fields_from_legacy_offsets(self) -> "CexParams":
+        (
+            self.spread_offset_ngn,
+            self.ladder_step_ngn,
+            self.ladder_levels_per_side,
+            self.ladder_offsets_ngn,
+        ) = hydrate_ladder_fields_from_legacy_offsets(
+            spread_offset_ngn=self.spread_offset_ngn,
+            ladder_step_ngn=self.ladder_step_ngn,
+            ladder_levels_per_side=self.ladder_levels_per_side,
+            legacy_offsets=self.ladder_offsets_ngn,
+            provided_fields=set(self.model_fields_set),
+        )
+        return self
+
+    @property
+    def resolved_ladder_offsets_ngn(self) -> list[int]:
+        return resolve_ladder_offsets(
+            spread_offset_ngn=self.spread_offset_ngn,
+            ladder_step_ngn=self.ladder_step_ngn,
+            ladder_levels_per_side=self.ladder_levels_per_side,
+            legacy_offsets=self.ladder_offsets_ngn,
+        )
+
+    def to_params_payload(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
+        return cex_params_payload(
+            base_payload=self.model_dump(mode=mode),
+            legacy_offsets=self.ladder_offsets_ngn,
+            mode=mode,
+        )
 
 
 class WalletParams(BaseModel):
     """Parameters for wallet system rate setting."""
 
     spread_bps: int = 15
+
+
+class VenueOrderSummary(BaseModel):
+    """Normalized venue order row for monitoring surfaces."""
+
+    id: str
+    market: Optional[str] = None
+    side: str
+    status: Optional[str] = None
+    price: Decimal
+    volume: Decimal
+    remaining_volume: Decimal
+    executed_volume: Decimal
+    notional: Decimal
+    created_at: Optional[int] = None
 
 
 # === Alert types ===

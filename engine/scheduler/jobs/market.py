@@ -8,7 +8,7 @@ from typing import Callable, cast
 
 import structlog
 
-from engine.api.schemas import CexAnchorSource
+from engine.types import CexAnchorSource
 from engine.market.venue_prices import VenuePrice
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import SchedulerState, SyncOrderLadderVenueProtocol
