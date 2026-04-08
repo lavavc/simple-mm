@@ -477,7 +477,7 @@ class TestActiveLpPositionSnapshot:
 
         position_manager_contract = MagicMock()
         position_manager_contract.address = "0x" + "dd" * 20
-        position_manager_contract.functions.getPositionInfo.return_value.call.return_value = [
+        position_manager_contract.functions.getPoolAndPositionInfo.return_value.call.return_value = [
             ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
             info_bytes32,
         ]

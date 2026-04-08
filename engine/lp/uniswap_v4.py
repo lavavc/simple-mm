@@ -77,7 +77,7 @@ POSITION_MANAGER_ABI = [
     },
     {
         "inputs": [{"name": "tokenId", "type": "uint256"}],
-        "name": "getPositionInfo",
+        "name": "getPoolAndPositionInfo",
         "outputs": [
             {
                 "components": [
@@ -381,7 +381,7 @@ class V4PositionManager:
         if not self._position_manager_contract:
             return None
         try:
-            result = self._position_manager_contract.functions.getPositionInfo(token_id).call()
+            result = self._position_manager_contract.functions.getPoolAndPositionInfo(token_id).call()
             info_bytes32: bytes = result[1]
             tick_lower, tick_upper = _decode_position_info(info_bytes32)
 
