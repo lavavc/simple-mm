@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import Any, cast
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from web3 import Web3
-import structlog
 
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
-from engine.api.helpers.pricing import get_reference_price_ngn
-from engine.api.protocols import DepthVenue, SyncOrderLadderVenue, WebhookVenue
+from engine.api.protocols import DepthVenue, WebhookVenue
 from engine.api.schemas import OrderBookDepthResponse, VenueOrdersResponse
-from engine.types import CexParams, OrderBookLevel, VenueOrderSummary
-from engine.venues.cex.order_values import coerce_timestamp_ms, decimal_from_order_value
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime
+from engine.types import CexParams, OrderBookLevel, VenueOrderSummary
+from engine.venue_controls import pause_venue_now, resume_venue_now, sync_venue_now
+from engine.venues.cex.order_values import decimal_from_order_value
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -48,7 +48,10 @@ def get_deposit_token_address(token: str) -> str:
     }
     address = token_map.get(token)
     if not address:
-        raise HTTPException(status_code=400, detail=f"Unsupported token: {token}. Use USDC or cNGN.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported token: {token}. Use USDC or cNGN.",
+        )
     return address
 
 
@@ -65,7 +68,11 @@ def _normalize_generic_order_summary(order: dict[str, Any], venue: str) -> Venue
         volume = origin_volume
     if remaining_volume <= 0:
         base_volume = origin_volume if origin_volume > 0 else volume
-        remaining_volume = base_volume - executed_volume if base_volume > executed_volume else base_volume
+        remaining_volume = (
+            base_volume - executed_volume
+            if base_volume > executed_volume
+            else base_volume
+        )
     if remaining_volume < 0:
         remaining_volume = Decimal("0")
     if volume <= 0:
@@ -83,22 +90,6 @@ def _normalize_generic_order_summary(order: dict[str, Any], venue: str) -> Venue
         notional=price * (remaining_volume if remaining_volume > 0 else volume),
         created_at=None,
     )
-
-
-async def _sync_venue_now(venue: str, runtime: EngineRuntime) -> Literal["sync_triggered", "position_refreshed"]:
-    venue_adapter = runtime.venues[venue]
-    anchor_source = getattr(getattr(venue_adapter, "params", None), "anchor_source", "blended")
-    market_jobs = getattr(runtime.scheduler, "market_jobs", None)
-    get_anchor_reference_price = getattr(market_jobs, "get_reference_price_ngn", None)
-    if callable(get_anchor_reference_price):
-        ref_price = await get_anchor_reference_price(anchor_source=anchor_source)
-    else:
-        ref_price = await get_reference_price_ngn(runtime)
-    if hasattr(venue_adapter, "sync_order_ladder") and ref_price:
-        await cast(SyncOrderLadderVenue, venue_adapter).sync_order_ladder(ref_price)
-        return "sync_triggered"
-    await venue_adapter.get_position()
-    return "position_refreshed"
 
 
 @router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])
@@ -135,10 +126,18 @@ async def withdraw_venue_position(
         {
             "type": "alert",
             "severity": "warning",
-            "message": f"LP positions withdrawn on {venue} to {body.to_address}: {[r['token_id'] for r in results]}",
+            "message": (
+                f"LP positions withdrawn on {venue} to {body.to_address}: "
+                f"{[r['token_id'] for r in results]}"
+            ),
         }
     )
-    logger.info("venue_positions_withdrawn", venue=venue, to_address=body.to_address, results=results)
+    logger.info(
+        "venue_positions_withdrawn",
+        venue=venue,
+        to_address=body.to_address,
+        results=results,
+    )
     return {"venue": venue, "removed": results}
 
 
@@ -146,20 +145,16 @@ async def withdraw_venue_position(
 async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
-    venue_adapter = runtime.venues[venue]
-    venue_adapter.paused = True
 
     cancelled_orders: int | None = None
-    cancel_all_orders = getattr(venue_adapter, "cancel_all_orders", None)
-    if callable(cancel_all_orders):
-        try:
-            cancelled_orders = await cancel_all_orders()
-        except Exception as exc:
-            logger.error("venue_pause_cancel_failed", venue=venue, error=str(exc))
-            raise HTTPException(
-                status_code=500,
-                detail="Venue paused, but failed to cancel open orders",
-            ) from exc
+    try:
+        cancelled_orders = await pause_venue_now(runtime, venue, set_paused=True)
+    except Exception as exc:
+        logger.error("venue_pause_cancel_failed", venue=venue, error=str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="Venue paused, but failed to cancel open orders",
+        ) from exc
 
     logger.info("venue_paused", venue=venue, cancelled_orders=cancelled_orders)
     return {"venue": venue, "paused": True, "cancelled_orders": cancelled_orders}
@@ -169,20 +164,26 @@ async def pause_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime))
 async def resume_venue(venue: str, runtime: EngineRuntime = Depends(get_runtime)) -> dict[str, Any]:
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
-    venue_adapter = runtime.venues[venue]
-    venue_adapter.paused = False
-    if not runtime.scheduler.trading_enabled:
+    sync_outcome, sync_error = await resume_venue_now(runtime, venue)
+    if sync_error == "trading_paused":
         logger.info("venue_resumed_sync_skipped_global_pause", venue=venue)
-        return {"venue": venue, "paused": False, "sync_triggered": False, "sync_skipped": "trading_paused"}
-
-    try:
-        sync_outcome = await _sync_venue_now(venue, runtime)
-    except Exception as exc:
-        logger.warning("venue_resume_sync_failed", venue=venue, error=str(exc))
-        return {"venue": venue, "paused": False, "sync_triggered": False, "sync_error": str(exc)}
+        return {
+            "venue": venue,
+            "paused": False,
+            "sync_triggered": False,
+            "sync_skipped": "trading_paused",
+        }
+    if sync_error is not None:
+        logger.warning("venue_resume_sync_failed", venue=venue, error=sync_error)
+        return {"venue": venue, "paused": False, "sync_triggered": False, "sync_error": sync_error}
 
     sync_triggered = sync_outcome == "sync_triggered"
-    logger.info("venue_resumed", venue=venue, sync_outcome=sync_outcome, sync_triggered=sync_triggered)
+    logger.info(
+        "venue_resumed",
+        venue=venue,
+        sync_outcome=sync_outcome,
+        sync_triggered=sync_triggered,
+    )
     return {"venue": venue, "paused": False, "sync_triggered": sync_triggered}
 
 
@@ -210,7 +211,10 @@ async def update_venue_params(
         merged = venue_adapter.params.model_dump(mode="json")
         merged.update(params)
         venue_adapter.params = CexParams(**merged)
-        await db.venue_config.update_venue_config(venue, venue_adapter.params.model_dump(mode="json"))
+        await db.venue_config.update_venue_config(
+            venue,
+            venue_adapter.params.model_dump(mode="json"),
+        )
     else:
         await db.venue_config.update_venue_config(venue, params)
 
@@ -282,7 +286,7 @@ async def trigger_venue_sync(
         raise HTTPException(status_code=404, detail="Venue not found")
 
     try:
-        sync_outcome = await _sync_venue_now(venue, runtime)
+        sync_outcome = await sync_venue_now(runtime, venue)
         logger.info("manual_sync_triggered", venue=venue, sync_outcome=sync_outcome)
         return {"status": sync_outcome, "venue": venue}
     except Exception as exc:
@@ -290,7 +294,11 @@ async def trigger_venue_sync(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/venues/{venue}/orders", response_model=VenueOrdersResponse, dependencies=[Depends(verify_token)])
+@router.get(
+    "/venues/{venue}/orders",
+    response_model=VenueOrdersResponse,
+    dependencies=[Depends(verify_token)],
+)
 async def get_venue_orders(
     venue: str,
     runtime: EngineRuntime = Depends(get_runtime),

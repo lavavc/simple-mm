@@ -4,18 +4,18 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 import engine.api as api_module
 import engine.api.deps as api_deps
 from engine.api import api_router
 from engine.api.routes import venues as venue_routes
-from engine.types import ArbitrageOpportunity, CexParams
 from engine.config import DexParams
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
+from engine.types import ArbitrageOpportunity, CexParams, LPPosition, Position
 
 
 class _DummyVenue:
@@ -280,11 +280,12 @@ async def test_resume_venue_triggers_sync_when_reference_price_available():
     venue.params = CexParams(anchor_source="quidax")
     venue.sync_order_ladder = AsyncMock()
     venue.get_position = AsyncMock()
-    runtime.scheduler.market_jobs = SimpleNamespace(get_reference_price_ngn=AsyncMock(return_value=Decimal("1600")))
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1600"))
+    )
     runtime.venues = {"quidax": venue}
 
-    with patch.object(venue_routes, "get_reference_price_ngn", AsyncMock(return_value=Decimal("1700"))):
-        response = await venue_routes.resume_venue("quidax", runtime=runtime)
+    response = await venue_routes.resume_venue("quidax", runtime=runtime)
 
     assert response == {"venue": "quidax", "paused": False, "sync_triggered": True}
     assert venue.paused is False
@@ -299,10 +300,12 @@ async def test_resume_venue_falls_back_to_position_when_reference_price_unavaila
     venue = _DummyVenue()
     venue.sync_order_ladder = AsyncMock()
     venue.get_position = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=None)
+    )
     runtime.venues = {"quidax": venue}
 
-    with patch.object(venue_routes, "get_reference_price_ngn", AsyncMock(return_value=None)):
-        response = await venue_routes.resume_venue("quidax", runtime=runtime)
+    response = await venue_routes.resume_venue("quidax", runtime=runtime)
 
     assert response == {"venue": "quidax", "paused": False, "sync_triggered": False}
     assert venue.paused is False
@@ -338,7 +341,9 @@ async def test_resume_venue_reports_sync_failure_without_repausing_venue():
     venue = _DummyVenue()
     venue.sync_order_ladder = AsyncMock(side_effect=RuntimeError("boom"))
     venue.get_position = AsyncMock()
-    runtime.scheduler.market_jobs = SimpleNamespace(get_reference_price_ngn=AsyncMock(return_value=Decimal("1600")))
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1600"))
+    )
     runtime.venues = {"quidax": venue}
 
     response = await venue_routes.resume_venue("quidax", runtime=runtime)
@@ -350,6 +355,43 @@ async def test_resume_venue_reports_sync_failure_without_repausing_venue():
         "sync_error": "boom",
     }
     assert venue.paused is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_venue_sync_reports_sync_triggered_when_ladder_runs():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.params = CexParams(anchor_source="quidax")
+    venue.sync_order_ladder = AsyncMock()
+    venue.get_position = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1600"))
+    )
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.trigger_venue_sync("quidax", runtime=runtime)
+
+    assert response == {"status": "sync_triggered", "venue": "quidax"}
+    venue.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+    venue.get_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trigger_venue_sync_reports_position_refreshed_without_reference_price():
+    runtime = _make_runtime()
+    venue = _DummyVenue()
+    venue.sync_order_ladder = AsyncMock()
+    venue.get_position = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=None)
+    )
+    runtime.venues = {"quidax": venue}
+
+    response = await venue_routes.trigger_venue_sync("quidax", runtime=runtime)
+
+    assert response == {"status": "position_refreshed", "venue": "quidax"}
+    venue.sync_order_ladder.assert_not_awaited()
+    venue.get_position.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -528,7 +570,11 @@ async def test_shutdown_unwind_pauses_and_uses_lp_rebalancer():
     runtime.venues = {"uni-base": lp_venue}
     runtime.lp_managers = {"uni-base": lp_venue}
     runtime.scheduler.lp_rebalancer.unwind_all_positions = AsyncMock(
-        return_value={"uni-base": [{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]}
+        return_value={
+            "uni-base": [
+                {"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}
+            ]
+        }
     )
 
     fake_loop = SimpleNamespace(call_later=MagicMock())
@@ -543,8 +589,6 @@ async def test_shutdown_unwind_pauses_and_uses_lp_rebalancer():
 
 def test_status_route_uses_lp_manager_position_not_venue_adapter():
     """The /status route must call lp_manager.get_position_as_schema(), not venue.get_position()."""
-    from decimal import Decimal
-    from engine.types import LPPosition, Position
 
     lp_position = LPPosition(
         token_id="42",

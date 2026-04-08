@@ -7,15 +7,16 @@ import os
 import secrets
 import signal
 import time
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import structlog
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from engine.api.helpers.pricing import get_reference_price_ngn
 from engine.config import Settings
 from engine.runtime import EngineRuntime
+from engine.venue_controls import pause_venue_now as _pause_venue_now
+from engine.venue_controls import resume_venue_now as _resume_venue_now
 
 logger = structlog.get_logger()
 
@@ -57,46 +58,9 @@ def _confirm_kb(action: str) -> InlineKeyboardMarkup:
     ]])
 
 
-async def _sync_venue_now(
+async def _pause_all_trading_now(
     runtime: EngineRuntime,
-    venue_name: str,
-) -> Literal["sync_triggered", "position_refreshed"]:
-    venue = runtime.venues.get(venue_name)
-    if venue is None:
-        raise ValueError(f"Venue not found: {venue_name}")
-
-    anchor_source = getattr(getattr(venue, "params", None), "anchor_source", "blended")
-    market_jobs = getattr(runtime.scheduler, "market_jobs", None)
-    get_anchor_reference_price = getattr(market_jobs, "get_reference_price_ngn", None)
-    if callable(get_anchor_reference_price):
-        ref_price = await get_anchor_reference_price(anchor_source=anchor_source)
-    else:
-        ref_price = await get_reference_price_ngn(runtime)
-
-    sync_order_ladder = getattr(venue, "sync_order_ladder", None)
-    if callable(sync_order_ladder) and ref_price:
-        await sync_order_ladder(ref_price)
-        return "sync_triggered"
-
-    await venue.get_position()
-    return "position_refreshed"
-
-
-async def _pause_venue_now(runtime: EngineRuntime, venue_name: str, *, set_paused: bool) -> int | None:
-    venue = runtime.venues.get(venue_name)
-    if venue is None:
-        raise ValueError(f"Venue not found: {venue_name}")
-
-    if set_paused:
-        venue.paused = True
-
-    cancel_all_orders = getattr(venue, "cancel_all_orders", None)
-    if callable(cancel_all_orders):
-        return await cancel_all_orders()
-    return None
-
-
-async def _pause_all_trading_now(runtime: EngineRuntime) -> tuple[dict[str, int | None], dict[str, str]]:
+) -> tuple[dict[str, int | None], dict[str, str]]:
     await runtime.scheduler.pause()
 
     cancelled: dict[str, int | None] = {}
@@ -110,25 +74,6 @@ async def _pause_all_trading_now(runtime: EngineRuntime) -> tuple[dict[str, int 
         except Exception as exc:
             errors[venue_name] = str(exc)
     return cancelled, errors
-
-
-async def _resume_venue_now(
-    runtime: EngineRuntime,
-    venue_name: str,
-) -> tuple[Literal["sync_triggered", "position_refreshed"] | None, str | None]:
-    venue = runtime.venues.get(venue_name)
-    if venue is None:
-        raise ValueError(f"Venue not found: {venue_name}")
-
-    venue.paused = False
-    if not runtime.scheduler.trading_enabled:
-        return None, "trading_paused"
-
-    try:
-        sync_outcome = await _sync_venue_now(runtime, venue_name)
-        return sync_outcome, None
-    except Exception as exc:
-        return None, str(exc)
 
 
 # --- Read-only commands ---
@@ -202,7 +147,8 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     lines.append(f"  snapshot_message: {pos.lp_position.snapshot_message}")
                 if pos.lp_position.range_min is not None and pos.lp_position.range_max is not None:
                     lines.append(
-                        f"  range: {pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
+                        "  range: "
+                        f"{pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
                     )
                 else:
                     lines.append("  range: unavailable")
@@ -260,7 +206,9 @@ async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"Enabled: {'✅' if s.enabled else '❌'}\n"
             f"Consecutive failures: {s.consecutive_failures}\n"
             f"Circuit breaker: {'🚨 Active' if s.circuit_breaker_active else '✅ Clear'}\n"
-            f"Opportunities (24h): {s.opportunities_detected_24h} detected / {s.opportunities_executed_24h} executed\n"
+            "Opportunities (24h): "
+            f"{s.opportunities_detected_24h} detected / "
+            f"{s.opportunities_executed_24h} executed\n"
             f"Profit (24h): ${s.total_profit_24h_usd:.2f}"
         )
         await message.reply_text(text, parse_mode="Markdown")
@@ -303,6 +251,12 @@ def _resolve_operator_venue(runtime: EngineRuntime, requested_name: str) -> tupl
         if venue is not None:
             return venue_name, venue
     return requested_name, runtime.venues.get(requested_name)
+
+
+def _format_operator_venue_label(requested_name: str, effective_name: str) -> str:
+    if requested_name == effective_name:
+        return effective_name
+    return f"{requested_name} (effective venue: {effective_name})"
 
 
 async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -372,11 +326,7 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if venue is None:
             await message.reply_text(f"Venue not found: {requested_name}")
             return
-        label = (
-            venue_name
-            if venue_name == requested_name
-            else f"{requested_name} (effective venue: {venue_name})"
-        )
+        label = _format_operator_venue_label(requested_name, venue_name)
         await message.reply_text(
             f"⚠️ Pause *{label}* and cancel open orders. Confirm?",
             reply_markup=_confirm_kb(f"pause_venue:{venue_name}"),
@@ -403,11 +353,7 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if venue is None:
             await message.reply_text(f"Venue not found: {requested_name}")
             return
-        label = (
-            venue_name
-            if venue_name == requested_name
-            else f"{requested_name} (effective venue: {venue_name})"
-        )
+        label = _format_operator_venue_label(requested_name, venue_name)
         await message.reply_text(
             f"⚠️ Resume *{label}*. Confirm?",
             reply_markup=_confirm_kb(f"resume_venue:{venue_name}"),
@@ -523,7 +469,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = _get_callback_query(update)
     if query is None:
         return
-    if not _settings or query.message is None or str(query.message.chat.id) != str(_settings.telegram_chat_id):
+    if (
+        not _settings
+        or query.message is None
+        or str(query.message.chat.id) != str(_settings.telegram_chat_id)
+    ):
         await query.answer()
         return
     runtime = _require_runtime()
@@ -626,7 +576,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 sign = "+" if profit >= 0 else ""
                 if reply_message is not None:
                     await reply_message.reply_text(
-                        f"✅ Recovered DEX-DEX ({method}): tx {result['sell_tx_hash']}, P&L {sign}${profit:.2f}"
+                        "✅ Recovered DEX-DEX "
+                        f"({method}): tx {result['sell_tx_hash']}, "
+                        f"P&L {sign}${profit:.2f}"
                     )
             except ValueError as e:
                 if "Unknown DEX arbitrage opportunity" not in str(e):
@@ -661,12 +613,19 @@ async def forward_alert(event: dict[str, Any]) -> None:
     if cooldown_s > 0:
         last_expires_at = _recent_alerts.get(dedupe_key)
         if last_expires_at and last_expires_at > now:
-            logger.info("telegram_alert_suppressed_duplicate", dedupe_key=dedupe_key, severity=severity)
+            logger.info(
+                "telegram_alert_suppressed_duplicate",
+                dedupe_key=dedupe_key,
+                severity=severity,
+            )
             return
         _recent_alerts[dedupe_key] = now + cooldown_s
     icon = "🚨" if severity == "critical" else "⚠️"
     try:
-        await _app.bot.send_message(_settings.telegram_chat_id, f"{icon} {event.get('message', '')}")
+        await _app.bot.send_message(
+            _settings.telegram_chat_id,
+            f"{icon} {event.get('message', '')}",
+        )
     except Exception as e:
         _recent_alerts.pop(dedupe_key, None)
         logger.warning("telegram_alert_failed", error=str(e))
