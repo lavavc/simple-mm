@@ -139,6 +139,36 @@ async def init_venues(
     return venues
 
 
+async def restore_venue_params(
+    db: Any,
+    venues: dict[str, Any],
+    lp_managers: dict[str, V4PositionManager],
+) -> None:
+    """Restore persisted venue params for both LP managers and CEX adapters."""
+    restored_lp_venues = set()
+
+    for venue_name, lp_manager in lp_managers.items():
+        config = await db.venue_config.get_venue_config(venue_name)
+        params = config.get("params") if config else None
+        if not params:
+            continue
+        lp_manager.params = DexParams(**params)
+        restored_lp_venues.add(venue_name)
+        logger.info("venue_params_restored", venue=venue_name)
+
+    for venue_name, venue in venues.items():
+        if venue_name in restored_lp_venues:
+            continue
+        if not isinstance(getattr(venue, "params", None), CexParams):
+            continue
+        config = await db.venue_config.get_venue_config(venue_name)
+        params = config.get("params") if config else None
+        if not params:
+            continue
+        venue.params = CexParams(**params)
+        logger.info("venue_params_restored", venue=venue_name)
+
+
 def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
     """Build LP position managers keyed by venue name."""
     lp_managers: dict[str, V4PositionManager] = {}
@@ -193,12 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     venues = await init_venues(account_manager, alert_store=db.alerts, system_state_store=db.system_state)
     lp_managers = init_lp_managers(venues)
-
-    for venue_name, lp_manager in lp_managers.items():
-        config = await db.venue_config.get_venue_config(venue_name)
-        if config and config.get("params"):
-            lp_manager.params = DexParams(**config["params"])
-            logger.info("venue_params_restored", venue=venue_name)
+    await restore_venue_params(db, venues, lp_managers)
 
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states
