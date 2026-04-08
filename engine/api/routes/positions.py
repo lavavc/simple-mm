@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 import structlog
 
 from engine.api.deps import get_runtime
-from engine.api.schemas import GlobalPosition, Position
+from engine.api.schemas import GlobalPosition
+from engine.types import Position
 from engine.api.helpers.portfolio import get_portfolio_exposure_calculator, to_global_position_response
 from engine.runtime import EngineRuntime
 

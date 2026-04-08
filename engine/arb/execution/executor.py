@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.api.schemas import ArbitrageTrade
+from engine.types import ArbitrageTrade
 from engine.venues.base import VenueAdapter, is_dex_execution_venue
 from engine.venues.cex.quidax import QuidaxAdapter
 

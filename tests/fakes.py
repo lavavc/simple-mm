@@ -6,7 +6,7 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.api.schemas import LPPosition, Position, TxResult
+from engine.types import LPPosition, Position, TxResult
 from tests.conftest_params import make_dex_params
 from engine.venues.dex.v4 import BaseV4DexAdapter
 from engine.venues.dex.shared import PositionState

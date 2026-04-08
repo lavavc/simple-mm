@@ -245,7 +245,7 @@ class TestDecimalAdjustments:
 
 
 # =============================================================================
-# EWMA stats (V4LPAdapter.compute_ewma_stats)
+# EWMA stats (compute_ewma_stats)
 # =============================================================================
 
 

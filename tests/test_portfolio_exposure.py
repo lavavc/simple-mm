@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from engine.api.schemas import Position
+from engine.types import Position
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from tests.fakes import FakeDexAdapter

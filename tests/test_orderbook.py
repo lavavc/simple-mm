@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from engine.api.schemas import OrderBookLevel
+from engine.types import OrderBookLevel
 from engine.arb.detection.cex_dex import (
     walk_orderbook_asks,
     walk_orderbook_bids,

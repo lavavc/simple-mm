@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 
-from engine.api.schemas import (
+from engine.types import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryItem,
     ArbitrageHistoryWalletSnapshot,

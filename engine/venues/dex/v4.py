@@ -13,7 +13,7 @@ from web3 import Web3
 from web3.middleware import geth_poa_middleware  # type: ignore[attr-defined]
 from web3.types import BlockData, Nonce, TxParams, TxReceipt, Wei
 
-from engine.api.schemas import Position, PriceQuote, TxResult
+from engine.types import Position, PriceQuote, TxResult
 from engine.config import DexParams
 from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
 from engine.venues.base import VenueAdapter
@@ -144,6 +144,23 @@ class V4ExecutionConfig:
     invert_price: bool = False
     cngn_is_token0: bool = False
     position_manager: str = ""
+
+    def resolve_pool_key(self) -> tuple[str, str, int, int, str]:
+        """Build the canonical pool key tuple from config fields.
+
+        Raises ValueError if fee or tick_spacing are not set.
+        """
+        if self.fee is None or self.tick_spacing is None:
+            raise ValueError(
+                f"fee and tick_spacing must be set in config (pool_id={self.pool_id})"
+            )
+        return (
+            Web3.to_checksum_address(self.token0_address),
+            Web3.to_checksum_address(self.token1_address),
+            int(self.fee),
+            int(self.tick_spacing),
+            Web3.to_checksum_address(self.hooks),
+        )
 
 
 class BaseV4DexAdapter(VenueAdapter):
@@ -381,14 +398,8 @@ class BaseV4DexAdapter(VenueAdapter):
         if self._pool_key is not None:
             return self._pool_key
 
-        if self.config.fee is not None and self.config.tick_spacing is not None:
-            self._pool_key = (
-                Web3.to_checksum_address(self.config.token0_address),
-                Web3.to_checksum_address(self.config.token1_address),
-                int(self.config.fee),
-                int(self.config.tick_spacing),
-                Web3.to_checksum_address(self.config.hooks),
-            )
+        try:
+            self._pool_key = self.config.resolve_pool_key()
             logger.info(
                 "v4_pool_key_resolved",
                 venue=self.name,
@@ -399,6 +410,8 @@ class BaseV4DexAdapter(VenueAdapter):
                 source="config",
             )
             return self._pool_key
+        except ValueError:
+            pass
 
         event_topic = as_hexstr(self.w3.keccak(text="Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)").hex())
         logs = self.w3.eth.get_logs({

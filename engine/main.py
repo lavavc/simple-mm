@@ -17,7 +17,7 @@ import uvicorn
 
 from engine.accounts import AccountManager, AccountRole
 from engine.api import api_router
-from engine.api.schemas import ArbitrageParams, CexParams
+from engine.types import ArbitrageParams, CexParams
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
 from engine.db.repository import open_repository
@@ -30,16 +30,8 @@ from engine.scheduler import SchedulerConfig, TradingScheduler
 from engine.arb import ArbitrageEngine
 from engine.venues.cex.quidax import QuidaxAdapter
 from engine.lp.uniswap_v4 import V4PositionManager
-from engine.venues.dex.uniswap_base import (
-    UniswapBaseV4Adapter,
-    UNISWAP_BASE_EXECUTION_CONFIG,
-    _BASE_POSITION_MANAGER,
-)
-from engine.venues.dex.uniswap_bsc import (
-    UniswapBscV4Adapter,
-    UNISWAP_BSC_EXECUTION_CONFIG,
-    _BSC_POSITION_MANAGER,
-)
+from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter, UNISWAP_BASE_EXECUTION_CONFIG
+from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter, UNISWAP_BSC_EXECUTION_CONFIG
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.ws import ws_manager
 
@@ -145,15 +137,15 @@ async def init_venues(
 def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
     """Build LP position managers keyed by venue name."""
     lp_managers: dict[str, V4PositionManager] = {}
-    for name, config, pm_addr, param_attr in [
-        ("uni-base", UNISWAP_BASE_EXECUTION_CONFIG, _BASE_POSITION_MANAGER, "uni_base_lp_params"),
-        ("uni-bsc", UNISWAP_BSC_EXECUTION_CONFIG, _BSC_POSITION_MANAGER, "uni_bsc_lp_params"),
+    for name, config, param_attr in [
+        ("uni-base", UNISWAP_BASE_EXECUTION_CONFIG, "uni_base_lp_params"),
+        ("uni-bsc", UNISWAP_BSC_EXECUTION_CONFIG, "uni_bsc_lp_params"),
     ]:
         adapter = venues.get(name)
         if adapter is None:
             continue
         pm_contract = adapter.w3.eth.contract(
-            address=Web3.to_checksum_address(pm_addr),
+            address=Web3.to_checksum_address(config.position_manager),
             abi=V4PositionManager.POSITION_MANAGER_ABI,
         )
         lp_managers[name] = V4PositionManager(

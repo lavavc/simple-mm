@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 import httpx
 import structlog
 
-from engine.api.schemas import PriceQuote
+from engine.types import PriceQuote
 from engine.market.dex_volume import get_pool_volume_24h_usd
 
 if TYPE_CHECKING:

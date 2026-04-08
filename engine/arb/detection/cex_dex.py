@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 import structlog
 
-from engine.api.schemas import OrderBookDepth
+from engine.types import OrderBookDepth
 from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0, Q96
 
 logger = structlog.get_logger()

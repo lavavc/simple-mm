@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from eth_abi import decode  # type: ignore[attr-defined]
 import pytest
 
-from engine.api.schemas import TxResult
+from engine.types import TxResult
 from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
 from engine.lp.types import LPBalanceSwapResult, LPMarketSnapshot, LPStaticPositionMetadata
 from engine.lp.uniswap_v4 import V4PositionManager
@@ -202,7 +202,7 @@ class TestComputeRequiredRatio:
 
 
 class TestPrepareLpBalance:
-    """Tests for V4LPAdapter.prepare_lp_balance via mocked RPC."""
+    """Tests for V4PositionManager.prepare_lp_balance via mocked RPC."""
 
     @pytest.mark.asyncio
     async def test_no_swap_when_empty(self):
@@ -272,7 +272,7 @@ class TestPrepareLpBalance:
 
 
 class TestActiveLpPositionSnapshot:
-    """Tests for V4LPAdapter.get_active_lp_position_snapshot."""
+    """Tests for V4PositionManager.get_active_lp_position_snapshot."""
 
     def test_live_pool_snapshot_keeps_slot0_when_liquidity_read_fails(self):
         state_view = MagicMock()

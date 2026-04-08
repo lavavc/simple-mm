@@ -11,7 +11,7 @@ import pytest
 import engine.api as api_module
 from engine.api import api_router
 from engine.api.routes import venues as venue_routes
-from engine.api.schemas import ArbitrageOpportunity
+from engine.types import ArbitrageOpportunity
 from engine.config import DexParams
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime

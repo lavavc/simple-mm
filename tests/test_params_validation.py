@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from pydantic import ValidationError
 from engine.config import DexParams
-from engine.api.schemas import CexParams, WalletParams
+from engine.types import CexParams, WalletParams
 from engine.config import settings
 from tests.conftest_params import make_dex_params
 

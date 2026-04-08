@@ -11,7 +11,7 @@ from eth_abi import encode  # type: ignore[attr-defined]
 from web3 import Web3
 from web3.types import TxParams, Wei
 
-from engine.api.schemas import LPPosition, Position, TxResult
+from engine.types import LPPosition, Position, TxResult
 from engine.config import DexParams
 from engine.lp.types import (
     LPBalanceSwapResult,
@@ -224,19 +224,8 @@ class V4PositionManager:
     # === Pool key ===
 
     def _resolve_pool_key(self) -> tuple[str, str, int, int, str]:
-        if self._pool_key is not None:
-            return self._pool_key
-        if self.config.fee is None or self.config.tick_spacing is None:
-            raise ValueError(
-                f"Cannot resolve pool key for {self.name}: fee and tick_spacing must be set in config"
-            )
-        self._pool_key = (
-            Web3.to_checksum_address(self.config.token0_address),
-            Web3.to_checksum_address(self.config.token1_address),
-            int(self.config.fee),
-            int(self.config.tick_spacing),
-            Web3.to_checksum_address(self.config.hooks),
-        )
+        if self._pool_key is None:
+            self._pool_key = self.config.resolve_pool_key()
         return self._pool_key
 
     # === Position queries ===
@@ -600,26 +589,6 @@ class V4PositionManager:
             pool_liquidity=market.pool_liquidity,
         )
 
-    def get_pool_metrics(
-        self, pos_state: Optional[PositionState] = None
-    ) -> tuple[Optional[Decimal], None, Optional[Decimal]]:
-        """Compute position value and our share of active pool liquidity from cache."""
-        if pos_state is None:
-            return None, None, None
-
-        from engine.market.pool_state import get_cached_pool_state
-
-        sqrt_p, pool_liquidity, _, _ = get_cached_pool_state(self.config.pool_id)
-        if sqrt_p is None or pool_liquidity is None or pool_liquidity <= 0:
-            return None, None, None
-
-        snapshot = self._build_lp_position_snapshot(
-            pos_state,
-            sqrt_price_x96=sqrt_p,
-            pool_liquidity=pool_liquidity,
-        )
-        return snapshot.position_value_usd, None, snapshot.our_share_pct
-
     # === Schema adapter ===
 
     async def get_position_as_schema(self) -> Position:
@@ -789,13 +758,13 @@ class V4PositionManager:
         tx = self._position_manager_contract.functions.modifyLiquidities(
             unlock_data, deadline
         ).build_transaction(tx_params)
-        estimate_params_dict: TxParams = {
+        estimate_params: TxParams = {
             "from": tx["from"],
             "to": tx["to"],
             "data": tx["data"],
             "value": Wei(0),
         }
-        estimated = self._w3.eth.estimate_gas(estimate_params_dict)
+        estimated = self._w3.eth.estimate_gas(estimate_params)
         tx["gas"] = int(estimated * 1.2)
 
         logger.info(
@@ -861,13 +830,13 @@ class V4PositionManager:
         tx = self._position_manager_contract.functions.modifyLiquidities(
             unlock_data, deadline
         ).build_transaction(tx_params)
-        estimate_params_dict2: TxParams = {
+        estimate_params: TxParams = {
             "from": tx["from"],
             "to": tx["to"],
             "data": tx["data"],
             "value": Wei(0),
         }
-        estimated = self._w3.eth.estimate_gas(estimate_params_dict2)
+        estimated = self._w3.eth.estimate_gas(estimate_params)
         tx["gas"] = int(estimated * 1.2)
 
         logger.info(

@@ -23,8 +23,12 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
 
     venue_statuses: list[VenueStatus] = []
     for name, venue in runtime.venues.items():
+        lp_manager = runtime.lp_managers.get(name)
         try:
-            position = await venue.get_position()
+            if lp_manager is not None:
+                position = await lp_manager.get_position_as_schema()
+            else:
+                position = await venue.get_position()
         except Exception:
             position = None
 
@@ -39,6 +43,13 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
                 age_seconds=price_data.age_seconds,
             )
 
+        if lp_manager is not None:
+            params = lp_manager.params.model_dump()
+        elif hasattr(venue, "params") and venue.params:
+            params = venue.params.model_dump()
+        else:
+            params = None
+
         venue_statuses.append(
             VenueStatus(
                 name=name,
@@ -46,7 +57,7 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
                 paused=venue.paused,
                 position=position,
                 price=price_response,
-                params=venue.params.model_dump() if hasattr(venue, "params") and venue.params else None,
+                params=params,
             )
         )
 

@@ -7,7 +7,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from engine.api.schemas import TxResult
+from engine.types import TxResult
 from engine.venues.dex.shared import PositionState
 from engine.scheduler import TradingScheduler, SchedulerConfig
 from engine.lp.types import LPBalanceSwapResult

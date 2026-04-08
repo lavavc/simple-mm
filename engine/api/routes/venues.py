@@ -13,7 +13,8 @@ import structlog
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
 from engine.api.helpers.pricing import get_reference_price_ngn
 from engine.api.protocols import DepthVenue, SyncOrderLadderVenue, WebhookVenue
-from engine.api.schemas import CexParams, OrderBookDepthResponse, OrderBookLevel
+from engine.api.schemas import OrderBookDepthResponse
+from engine.types import CexParams, OrderBookLevel
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime

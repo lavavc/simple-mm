@@ -4,22 +4,24 @@ import pytest
 from decimal import Decimal
 from pydantic import ValidationError
 
-from engine.api.schemas import (
+from engine.types import (
     PriceQuote,
     LPPosition,
     Position,
-    VenuePriceResponse,
-    VenueStatus,
-    SystemStatus,
     CexParams,
     WalletParams,
-    GlobalPosition,
-    PortfolioExposure,
-    PortfolioExposureSource,
     Alert,
     ArbitrageParams,
     ArbitrageOpportunity,
     ArbitrageStatus,
+)
+from engine.api.schemas import (
+    VenuePriceResponse,
+    VenueStatus,
+    SystemStatus,
+    GlobalPosition,
+    PortfolioExposure,
+    PortfolioExposureSource,
     BlendedPriceResponse,
     NormalizedPriceResponse,
 )

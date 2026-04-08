@@ -8,7 +8,7 @@ from typing import Any
 
 import aiosqlite
 
-from engine.api.schemas import ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity
+from engine.types import ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity
 from engine.arb.routing.route_registry import ROUTES
 
 

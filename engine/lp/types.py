@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from engine.api.schemas import TxResult
+    from engine.types import TxResult
 
 # V4 PositionManager action codes
 _V4_LP_MINT_POSITION      = 0

@@ -8,7 +8,7 @@ import pytest
 
 from engine.db.connection import SQLiteConnectionManager
 from engine.db.repository import DatabaseRepository
-from engine.api.schemas import (
+from engine.types import (
     PriceQuote, Position, Alert, ArbitrageOpportunity, DexArbOpportunity,
     ArbitrageHistoryEvent, ArbitrageHistoryWalletSnapshot,
 )

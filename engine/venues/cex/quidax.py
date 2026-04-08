@@ -9,7 +9,7 @@ from typing import Any, Optional, cast
 import httpx
 import structlog
 
-from engine.api.schemas import Position, PriceQuote, CexParams, OrderBookDepth, OrderBookLevel
+from engine.types import CexParams, OrderBookDepth, OrderBookLevel, Position, PriceQuote
 from engine.db.backend import AlertStoreProtocol
 from engine.venues.base import VenueAdapter
 

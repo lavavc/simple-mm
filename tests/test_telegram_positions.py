@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from engine.api.schemas import LPPosition, Position
+from engine.types import LPPosition, Position
 import engine.bot.telegram as telegram
 from tests.fakes import FakeDexAdapter
 

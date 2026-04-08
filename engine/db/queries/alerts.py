@@ -6,7 +6,7 @@ import time
 
 import aiosqlite
 
-from engine.api.schemas import Alert
+from engine.types import Alert
 
 
 def _require_lastrowid(lastrowid: int | None) -> int:
