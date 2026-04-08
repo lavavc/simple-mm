@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from engine.types import TxResult
 
-# V4 PositionManager action codes
-_V4_LP_MINT_POSITION      = 0
-_V4_LP_DECREASE_LIQUIDITY = 2
-_V4_LP_BURN_POSITION      = 3
-_V4_LP_SETTLE_PAIR        = 17  # 0x11
-_V4_LP_TAKE_PAIR          = 18  # 0x12
+# V4 PositionManager action codes from Uniswap v4-periphery Actions.sol
+_V4_LP_DECREASE_LIQUIDITY = 1   # 0x01
+_V4_LP_MINT_POSITION      = 2   # 0x02
+_V4_LP_BURN_POSITION      = 3   # 0x03
+_V4_LP_SETTLE_PAIR        = 13  # 0x0d
+_V4_LP_TAKE_PAIR          = 17  # 0x11
 
 
 @dataclass(slots=True)

@@ -9,7 +9,16 @@ import pytest
 
 from engine.types import TxResult
 from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
-from engine.lp.types import LPBalanceSwapResult, LPMarketSnapshot, LPStaticPositionMetadata
+from engine.lp.types import (
+    LPBalanceSwapResult,
+    LPMarketSnapshot,
+    LPStaticPositionMetadata,
+    _V4_LP_BURN_POSITION,
+    _V4_LP_DECREASE_LIQUIDITY,
+    _V4_LP_MINT_POSITION,
+    _V4_LP_SETTLE_PAIR,
+    _V4_LP_TAKE_PAIR,
+)
 from engine.lp.uniswap_v4 import V4PositionManager
 
 
@@ -422,6 +431,85 @@ class TestActiveLpPositionSnapshot:
         assert balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
 
     @pytest.mark.asyncio
+    async def test_mint_position_encodes_expected_actions(self):
+        position_manager_contract = MagicMock()
+        position_manager_contract.functions.modifyLiquidities.return_value.build_transaction.return_value = {
+            "from": "0x" + "cc" * 20,
+            "to": "0x" + "dd" * 20,
+            "data": "0xabc",
+        }
+        state_view = MagicMock()
+        state_view.functions.getSlot0.return_value.call.return_value = [123456789, 0, 0, 0]
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _approve_lp_tokens_if_needed=AsyncMock(),
+            _compute_liquidity_from_amounts=lambda *args: 987654321,
+            _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
+            _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+            _state_view=state_view,
+            _w3=MagicMock(),
+            _tx=SimpleNamespace(
+                _get_tx_params=lambda account: {"from": account.address},
+                _send_transaction=AsyncMock(return_value=TxResult(hash="0xmint", status="confirmed")),
+            ),
+            params=SimpleNamespace(max_slippage_percent=Decimal("1.0")),
+            config=SimpleNamespace(pool_id="0x" + "ab" * 32),
+        )
+        adapter._w3.eth.get_block.return_value = {"timestamp": 100}
+        adapter._w3.eth.estimate_gas.return_value = 100_000
+
+        result = await V4PositionManager.mint_position(adapter, 1_000_000, 2_000_000, -120, 120)
+
+        assert result.status == "confirmed"
+        unlock_data, deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
+        actions, params = decode(["bytes", "bytes[]"], unlock_data)
+        assert actions == bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR])
+        assert len(params) == 2
+        assert deadline == 400
+
+    @pytest.mark.asyncio
+    async def test_remove_position_encodes_expected_actions_for_live_liquidity(self):
+        token_id = 77
+        recipient = "0x" + "ee" * 20
+        position_manager_contract = MagicMock()
+        position_manager_contract.functions.modifyLiquidities.return_value.build_transaction.return_value = {
+            "from": "0x" + "cc" * 20,
+            "to": "0x" + "dd" * 20,
+            "data": "0xabc",
+        }
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _get_static_position_metadata=lambda _token_id: LPStaticPositionMetadata(
+                token_id=token_id,
+                liquidity=123456,
+                tick_lower=-1000,
+                tick_upper=1000,
+                range_min=Decimal("0.9"),
+                range_max=Decimal("1.1"),
+            ),
+            _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
+            _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+            _w3=MagicMock(),
+            _tx=SimpleNamespace(
+                _get_tx_params=lambda account: {"from": account.address},
+                _send_transaction=AsyncMock(return_value=TxResult(hash="0xremove", status="confirmed")),
+            ),
+        )
+        adapter._w3.eth.get_block.return_value = {"timestamp": 100}
+        adapter._w3.eth.estimate_gas.return_value = 100_000
+
+        result = await V4PositionManager.remove_position(adapter, token_id, recipient=recipient)
+
+        assert result.status == "confirmed"
+        unlock_data, deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
+        actions, params = decode(["bytes", "bytes[]"], unlock_data)
+        assert actions == bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR])
+        assert len(params) == 3
+        assert deadline == 400
+
+    @pytest.mark.asyncio
     async def test_remove_position_burns_zero_liquidity_shell(self):
         token_id = 77
         recipient = "0x" + "ee" * 20
@@ -458,7 +546,7 @@ class TestActiveLpPositionSnapshot:
         assert result.status == "confirmed"
         unlock_data, deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
         actions, params = decode(["bytes", "bytes[]"], unlock_data)
-        assert actions == bytes([3])
+        assert actions == bytes([_V4_LP_BURN_POSITION])
         assert len(params) == 1
         assert deadline == 400
 
