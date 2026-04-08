@@ -476,7 +476,7 @@ class TestActiveLpPositionSnapshot:
         adapter = SimpleNamespace(
             name="uni-base",
             _position_manager_contract=position_manager_contract,
-            _compute_liquidity_from_amounts=lambda *args: 987654321,
+            _compute_liquidity_from_amounts=MagicMock(return_value=987654321),
             _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
             _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
             _state_view=state_view,
@@ -486,27 +486,38 @@ class TestActiveLpPositionSnapshot:
                 _send_transaction=AsyncMock(return_value=TxResult(hash="0xmint", status="confirmed")),
             ),
             params=SimpleNamespace(max_slippage_percent=Decimal("1.0")),
-            config=SimpleNamespace(pool_id="0x" + "ab" * 32),
+            config=SimpleNamespace(pool_id="0x" + "ab" * 32, token0_decimals=6, token1_decimals=6),
         )
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
         adapter._approve_lp_tokens_if_needed = AsyncMock()
-        adapter._compute_required_token_amounts_raw = MethodType(
-            V4PositionManager._compute_required_token_amounts_raw,
-            adapter,
-        )
 
         result = await V4PositionManager.mint_position(adapter, 1_000_000, 2_000_000, -120, 120)
 
         assert result.status == "confirmed"
+        adapter._compute_liquidity_from_amounts.assert_called_once_with(
+            123456789,
+            -120,
+            120,
+            990_000,
+            1_990_000,
+        )
         unlock_data, deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
         actions, params = decode(["bytes", "bytes[]"], unlock_data)
         assert actions == bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR])
         assert len(params) == 2
+        mint_params = decode(
+            ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
+            params[0],
+        )
+        _pool_key, _tick_lower, _tick_upper, liquidity, amount0_max, amount1_max, _recipient, _hook = mint_params
+        assert liquidity == 987654321
+        assert amount0_max == 1_000_000
+        assert amount1_max == 2_000_000
         assert deadline == 400
 
     @pytest.mark.asyncio
-    async def test_mint_position_reduces_liquidity_when_rounded_requirements_exceed_balance(self):
+    async def test_mint_position_caps_reserve_for_small_balances(self):
         position_manager_contract = MagicMock()
         position_manager_contract.functions.modifyLiquidities.return_value.build_transaction.return_value = {
             "from": "0x" + "cc" * 20,
@@ -516,18 +527,10 @@ class TestActiveLpPositionSnapshot:
         state_view = MagicMock()
         state_view.functions.getSlot0.return_value.call.return_value = [123456789, 0, 0, 0]
 
-        def required_amounts(_sqrt_p: int, _tick_lower: int, _tick_upper: int, liquidity: int, *, round_up: bool):
-            assert round_up is True
-            return {
-                10: (100, 101),
-                9: (99, 100),
-            }[liquidity]
-
         adapter = SimpleNamespace(
             name="uni-base",
             _position_manager_contract=position_manager_contract,
-            _compute_liquidity_from_amounts=lambda *args: 10,
-            _compute_required_token_amounts_raw=required_amounts,
+            _compute_liquidity_from_amounts=MagicMock(return_value=10),
             _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
             _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
             _state_view=state_view,
@@ -537,15 +540,22 @@ class TestActiveLpPositionSnapshot:
                 _send_transaction=AsyncMock(return_value=TxResult(hash="0xmint", status="confirmed")),
             ),
             params=SimpleNamespace(max_slippage_percent=Decimal("0")),
-            config=SimpleNamespace(pool_id="0x" + "ab" * 32),
+            config=SimpleNamespace(pool_id="0x" + "ab" * 32, token0_decimals=6, token1_decimals=6),
         )
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
         adapter._approve_lp_tokens_if_needed = AsyncMock()
 
-        result = await V4PositionManager.mint_position(adapter, 100, 100, -120, 120)
+        result = await V4PositionManager.mint_position(adapter, 100, 10_000, -120, 120)
 
         assert result.status == "confirmed"
+        adapter._compute_liquidity_from_amounts.assert_called_once_with(
+            123456789,
+            -120,
+            120,
+            50,
+            5_000,
+        )
         unlock_data, _deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
         actions, params = decode(["bytes", "bytes[]"], unlock_data)
         assert actions == bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR])
@@ -554,9 +564,9 @@ class TestActiveLpPositionSnapshot:
             params[0],
         )
         _pool_key, _tick_lower, _tick_upper, liquidity, amount0_max, amount1_max, _recipient, _hook = mint_params
-        assert liquidity == 9
-        assert amount0_max == 99
-        assert amount1_max == 100
+        assert liquidity == 10
+        assert amount0_max == 100
+        assert amount1_max == 10_000
 
     @pytest.mark.asyncio
     async def test_remove_position_encodes_expected_actions_for_live_liquidity(self):
