@@ -404,15 +404,31 @@ class V4PositionManager:
                 liquidity=liquidity,
                 tick_lower=tick_lower,
                 tick_upper=tick_upper,
-                range_min=tick_to_price(
-                    tick_lower,
-                    self.config.token0_decimals,
-                    self.config.token1_decimals,
+                range_min=(
+                    Decimal(1) / tick_to_price(
+                        tick_upper,
+                        self.config.token0_decimals,
+                        self.config.token1_decimals,
+                    )
+                    if self.config.invert_price
+                    else tick_to_price(
+                        tick_lower,
+                        self.config.token0_decimals,
+                        self.config.token1_decimals,
+                    )
                 ),
-                range_max=tick_to_price(
-                    tick_upper,
-                    self.config.token0_decimals,
-                    self.config.token1_decimals,
+                range_max=(
+                    Decimal(1) / tick_to_price(
+                        tick_lower,
+                        self.config.token0_decimals,
+                        self.config.token1_decimals,
+                    )
+                    if self.config.invert_price
+                    else tick_to_price(
+                        tick_upper,
+                        self.config.token0_decimals,
+                        self.config.token1_decimals,
+                    )
                 ),
             )
         except Exception as e:

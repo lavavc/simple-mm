@@ -20,6 +20,7 @@ from engine.lp.types import (
     _V4_LP_TAKE_PAIR,
 )
 from engine.lp.uniswap_v4 import V4PositionManager
+from engine.lp import strategy
 
 
 def _price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
@@ -499,6 +500,68 @@ class TestActiveLpPositionSnapshot:
         assert metadata.token_id == token_id
         assert metadata.liquidity == 123456
         position_manager_contract.functions.getPositionLiquidity.assert_called_once_with(token_id)
+
+    def test_static_position_metadata_inverts_display_range_for_inverted_venues(self):
+        token_id = 77
+        tick_lower = -120
+        tick_upper = 120
+        raw = ((tick_lower & 0xFFFFFF) << 8) | ((tick_upper & 0xFFFFFF) << 32)
+        info_bytes32 = raw.to_bytes(32, "big")
+
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.getPoolAndPositionInfo.return_value.call.return_value = [
+            ("0x" + "aa" * 20, "0x" + "bb" * 20, 1200, 24, "0x" + "00" * 20),
+            info_bytes32,
+        ]
+        position_manager_contract.functions.getPositionLiquidity.return_value.call.return_value = 123456
+
+        adapter = SimpleNamespace(
+            name="uni-bsc",
+            _position_manager_contract=position_manager_contract,
+            config=SimpleNamespace(
+                pool_id="0x" + "ab" * 32,
+                token0_decimals=18,
+                token1_decimals=6,
+                invert_price=True,
+            ),
+        )
+
+        metadata = V4PositionManager._get_static_position_metadata(adapter, token_id)
+
+        assert metadata is not None
+        assert metadata.range_min < metadata.range_max
+
+    def test_calculate_tick_range_inverts_prices_for_inverted_venues(self):
+        params = SimpleNamespace(
+            lookback_points=None,
+            ewma_lambda=Decimal("0.975"),
+            sd_multiplier=Decimal("3.0"),
+            downside_skew=Decimal("0.5"),
+            min_tick_width=100,
+            max_tick_width=1000,
+        )
+
+        direct = strategy.calculate_tick_range(
+            [Decimal("1400"), Decimal("1420"), Decimal("1410")],
+            params,
+            tick_spacing=24,
+            token0_decimals=18,
+            token1_decimals=6,
+            invert_price=False,
+            venue_name="direct",
+        )
+        inverted = strategy.calculate_tick_range(
+            [Decimal("1") / Decimal("1400"), Decimal("1") / Decimal("1420"), Decimal("1") / Decimal("1410")],
+            params,
+            tick_spacing=24,
+            token0_decimals=18,
+            token1_decimals=6,
+            invert_price=True,
+            venue_name="inverted",
+        )
+
+        assert direct == inverted
 
     @pytest.mark.asyncio
     async def test_lp_token_approvals_include_permit2_for_position_manager(self):

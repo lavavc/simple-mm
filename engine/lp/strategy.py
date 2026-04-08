@@ -33,6 +33,7 @@ def calculate_tick_range(
     tick_spacing: int,
     token0_decimals: int,
     token1_decimals: int,
+    invert_price: bool = False,
     recovery_price: float | None = None,
     venue_name: str = "",
 ) -> tuple[int, int]:
@@ -49,9 +50,21 @@ def calculate_tick_range(
 
     mean, std_dev = compute_ewma_stats(prices, params)
 
+    if invert_price:
+        if mean <= 0:
+            raise ValueError("Cannot invert non-positive mean price")
+        transformed_prices = [Decimal(1) / price for price in prices if price > 0]
+        if len(transformed_prices) < 2:
+            raise ValueError("Insufficient positive price history for inverted SD calculation")
+        mean, std_dev = compute_ewma_stats(transformed_prices, params)
+
     multiplier = float(params.sd_multiplier)
     skew = float(params.downside_skew)
     if recovery_price is not None and std_dev > 0:
+        if invert_price:
+            if recovery_price <= 0:
+                raise ValueError("Cannot invert non-positive recovery price")
+            recovery_price = 1 / recovery_price
         deviation = (recovery_price - mean) / (std_dev * multiplier)
         skew = max(0.2, min(0.8, skew + deviation * 0.15))
         params.downside_skew = Decimal(str(round(skew, 4)))

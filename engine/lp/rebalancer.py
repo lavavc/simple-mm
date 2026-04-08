@@ -227,6 +227,7 @@ class LPRebalancer:
             tick_lower, tick_upper = strategy.calculate_tick_range(
                 prices, venue.params, venue.config.tick_spacing,
                 venue.config.token0_decimals, venue.config.token1_decimals,
+                invert_price=venue.config.invert_price,
                 recovery_price=recovery_price, venue_name=venue.name,
             )
             if recovery_price is not None:
