@@ -1,12 +1,9 @@
 """Quidax CEX adapter for order ladder management."""
 
 import asyncio
-import json
 import time
-from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
-from typing import Any, Callable, Optional, cast
+from typing import Any, Optional, cast
 
 import httpx
 import structlog
@@ -21,15 +18,29 @@ from engine.api.schemas import (
 )
 from engine.db.backend import AlertStoreProtocol, SystemStateStoreProtocol
 from engine.venues.base import VenueAdapter
+from engine.venues.cex.ladder_planner import (
+    LadderOrderTarget,
+    build_ladder_order_targets,
+    requires_requote,
+)
+from engine.venues.cex.order_values import decimal_from_order_value
+from engine.venues.cex.quidax_client import QuidaxApiClient
+from engine.venues.cex.quidax_order_state import QuidaxTrackedOrderState
+from engine.venues.cex.quidax_orders import (
+    cancel_response_is_pending,
+    extract_order_rows,
+    is_order_open,
+    is_order_terminal,
+    normalize_order_summary,
+    order_market_matches,
+)
 
 logger = structlog.get_logger()
 
-
-@dataclass(frozen=True, slots=True)
-class LadderOrderTarget:
-    side: str
-    price: Decimal
-    volume: Decimal
+_LADDER_PLACE_CONCURRENCY = 4
+_ORDER_CANCEL_CONCURRENCY = 4
+_PENDING_CANCEL_POLL_ATTEMPTS = 3
+_PENDING_CANCEL_POLL_INTERVAL_SECONDS = 0.5
 
 
 class QuidaxAdapter(VenueAdapter):
@@ -55,7 +66,6 @@ class QuidaxAdapter(VenueAdapter):
         funding_role: str = "quidax-trade-fund",
         alert_store: AlertStoreProtocol | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
-        broadcast: Callable[[dict[str, Any]], Any] | None = None,
     ):
         """
         Initialize Quidax adapter.
@@ -78,18 +88,26 @@ class QuidaxAdapter(VenueAdapter):
         self.order_api_base_url = (order_api_base_url or "https://app.quidax.io/api/v1").rstrip("/")
         self.order_user_id = order_user_id or "me"
         self._funding_role = funding_role
+        self._api = QuidaxApiClient(
+            market=self.market,
+            base_url=self.base_url,
+            order_api_base_url=self.order_api_base_url,
+            order_user_id=self.order_user_id,
+            client_getter=lambda: self._get_client(),
+        )
+        self._order_state = QuidaxTrackedOrderState(
+            venue_name=self.name,
+            market=self.market,
+            system_state_store=system_state_store,
+        )
         self._client: Optional[httpx.AsyncClient] = None
         self._last_balances: dict[str, Decimal] = {}
         self._last_ladder_requote_at: float = 0
-        self._tracked_open_orders: list[dict[str, Any]] = []
-        self._tracked_open_orders_loaded = False
         self.enabled = True
         self.paused = False
         if alert_store is None:
             raise ValueError("QuidaxAdapter requires an alert store")
         self.alert_store = alert_store
-        self.system_state_store = system_state_store
-        self.broadcast = broadcast
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with auth headers."""
@@ -150,142 +168,8 @@ class QuidaxAdapter(VenueAdapter):
             return rounded_price, rounded_amount
         return price, amount
 
-    def _decimal_from_order_value(self, value: Any) -> Decimal:
-        if isinstance(value, dict):
-            for key in ("amount", "value"):
-                nested = value.get(key)
-                if nested is not None:
-                    return Decimal(str(nested))
-            return Decimal("0")
-        if value is None:
-            return Decimal("0")
-        return Decimal(str(value))
-
-    def _tracked_orders_state_key(self) -> str:
-        return f"{self.name}:tracked_open_orders"
-
-    async def _ensure_tracked_open_orders_loaded(self) -> None:
-        if self._tracked_open_orders_loaded:
-            return
-
-        self._tracked_open_orders_loaded = True
-        if self.system_state_store is None:
-            return
-
-        try:
-            raw = await self.system_state_store.get_system_state(self._tracked_orders_state_key())
-        except Exception as exc:
-            logger.warning("quidax_tracked_orders_load_failed", venue=self.name, error=str(exc))
-            return
-
-        if not raw:
-            return
-
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.warning("quidax_tracked_orders_decode_failed", venue=self.name, error=str(exc))
-            return
-
-        if not isinstance(payload, list):
-            logger.warning(
-                "quidax_tracked_orders_unexpected_shape",
-                venue=self.name,
-                payload_type=type(payload).__name__,
-            )
-            return
-
-        self._tracked_open_orders = [
-            item
-            for item in payload
-            if isinstance(item, dict) and item.get("id")
-        ]
-
-    async def _persist_tracked_open_orders(self) -> None:
-        if self.system_state_store is None:
-            return
-
-        try:
-            await self.system_state_store.set_system_state(
-                self._tracked_orders_state_key(),
-                self._tracked_open_orders,
-            )
-        except Exception as exc:
-            logger.warning("quidax_tracked_orders_persist_failed", venue=self.name, error=str(exc))
-
-    async def _broadcast_orders_changed(self) -> None:
-        if self.broadcast is None:
-            return
-
-        try:
-            result = self.broadcast({"type": "venue_orders", "data": {"venue": self.name}})
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception as exc:
-            logger.warning("quidax_orders_broadcast_failed", venue=self.name, error=str(exc))
-
-    def _tracked_order_to_row(self, tracked: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "id": str(tracked.get("id", "")),
-            "market": {"id": tracked.get("market") or self.market},
-            "side": tracked.get("side"),
-            "status": tracked.get("status") or "wait",
-            "price": tracked.get("price", "0"),
-            "volume": tracked.get("volume", "0"),
-            "remaining_volume": tracked.get("remaining_volume") or tracked.get("volume", "0"),
-            "executed_volume": tracked.get("executed_volume", "0"),
-            "created_at": tracked.get("created_at"),
-            "_tracked_local": True,
-        }
-
     async def _get_tracked_open_order_rows(self) -> list[dict[str, Any]]:
-        await self._ensure_tracked_open_orders_loaded()
-        removed_pending_ids: set[str] = set()
-        status_updates: dict[str, str] = {}
-
-        for tracked in self._tracked_open_orders:
-            order_id = str(tracked.get("id", ""))
-            if not order_id or str(tracked.get("status") or "").lower() != "pending_cancel":
-                continue
-
-            resolution, order = await self._fetch_order_by_id(order_id)
-            if resolution == "missing":
-                removed_pending_ids.add(order_id)
-                continue
-
-            if resolution == "found" and isinstance(order, dict):
-                if self._is_order_terminal(order):
-                    removed_pending_ids.add(order_id)
-                    continue
-
-                remote_status = str(order.get("state") or order.get("status") or "").lower()
-                if remote_status and remote_status != str(tracked.get("status") or "").lower():
-                    status_updates[order_id] = remote_status
-
-        changed = False
-        if removed_pending_ids:
-            self._tracked_open_orders = [
-                order for order in self._tracked_open_orders if str(order.get("id", "")) not in removed_pending_ids
-            ]
-            changed = True
-
-        if status_updates:
-            for tracked in self._tracked_open_orders:
-                order_id = str(tracked.get("id", ""))
-                if order_id in status_updates:
-                    tracked["status"] = status_updates[order_id]
-                    changed = True
-
-        if changed:
-            await self._persist_tracked_open_orders()
-            await self._broadcast_orders_changed()
-
-        rows = [self._tracked_order_to_row(order) for order in self._tracked_open_orders]
-        return [
-            row
-            for row in rows
-            if self._order_market_matches(row) and self._is_order_open(row)
-        ]
+        return await self._order_state.get_open_order_rows(self._api.fetch_order_by_id)
 
     async def _track_open_order(
         self,
@@ -296,397 +180,29 @@ class QuidaxAdapter(VenueAdapter):
         volume: Decimal,
         created_at: Any = None,
     ) -> None:
-        await self._ensure_tracked_open_orders_loaded()
-        record = {
-            "id": order_id,
-            "market": self.market,
-            "side": side,
-            "status": "wait",
-            "price": str(price),
-            "volume": str(volume),
-            "remaining_volume": str(volume),
-            "executed_volume": "0",
-            "created_at": created_at if created_at is not None else int(time.time() * 1000),
-        }
-        existing_index = next(
-            (index for index, current in enumerate(self._tracked_open_orders) if current.get("id") == order_id),
-            None,
-        )
-        if existing_index is None:
-            self._tracked_open_orders.append(record)
-        else:
-            self._tracked_open_orders[existing_index] = record
-        await self._persist_tracked_open_orders()
-        await self._broadcast_orders_changed()
-
-    async def _remove_tracked_open_order(self, order_id: str) -> None:
-        await self._ensure_tracked_open_orders_loaded()
-        original_count = len(self._tracked_open_orders)
-        self._tracked_open_orders = [
-            order for order in self._tracked_open_orders if str(order.get("id", "")) != order_id
-        ]
-        if len(self._tracked_open_orders) != original_count:
-            await self._persist_tracked_open_orders()
-            await self._broadcast_orders_changed()
-
-    async def seed_orders_ws_state(self) -> None:
-        """Seed the websocket retained state for this venue's active orders.
-
-        The frontend uses a lightweight `venue_orders` event to invalidate the
-        orders query. Because retained websocket events live only in memory,
-        a backend restart can leave the socket quiet until the next order
-        create/cancel. Broadcasting once at startup restores that retained
-        event so newly opened dashboards refetch immediately.
-        """
-        await self._ensure_tracked_open_orders_loaded()
-        await self._broadcast_orders_changed()
-
-    def _order_collection_endpoints(self) -> list[str]:
-        endpoints = [
-            f"{self.order_api_base_url}/users/{self.order_user_id}/orders",
-            f"{self.order_api_base_url}/users/me/orders",
-            f"{self.base_url}/users/{self.order_user_id}/orders",
-            f"{self.base_url}/users/me/orders",
-        ]
-        deduped: list[str] = []
-        for endpoint in endpoints:
-            if endpoint not in deduped:
-                deduped.append(endpoint)
-        return deduped
-
-    def _order_item_endpoints(self, order_id: str) -> list[str]:
-        endpoints = [
-            f"{self.order_api_base_url}/users/{self.order_user_id}/orders/{order_id}",
-            f"{self.order_api_base_url}/users/me/orders/{order_id}",
-            f"{self.base_url}/users/{self.order_user_id}/orders/{order_id}",
-            f"{self.base_url}/users/me/orders/{order_id}",
-        ]
-        deduped: list[str] = []
-        for endpoint in endpoints:
-            if endpoint not in deduped:
-                deduped.append(endpoint)
-        return deduped
-
-    def _extract_order_rows(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        data = payload.get("data", [])
-        if isinstance(data, dict):
-            data = data.get("items") or data.get("orders") or []
-        if not isinstance(data, list):
-            logger.warning("quidax_orders_unexpected_shape", payload_type=type(data).__name__)
-            return []
-        return cast(list[dict[str, Any]], data)
-
-    def _normalize_market_id(self, market: Any) -> str:
-        if isinstance(market, dict):
-            market_id = market.get("id")
-            if market_id:
-                return "".join(ch for ch in str(market_id).lower() if ch.isalnum())
-            base = market.get("base_unit")
-            quote = market.get("quote_unit")
-            if base and quote:
-                return "".join(ch for ch in f"{base}{quote}".lower() if ch.isalnum())
-            return ""
-        return "".join(ch for ch in str(market).lower() if ch.isalnum())
-
-    def _order_market_matches(self, order: dict[str, Any]) -> bool:
-        market = order.get("market")
-        if market is None:
-            return True
-        return self._normalize_market_id(market) == self._normalize_market_id(self.market)
-
-    def _is_order_terminal(self, order: dict[str, Any]) -> bool:
-        status = str(order.get("state") or order.get("status") or "").lower()
-        return status in {"done", "cancel", "cancelled", "canceled", "filled", "failed", "rejected"}
-
-    def _is_order_open(self, order: dict[str, Any]) -> bool:
-        status = str(order.get("state") or order.get("status") or "").lower()
-        if status and status not in {"wait", "confirm", "pending_cancel"}:
-            return False
-
-        remaining = self._decimal_from_order_value(order.get("remaining_volume"))
-        if remaining <= 0:
-            remaining = self._decimal_from_order_value(order.get("volume"))
-        if remaining > 0:
-            return True
-
-        origin = self._decimal_from_order_value(order.get("origin_volume"))
-        executed = self._decimal_from_order_value(order.get("executed_volume"))
-        if origin > executed:
-            return True
-
-        return status in {"wait", "confirm", "pending_cancel"}
-
-    def _cancel_response_is_pending(self, result: dict[str, Any]) -> bool:
-        data = result.get("data")
-        if not isinstance(data, dict):
-            return False
-        nested_status = str(data.get("state") or data.get("status") or "").lower()
-        return nested_status == "pending_cancel"
-
-    def _is_missing_order_error(self, exc: Exception) -> bool:
-        response = getattr(exc, "response", None)
-        if response is not None and getattr(response, "status_code", None) == 404:
-            return True
-        return "404" in str(exc)
-
-    async def _fetch_order_by_id(self, order_id: str) -> tuple[str, dict[str, Any] | None]:
-        client = await self._get_client()
-        saw_missing = False
-        saw_error = False
-
-        for endpoint in self._order_item_endpoints(order_id):
-            try:
-                response = await client.get(endpoint)
-                response.raise_for_status()
-                payload = cast(dict[str, Any], response.json())
-                data = payload.get("data")
-                if isinstance(data, dict):
-                    return "found", data
-            except Exception as exc:
-                if self._is_missing_order_error(exc):
-                    saw_missing = True
-                    continue
-                saw_error = True
-                logger.warning(
-                    "quidax_fetch_order_by_id_failed",
-                    endpoint=endpoint,
-                    order_id=order_id,
-                    error=str(exc),
-                )
-
-        if saw_missing and not saw_error:
-            return "missing", None
-        return "unknown", None
-
-    async def _update_tracked_open_order(self, order_id: str, **fields: Any) -> bool:
-        await self._ensure_tracked_open_orders_loaded()
-        updated = False
-        for order in self._tracked_open_orders:
-            if str(order.get("id", "")) != order_id:
-                continue
-            for key, value in fields.items():
-                if value is not None:
-                    order[key] = value
-                    updated = True
-            break
-
-        if updated:
-            await self._persist_tracked_open_orders()
-            await self._broadcast_orders_changed()
-        return updated
-
-    async def _reconcile_tracked_open_orders_from_rows(self, rows: list[dict[str, Any]]) -> set[str]:
-        await self._ensure_tracked_open_orders_loaded()
-        if not self._tracked_open_orders or not rows:
-            return set()
-
-        rows_by_id = {
-            str(row.get("id", "")): row
-            for row in rows
-            if isinstance(row, dict) and row.get("id")
-        }
-        removed_ids: set[str] = set()
-        status_updates: dict[str, str] = {}
-
-        for order in self._tracked_open_orders:
-            order_id = str(order.get("id", ""))
-            if not order_id:
-                continue
-            row = rows_by_id.get(order_id)
-            if row is None:
-                continue
-            if self._is_order_terminal(row):
-                removed_ids.add(order_id)
-                continue
-
-            status = str(row.get("state") or row.get("status") or "").lower()
-            if status and status != str(order.get("status") or "").lower():
-                status_updates[order_id] = status
-
-        changed = False
-        if removed_ids:
-            self._tracked_open_orders = [
-                order for order in self._tracked_open_orders if str(order.get("id", "")) not in removed_ids
-            ]
-            changed = True
-
-        if status_updates:
-            for order in self._tracked_open_orders:
-                order_id = str(order.get("id", ""))
-                if order_id in status_updates:
-                    order["status"] = status_updates[order_id]
-                    changed = True
-
-        if changed:
-            await self._persist_tracked_open_orders()
-            await self._broadcast_orders_changed()
-
-        return removed_ids
-
-    async def _fetch_orders_payload(self, params: dict[str, Any] | None) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for endpoint in self._order_collection_endpoints():
-            try:
-                payload = await self._fetch_orders_payload_direct(endpoint, params)
-                return payload
-            except Exception as exc:
-                last_error = exc
-                logger.warning("quidax_fetch_orders_failed", endpoint=endpoint, error=str(exc))
-        if last_error is not None:
-            raise last_error
-        return {"status": "error", "message": "No Quidax order endpoint available", "data": []}
-
-    async def _fetch_orders_payload_direct(
-        self,
-        endpoint: str,
-        params: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        client = await self._get_client()
-        response = await client.get(endpoint, params=params)
-        response.raise_for_status()
-        payload = cast(dict[str, Any], response.json())
-        payload.setdefault("_endpoint", endpoint)
-        return payload
-
-    def _build_desired_ladder_orders(self, reference_price: Decimal) -> list[LadderOrderTarget]:
-        effective_order_size_cngn, effective_order_size_usdt = self._resolve_balanced_order_sizes(
-            reference_price
-        )
-        targets: list[LadderOrderTarget] = []
-        for offset in self.params.resolved_ladder_offsets_ngn:
-            if effective_order_size_cngn > 0:
-                sell_ngn_rate = reference_price - offset
-                if sell_ngn_rate > 0:
-                    sell_usdt_volume = effective_order_size_cngn / sell_ngn_rate
-                    price, volume = self._format_limit_order("buy", sell_ngn_rate, sell_usdt_volume)
-                    targets.append(LadderOrderTarget(side="buy", price=price, volume=volume))
-            if effective_order_size_usdt > 0:
-                buy_ngn_rate = reference_price + offset
-                price, volume = self._format_limit_order("sell", buy_ngn_rate, effective_order_size_usdt)
-                targets.append(LadderOrderTarget(side="sell", price=price, volume=volume))
-        return targets
-
-    def _extract_open_order_target(self, order: dict[str, Any]) -> LadderOrderTarget | None:
-        side = str(order.get("side", "")).lower()
-        if side not in {"buy", "sell"}:
-            return None
-
-        price = self._decimal_from_order_value(order.get("price"))
-        if price <= 0:
-            return None
-
-        remaining_volume = order.get("remaining_volume")
-        if remaining_volume is None:
-            remaining_volume = order.get("volume")
-        volume = self._decimal_from_order_value(remaining_volume)
-        if volume <= 0:
-            return None
-
-        return LadderOrderTarget(side=side, price=price, volume=volume)
-
-    def _requires_requote(
-        self,
-        existing_orders: list[dict[str, Any]],
-        desired_orders: list[LadderOrderTarget],
-    ) -> bool:
-        current_targets = [
-            target
-            for order in existing_orders
-            if (target := self._extract_open_order_target(order)) is not None
-        ]
-        if len(current_targets) != len(desired_orders):
-            return True
-
-        threshold_bps = Decimal(str(self.params.anchor_requote_threshold_bps))
-        volume_tolerance = Decimal("0.01")
-        current_targets.sort(key=lambda order: (order.side, order.price, order.volume))
-        desired_orders = sorted(desired_orders, key=lambda order: (order.side, order.price, order.volume))
-
-        for current, desired in zip(current_targets, desired_orders):
-            if current.side != desired.side:
-                return True
-            if desired.price <= 0:
-                return True
-            price_drift_bps = (abs(current.price - desired.price) / desired.price) * Decimal("10000")
-            if price_drift_bps > threshold_bps:
-                return True
-            if abs(current.volume - desired.volume) > volume_tolerance:
-                return True
-
-        return False
-
-    def _coerce_timestamp_ms(self, value: Any) -> int | None:
-        if value is None:
-            return None
-
-        if isinstance(value, (int, float)):
-            numeric = int(value)
-            return numeric if numeric > 10_000_000_000 else numeric * 1000
-
-        text = str(value).strip()
-        if not text:
-            return None
-
-        if text.isdigit():
-            numeric = int(text)
-            return numeric if numeric > 10_000_000_000 else numeric * 1000
-
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            return int(parsed.timestamp() * 1000)
-        except ValueError:
-            return None
-
-    def _normalize_order_summary(self, order: dict[str, Any]) -> VenueOrderSummary | None:
-        side = str(order.get("side", "")).lower()
-        if side not in {"buy", "sell"}:
-            return None
-
-        price = self._decimal_from_order_value(order.get("price"))
-        if price <= 0:
-            return None
-
-        volume = self._decimal_from_order_value(order.get("volume"))
-        origin_volume = self._decimal_from_order_value(order.get("origin_volume"))
-        remaining_volume = self._decimal_from_order_value(order.get("remaining_volume"))
-        executed_volume = self._decimal_from_order_value(order.get("executed_volume"))
-
-        if volume <= 0:
-            volume = origin_volume
-        if remaining_volume <= 0:
-            base_volume = origin_volume if origin_volume > 0 else volume
-            remaining_volume = base_volume - executed_volume if base_volume > executed_volume else base_volume
-        if remaining_volume < 0:
-            remaining_volume = Decimal("0")
-        if volume <= 0:
-            volume = origin_volume if origin_volume > 0 else remaining_volume + executed_volume
-
-        return VenueOrderSummary(
-            id=str(order.get("id", "")),
-            market=self._normalize_market_id(order.get("market")) or self.market,
+        await self._order_state.track_open_order(
+            order_id,
             side=side,
-            status=str(order.get("state") or order.get("status") or "").lower() or None,
             price=price,
             volume=volume,
-            remaining_volume=remaining_volume,
-            executed_volume=executed_volume,
-            notional=price * (remaining_volume if remaining_volume > 0 else volume),
-            created_at=self._coerce_timestamp_ms(
-                order.get("created_at")
-                or order.get("created_at_i")
-                or order.get("timestamp")
-            ),
+            created_at=created_at,
         )
+
+    async def _remove_tracked_open_order(self, order_id: str) -> None:
+        await self._order_state.remove_tracked_open_order(order_id)
+
+    async def _update_tracked_open_order(self, order_id: str, **fields: Any) -> bool:
+        return await self._order_state.update_tracked_open_order(order_id, **fields)
+
+    async def _reconcile_tracked_open_orders_from_rows(self, rows: list[dict[str, Any]]) -> set[str]:
+        return await self._order_state.reconcile_from_rows(rows)
 
     async def get_position(self) -> Position:
         """Fetch live cNGN and USDT balances from the Quidax wallet API."""
-        client = await self._get_client()
         balances: dict[str, Decimal] = {}
         for currency in ["cngn", "usdt"]:
             try:
-                resp = await client.get(f"{self.base_url}/users/me/wallets/{currency}")
-                resp.raise_for_status()
-                balances[currency] = Decimal(str(resp.json().get("data", {}).get("balance", "0")))
+                balances[currency] = await self._api.get_wallet_balance(currency)
             except Exception as e:
                 logger.warning("quidax_balance_fetch_failed", currency=currency, error=str(e))
                 balances[currency] = self._last_balances.get(currency, Decimal("0"))
@@ -701,14 +217,7 @@ class QuidaxAdapter(VenueAdapter):
     async def get_order_book_depth(self, limit: int = 50) -> Optional[OrderBookDepth]:
         """Fetch Level 2 Order Book depth (Bids and Asks with volume)."""
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.get(
-                    f"{self.base_url}/markets/{self.market}/depth",
-                    params={"limit": limit},
-                    headers={"accept": "application/json"},
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._api.get_order_book_payload(limit)
 
             if data.get("status") != "success":
                 return None
@@ -743,13 +252,7 @@ class QuidaxAdapter(VenueAdapter):
         Uses a plain client (no auth header) since this is a public endpoint.
         """
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.get(
-                    f"{self.base_url}/markets/summary/",
-                    headers={"accept": "application/json"},
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._api.get_market_summary_payload()
 
             if data.get("status") != "success":
                 return None
@@ -791,15 +294,15 @@ class QuidaxAdapter(VenueAdapter):
         fallback_rows: list[dict[str, Any]] = []
 
         for params in attempts:
-            payload = await self._fetch_orders_payload(params)
-            rows = self._extract_order_rows(payload)
+            payload = await self._api.fetch_orders_payload(params)
+            rows = extract_order_rows(payload)
             await self._reconcile_tracked_open_orders_from_rows(rows)
             if rows:
                 fallback_rows = rows
             open_rows = [
                 order
                 for order in rows
-                if self._order_market_matches(order) and self._is_order_open(order)
+                if order_market_matches(order, self.market) and is_order_open(order)
             ]
             if open_rows:
                 tracked_rows = await self._get_tracked_open_order_rows()
@@ -834,9 +337,9 @@ class QuidaxAdapter(VenueAdapter):
         for params in attempts:
             endpoint_results: list[dict[str, Any]] = []
             payload: dict[str, Any] | None = None
-            for endpoint in self._order_collection_endpoints():
+            for endpoint in self._api.order_collection_endpoints():
                 try:
-                    current_payload = await self._fetch_orders_payload_direct(endpoint, params)
+                    current_payload = await self._api.fetch_orders_payload_direct(endpoint, params)
                     endpoint_results.append(
                         {"endpoint": endpoint, "ok": True, "payload": current_payload}
                     )
@@ -848,11 +351,11 @@ class QuidaxAdapter(VenueAdapter):
                     )
 
             payload = payload or {"status": "error", "message": "No payload returned", "data": []}
-            rows = self._extract_order_rows(payload)
+            rows = extract_order_rows(payload)
             open_rows = [
                 order
                 for order in rows
-                if self._order_market_matches(order) and self._is_order_open(order)
+                if order_market_matches(order, self.market) and is_order_open(order)
             ]
             results.append(
                 {
@@ -872,7 +375,7 @@ class QuidaxAdapter(VenueAdapter):
         orders = await self.get_open_orders()
         summaries: list[VenueOrderSummary] = []
         for order in orders:
-            if (summary := self._normalize_order_summary(order)) is not None:
+            if (summary := normalize_order_summary(order, market=self.market)) is not None:
                 summaries.append(summary)
         summaries.sort(key=lambda order: order.created_at or 0, reverse=True)
         return summaries
@@ -885,37 +388,70 @@ class QuidaxAdapter(VenueAdapter):
             Number of orders cancelled
         """
         orders = await self.get_open_orders()
+        if not orders:
+            logger.info("cancelled_orders", count=0, total=0, pending=0, remaining=0)
+            return 0
+
         client = await self._get_client()
 
         terminal_cancelled_ids: set[str] = set()
         pending_cancel_ids: set[str] = set()
-        for order in orders:
+        failed_cancel_ids: set[str] = set()
+
+        async def _track_settling_cancel(order: dict[str, Any]) -> None:
+            order_id = str(order.get("id", ""))
+            if not order_id:
+                return
+
+            if not await self._update_tracked_open_order(order_id, status="pending_cancel"):
+                summary = normalize_order_summary(order, market=self.market)
+                if summary is not None:
+                    tracked_volume = (
+                        summary.remaining_volume if summary.remaining_volume > 0 else summary.volume
+                    )
+                    await self._track_open_order(
+                        order_id,
+                        side=summary.side,
+                        price=summary.price,
+                        volume=tracked_volume,
+                        created_at=summary.created_at,
+                    )
+                else:
+                    await self._track_open_order(
+                        order_id,
+                        side=str(order.get("side") or "").lower() or "unknown",
+                        price=decimal_from_order_value(order.get("price")),
+                        volume=decimal_from_order_value(order.get("remaining_volume"))
+                        or decimal_from_order_value(order.get("volume"))
+                        or decimal_from_order_value(order.get("origin_volume")),
+                        created_at=order.get("created_at") or int(time.time() * 1000),
+                    )
+                await self._update_tracked_open_order(order_id, status="pending_cancel")
+
+        async def _cancel_order(order: dict[str, Any]) -> tuple[str | None, str]:
             order_id = str(order.get("id", ""))
             if not order_id:
                 logger.warning("cancel_order_missing_id", order=order)
-                continue
+                return None, "failed"
             try:
-                cancelled_this_order = False
-                for endpoint in self._order_item_endpoints(order_id):
+                for endpoint in self._api.order_item_endpoints(order_id):
                     cancel_endpoint = f"{endpoint}/cancel"
                     try:
                         response = await client.post(cancel_endpoint)
                         response.raise_for_status()
                         result = cast(dict[str, Any], response.json())
                         if result.get("status") == "success":
-                            if self._cancel_response_is_pending(result):
-                                pending_cancel_ids.add(order_id)
-                                await self._update_tracked_open_order(order_id, status="pending_cancel")
+                            if cancel_response_is_pending(result):
+                                await _track_settling_cancel(order)
                                 logger.info(
                                     "cancel_order_pending",
                                     endpoint=cancel_endpoint,
                                     order_id=order_id,
                                 )
+                                return order_id, "pending"
                             else:
-                                terminal_cancelled_ids.add(order_id)
-                                await self._remove_tracked_open_order(order_id)
-                            cancelled_this_order = True
-                            break
+                                await _track_settling_cancel(order)
+                                return order_id, "terminal"
                         logger.warning(
                             "cancel_order_rejected",
                             endpoint=cancel_endpoint,
@@ -929,30 +465,70 @@ class QuidaxAdapter(VenueAdapter):
                             order_id=order_id,
                             error=str(endpoint_exc),
                         )
-                if not cancelled_this_order:
-                    logger.warning("cancel_order_failed_all_endpoints", order_id=order_id)
+                logger.warning("cancel_order_failed_all_endpoints", order_id=order_id)
             except Exception as e:
                 logger.warning("cancel_order_failed", order_id=order_id, error=str(e))
+            return order_id, "failed"
 
-        remaining = orders
-        for _ in range(3):
-            if not remaining:
-                break
-            await asyncio.sleep(0.5)
-            remaining = await self.get_open_orders()
+        cancel_semaphore = asyncio.Semaphore(min(_ORDER_CANCEL_CONCURRENCY, len(orders)))
 
-        remaining_ids = {str(order.get("id", "")) for order in remaining if order.get("id")}
-        completed_pending_ids = {order_id for order_id in pending_cancel_ids if order_id not in remaining_ids}
-        for order_id in completed_pending_ids:
+        async def _cancel_with_limit(order: dict[str, Any]) -> tuple[str | None, str]:
+            async with cancel_semaphore:
+                return await _cancel_order(order)
+
+        cancel_results = await asyncio.gather(*[_cancel_with_limit(order) for order in orders])
+        for order_id, result in cancel_results:
+            if not order_id:
+                continue
+            if result == "terminal":
+                terminal_cancelled_ids.add(order_id)
+            elif result == "pending":
+                pending_cancel_ids.add(order_id)
+            else:
+                failed_cancel_ids.add(order_id)
+
+        settling_cancel_ids = terminal_cancelled_ids | pending_cancel_ids
+        remaining_settling_ids = set(settling_cancel_ids)
+        if remaining_settling_ids:
+            poll_semaphore = asyncio.Semaphore(min(_ORDER_CANCEL_CONCURRENCY, len(remaining_settling_ids)))
+
+            async def _poll_cancel_settlement(order_id: str) -> tuple[str, bool]:
+                async with poll_semaphore:
+                    resolution, order = await self._api.fetch_order_by_id(order_id)
+                    if resolution == "missing":
+                        return order_id, True
+                    if resolution == "found" and isinstance(order, dict):
+                        if is_order_terminal(order):
+                            return order_id, True
+                        remote_status = str(order.get("state") or order.get("status") or "").lower()
+                        if remote_status:
+                            await self._update_tracked_open_order(order_id, status=remote_status)
+                    return order_id, False
+
+            for attempt in range(_PENDING_CANCEL_POLL_ATTEMPTS):
+                if not remaining_settling_ids:
+                    break
+                if attempt > 0:
+                    await asyncio.sleep(_PENDING_CANCEL_POLL_INTERVAL_SECONDS)
+                poll_results = await asyncio.gather(
+                    *[_poll_cancel_settlement(order_id) for order_id in remaining_settling_ids]
+                )
+                completed_ids = {
+                    order_id for order_id, settled in poll_results if settled
+                }
+                remaining_settling_ids -= completed_ids
+
+        completed_settling_ids = settling_cancel_ids - remaining_settling_ids
+        for order_id in completed_settling_ids:
             await self._remove_tracked_open_order(order_id)
 
-        cancelled = len(terminal_cancelled_ids | completed_pending_ids)
+        cancelled = len(completed_settling_ids)
         logger.info(
             "cancelled_orders",
             count=cancelled,
             total=len(orders),
-            pending=len(pending_cancel_ids - completed_pending_ids),
-            remaining=len(remaining),
+            pending=len(remaining_settling_ids),
+            remaining=len(remaining_settling_ids),
         )
         return cancelled
 
@@ -984,7 +560,7 @@ class QuidaxAdapter(VenueAdapter):
         }
         result: dict[str, Any] | None = None
         last_error: Exception | None = None
-        for endpoint in self._order_collection_endpoints():
+        for endpoint in self._api.order_collection_endpoints():
             try:
                 response = await client.post(endpoint, json=payload)
                 response.raise_for_status()
@@ -1012,8 +588,8 @@ class QuidaxAdapter(VenueAdapter):
         if isinstance(order_data, dict):
             order_id = str(order_data.get("id", "")).strip()
             if order_id:
-                tracked_price = self._decimal_from_order_value(order_data.get("price"))
-                tracked_volume = self._decimal_from_order_value(order_data.get("volume"))
+                tracked_price = decimal_from_order_value(order_data.get("price"))
+                tracked_volume = decimal_from_order_value(order_data.get("volume"))
                 await self._track_open_order(
                     order_id,
                     side=str(order_data.get("side") or side).lower(),
@@ -1047,7 +623,7 @@ class QuidaxAdapter(VenueAdapter):
             try:
                 response = None
                 resp_json: dict[str, Any] = {}
-                for endpoint in self._order_collection_endpoints():
+                for endpoint in self._api.order_collection_endpoints():
                     try:
                         response = await client.post(endpoint, json=payload)
                         try:
@@ -1126,9 +702,22 @@ class QuidaxAdapter(VenueAdapter):
             logger.info("quidax_ladder_skipped", paused=self.paused, enabled=self.params.ladder_enabled)
             return
 
-        desired_orders = self._build_desired_ladder_orders(reference_price)
+        effective_order_size_cngn, effective_order_size_usdt = self._resolve_balanced_order_sizes(
+            reference_price
+        )
+        desired_orders = build_ladder_order_targets(
+            reference_price=reference_price,
+            offsets=self.params.resolved_ladder_offsets_ngn,
+            order_size_cngn=effective_order_size_cngn,
+            order_size_usdt=effective_order_size_usdt,
+            format_limit_order=self._format_limit_order,
+        )
         existing_orders = await self.get_open_orders()
-        if existing_orders and not self._requires_requote(existing_orders, desired_orders):
+        if existing_orders and not requires_requote(
+            existing_orders=existing_orders,
+            desired_orders=desired_orders,
+            threshold_bps=Decimal(str(self.params.anchor_requote_threshold_bps)),
+        ):
             logger.info(
                 "quidax_ladder_requote_skipped",
                 reference_price_ngn=float(reference_price),
@@ -1161,15 +750,25 @@ class QuidaxAdapter(VenueAdapter):
         orders_attempted = 0
         orders_placed = 0
         order_errors: list[str] = []
+        orders_attempted = len(desired_orders)
 
-        for target in desired_orders:
-            try:
-                orders_attempted += 1
-                await self.place_order(target.side, target.price, target.volume)
+        place_semaphore = asyncio.Semaphore(min(_LADDER_PLACE_CONCURRENCY, len(desired_orders)))
+
+        async def _place_target(target: LadderOrderTarget) -> tuple[LadderOrderTarget, Exception | None]:
+            async with place_semaphore:
+                try:
+                    await self.place_order(target.side, target.price, target.volume)
+                    return target, None
+                except Exception as exc:
+                    return target, exc
+
+        placement_results = await asyncio.gather(*[_place_target(target) for target in desired_orders])
+        for target, error in placement_results:
+            if error is None:
                 orders_placed += 1
-            except Exception as e:
-                order_errors.append(f"{target.side}@{target.price}:{e}")
-                logger.warning("place_ladder_order_failed", side=target.side, price=float(target.price), error=str(e))
+                continue
+            order_errors.append(f"{target.side}@{target.price}:{error}")
+            logger.warning("place_ladder_order_failed", side=target.side, price=float(target.price), error=str(error))
 
         if orders_attempted > 0 and orders_placed == 0:
             raise RuntimeError(

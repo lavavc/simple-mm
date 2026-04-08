@@ -24,6 +24,7 @@ from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime
 from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.venues.cex.order_values import decimal_from_order_value
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -57,27 +58,15 @@ def get_deposit_token_address(token: str) -> str:
     return address
 
 
-def _decimal_from_order_value(value: Any) -> Decimal:
-    if isinstance(value, dict):
-        for key in ("amount", "value"):
-            nested = value.get(key)
-            if nested is not None:
-                return Decimal(str(nested))
-        return Decimal("0")
-    if value is None:
-        return Decimal("0")
-    return Decimal(str(value))
-
-
 def _normalize_generic_order_summary(order: dict[str, Any], venue: str) -> VenueOrderSummary | None:
-    price = _decimal_from_order_value(order.get("price"))
+    price = decimal_from_order_value(order.get("price"))
     if price <= 0:
         return None
 
-    volume = _decimal_from_order_value(order.get("volume"))
-    origin_volume = _decimal_from_order_value(order.get("origin_volume"))
-    remaining_volume = _decimal_from_order_value(order.get("remaining_volume"))
-    executed_volume = _decimal_from_order_value(order.get("executed_volume"))
+    volume = decimal_from_order_value(order.get("volume"))
+    origin_volume = decimal_from_order_value(order.get("origin_volume"))
+    remaining_volume = decimal_from_order_value(order.get("remaining_volume"))
+    executed_volume = decimal_from_order_value(order.get("executed_volume"))
     if volume <= 0:
         volume = origin_volume
     if remaining_volume <= 0:

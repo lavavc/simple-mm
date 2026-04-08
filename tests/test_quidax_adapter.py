@@ -8,6 +8,7 @@ import pytest
 
 from engine.api.schemas import CexParams
 from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.cex.quidax_orders import normalize_order_summary, order_market_matches
 
 
 class _FakeResponse:
@@ -56,14 +57,12 @@ def _make_adapter(
     params: CexParams | None = None,
     *,
     system_state_store: _FakeSystemStateStore | None = None,
-    broadcast: object | None = None,
 ) -> QuidaxAdapter:
     return QuidaxAdapter(
         api_key="test-key",
         params=params,
         alert_store=SimpleNamespace(insert_alert=AsyncMock()),
         system_state_store=system_state_store,
-        broadcast=broadcast,
     )
 
 
@@ -370,14 +369,20 @@ async def test_cancel_all_orders_clears_tracked_orders_when_cancel_succeeds():
     )
     adapter = _make_adapter(system_state_store=state_store)
     fake_client = _FakeClient({"status": "success", "data": []})
-    fake_client.get_payloads = [{"status": "success", "data": []}] * 4
 
     async def _post(url: str, *_args, **_kwargs) -> _FakeResponse:
         if url.endswith("/cancel"):
             return _FakeResponse({"status": "success", "data": {"status": "cancel"}})
         return _FakeResponse({"status": "success", "data": {"id": "ord-1"}})
 
+    async def _get(url: str, *_args, **kwargs) -> _FakeResponse:
+        fake_client.get_calls.append(kwargs.get("params"))
+        if "/orders/ord-1" in url:
+            return _FakeResponse({}, status_code=404)
+        return _FakeResponse({"status": "success", "data": []})
+
     fake_client.post = _post  # type: ignore[method-assign]
+    fake_client.get = _get  # type: ignore[method-assign]
     adapter._get_client = AsyncMock(return_value=fake_client)
 
     cancelled = await adapter.cancel_all_orders()
@@ -385,6 +390,50 @@ async def test_cancel_all_orders_clears_tracked_orders_when_cancel_succeeds():
 
     assert cancelled == 1
     assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_orders_keeps_terminally_acknowledged_orders_tracked_until_settled():
+    state_store = _FakeSystemStateStore()
+    state_store.values["quidax:tracked_open_orders"] = json.dumps(
+        [
+            {
+                "id": "ord-1",
+                "market": "usdtcngn",
+                "side": "sell",
+                "status": "wait",
+                "price": "1445.11",
+                "volume": "1.43",
+                "remaining_volume": "1.43",
+                "executed_volume": "0",
+                "created_at": 1712520000000,
+            }
+        ]
+    )
+    adapter = _make_adapter(system_state_store=state_store)
+    fake_client = _FakeClient({"status": "success", "data": []})
+
+    async def _post(url: str, *_args, **_kwargs) -> _FakeResponse:
+        if url.endswith("/cancel"):
+            return _FakeResponse({"status": "success", "data": {"status": "cancel"}})
+        return _FakeResponse({"status": "success", "data": {"id": "ord-1"}})
+
+    async def _get(url: str, *_args, **kwargs) -> _FakeResponse:
+        fake_client.get_calls.append(kwargs.get("params"))
+        if "/orders/ord-1" in url:
+            return _FakeResponse({"status": "success", "data": []})
+        return _FakeResponse({"status": "success", "data": []})
+
+    fake_client.post = _post  # type: ignore[method-assign]
+    fake_client.get = _get  # type: ignore[method-assign]
+    adapter._get_client = AsyncMock(return_value=fake_client)
+
+    cancelled = await adapter.cancel_all_orders()
+    remaining = await adapter._get_tracked_open_order_rows()
+
+    assert cancelled == 0
+    assert [order["id"] for order in remaining] == ["ord-1"]
+    assert remaining[0]["status"] == "pending_cancel"
 
 
 @pytest.mark.asyncio
@@ -546,62 +595,17 @@ async def test_cancel_all_orders_counts_pending_cancel_once_order_disappears():
     assert remaining == []
 
 
-@pytest.mark.asyncio
-async def test_track_open_order_broadcasts_venue_orders_event():
-    state_store = _FakeSystemStateStore()
-    broadcast = AsyncMock()
-    adapter = _make_adapter(system_state_store=state_store, broadcast=broadcast)
-
-    await adapter._track_open_order(
-        "ord-1",
-        side="buy",
-        price=Decimal("1345.10"),
-        volume=Decimal("1.48"),
-        created_at=1712520000000,
-    )
-
-    broadcast.assert_called_once_with({"type": "venue_orders", "data": {"venue": "quidax"}})
-
-
-@pytest.mark.asyncio
-async def test_seed_orders_ws_state_broadcasts_existing_tracked_orders_event():
-    state_store = _FakeSystemStateStore()
-    state_store.values["quidax:tracked_open_orders"] = json.dumps(
-        [
-            {
-                "id": "ord-1",
-                "market": "usdtcngn",
-                "side": "buy",
-                "status": "wait",
-                "price": "1345.10",
-                "volume": "1.48",
-                "remaining_volume": "1.48",
-                "executed_volume": "0",
-                "created_at": 1712520000000,
-            }
-        ]
-    )
-    broadcast = AsyncMock()
-    adapter = _make_adapter(system_state_store=state_store, broadcast=broadcast)
-
-    await adapter.seed_orders_ws_state()
-
-    broadcast.assert_called_once_with({"type": "venue_orders", "data": {"venue": "quidax"}})
-
-
 def test_order_market_matches_normalizes_market_formats():
-    adapter = _make_adapter()
+    market = "usdtcngn"
 
-    assert adapter._order_market_matches({"market": "USDT/CNGN"})
-    assert adapter._order_market_matches({"market": "usdt_cngn"})
-    assert adapter._order_market_matches({"market": {"id": "USDT/CNGN"}})
-    assert adapter._order_market_matches({"market": {"base_unit": "USDT", "quote_unit": "CNGN"}})
+    assert order_market_matches({"market": "USDT/CNGN"}, market)
+    assert order_market_matches({"market": "usdt_cngn"}, market)
+    assert order_market_matches({"market": {"id": "USDT/CNGN"}}, market)
+    assert order_market_matches({"market": {"base_unit": "USDT", "quote_unit": "CNGN"}}, market)
 
 
 def test_normalize_order_summary_uses_origin_volume_when_volume_is_zero():
-    adapter = _make_adapter()
-
-    summary = adapter._normalize_order_summary(
+    summary = normalize_order_summary(
         {
             "id": "ord-1",
             "market": {"id": "usdtcngn"},
@@ -611,7 +615,8 @@ def test_normalize_order_summary_uses_origin_volume_when_volume_is_zero():
             "volume": {"amount": "0"},
             "origin_volume": {"amount": "2"},
             "executed_volume": {"amount": "0"},
-        }
+        },
+        market="usdtcngn",
     )
 
     assert summary is not None
@@ -629,7 +634,7 @@ async def test_get_position_does_not_expose_open_orders():
 
     position = await adapter.get_position()
 
-    assert position.open_orders is None
+    assert "open_orders" not in position.model_dump(mode="json")
 
 
 def test_order_collection_endpoints_include_docs_me_fallback():
@@ -639,7 +644,7 @@ def test_order_collection_endpoints_include_docs_me_fallback():
         alert_store=SimpleNamespace(insert_alert=AsyncMock()),
     )
 
-    assert adapter._order_collection_endpoints() == [
+    assert adapter._api.order_collection_endpoints() == [
         "https://app.quidax.io/api/v1/users/11423927/orders",
         "https://app.quidax.io/api/v1/users/me/orders",
         "https://openapi.quidax.io/exchange-open-api/api/v1/users/11423927/orders",

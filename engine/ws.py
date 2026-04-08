@@ -14,7 +14,6 @@ RETAINED_EVENT_TYPES = {
     "quidax_dex_arb_curve",
     "quidax_dex_optimal_arb",
     "quidax_orderbook_depth",
-    "venue_orders",
     "venue_prices",
     "positions",
     "portfolio_delta",
@@ -60,10 +59,6 @@ class ConnectionManager:
         event_type = event.get("type")
         if event_type not in RETAINED_EVENT_TYPES:
             return None
-
-        if event_type == "venue_orders":
-            venue = event.get("data", {}).get("venue")
-            return f"{event_type}:{venue}" if venue else event_type
 
         return str(event_type)
 

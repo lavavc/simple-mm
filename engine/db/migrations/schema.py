@@ -78,7 +78,6 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
     timestamp_ms INTEGER NOT NULL,
     balances_json TEXT NOT NULL,
     lp_position_json TEXT,
-    open_orders_json TEXT,
     position_value_usd REAL,
     volume_24h_usd REAL,
     rates_json TEXT
