@@ -57,12 +57,15 @@ def _make_adapter(
     params: CexParams | None = None,
     *,
     system_state_store: _FakeSystemStateStore | None = None,
+    alert_store: object | None = None,
+    broadcast: object | None = None,
 ) -> QuidaxAdapter:
     return QuidaxAdapter(
         api_key="test-key",
         params=params,
-        alert_store=SimpleNamespace(insert_alert=AsyncMock()),
+        alert_store=alert_store or SimpleNamespace(insert_alert=AsyncMock()),
         system_state_store=system_state_store,
+        broadcast=broadcast,
     )
 
 
@@ -241,6 +244,54 @@ async def test_sync_order_ladder_skips_during_requote_cooldown():
 
     adapter.cancel_all_orders.assert_not_awaited()
     adapter.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_order_ladder_broadcasts_warning_when_anchor_move_requotes():
+    alerts = SimpleNamespace(insert_alert=AsyncMock(return_value=1))
+    broadcasts: list[dict[str, object]] = []
+    adapter = _make_adapter(
+        CexParams(
+            ladder_enabled=True,
+            spread_offset_ngn=50,
+            ladder_step_ngn=1,
+            ladder_levels_per_side=1,
+            anchor_requote_threshold_bps=10,
+            order_size_cngn=Decimal("2000"),
+            order_size_usdt=Decimal("10"),
+        ),
+        alert_store=alerts,
+        broadcast=broadcasts.append,
+    )
+    adapter.get_open_orders = AsyncMock(
+        side_effect=[
+            [
+                {"id": "a", "side": "buy", "price": "1300.00", "volume": "1.53"},
+                {"id": "b", "side": "sell", "price": "1500.00", "volume": "1.42"},
+            ],
+            [],
+        ]
+    )
+    adapter.cancel_all_orders = AsyncMock()
+    adapter.place_order = AsyncMock()
+
+    await adapter.sync_order_ladder(Decimal("1395.56"))
+
+    alerts.insert_alert.assert_awaited_once()
+    alert_kwargs = alerts.insert_alert.await_args.kwargs
+    assert alert_kwargs["severity"] == "warning"
+    assert alert_kwargs["category"] == "cex"
+    assert "anchor moved" in alert_kwargs["message"]
+    assert "1395.56" in alert_kwargs["message"]
+    assert broadcasts == [
+        {
+            "type": "alert",
+            "severity": "warning",
+            "message": alert_kwargs["message"],
+            "dedupe_key": alert_kwargs["dedupe_key"],
+            "cooldown_s": 30,
+        }
+    ]
 
 
 @pytest.mark.asyncio

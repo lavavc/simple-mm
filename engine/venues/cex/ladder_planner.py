@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from engine.venues.cex.order_values import decimal_from_order_value
 
@@ -60,6 +60,53 @@ def extract_open_order_target(order: dict[str, Any]) -> LadderOrderTarget | None
     return LadderOrderTarget(side=side, price=price, volume=volume)
 
 
+def estimate_existing_anchor(existing_orders: list[dict[str, Any]]) -> Decimal | None:
+    """Estimate the current ladder anchor from the nearest resting buy and sell orders."""
+    current_targets = [
+        target
+        for order in existing_orders
+        if (target := extract_open_order_target(order)) is not None
+    ]
+    buy_prices = [target.price for target in current_targets if target.side == "buy"]
+    sell_prices = [target.price for target in current_targets if target.side == "sell"]
+    if not buy_prices or not sell_prices:
+        return None
+    return (max(buy_prices) + min(sell_prices)) / Decimal("2")
+
+
+def get_requote_reason(
+    *,
+    existing_orders: list[dict[str, Any]],
+    desired_orders: list[LadderOrderTarget],
+    threshold_bps: Decimal,
+    volume_tolerance: Decimal = Decimal("0.01"),
+) -> Literal["count_mismatch", "side_mismatch", "anchor_move", "size_change"] | None:
+    """Return the first reason the current open ladder should be cancelled and replaced."""
+    current_targets = [
+        target
+        for order in existing_orders
+        if (target := extract_open_order_target(order)) is not None
+    ]
+    if len(current_targets) != len(desired_orders):
+        return "count_mismatch"
+
+    current_targets.sort(key=lambda order: (order.side, order.price, order.volume))
+    desired_targets = sorted(desired_orders, key=lambda order: (order.side, order.price, order.volume))
+
+    for current, desired in zip(current_targets, desired_targets):
+        if current.side != desired.side:
+            return "side_mismatch"
+        if desired.price <= 0:
+            return "anchor_move"
+        price_drift_bps = (abs(current.price - desired.price) / desired.price) * Decimal("10000")
+        if price_drift_bps > threshold_bps:
+            return "anchor_move"
+        if abs(current.volume - desired.volume) > volume_tolerance:
+            return "size_change"
+
+    return None
+
+
 def requires_requote(
     *,
     existing_orders: list[dict[str, Any]],
@@ -68,26 +115,12 @@ def requires_requote(
     volume_tolerance: Decimal = Decimal("0.01"),
 ) -> bool:
     """Return whether the current open ladder should be cancelled and replaced."""
-    current_targets = [
-        target
-        for order in existing_orders
-        if (target := extract_open_order_target(order)) is not None
-    ]
-    if len(current_targets) != len(desired_orders):
-        return True
-
-    current_targets.sort(key=lambda order: (order.side, order.price, order.volume))
-    desired_targets = sorted(desired_orders, key=lambda order: (order.side, order.price, order.volume))
-
-    for current, desired in zip(current_targets, desired_targets):
-        if current.side != desired.side:
-            return True
-        if desired.price <= 0:
-            return True
-        price_drift_bps = (abs(current.price - desired.price) / desired.price) * Decimal("10000")
-        if price_drift_bps > threshold_bps:
-            return True
-        if abs(current.volume - desired.volume) > volume_tolerance:
-            return True
-
-    return False
+    return (
+        get_requote_reason(
+            existing_orders=existing_orders,
+            desired_orders=desired_orders,
+            threshold_bps=threshold_bps,
+            volume_tolerance=volume_tolerance,
+        )
+        is not None
+    )
