@@ -410,8 +410,8 @@ class BaseV4DexAdapter(VenueAdapter):
                 source="config",
             )
             return self._pool_key
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning("v4_pool_key_config_incomplete", venue=self.name, reason=str(exc))
 
         event_topic = as_hexstr(self.w3.keccak(text="Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)").hex())
         logs = self.w3.eth.get_logs({

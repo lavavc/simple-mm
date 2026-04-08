@@ -93,7 +93,7 @@ class CexParams(BaseModel):
     ladder_enabled: bool = False
     # NGN offsets from current rate, one order placed per offset on each side
     # e.g. [1, 3, 5, 10] → orders at rate±1, rate±3, rate±5, rate±10 NGN
-    ladder_offsets_ngn: list[int] = [1, 3, 5, 10]
+    ladder_offsets_ngn: list[int] = Field(default_factory=lambda: [1, 3, 5, 10])
     order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
     order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
 
@@ -115,18 +115,6 @@ class Alert(BaseModel):
     severity: Literal["info", "warning", "critical"]
     category: str
     message: str
-    acknowledged: bool = False
-
-
-class RefillAlert(BaseModel):
-    """Alert for account needing refill from treasury."""
-
-    id: int
-    timestamp: int
-    role: str
-    address: str
-    chain_id: int
-    reasons: list[str]
     acknowledged: bool = False
 
 
@@ -330,4 +318,4 @@ class ArbitrageStatus(BaseModel):
     circuit_breaker_active: bool
     consecutive_failures: int
     params: ArbitrageParams
-    low_inventory_venues: list[str] = []
+    low_inventory_venues: list[str] = Field(default_factory=list)

@@ -350,3 +350,87 @@ async def test_shutdown_unwind_pauses_and_uses_lp_rebalancer():
     assert response == {"status": "shutting_down", "unwind": True}
     runtime.scheduler.pause.assert_awaited_once()
     runtime.scheduler.lp_rebalancer.unwind_all_positions.assert_awaited_once()
+
+
+def test_status_route_uses_lp_manager_position_not_venue_adapter():
+    """The /status route must call lp_manager.get_position_as_schema(), not venue.get_position()."""
+    from decimal import Decimal
+    from engine.types import LPPosition, Position
+
+    lp_position = LPPosition(
+        token_id="42",
+        liquidity="1000000",
+        range_min=Decimal("0.0005"),
+        range_max=Decimal("0.0007"),
+        in_range=True,
+    )
+    expected_position = Position(
+        venue="uni-base",
+        pair="cNGN/USDC",
+        timestamp=0,
+        balances={"cngn": Decimal("1000"), "usdc": Decimal("50")},
+        lp_position=lp_position,
+    )
+
+    class _LpManagerWithPosition(_DummyLpVenue):
+        get_position_as_schema = AsyncMock(return_value=expected_position)
+
+    lp_mgr = _LpManagerWithPosition(DexParams(
+        sd_multiplier=Decimal("2.75"),
+        min_tick_width=100,
+        max_tick_width=1000,
+        lookback_points=None,
+        rebalance_threshold_percent=Decimal("10.0"),
+        max_slippage_percent=Decimal("1.0"),
+        downside_skew=Decimal("0.45"),
+        ewma_lambda=Decimal("0.975"),
+    ))
+
+    runtime = _make_runtime()
+    runtime.venues = {"uni-base": lp_mgr}
+    runtime.lp_managers = {"uni-base": lp_mgr}
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    lp_mgr.get_position_as_schema.assert_awaited_once()
+    venue_status = next(v for v in response.json()["venues"] if v["name"] == "uni-base")
+    assert venue_status["position"]["lp_position"]["token_id"] == "42"
+    assert venue_status["position"]["lp_position"]["in_range"] is True
+
+
+def test_status_route_returns_lp_manager_params_not_venue_params():
+    """The /status route must return lp_manager.params, not venue.params."""
+    from decimal import Decimal
+
+    class _LpManagerWithPosition(_DummyLpVenue):
+        get_position_as_schema = AsyncMock(return_value=None)
+
+    lp_params = DexParams(
+        sd_multiplier=Decimal("3.5"),
+        min_tick_width=200,
+        max_tick_width=2000,
+        lookback_points=None,
+        rebalance_threshold_percent=Decimal("5.0"),
+        max_slippage_percent=Decimal("2.0"),
+        downside_skew=Decimal("0.6"),
+        ewma_lambda=Decimal("0.99"),
+    )
+    lp_mgr = _LpManagerWithPosition(lp_params)
+
+    runtime = _make_runtime()
+    runtime.venues = {"uni-base": lp_mgr}
+    runtime.lp_managers = {"uni-base": lp_mgr}
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    venue_status = next(v for v in response.json()["venues"] if v["name"] == "uni-base")
+    params = venue_status["params"]
+    assert params["sd_multiplier"] == "3.5"
+    assert params["downside_skew"] == "0.6"
+    assert params["min_tick_width"] == 200

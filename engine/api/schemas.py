@@ -1,6 +1,8 @@
 """HTTP-specific response and wrapper types for the API layer.
 
 Domain types used outside engine/api/ live in engine/types.py.
+schemas.py may import from engine.types for field type annotations but must not
+add those symbols to its public interface (__all__).
 """
 
 from decimal import Decimal
@@ -8,7 +10,19 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from engine.types import LPPosition, Position, PriceQuote
+from engine.types import LPPosition, OrderBookLevel, Position, PriceQuote
+
+__all__ = [
+    "VenuePriceResponse",
+    "OrderBookDepthResponse",
+    "VenueStatus",
+    "SystemStatus",
+    "GlobalPosition",
+    "PortfolioExposureSource",
+    "PortfolioExposure",
+    "NormalizedPriceResponse",
+    "BlendedPriceResponse",
+]
 
 
 class VenuePriceResponse(BaseModel):
@@ -27,8 +41,8 @@ class OrderBookDepthResponse(BaseModel):
     venue: str
     pair: str
     timestamp: int
-    bids: list[Any]
-    asks: list[Any]
+    bids: list[OrderBookLevel]
+    asks: list[OrderBookLevel]
 
 
 class VenueStatus(BaseModel):
@@ -100,4 +114,4 @@ class BlendedPriceResponse(BaseModel):
     num_sources: int
     total_venues: int = 0
     confidence: float  # 0-1 based on source agreement
-    dex_volume_24h_usd: dict[str, Optional[Decimal]] = {}
+    dex_volume_24h_usd: dict[str, Optional[Decimal]] = Field(default_factory=dict)
