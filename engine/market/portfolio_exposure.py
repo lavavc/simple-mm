@@ -56,6 +56,7 @@ class PortfolioExposureCalculator:
         blended_calculator: "BlendedPriceCalculator | None",
         price_aggregator: "VenuePriceAggregator | None",
         portfolio_source_registry: Sequence[PortfolioSourceDescriptor],
+        lp_managers: dict[str, Any] | None = None,
     ) -> None:
         self.venues = venues
         self.account_manager = account_manager
@@ -63,6 +64,7 @@ class PortfolioExposureCalculator:
         self.blended_calculator = blended_calculator
         self.price_aggregator = price_aggregator
         self.portfolio_source_registry = tuple(portfolio_source_registry)
+        self.lp_managers: dict[str, Any] = lp_managers or {}
 
     async def calculate(self) -> PortfolioExposureSnapshot:
         """Return the current portfolio exposure with per-source breakdown."""
@@ -104,15 +106,15 @@ class PortfolioExposureCalculator:
 
             raw_balances: dict[str, Any] | None
             if descriptor.source_kind == "lp_position":
-                get_portfolio_balances = getattr(venue, "get_portfolio_balances", None)
-                if get_portfolio_balances is None:
+                lp_manager = self.lp_managers.get(descriptor.venue)
+                if lp_manager is None:
                     logger.warning(
-                        "portfolio_lp_balance_helper_missing",
+                        "portfolio_lp_manager_missing",
                         venue=descriptor.venue,
                     )
                     continue
                 try:
-                    raw_balances = get_portfolio_balances()
+                    raw_balances = lp_manager.get_portfolio_balances()
                 except Exception as exc:
                     logger.warning(
                         "portfolio_lp_balances_failed",

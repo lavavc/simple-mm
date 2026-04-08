@@ -10,7 +10,7 @@ from typing import Any, Optional, cast
 import httpx
 import structlog
 
-from engine.api.schemas import Position, PriceQuote
+from engine.types import Position, PriceQuote
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()

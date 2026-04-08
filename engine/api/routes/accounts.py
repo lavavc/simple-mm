@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import structlog
 
 from engine.api.deps import get_runtime, require_account_manager, verify_token
-from engine.api.schemas import AccountBalanceResponse, AccountInfo, AccountThresholds
+from engine.types import AccountBalanceResponse, AccountInfo, AccountThresholds
 from engine.config import settings
 from engine.runtime import EngineRuntime
 

@@ -6,9 +6,9 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.api.schemas import LPPosition, Position, TxResult
+from engine.types import LPPosition, Position, TxResult
 from tests.conftest_params import make_dex_params
-from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.venues.dex.v4 import BaseV4DexAdapter
 from engine.venues.dex.shared import PositionState
 
 
@@ -27,7 +27,7 @@ class _DummyContract:
 
 
 class FakeDexAdapter:
-    """In-process double for V4LPAdapter. No Web3, no RPC.
+    """In-process double for V4PositionManager / BaseV4DexAdapter. No Web3, no RPC.
 
     Configurable to succeed or fail on any operation.
     Tracks minted positions and transfers for assertions.
@@ -187,6 +187,6 @@ class FakeCexAdapter:
         return False, Decimal("0"), self._sell_price, "simulated sell failure"
 
 
-# Register FakeDexAdapter as a virtual subclass of V4LPAdapter so that
-# isinstance(fake, V4LPAdapter) returns True in scheduler tests.
-V4LPAdapter.register(FakeDexAdapter)
+# Register FakeDexAdapter as a virtual subclass of BaseV4DexAdapter so that
+# isinstance(fake, BaseV4DexAdapter) returns True for WS subscription tests.
+BaseV4DexAdapter.register(FakeDexAdapter)

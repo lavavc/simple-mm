@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from engine.api.schemas import ArbitrageHistoryEvent, ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity, Position, PriceQuote
+from engine.types import ArbitrageHistoryEvent, ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity, Position, PriceQuote
 
 from .connection import SQLiteConnectionManager
 from .migrations import bootstrap_schema

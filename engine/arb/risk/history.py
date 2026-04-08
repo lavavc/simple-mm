@@ -8,7 +8,7 @@ from typing import Any, Callable, Literal, Optional
 
 import structlog
 
-from engine.api.schemas import (
+from engine.types import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryWalletSnapshot,
 )

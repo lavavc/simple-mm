@@ -7,14 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 from eth_abi import decode  # type: ignore[attr-defined]
 import pytest
 
-from engine.api.schemas import TxResult
+from engine.types import TxResult
 from engine.venues.dex.shared import _Q96, PositionState, compute_required_ratio
-from engine.venues.dex.lp_v4 import (
-    LPBalanceSwapResult,
-    LPMarketSnapshot,
-    LPStaticPositionMetadata,
-    V4LPAdapter,
-)
+from engine.lp.types import LPBalanceSwapResult, LPMarketSnapshot, LPStaticPositionMetadata
+from engine.lp.uniswap_v4 import V4PositionManager
 
 
 def _price_to_sqrt_x96(price: float, token0_decimals: int = 6, token1_decimals: int = 6) -> int:
@@ -31,7 +27,7 @@ def _make_balance_adapter(
     token0_decimals: int = 6,
     token1_decimals: int = 6,
 ) -> SimpleNamespace:
-    """Minimal self-mock for prepare_lp_balance."""
+    """Minimal self-mock for V4PositionManager.prepare_lp_balance."""
     pool_id = "0x" + "ab" * 32
     token0_addr = "0x" + "aa" * 20
     token1_addr = "0x" + "bb" * 20
@@ -45,7 +41,10 @@ def _make_balance_adapter(
     token1 = MagicMock()
     token1.functions.balanceOf.return_value.call.return_value = balance1_raw
 
-    adapter = SimpleNamespace(
+    w3 = MagicMock()
+    w3.eth.contract.side_effect = [token0, token1]
+
+    return SimpleNamespace(
         config=SimpleNamespace(
             pool_id=pool_id,
             token0_decimals=token0_decimals,
@@ -55,18 +54,13 @@ def _make_balance_adapter(
             invert_price=False,
         ),
         name="uni-base",
-        lp_account=SimpleNamespace(address=lp_addr),
-        state_view=state_view,
-        token0=token0,
-        token1=token1,
+        _lp_account=SimpleNamespace(address=lp_addr),
+        _state_view=state_view,
+        _w3=w3,
         _swap_from_lp=AsyncMock(
             return_value=swap_result or TxResult(hash="0xswap", status="confirmed")
         ),
     )
-    adapter._compute_required_ratio = lambda tl, tu, sp: compute_required_ratio(
-        tl, tu, sp, adapter.config.token0_decimals, adapter.config.token1_decimals
-    )
-    return adapter
 
 
 def _make_position_state(
@@ -140,26 +134,26 @@ def _make_lp_snapshot_adapter(
             )
         ),
         _get_static_position_metadata=lambda token_id: position_metadata.get(token_id),
-        lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+        _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
         position_manager_contract=object(),
-        state_view=MagicMock(),
+        _state_view=MagicMock(),
     )
-    adapter._compute_lp_token_amounts = MethodType(V4LPAdapter._compute_lp_token_amounts, adapter)
+    adapter._compute_lp_token_amounts = MethodType(V4PositionManager._compute_lp_token_amounts, adapter)
     adapter._compute_lp_token_amounts_from_metadata = MethodType(
-        V4LPAdapter._compute_lp_token_amounts_from_metadata,
+        V4PositionManager._compute_lp_token_amounts_from_metadata,
         adapter,
     )
     adapter._build_position_state_from_metadata = MethodType(
-        V4LPAdapter._build_position_state_from_metadata,
+        V4PositionManager._build_position_state_from_metadata,
         adapter,
     )
-    adapter._build_lp_position_snapshot = MethodType(V4LPAdapter._build_lp_position_snapshot, adapter)
-    adapter._build_degraded_lp_snapshot = MethodType(V4LPAdapter._build_degraded_lp_snapshot, adapter)
-    adapter._empty_position_balances = MethodType(V4LPAdapter._empty_position_balances, adapter)
-    adapter._add_symbol_balance = MethodType(V4LPAdapter._add_symbol_balance, adapter)
-    adapter.get_portfolio_balances = MethodType(V4LPAdapter.get_portfolio_balances, adapter)
-    adapter.get_active_lp_position_snapshot = MethodType(V4LPAdapter.get_active_lp_position_snapshot, adapter)
-    adapter.get_position = MethodType(V4LPAdapter.get_position, adapter)
+    adapter._build_lp_position_snapshot = MethodType(V4PositionManager._build_lp_position_snapshot, adapter)
+    adapter._build_degraded_lp_snapshot = MethodType(V4PositionManager._build_degraded_lp_snapshot, adapter)
+    adapter._empty_position_balances = MethodType(V4PositionManager._empty_position_balances, adapter)
+    adapter._add_symbol_balance = MethodType(V4PositionManager._add_symbol_balance, adapter)
+    adapter.get_portfolio_balances = MethodType(V4PositionManager.get_portfolio_balances, adapter)
+    adapter.get_active_lp_position_snapshot = MethodType(V4PositionManager.get_active_lp_position_snapshot, adapter)
+    adapter.get_position_as_schema = MethodType(V4PositionManager.get_position_as_schema, adapter)
     return adapter
 
 
@@ -208,14 +202,14 @@ class TestComputeRequiredRatio:
 
 
 class TestPrepareLpBalance:
-    """Tests for V4LPAdapter.prepare_lp_balance via mocked RPC."""
+    """Tests for V4PositionManager.prepare_lp_balance via mocked RPC."""
 
     @pytest.mark.asyncio
     async def test_no_swap_when_empty(self):
         """Both balances zero: returns immediately, no swap."""
         sqrt_p = _price_to_sqrt_x96(1.0)
         adapter = _make_balance_adapter(sqrt_p, 0, 0)
-        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        await V4PositionManager.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_not_called()
 
     @pytest.mark.asyncio
@@ -225,7 +219,7 @@ class TestPrepareLpBalance:
         # Symmetric range at price ≈ 1: target is approximately 50/50 by value.
         # Fund with equal raw amounts — should be close enough to skip the swap.
         adapter = _make_balance_adapter(sqrt_p, 500_000_000, 500_000_000)
-        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        await V4PositionManager.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_not_called()
 
     @pytest.mark.asyncio
@@ -234,7 +228,7 @@ class TestPrepareLpBalance:
         sqrt_p = _price_to_sqrt_x96(1.0)
         # Entirely in token0, none in token1 — large imbalance
         adapter = _make_balance_adapter(sqrt_p, 1_000_000_000, 0)
-        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        await V4PositionManager.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_called_once()
         call_args = adapter._swap_from_lp.call_args[0]
         assert call_args[0].lower() == adapter.config.token0_address.lower()
@@ -244,7 +238,7 @@ class TestPrepareLpBalance:
         """All token1, none of token0: surplus token1 swap is triggered."""
         sqrt_p = _price_to_sqrt_x96(1.0)
         adapter = _make_balance_adapter(sqrt_p, 0, 1_000_000_000)
-        await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        await V4PositionManager.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_called_once()
         call_args = adapter._swap_from_lp.call_args[0]
         assert call_args[0].lower() == adapter.config.token1_address.lower()
@@ -255,7 +249,7 @@ class TestPrepareLpBalance:
         sqrt_p = _price_to_sqrt_x96(1.0)
         failed = TxResult(hash="", status="failed", error="reverted")
         adapter = _make_balance_adapter(sqrt_p, 1_000_000_000, 0, swap_result=failed)
-        result = await V4LPAdapter.prepare_lp_balance(adapter, -1000, 1000)
+        result = await V4PositionManager.prepare_lp_balance(adapter, -1000, 1000)
         adapter._swap_from_lp.assert_called_once()
         assert isinstance(result, LPBalanceSwapResult)
         assert result.tx_result.status == "failed"
@@ -269,7 +263,7 @@ class TestPrepareLpBalance:
         sqrt_near_upper = _price_to_sqrt_x96(1.009)  # tick ≈ 90, very close to upper=100
         # Fund only token0 (worst case for the negative-target1 scenario)
         adapter = _make_balance_adapter(sqrt_near_upper, 1_000_000_000, 0)
-        await V4LPAdapter.prepare_lp_balance(adapter, tick_lower, tick_upper)
+        await V4PositionManager.prepare_lp_balance(adapter, tick_lower, tick_upper)
         # Should not have swapped token1→token0 (that would be wrong direction)
         if adapter._swap_from_lp.called:
             call_args = adapter._swap_from_lp.call_args[0]
@@ -278,7 +272,7 @@ class TestPrepareLpBalance:
 
 
 class TestActiveLpPositionSnapshot:
-    """Tests for V4LPAdapter.get_active_lp_position_snapshot."""
+    """Tests for V4PositionManager.get_active_lp_position_snapshot."""
 
     def test_live_pool_snapshot_keeps_slot0_when_liquidity_read_fails(self):
         state_view = MagicMock()
@@ -297,10 +291,10 @@ class TestActiveLpPositionSnapshot:
                 token1_decimals=6,
                 invert_price=False,
             ),
-            state_view=state_view,
+            _state_view=state_view,
         )
 
-        result = V4LPAdapter._get_live_pool_snapshot(adapter)
+        result = V4PositionManager._get_live_pool_snapshot(adapter)
 
         assert result is not None
         assert result.current_tick == 0
@@ -314,14 +308,14 @@ class TestActiveLpPositionSnapshot:
             include_live_market=False,
         )
 
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is None
 
     def test_snapshot_below_range_is_all_token0(self):
         pos_state = _make_position_state(tick_lower=1000, tick_upper=2000, in_range=False)
         adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(0.5))
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token0_amount > 0
@@ -331,7 +325,7 @@ class TestActiveLpPositionSnapshot:
     def test_snapshot_above_range_is_all_token1(self):
         pos_state = _make_position_state(tick_lower=-2000, tick_upper=-1000, in_range=False)
         adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(2.0))
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token0_amount == 0
@@ -340,7 +334,7 @@ class TestActiveLpPositionSnapshot:
     def test_snapshot_in_range_has_both_tokens(self):
         pos_state = _make_position_state(in_range=True)
         adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token0_amount > 0
@@ -353,7 +347,7 @@ class TestActiveLpPositionSnapshot:
             sqrt_price_x96=_price_to_sqrt_x96(1.0),
         )
 
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token_id is None
@@ -374,7 +368,7 @@ class TestActiveLpPositionSnapshot:
             include_live_market=False,
         )
 
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.snapshot_status == "degraded"
@@ -389,7 +383,7 @@ class TestActiveLpPositionSnapshot:
         pos_state.liquidity = 0
         adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
 
-        result = V4LPAdapter.get_active_lp_position_snapshot(adapter)
+        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
 
         assert result is not None
         assert result.token_id == 77
@@ -411,7 +405,7 @@ class TestActiveLpPositionSnapshot:
             lambda _pool_id: (Decimal(_price_to_sqrt_x96(1.0)), Decimal("5000000"), 123.0, None),
         )
 
-        balances = V4LPAdapter.get_portfolio_balances(adapter)
+        balances = V4PositionManager.get_portfolio_balances(adapter)
 
         assert balances["cngn"] > 0
         assert balances["usdc"] > 0
@@ -423,7 +417,7 @@ class TestActiveLpPositionSnapshot:
             sqrt_price_x96=_price_to_sqrt_x96(1.0),
         )
 
-        balances = V4LPAdapter.get_portfolio_balances(adapter)
+        balances = V4PositionManager.get_portfolio_balances(adapter)
 
         assert balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
 
@@ -439,7 +433,7 @@ class TestActiveLpPositionSnapshot:
         }
         adapter = SimpleNamespace(
             name="uni-base",
-            position_manager_contract=position_manager_contract,
+            _position_manager_contract=position_manager_contract,
             _get_static_position_metadata=lambda _token_id: LPStaticPositionMetadata(
                 token_id=token_id,
                 liquidity=0,
@@ -449,15 +443,17 @@ class TestActiveLpPositionSnapshot:
                 range_max=Decimal("1.1"),
             ),
             _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 0, 0, "0x" + "00" * 20),
-            lp_account=SimpleNamespace(address="0x" + "cc" * 20),
-            w3=MagicMock(),
-            _get_tx_params=lambda account: {"from": account.address},
-            _send_transaction=AsyncMock(return_value=TxResult(hash="0xremove", status="confirmed")),
+            _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+            _w3=MagicMock(),
+            _tx=SimpleNamespace(
+                _get_tx_params=lambda account: {"from": account.address},
+                _send_transaction=AsyncMock(return_value=TxResult(hash="0xremove", status="confirmed")),
+            ),
         )
-        adapter.w3.eth.get_block.return_value = {"timestamp": 100}
-        adapter.w3.eth.estimate_gas.return_value = 100_000
+        adapter._w3.eth.get_block.return_value = {"timestamp": 100}
+        adapter._w3.eth.estimate_gas.return_value = 100_000
 
-        result = await V4LPAdapter.remove_position(adapter, token_id, recipient=recipient)
+        result = await V4PositionManager.remove_position(adapter, token_id, recipient=recipient)
 
         assert result.status == "confirmed"
         unlock_data, deadline = position_manager_contract.functions.modifyLiquidities.call_args.args
@@ -473,7 +469,7 @@ class TestV4GetPosition:
         pos_state = _make_position_state(token_id=77, in_range=True)
         adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
 
-        result = await V4LPAdapter.get_position(adapter)
+        result = await V4PositionManager.get_position_as_schema(adapter)
 
         assert result.balances["cngn"] > 0
         assert result.balances["usdc"] > 0
@@ -485,7 +481,7 @@ class TestV4GetPosition:
     async def test_get_position_returns_zero_balances_when_no_nft(self):
         adapter = _make_lp_snapshot_adapter([], sqrt_price_x96=_price_to_sqrt_x96(1.0))
 
-        result = await V4LPAdapter.get_position(adapter)
+        result = await V4PositionManager.get_position_as_schema(adapter)
 
         assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
         assert result.lp_position is None
@@ -499,7 +495,7 @@ class TestV4GetPosition:
             include_live_market=False,
         )
 
-        result = await V4LPAdapter.get_position(adapter)
+        result = await V4PositionManager.get_position_as_schema(adapter)
 
         assert result.lp_position is not None
         assert result.lp_position.snapshot_status == "degraded"

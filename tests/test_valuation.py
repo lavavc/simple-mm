@@ -5,7 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from engine.arb.valuation import portfolio_value, cex_holdings_value, dex_holdings_value
-from engine.api.schemas import OrderBookDepth, OrderBookLevel
+from engine.types import OrderBookDepth, OrderBookLevel
 from engine.arb.detection.cex_dex import QUIDAX_FEE
 from engine.market.pool_state import swap_token0_for_token1
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter

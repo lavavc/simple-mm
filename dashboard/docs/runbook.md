@@ -139,7 +139,7 @@ python -m engine
 ## Known issues to fix before trading real money
 
 ### HIGH — infinite token approvals
-`engine/venues/dex/lp_v4.py` (`_approve_lp_tokens_if_needed`) approves `2**256 - 1` (unlimited) for each token before the
+`engine/lp/uniswap_v4.py` (`V4PositionManager._approve_lp_tokens_if_needed`) approves `2**256 - 1` (unlimited) for each token before the
 first swap or mint. If the router contract were compromised the entire wallet balance would
 be at risk. Should approve only the amount needed per transaction.
 

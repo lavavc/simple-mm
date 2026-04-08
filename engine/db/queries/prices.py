@@ -8,7 +8,7 @@ from typing import Any
 
 import aiosqlite
 
-from engine.api.schemas import PriceQuote
+from engine.types import PriceQuote
 
 
 async def insert_price_snapshot(

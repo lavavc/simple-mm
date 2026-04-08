@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, cast
 
 from fastapi import FastAPI, WebSocket
+from web3 import Web3
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import structlog
@@ -16,7 +17,7 @@ import uvicorn
 
 from engine.accounts import AccountManager, AccountRole
 from engine.api import api_router
-from engine.api.schemas import ArbitrageParams, CexParams
+from engine.types import ArbitrageParams, CexParams
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
 from engine.db.repository import open_repository
@@ -28,9 +29,9 @@ from engine.runtime import EngineRuntime
 from engine.scheduler import SchedulerConfig, TradingScheduler
 from engine.arb import ArbitrageEngine
 from engine.venues.cex.quidax import QuidaxAdapter
-from engine.venues.dex.lp_v4 import V4LPAdapter
-from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
-from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
+from engine.lp.uniswap_v4 import V4PositionManager
+from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter, UNISWAP_BASE_EXECUTION_CONFIG
+from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter, UNISWAP_BSC_EXECUTION_CONFIG
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.ws import ws_manager
 
@@ -138,6 +139,32 @@ async def init_venues(
     return venues
 
 
+def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
+    """Build LP position managers keyed by venue name."""
+    lp_managers: dict[str, V4PositionManager] = {}
+    for name, config, param_attr in [
+        ("uni-base", UNISWAP_BASE_EXECUTION_CONFIG, "uni_base_lp_params"),
+        ("uni-bsc", UNISWAP_BSC_EXECUTION_CONFIG, "uni_bsc_lp_params"),
+    ]:
+        adapter = venues.get(name)
+        if adapter is None:
+            continue
+        pm_contract = adapter.w3.eth.contract(
+            address=Web3.to_checksum_address(config.position_manager),
+            abi=V4PositionManager.POSITION_MANAGER_ABI,
+        )
+        lp_managers[name] = V4PositionManager(
+            config=config,
+            state_view=adapter.state_view,
+            position_manager_contract=pm_contract,
+            params=getattr(settings, param_attr),
+            venue_name=name,
+            tx_context=adapter,
+        )
+        logger.info("lp_manager_initialized", venue=name)
+    return lp_managers
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
@@ -164,22 +191,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
-    venues = await init_venues(
-        account_manager,
-        alert_store=db.alerts,
-        system_state_store=db.system_state,
-    )
+    venues = await init_venues(account_manager, alert_store=db.alerts)
+    lp_managers = init_lp_managers(venues)
 
-    for venue_name, venue_adapter in venues.items():
+    for venue_name, lp_manager in lp_managers.items():
         config = await db.venue_config.get_venue_config(venue_name)
-        if not config or not config.get("params") or not hasattr(venue_adapter, "params"):
-            continue
-
-        if isinstance(venue_adapter, V4LPAdapter):
-            venue_adapter.params = DexParams(**config["params"])
-        else:
-            venue_adapter.params = CexParams(**config["params"])
-        logger.info("venue_params_restored", venue=venue_name)
+        if config and config.get("params"):
+            lp_manager.params = DexParams(**config["params"])
+            logger.info("venue_params_restored", venue=venue_name)
 
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states
@@ -209,6 +228,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         blended_calculator=blended_calculator,
         price_aggregator=price_aggregator,
         portfolio_source_registry=portfolio_source_registry,
+        lp_managers=lp_managers,
     )
     logger.info("portfolio_exposure_calculator_initialized")
 
@@ -243,6 +263,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
         quidax_lp=quidax_lp,
+        lp_managers=lp_managers,
         system_state_store=db.system_state,
         price_store=db.prices,
         position_store=db.positions,
@@ -265,6 +286,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
         quidax_lp=quidax_lp,
+        lp_managers=lp_managers,
     )
     app.state.runtime = runtime
 

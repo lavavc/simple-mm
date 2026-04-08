@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from engine.api.schemas import ArbitrageHistoryEvent, ArbitrageOpportunity, DexArbOpportunity, Position, PriceQuote
+from engine.types import ArbitrageHistoryEvent, ArbitrageOpportunity, DexArbOpportunity, Position, PriceQuote
 
 
 @runtime_checkable

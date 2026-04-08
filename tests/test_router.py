@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import engine.arb.routing.router as _router
 from engine.arb.routing.router import RouteCandidate, SelectedRoute, select_route
-from engine.api.schemas import ArbitrageParams, OrderBookDepth, OrderBookLevel
+from engine.types import ArbitrageParams, OrderBookDepth, OrderBookLevel
 from engine.arb.risk.inventory import InventoryTracker
 
 

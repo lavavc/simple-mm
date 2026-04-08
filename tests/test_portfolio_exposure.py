@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from engine.api.schemas import Position
+from engine.types import Position
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from tests.fakes import FakeDexAdapter
@@ -94,6 +94,7 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
         blended_calculator=blended_calculator,
         price_aggregator=None,
         portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
+        lp_managers={"uni-base": lp_venue},
     )
     calculator.venues["quidax-lp"] = quidax_lp_venue
 

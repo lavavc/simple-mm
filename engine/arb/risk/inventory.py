@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.api.schemas import ArbitrageParams
+from engine.types import ArbitrageParams
 
 logger = structlog.get_logger()
 
