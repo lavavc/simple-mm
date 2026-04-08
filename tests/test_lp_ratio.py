@@ -431,6 +431,39 @@ class TestActiveLpPositionSnapshot:
         assert balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
 
     @pytest.mark.asyncio
+    async def test_lp_token_approvals_include_permit2_for_position_manager(self):
+        token0 = MagicMock()
+        token0.functions.allowance.return_value.call.return_value = 2 ** 200
+        token1 = MagicMock()
+        token1.functions.allowance.return_value.call.return_value = 2 ** 200
+        w3 = MagicMock()
+        w3.eth.contract.side_effect = [token0, token1]
+        tx_context = SimpleNamespace(
+            _approve_token_to_permit2_if_needed=AsyncMock(),
+            _approve_permit2_to_spender_if_needed=AsyncMock(),
+        )
+        adapter = SimpleNamespace(
+            _position_manager_contract=object(),
+            config=SimpleNamespace(
+                token0_address="0x" + "aa" * 20,
+                token1_address="0x" + "bb" * 20,
+                position_manager="0x" + "dd" * 20,
+            ),
+            _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
+            _w3=w3,
+            _tx=tx_context,
+            _lp_approvals_done=set(),
+            name="uni-base",
+        )
+
+        await V4PositionManager._approve_lp_tokens_if_needed(adapter)
+
+        assert tx_context._approve_token_to_permit2_if_needed.await_count == 2
+        assert tx_context._approve_permit2_to_spender_if_needed.await_count == 2
+        spender_args = [call.args[1] for call in tx_context._approve_permit2_to_spender_if_needed.await_args_list]
+        assert spender_args == ["0x" + "dd" * 20, "0x" + "dd" * 20]
+
+    @pytest.mark.asyncio
     async def test_mint_position_encodes_expected_actions(self):
         position_manager_contract = MagicMock()
         position_manager_contract.functions.modifyLiquidities.return_value.build_transaction.return_value = {
@@ -443,7 +476,6 @@ class TestActiveLpPositionSnapshot:
         adapter = SimpleNamespace(
             name="uni-base",
             _position_manager_contract=position_manager_contract,
-            _approve_lp_tokens_if_needed=AsyncMock(),
             _compute_liquidity_from_amounts=lambda *args: 987654321,
             _resolve_pool_key=lambda: ("0x" + "aa" * 20, "0x" + "bb" * 20, 1500, 30, "0x" + "00" * 20),
             _lp_account=SimpleNamespace(address="0x" + "cc" * 20),
@@ -458,6 +490,7 @@ class TestActiveLpPositionSnapshot:
         )
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
+        adapter._approve_lp_tokens_if_needed = AsyncMock()
 
         result = await V4PositionManager.mint_position(adapter, 1_000_000, 2_000_000, -120, 120)
 

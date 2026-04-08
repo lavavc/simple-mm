@@ -156,6 +156,14 @@ class V4TxContext(Protocol):
         account: "LocalAccount | None" = None,
     ) -> None: ...
 
+    async def _approve_permit2_to_spender_if_needed(
+        self,
+        token: str,
+        spender: str,
+        *,
+        account: "LocalAccount | None" = None,
+    ) -> None: ...
+
 
 class LPVenueProtocol(Protocol):
     """What LPRebalancer needs from an LP position manager."""
@@ -650,40 +658,45 @@ class V4PositionManager:
     # === LP-specific approvals ===
 
     async def _approve_lp_tokens_if_needed(self) -> None:
-        """Approve ERC20 tokens to PositionManager from LP account."""
+        """Approve LP account tokens for PositionManager settlement."""
         if not self._position_manager_contract:
             return
         pm_addr = self.config.position_manager
         for token_addr in [self.config.token0_address, self.config.token1_address]:
             cache_key = f"lp_pm_{token_addr.lower()}"
-            if cache_key in self._lp_approvals_done:
-                continue
-            token = self._w3.eth.contract(
-                address=Web3.to_checksum_address(token_addr), abi=ERC20_ABI
-            )
-            allowance = token.functions.allowance(
-                self._lp_account.address,
-                Web3.to_checksum_address(pm_addr),
-            ).call()
-            if allowance >= 2 ** 128:
-                self._lp_approvals_done.add(cache_key)
-                continue
-            tx_params = self._tx._get_tx_params(self._lp_account)
-            tx_params["value"] = Wei(0)
-            tx_params["gas"] = 100_000
-            tx = token.functions.approve(
-                Web3.to_checksum_address(pm_addr), 2 ** 256 - 1
-            ).build_transaction(tx_params)
-            result = await self._tx._send_transaction(tx, self._lp_account)
-            if result.status == "confirmed":
-                self._lp_approvals_done.add(cache_key)
-            else:
-                logger.error(
-                    "lp_token_approval_failed",
-                    venue=self.name,
-                    token=token_addr,
-                    error=result.error,
+            if cache_key not in self._lp_approvals_done:
+                token = self._w3.eth.contract(
+                    address=Web3.to_checksum_address(token_addr), abi=ERC20_ABI
                 )
+                allowance = token.functions.allowance(
+                    self._lp_account.address,
+                    Web3.to_checksum_address(pm_addr),
+                ).call()
+                if allowance < 2 ** 128:
+                    tx_params = self._tx._get_tx_params(self._lp_account)
+                    tx_params["value"] = Wei(0)
+                    tx_params["gas"] = 100_000
+                    tx = token.functions.approve(
+                        Web3.to_checksum_address(pm_addr), 2 ** 256 - 1
+                    ).build_transaction(tx_params)
+                    result = await self._tx._send_transaction(tx, self._lp_account)
+                    if result.status != "confirmed":
+                        logger.error(
+                            "lp_token_approval_failed",
+                            venue=self.name,
+                            token=token_addr,
+                            error=result.error,
+                        )
+                self._lp_approvals_done.add(cache_key)
+            # V4 PositionManager settles token deltas via Permit2, so LP minting needs
+            # Permit2 approval for the PositionManager spender in addition to any direct
+            # ERC20 approval path the token may support.
+            await self._tx._approve_token_to_permit2_if_needed(token_addr, account=self._lp_account)
+            await self._tx._approve_permit2_to_spender_if_needed(
+                token_addr,
+                pm_addr,
+                account=self._lp_account,
+            )
 
     async def _ensure_lp_swap_approvals(self, token_in: str) -> None:
         """Ensure LP account has Permit2 + UniversalRouter approvals for a preparatory swap."""

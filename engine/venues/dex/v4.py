@@ -584,22 +584,36 @@ class BaseV4DexAdapter(VenueAdapter):
         *,
         account: LocalAccount | None = None,
     ) -> None:
+        await self._approve_permit2_to_spender_if_needed(
+            token,
+            self.config.universal_router,
+            account=account,
+        )
+
+    async def _approve_permit2_to_spender_if_needed(
+        self,
+        token: str,
+        spender: str,
+        *,
+        account: LocalAccount | None = None,
+    ) -> None:
         acct = account or self.trade_account
-        cache_key = f"permit2_router_{token.lower()}_{acct.address.lower()}"
+        spender_checksum = Web3.to_checksum_address(spender)
+        cache_key = f"permit2_spender_{token.lower()}_{spender_checksum.lower()}_{acct.address.lower()}"
         if cache_key in self._approvals_done:
             return
 
         amount, expiration, _ = self.permit2.functions.allowance(
             acct.address,
             Web3.to_checksum_address(token),
-            Web3.to_checksum_address(self.config.universal_router),
+            spender_checksum,
         ).call()
         logger.info(
-            "permit2_router_allowance_state",
+            "permit2_spender_allowance_state",
             venue=self.name,
             token=token,
             owner=acct.address,
-            spender=self.config.universal_router,
+            spender=spender_checksum,
             amount=amount,
             expiration=expiration,
         )
@@ -607,18 +621,30 @@ class BaseV4DexAdapter(VenueAdapter):
             self._approvals_done.add(cache_key)
             return
 
-        logger.info("approving_permit2_to_router", venue=self.name, token=token, router=self.config.universal_router, account=acct.address)
+        logger.info(
+            "approving_permit2_to_spender",
+            venue=self.name,
+            token=token,
+            spender=spender_checksum,
+            account=acct.address,
+        )
         tx_params = self._get_tx_params(acct)
         tx_params["value"] = Wei(0)
         tx_params["gas"] = _DEFAULT_PERMIT2_APPROVAL_GAS
         tx = self.permit2.functions.approve(
             Web3.to_checksum_address(token),
-            Web3.to_checksum_address(self.config.universal_router),
+            spender_checksum,
             _PERMIT2_MAX_AMOUNT,
             _PERMIT2_EXPIRATION,
         ).build_transaction(tx_params)
         result = await self._send_transaction(tx, acct)
         if result.status != "confirmed":
-            logger.error("permit2_router_approval_failed", venue=self.name, token=token, error=result.error)
+            logger.error(
+                "permit2_spender_approval_failed",
+                venue=self.name,
+                token=token,
+                spender=spender_checksum,
+                error=result.error,
+            )
         else:
             self._approvals_done.add(cache_key)
