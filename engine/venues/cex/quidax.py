@@ -279,7 +279,7 @@ class QuidaxAdapter(VenueAdapter):
 
     async def get_open_orders(self) -> list[dict[str, Any]]:
         """Get all open orders."""
-        attempts = (
+        attempts: tuple[dict[str, Any], ...] = (
             {"market": self.market, "state": "wait"},
             {"market": self.market},
             {},
@@ -320,7 +320,7 @@ class QuidaxAdapter(VenueAdapter):
         return []
 
     async def get_orders_debug(self) -> dict[str, Any]:
-        attempts = (
+        attempts: tuple[dict[str, Any], ...] = (
             {"market": self.market, "state": "wait"},
             {"market": self.market},
             {},

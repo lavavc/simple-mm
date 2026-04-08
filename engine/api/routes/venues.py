@@ -344,7 +344,8 @@ async def get_venue_orders_debug(
         raise HTTPException(status_code=400, detail="Venue does not expose order debug inspection")
 
     try:
-        return await get_orders_debug()
+        result: dict[str, Any] = await get_orders_debug()
+        return result
     except Exception as exc:
         logger.error("venue_orders_debug_failed", venue=venue, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc

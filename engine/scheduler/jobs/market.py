@@ -98,7 +98,7 @@ class MarketJobs:
                 return
 
             try:
-                anchor_source = getattr(getattr(quidax_mm, "params", None), "anchor_source", "blended")
+                anchor_source: CexAnchorSource = getattr(getattr(quidax_mm, "params", None), "anchor_source", "blended")
                 reference_price = await self.get_reference_price_ngn(anchor_source=anchor_source)
                 if reference_price:
                     await cast(SyncOrderLadderVenueProtocol, quidax_mm).sync_order_ladder(reference_price)

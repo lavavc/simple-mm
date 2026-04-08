@@ -191,7 +191,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("account_manager_skipped", reason="no mnemonic configured")
 
-    venues = await init_venues(account_manager, alert_store=db.alerts)
+    venues = await init_venues(account_manager, alert_store=db.alerts, system_state_store=db.system_state)
     lp_managers = init_lp_managers(venues)
 
     for venue_name, lp_manager in lp_managers.items():
