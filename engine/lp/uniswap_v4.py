@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time as _time
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from typing import Any, Optional, Protocol, TYPE_CHECKING
 
 import structlog
@@ -108,6 +108,13 @@ def _decode_position_info(info_bytes32: bytes) -> tuple[int, int]:
     tick_lower = _sign_extend_24((raw >> 8) & 0xFFFFFF)
     tick_upper = _sign_extend_24((raw >> 32) & 0xFFFFFF)
     return tick_lower, tick_upper
+
+
+def _div_round_up(numerator: int, denominator: int) -> int:
+    """Return ceil(numerator / denominator) for positive integers."""
+    if denominator <= 0:
+        raise ValueError("denominator must be positive")
+    return (numerator + denominator - 1) // denominator
 
 
 class V4TxContext(Protocol):
@@ -747,9 +754,43 @@ class V4PositionManager:
         if liquidity == 0:
             return TxResult(hash="", status="failed", error="computed zero liquidity")
 
-        slippage = float(self.params.max_slippage_percent) / 100
-        amount0_max = int(amount0 * (1 + slippage))
-        amount1_max = int(amount1 * (1 + slippage))
+        # Contract-side settlement rounds token requirements up, so the initial
+        # liquidity derived from full balances can exceed available funds by a raw
+        # unit. Back off liquidity until the rounded-up requirements fit.
+        required0_raw, required1_raw = self._compute_required_token_amounts_raw(
+            sqrt_price_x96,
+            tick_lower,
+            tick_upper,
+            liquidity,
+            round_up=True,
+        )
+        while liquidity > 0 and (required0_raw > amount0 or required1_raw > amount1):
+            scaled_liquidity = liquidity
+            if required0_raw > amount0 and required0_raw > 0:
+                scaled_liquidity = min(scaled_liquidity, liquidity * amount0 // required0_raw)
+            if required1_raw > amount1 and required1_raw > 0:
+                scaled_liquidity = min(scaled_liquidity, liquidity * amount1 // required1_raw)
+            liquidity = scaled_liquidity if 0 < scaled_liquidity < liquidity else liquidity - 1
+            required0_raw, required1_raw = self._compute_required_token_amounts_raw(
+                sqrt_price_x96,
+                tick_lower,
+                tick_upper,
+                liquidity,
+                round_up=True,
+            )
+
+        if liquidity == 0:
+            return TxResult(hash="", status="failed", error="liquidity exceeds available balances")
+
+        slippage_multiplier = Decimal(1) + (self.params.max_slippage_percent / Decimal(100))
+        amount0_max = min(
+            amount0,
+            int((Decimal(required0_raw) * slippage_multiplier).to_integral_value(rounding=ROUND_CEILING)),
+        )
+        amount1_max = min(
+            amount1,
+            int((Decimal(required1_raw) * slippage_multiplier).to_integral_value(rounding=ROUND_CEILING)),
+        )
 
         currency0, currency1, fee, tick_spacing, hooks = self._resolve_pool_key()
         pool_key = (currency0, currency1, fee, tick_spacing, hooks)
@@ -788,6 +829,8 @@ class V4PositionManager:
             liquidity=liquidity,
             amount0=amount0,
             amount1=amount1,
+            amount0_max=amount0_max,
+            amount1_max=amount1_max,
         )
         return await self._tx._send_transaction(tx, self._lp_account)
 
@@ -997,3 +1040,41 @@ class V4PositionManager:
             if L0 > 0 and L1 > 0:
                 return min(L0, L1)
             return max(L0, L1)
+
+    def _compute_required_token_amounts_raw(
+        self,
+        sqrt_price_x96: int,
+        tick_lower: int,
+        tick_upper: int,
+        liquidity: int,
+        *,
+        round_up: bool,
+    ) -> tuple[int, int]:
+        """Return raw token amounts needed to mint the given liquidity over the range.
+
+        round_up=True mirrors contract-side settle checks more safely than floor math.
+        """
+        if liquidity <= 0:
+            return 0, 0
+
+        sqrt_a = int(_tick_to_sqrt_x96(tick_lower))
+        sqrt_b = int(_tick_to_sqrt_x96(tick_upper))
+        sqrt_p = sqrt_price_x96
+
+        def div(num: int, den: int) -> int:
+            return _div_round_up(num, den) if round_up else num // den
+
+        if sqrt_p <= sqrt_a:
+            if sqrt_b == sqrt_a:
+                return 0, 0
+            amount0 = div(liquidity * _Q96 * (sqrt_b - sqrt_a), sqrt_a * sqrt_b)
+            return amount0, 0
+        if sqrt_p >= sqrt_b:
+            if sqrt_b == sqrt_a:
+                return 0, 0
+            amount1 = div(liquidity * (sqrt_b - sqrt_a), _Q96)
+            return 0, amount1
+
+        amount0 = div(liquidity * _Q96 * (sqrt_b - sqrt_p), sqrt_p * sqrt_b)
+        amount1 = div(liquidity * (sqrt_p - sqrt_a), _Q96)
+        return amount0, amount1
