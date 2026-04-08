@@ -8,7 +8,7 @@ import subprocess
 import time
 import socket
 
-from engine.api.schemas import CexParams, WalletParams
+from engine.types import CexParams, WalletParams
 from tests.conftest_params import make_dex_params
 
 

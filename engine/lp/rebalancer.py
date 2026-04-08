@@ -1,18 +1,16 @@
-"""LP rebalance orchestration — drives V4LPAdapter through the position lifecycle."""
+"""LP rebalance orchestration — drives V4PositionManager through the position lifecycle."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 import structlog
 
 from engine.db.backend import ActionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
 from engine.lp import strategy
-from engine.venues.dex.lp_v4 import LPBalanceSwapResult
-
-if TYPE_CHECKING:
-    from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.lp.types import LPBalanceSwapResult
+from engine.lp.uniswap_v4 import LPVenueProtocol
 
 logger = structlog.get_logger()
 
@@ -34,6 +32,7 @@ class LPRebalancer:
         self._action_store = action_store
         self._auto_management_enabled = auto_management_enabled or (lambda: True)
         self._venue_locks: dict[str, asyncio.Lock] = {}
+        self._active_multi_position_incidents: dict[str, str] = {}
 
     def _get_venue_lock(self, venue_name: str) -> asyncio.Lock:
         return self._venue_locks.setdefault(venue_name, asyncio.Lock())
@@ -42,15 +41,20 @@ class LPRebalancer:
         return self._auto_management_enabled()
 
     @staticmethod
-    def _pool_source_name(venue: "V4LPAdapter") -> str:
+    def _multi_position_incident_key(venue_name: str, token_ids: list[int]) -> str:
+        normalized = ",".join(str(token_id) for token_id in sorted(token_ids))
+        return f"{venue_name}:{normalized}"
+
+    @staticmethod
+    def _pool_source_name(venue: LPVenueProtocol) -> str:
         return f"{venue.name}_pool"
 
     @staticmethod
-    def _token_symbol(venue: "V4LPAdapter", token_address: str) -> str:
+    def _token_symbol(venue: LPVenueProtocol, token_address: str) -> str:
         if token_address.lower() == venue.config.token0_address.lower():
-            return getattr(venue.config, "token0_symbol", venue.config.token0_address)
+            return venue.config.token0_symbol
         if token_address.lower() == venue.config.token1_address.lower():
-            return getattr(venue.config, "token1_symbol", venue.config.token1_address)
+            return venue.config.token1_symbol
         return token_address
 
     @staticmethod
@@ -59,7 +63,7 @@ class LPRebalancer:
             return None
         return float(raw_amount) / float(10 ** decimals)
 
-    async def check_and_rebalance(self, venue: "V4LPAdapter") -> None:
+    async def check_and_rebalance(self, venue: LPVenueProtocol) -> None:
         """Check position state; rebalance if out of range past threshold."""
         async with self._get_venue_lock(venue.name):
             if not self._auto_actions_allowed():
@@ -67,9 +71,30 @@ class LPRebalancer:
                 return
             await self._check_and_rebalance_locked(venue)
 
-    async def _check_and_rebalance_locked(self, venue: "V4LPAdapter") -> None:
+    async def _check_and_rebalance_locked(self, venue: LPVenueProtocol) -> None:
         """Check position state; rebalance if out of range past threshold."""
         token_ids = venue.get_owned_positions()
+        if len(token_ids) > 1:
+            incident_key = self._multi_position_incident_key(venue.name, token_ids)
+            message = (
+                f"{venue.name} has multiple LP positions ({token_ids}); "
+                "automatic LP management halted until resolved."
+            )
+            logger.warning("multiple_lp_positions_halt_auto_management", venue=venue.name, token_ids=token_ids)
+            await self._action_store.insert_action(
+                venue=venue.name,
+                action_type="lp_management_halted",
+                status="failed",
+                error=message,
+                triggered_by="auto:multi_position_halt",
+                metadata={"token_ids": token_ids},
+                idempotency_key=f"lp_management_halted:{incident_key}",
+            )
+            if self._active_multi_position_incidents.get(venue.name) != incident_key:
+                self.broadcast({"type": "alert", "severity": "warning", "message": message})
+            self._active_multi_position_incidents[venue.name] = incident_key
+            return
+        self._active_multi_position_incidents.pop(venue.name, None)
         if not token_ids:
             amount0, amount1 = venue.calculate_mint_amounts()
             if amount0 > 0 or amount1 > 0:
@@ -81,6 +106,13 @@ class LPRebalancer:
 
         position = venue.get_position_state(token_ids[0])
         if not position:
+            logger.warning(
+                "lp_rebalance_skipped",
+                venue=venue.name,
+                token_id=token_ids[0],
+                owned_token_ids=token_ids,
+                reason="position_state_unavailable",
+            )
             return
 
         if not position.in_range:
@@ -116,7 +148,7 @@ class LPRebalancer:
 
     async def create_position(
         self,
-        venue: "V4LPAdapter",
+        venue: LPVenueProtocol,
         recovery_price: float | None = None,
         triggered_by: str = "auto:initial_mint",
     ) -> bool:
@@ -130,7 +162,7 @@ class LPRebalancer:
 
     async def _record_ratio_swap(
         self,
-        venue: "V4LPAdapter",
+        venue: LPVenueProtocol,
         swap_result: LPBalanceSwapResult,
         *,
         triggered_by: str,
@@ -170,7 +202,7 @@ class LPRebalancer:
 
     async def _create_position_locked(
         self,
-        venue: "V4LPAdapter",
+        venue: LPVenueProtocol,
         recovery_price: float | None = None,
         triggered_by: str = "auto:initial_mint",
     ) -> bool:
@@ -281,7 +313,7 @@ class LPRebalancer:
 
     async def rebalance(
         self,
-        venue: "V4LPAdapter",
+        venue: LPVenueProtocol,
         token_id: int,
         position: Any,
         triggered_by: str = "auto:range_exit_rebalance",
@@ -297,7 +329,7 @@ class LPRebalancer:
 
     async def _rebalance_locked(
         self,
-        venue: "V4LPAdapter",
+        venue: LPVenueProtocol,
         token_id: int,
         position: Any,
         triggered_by: str,
@@ -346,7 +378,7 @@ class LPRebalancer:
 
     async def withdraw_positions(
         self,
-        venue: "V4LPAdapter",
+        venue: LPVenueProtocol,
         *,
         recipient: str | None = None,
         action_type: str = "manual_withdraw",
@@ -389,7 +421,7 @@ class LPRebalancer:
 
     async def unwind_all_positions(
         self,
-        venues: list["V4LPAdapter"],
+        venues: list[LPVenueProtocol],
         *,
         triggered_by: str = "system:shutdown_unwind",
     ) -> dict[str, list[dict[str, Any]]]:

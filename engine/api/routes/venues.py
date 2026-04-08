@@ -13,11 +13,11 @@ import structlog
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
 from engine.api.helpers.pricing import get_reference_price_ngn
 from engine.api.protocols import DepthVenue, SyncOrderLadderVenue, WebhookVenue
-from engine.api.schemas import CexParams, OrderBookDepthResponse, OrderBookLevel
+from engine.api.schemas import OrderBookDepthResponse
+from engine.types import CexParams, OrderBookLevel
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime
-from engine.venues.dex.lp_v4 import V4LPAdapter
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -60,12 +60,12 @@ async def withdraw_venue_position(
     if venue not in runtime.venues:
         raise HTTPException(status_code=404, detail="Venue not found")
 
-    adapter = runtime.venues[venue]
-    if not isinstance(adapter, V4LPAdapter):
+    lp_manager = runtime.lp_managers.get(venue)
+    if lp_manager is None:
         raise HTTPException(status_code=400, detail=f"{venue} is not a DEX venue")
 
     results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
-        adapter,
+        lp_manager,
         recipient=body.to_address,
         action_type="manual_withdraw",
         triggered_by="api:withdraw",
@@ -121,18 +121,18 @@ async def update_venue_params(
         raise HTTPException(status_code=404, detail="Venue not found")
 
     venue_adapter = runtime.venues[venue]
-    if hasattr(venue_adapter, "params"):
-        if isinstance(venue_adapter, V4LPAdapter):
-            merged = venue_adapter.params.model_dump()
-            merged.update(params)
-            venue_adapter.params = DexParams(**merged)
-            await db.venue_config.update_venue_config(
-                venue,
-                venue_adapter.params.model_dump(mode="json"),
-            )
-        else:
-            venue_adapter.params = CexParams(**params)
-            await db.venue_config.update_venue_config(venue, params)
+    lp_manager = runtime.lp_managers.get(venue)
+    if lp_manager is not None:
+        merged = lp_manager.params.model_dump()
+        merged.update(params)
+        lp_manager.params = DexParams(**merged)
+        await db.venue_config.update_venue_config(
+            venue,
+            lp_manager.params.model_dump(mode="json"),
+        )
+    elif hasattr(venue_adapter, "params"):
+        venue_adapter.params = CexParams(**params)
+        await db.venue_config.update_venue_config(venue, params)
     else:
         await db.venue_config.update_venue_config(venue, params)
 

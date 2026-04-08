@@ -8,7 +8,7 @@ from typing import Optional
 import structlog
 from web3 import Web3
 
-from engine.api.schemas import PriceQuote
+from engine.types import PriceQuote
 from .shared import sqrt_price_x96_to_decimal
 
 logger = structlog.get_logger()

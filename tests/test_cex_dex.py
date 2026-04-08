@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from engine.api.schemas import OrderBookDepth, OrderBookLevel
+from engine.types import OrderBookDepth, OrderBookLevel
 from engine.arb.detection.cex_dex import (
     QUIDAX_FEE,
     compute_arb_curve,

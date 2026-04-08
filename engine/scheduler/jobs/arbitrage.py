@@ -10,7 +10,7 @@ import structlog
 from engine.arb.listener import WalletActivitySubscription
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import DepthVenueProtocol, SchedulerState
-from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.venues.dex.v4 import BaseV4DexAdapter
 
 logger = structlog.get_logger()
 
@@ -36,7 +36,7 @@ class ArbitrageJobs:
         subscriptions: dict[str, list[WalletActivitySubscription]] = {}
         for venue_name in ("uni-base", "uni-bsc"):
             venue = self.context.venues.get(venue_name)
-            if not isinstance(venue, V4LPAdapter):
+            if not isinstance(venue, BaseV4DexAdapter):
                 continue
 
             chain_name = getattr(getattr(venue, "config", None), "chain_name", "")

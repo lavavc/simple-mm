@@ -4,22 +4,29 @@ import pytest
 from decimal import Decimal
 from pydantic import ValidationError
 
-from engine.api.schemas import (
+from engine.types import (
     PriceQuote,
+    LPPosition,
     Position,
-    VenuePriceResponse,
-    VenueStatus,
-    SystemStatus,
     CexParams,
     WalletParams,
-    GlobalPosition,
     Alert,
     ArbitrageParams,
     ArbitrageOpportunity,
     ArbitrageStatus,
+)
+from engine.api.schemas import (
+    OrderBookDepthResponse,
+    VenuePriceResponse,
+    VenueStatus,
+    SystemStatus,
+    GlobalPosition,
+    PortfolioExposure,
+    PortfolioExposureSource,
     BlendedPriceResponse,
     NormalizedPriceResponse,
 )
+from engine.types import OrderBookLevel
 
 
 # =============================================================================
@@ -170,6 +177,42 @@ class TestGlobalPosition:
         assert gp.delta_ratio == Decimal("0.47")
 
 
+class TestLPPosition:
+
+    def test_degraded_snapshot_allows_optional_live_fields(self):
+        lp = LPPosition(
+            token_id="77",
+            snapshot_status="degraded",
+            snapshot_message="LP position exists, but composition is unavailable.",
+        )
+        assert lp.snapshot_status == "degraded"
+        assert lp.liquidity is None
+        assert lp.range_min is None
+        assert lp.in_range is None
+
+
+class TestPortfolioExposure:
+
+    def test_create(self):
+        exposure = PortfolioExposure(
+            total_cngn=Decimal("100000"),
+            total_usdt=Decimal("50"),
+            total_usdc=Decimal("30"),
+            total_usd_value=Decimal("150"),
+            delta_ratio=Decimal("0.47"),
+            target_delta=Decimal("0.50"),
+            sources=[
+                PortfolioExposureSource(
+                    source="uni-base-lp",
+                    kind="account",
+                    balances={"cngn": Decimal("100"), "usdt": Decimal("0"), "usdc": Decimal("10")},
+                    usd_value=Decimal("10.07"),
+                )
+            ],
+        )
+        assert exposure.sources[0].source == "uni-base-lp"
+
+
 # =============================================================================
 # BlendedPriceResponse / NormalizedPriceResponse
 # =============================================================================
@@ -230,3 +273,68 @@ class TestAlert:
                 category="test", message="test",
             )
             assert a.severity == sev
+
+
+# =============================================================================
+# OrderBookDepthResponse
+# =============================================================================
+
+
+class TestOrderBookDepthResponse:
+    """Verify OrderBookDepthResponse retains typed level shape."""
+
+    def _levels(self) -> tuple[list[OrderBookLevel], list[OrderBookLevel]]:
+        bids = [
+            OrderBookLevel(price=Decimal("0.000700"), amount=Decimal("1000")),
+            OrderBookLevel(price=Decimal("0.000690"), amount=Decimal("2000")),
+        ]
+        asks = [
+            OrderBookLevel(price=Decimal("0.000710"), amount=Decimal("500")),
+            OrderBookLevel(price=Decimal("0.000720"), amount=Decimal("1500")),
+        ]
+        return bids, asks
+
+    def test_create_with_typed_levels(self):
+        bids, asks = self._levels()
+        r = OrderBookDepthResponse(
+            venue="quidax",
+            pair="cNGN/USDT",
+            timestamp=1700000000000,
+            bids=bids,
+            asks=asks,
+        )
+        assert r.venue == "quidax"
+        assert len(r.bids) == 2
+        assert len(r.asks) == 2
+        assert isinstance(r.bids[0], OrderBookLevel)
+        assert r.bids[0].price == Decimal("0.000700")
+        assert r.asks[1].amount == Decimal("1500")
+
+    def test_json_roundtrip(self):
+        bids, asks = self._levels()
+        original = OrderBookDepthResponse(
+            venue="quidax",
+            pair="cNGN/USDT",
+            timestamp=1700000000000,
+            bids=bids,
+            asks=asks,
+        )
+        restored = OrderBookDepthResponse.model_validate_json(original.model_dump_json())
+        assert restored.venue == original.venue
+        assert restored.timestamp == original.timestamp
+        assert len(restored.bids) == 2
+        assert restored.bids[0].price == Decimal("0.000700")
+        assert restored.asks[0].amount == Decimal("500")
+
+    def test_rejects_malformed_level(self):
+        """A dict missing required fields must raise a validation error."""
+        import pytest
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            OrderBookDepthResponse(
+                venue="quidax",
+                pair="cNGN/USDT",
+                timestamp=1700000000000,
+                bids=[{"price": "0.0007"}],  # missing amount
+                asks=[],
+            )

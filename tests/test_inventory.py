@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from engine.api.schemas import ArbitrageParams
+from engine.types import ArbitrageParams
 from engine.config import settings
 from engine.arb.risk.inventory import InventoryTracker, InventoryState
 

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { formatNumber } from '@/lib/utils';
 import { useStatus, usePortfolioValuation } from '@/lib/hooks/useQueries';
 import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge, ExternalLink } from 'lucide-react';
-import type { VenueStatus } from '@/types';
+import type { LPPosition, VenueStatus } from '@/types';
 import { PoolMetricsChart } from '@/components/charts/PoolMetricsChart';
 
 const venueInfo: Record<
@@ -42,6 +42,39 @@ const venueInfo: Record<
     description: 'B2C wallet integration. Rate setting and liquidity management.',
   }
 };
+
+function getLpStatusClasses(lp: LPPosition) {
+  if (lp.snapshot_status === 'degraded') {
+    return {
+      border: 'border-red-500/30',
+      header: 'border-red-500/10 bg-red-500/[0.02]',
+      icon: 'text-red-400',
+      badge: 'bg-red-500/10 border-red-500/20 text-red-400',
+      liquidity: 'text-red-400',
+    };
+  }
+  if (lp.in_range) {
+    return {
+      border: 'border-emerald-500/30',
+      header: 'border-emerald-500/10 bg-emerald-500/[0.02]',
+      icon: 'text-emerald-400',
+      badge: 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
+      liquidity: 'text-emerald-400',
+    };
+  }
+  return {
+    border: 'border-yellow-500/30',
+    header: 'border-yellow-500/10 bg-yellow-500/[0.02]',
+    icon: 'text-yellow-400',
+    badge: 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400',
+    liquidity: 'text-emerald-400',
+  };
+}
+
+function getLpStatusLabel(lp: LPPosition): string {
+  if (lp.snapshot_status === 'degraded') return 'DEGRADED';
+  return lp.in_range ? 'IN RANGE' : 'OUT RANGE';
+}
 
 function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: boolean }) {
   const info = venueInfo[venue.name] || {
@@ -84,6 +117,10 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
     : 0;
   // Live spot from venue's own price, as fallback
   const spotPrice = Number(venue.price?.quote?.mid) || 0.00066;
+  const lpPosition = venue.position?.lp_position;
+  const lpStatusClasses = lpPosition ? getLpStatusClasses(lpPosition) : null;
+  const lpStatusLabel = lpPosition ? getLpStatusLabel(lpPosition) : null;
+  const lpRangeAvailable = lpPosition?.range_min != null && lpPosition?.range_max != null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
@@ -231,47 +268,75 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             </CardContent>
           </Card>
 
-          {venue.position?.lp_position ? (
-            <Card className={`bg-[#12161C] border rounded-sm shadow-none transition-colors duration-500 ${venue.position.lp_position.in_range ? 'border-emerald-500/30' : 'border-yellow-500/30'}`}>
-              <CardHeader className={`p-3 border-b flex flex-row items-center justify-between ${venue.position.lp_position.in_range ? 'border-emerald-500/10 bg-emerald-500/[0.02]' : 'border-yellow-500/10 bg-yellow-500/[0.02]'}`}>
+          {lpPosition ? (
+            <Card className={`bg-[#12161C] border rounded-sm shadow-none transition-colors duration-500 ${lpStatusClasses?.border ?? 'border-white/[0.05]'}`}>
+              <CardHeader className={`p-3 border-b flex flex-row items-center justify-between ${lpStatusClasses?.header ?? 'border-white/[0.02]'}`}>
                 <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
-                  <Gauge className={`h-4 w-4 ${venue.position.lp_position.in_range ? 'text-emerald-400' : 'text-yellow-400'}`} />
+                  <Gauge className={`h-4 w-4 ${lpStatusClasses?.icon ?? 'text-white/60'}`} />
                   LIQUIDITY SENSOR
                 </div>
-                <div className={`text-[10px] uppercase tracking-widest font-mono px-2 py-0.5 rounded-sm border ${venue.position.lp_position.in_range ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'}`}>
-                  {venue.position.lp_position.in_range ? 'IN RANGE' : 'OUT RANGE'}
+                <div className={`text-[10px] uppercase tracking-widest font-mono px-2 py-0.5 rounded-sm border ${lpStatusClasses?.badge ?? 'bg-white/10 border-white/20 text-white/70'}`}>
+                  {lpStatusLabel}
                 </div>
               </CardHeader>
               <CardContent className="p-4 space-y-4">
                 <div className="flex justify-between items-center bg-black/40 p-2.5 rounded-sm border border-white/[0.02]">
                   <div className="text-[10px] text-white/50 uppercase tracking-widest">Vector Position ID</div>
-                  <div className="text-sm font-mono text-white">#{venue.position.lp_position.token_id}</div>
+                  <div className="text-sm font-mono text-white">
+                    {lpPosition.token_id ? `#${lpPosition.token_id}` : 'Unavailable'}
+                  </div>
                 </div>
+
+                <div className="flex justify-between items-center bg-black/40 p-2.5 rounded-sm border border-white/[0.02]">
+                  <div className="text-[10px] text-white/50 uppercase tracking-widest">Snapshot Status</div>
+                  <div className={`text-[11px] font-mono uppercase tracking-widest ${lpStatusClasses?.icon ?? 'text-white/70'}`}>
+                    {lpPosition.snapshot_status}
+                  </div>
+                </div>
+
+                {lpPosition.snapshot_message && (
+                  <div className="bg-black/40 p-3 rounded-sm border border-white/[0.02] space-y-2">
+                    <div className="text-[11px] text-white/60 font-mono leading-relaxed">
+                      {lpPosition.snapshot_message}
+                    </div>
+                  </div>
+                )}
 
                 <div className="bg-black/40 p-3.5 rounded-sm border border-white/[0.02] space-y-4">
                   <div className="flex justify-between items-end">
                     <div className="text-[10px] text-white/50 uppercase tracking-widest">Active Liquidity Volume</div>
-                    <div className="text-lg font-mono text-emerald-400">{formatNumber(Number(venue.position.lp_position.liquidity), 0)}</div>
+                    <div className={`text-lg font-mono ${lpStatusClasses?.liquidity ?? 'text-emerald-400'}`}>
+                      {lpPosition.liquidity != null ? formatNumber(Number(lpPosition.liquidity), 0) : 'Unavailable'}
+                    </div>
                   </div>
 
-                  {/* Visual Range Bar Mock */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-[10px] font-mono text-white/50">
-                      <span>MIN {formatNumber(venue.position.lp_position.range_min, 6)}</span>
-                      <span>MAX {formatNumber(venue.position.lp_position.range_max, 6)}</span>
+                  {lpRangeAvailable ? (
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-[10px] font-mono text-white/50">
+                        <span>MIN {formatNumber(Number(lpPosition.range_min), 6)}</span>
+                        <span>MAX {formatNumber(Number(lpPosition.range_max), 6)}</span>
+                      </div>
+                      <div className="h-2 w-full bg-black rounded-full overflow-hidden border border-white/[0.05] relative">
+                        {lpPosition.in_range === true ? (
+                          <div className="absolute top-0 bottom-0 left-[20%] right-[20%] bg-emerald-500/50 rounded-full">
+                            <div className="absolute top-0 bottom-0 left-[45%] w-1.5 bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,1)]"></div>
+                          </div>
+                        ) : lpPosition.in_range === false ? (
+                          <div className="absolute top-0 bottom-0 left-[20%] right-[20%] bg-white/10 rounded-full">
+                            <div className="absolute top-0 bottom-0 left-[5%] w-1.5 bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,1)]"></div>
+                          </div>
+                        ) : (
+                          <div className="absolute top-0 bottom-0 left-[20%] right-[20%] bg-blue-500/30 rounded-full">
+                            <div className="absolute top-0 bottom-0 left-[45%] w-1.5 bg-blue-300 shadow-[0_0_8px_rgba(147,197,253,1)]"></div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div className="h-2 w-full bg-black rounded-full overflow-hidden border border-white/[0.05] relative">
-                      {venue.position.lp_position.in_range ? (
-                        <div className="absolute top-0 bottom-0 left-[20%] right-[20%] bg-emerald-500/50 rounded-full">
-                          <div className="absolute top-0 bottom-0 left-[45%] w-1.5 bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,1)]"></div>
-                        </div>
-                      ) : (
-                        <div className="absolute top-0 bottom-0 left-[20%] right-[20%] bg-white/10 rounded-full">
-                          <div className="absolute top-0 bottom-0 left-[5%] w-1.5 bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,1)]"></div>
-                        </div>
-                      )}
+                  ) : (
+                    <div className="text-[11px] font-mono text-white/40 uppercase tracking-widest">
+                      Range unavailable for this snapshot
                     </div>
-                  </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

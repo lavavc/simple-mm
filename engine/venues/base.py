@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Protocol, TypeGuard
 
-from engine.api.schemas import Position, PriceQuote, TxResult
+from engine.types import Position, PriceQuote, TxResult
 
 
 class VenueAdapter(ABC):

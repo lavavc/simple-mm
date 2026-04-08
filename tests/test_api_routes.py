@@ -11,8 +11,9 @@ import pytest
 import engine.api as api_module
 from engine.api import api_router
 from engine.api.routes import venues as venue_routes
-from engine.api.schemas import ArbitrageOpportunity
+from engine.types import ArbitrageOpportunity
 from engine.config import DexParams
+from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
 
 
@@ -55,7 +56,10 @@ def _make_runtime() -> EngineRuntime:
         token_contracts={},
         blended_calculator=None,
         normalizer=None,
+        portfolio_exposure_calculator=None,
+        portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         quidax_lp=None,
+        lp_managers={},
     )
 
 
@@ -132,6 +136,40 @@ def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
     assert body["delta_ratio"] != "0"
 
 
+def test_portfolio_exposure_includes_source_breakdown():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "quidax": SimpleNamespace(
+            enabled=True,
+            paused=False,
+            params=None,
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("1000"), "usdt": Decimal("50"), "usdc": Decimal("0")}
+                )
+            ),
+        )
+    }
+    runtime.blended_calculator = SimpleNamespace(
+        get_blended_price=AsyncMock(
+            return_value=SimpleNamespace(
+                vwap=Decimal("0.0007"),
+                twap_5m=Decimal("0.00069"),
+                twap_1h=Decimal("0.00068"),
+            )
+        )
+    )
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/portfolio/exposure")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_usd_value"] == "50.7000"
+    assert body["sources"][0]["source"] == "quidax"
+
+
 def test_arbitrage_opportunity_route_uses_direct_lookup():
     runtime = _make_runtime()
     opp = ArbitrageOpportunity(
@@ -172,23 +210,22 @@ def test_missing_runtime_returns_503():
 async def test_update_venue_params_persists_full_lp_params():
     runtime = _make_runtime()
     runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
 
-    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
-        response = await venue_routes.update_venue_params(
+    response = await venue_routes.update_venue_params(
             "uni-base",
             {"downside_skew": "0.55"},
             runtime=runtime,
@@ -216,27 +253,26 @@ async def test_update_venue_params_persists_full_lp_params():
 @pytest.mark.asyncio
 async def test_withdraw_route_uses_lp_rebalancer_path():
     runtime = _make_runtime()
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
     runtime.scheduler.lp_rebalancer.withdraw_positions = AsyncMock(
         return_value=[{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]
     )
-    runtime.venues["uni-base"].get_owned_positions = MagicMock(return_value=[1])
+    lp_venue.get_owned_positions = MagicMock(return_value=[1])
 
-    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
-        response = await venue_routes.withdraw_venue_position(
+    response = await venue_routes.withdraw_venue_position(
             "uni-base",
             venue_routes.WithdrawRequest(to_address="0x0000000000000000000000000000000000000001"),
             runtime=runtime,
@@ -253,27 +289,26 @@ async def test_withdraw_route_uses_lp_rebalancer_path():
 @pytest.mark.asyncio
 async def test_withdraw_route_does_not_short_circuit_on_stale_empty_positions_read():
     runtime = _make_runtime()
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
-    runtime.venues["uni-base"].get_owned_positions = MagicMock(return_value=[])
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
+    lp_venue.get_owned_positions = MagicMock(return_value=[])
     runtime.scheduler.lp_rebalancer.withdraw_positions = AsyncMock(
         return_value=[{"token_id": 7, "status": "confirmed", "hash": "0xdef", "error": None}]
     )
 
-    with patch.object(venue_routes, "V4LPAdapter", _DummyLpVenue):
-        response = await venue_routes.withdraw_venue_position(
+    response = await venue_routes.withdraw_venue_position(
             "uni-base",
             venue_routes.WithdrawRequest(to_address="0x0000000000000000000000000000000000000001"),
             runtime=runtime,
@@ -289,30 +324,113 @@ async def test_shutdown_unwind_pauses_and_uses_lp_rebalancer():
     from engine.api.routes import system as system_routes
 
     runtime = _make_runtime()
-    runtime.venues = {
-        "uni-base": _DummyLpVenue(
-            DexParams(
-                sd_multiplier=Decimal("2.75"),
-                min_tick_width=100,
-                max_tick_width=1000,
-                lookback_points=None,
-                rebalance_threshold_percent=Decimal("10.0"),
-                max_slippage_percent=Decimal("1.0"),
-                downside_skew=Decimal("0.45"),
-                ewma_lambda=Decimal("0.975"),
-            )
+    lp_venue = _DummyLpVenue(
+        DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
         )
-    }
+    )
+    runtime.venues = {"uni-base": lp_venue}
+    runtime.lp_managers = {"uni-base": lp_venue}
     runtime.scheduler.lp_rebalancer.unwind_all_positions = AsyncMock(
         return_value={"uni-base": [{"token_id": 1, "status": "confirmed", "hash": "0xabc", "error": None}]}
     )
 
     fake_loop = SimpleNamespace(call_later=MagicMock())
 
-    with patch.object(system_routes, "V4LPAdapter", _DummyLpVenue), \
-         patch("asyncio.get_event_loop", return_value=fake_loop):
+    with patch("asyncio.get_event_loop", return_value=fake_loop):
         response = await system_routes.shutdown(unwind=True, runtime=runtime)
 
     assert response == {"status": "shutting_down", "unwind": True}
     runtime.scheduler.pause.assert_awaited_once()
     runtime.scheduler.lp_rebalancer.unwind_all_positions.assert_awaited_once()
+
+
+def test_status_route_uses_lp_manager_position_not_venue_adapter():
+    """The /status route must call lp_manager.get_position_as_schema(), not venue.get_position()."""
+    from decimal import Decimal
+    from engine.types import LPPosition, Position
+
+    lp_position = LPPosition(
+        token_id="42",
+        liquidity="1000000",
+        range_min=Decimal("0.0005"),
+        range_max=Decimal("0.0007"),
+        in_range=True,
+    )
+    expected_position = Position(
+        venue="uni-base",
+        pair="cNGN/USDC",
+        timestamp=0,
+        balances={"cngn": Decimal("1000"), "usdc": Decimal("50")},
+        lp_position=lp_position,
+    )
+
+    class _LpManagerWithPosition(_DummyLpVenue):
+        get_position_as_schema = AsyncMock(return_value=expected_position)
+
+    lp_mgr = _LpManagerWithPosition(DexParams(
+        sd_multiplier=Decimal("2.75"),
+        min_tick_width=100,
+        max_tick_width=1000,
+        lookback_points=None,
+        rebalance_threshold_percent=Decimal("10.0"),
+        max_slippage_percent=Decimal("1.0"),
+        downside_skew=Decimal("0.45"),
+        ewma_lambda=Decimal("0.975"),
+    ))
+
+    runtime = _make_runtime()
+    runtime.venues = {"uni-base": lp_mgr}
+    runtime.lp_managers = {"uni-base": lp_mgr}
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    lp_mgr.get_position_as_schema.assert_awaited_once()
+    venue_status = next(v for v in response.json()["venues"] if v["name"] == "uni-base")
+    assert venue_status["position"]["lp_position"]["token_id"] == "42"
+    assert venue_status["position"]["lp_position"]["in_range"] is True
+
+
+def test_status_route_returns_lp_manager_params_not_venue_params():
+    """The /status route must return lp_manager.params, not venue.params."""
+    from decimal import Decimal
+
+    class _LpManagerWithPosition(_DummyLpVenue):
+        get_position_as_schema = AsyncMock(return_value=None)
+
+    lp_params = DexParams(
+        sd_multiplier=Decimal("3.5"),
+        min_tick_width=200,
+        max_tick_width=2000,
+        lookback_points=None,
+        rebalance_threshold_percent=Decimal("5.0"),
+        max_slippage_percent=Decimal("2.0"),
+        downside_skew=Decimal("0.6"),
+        ewma_lambda=Decimal("0.99"),
+    )
+    lp_mgr = _LpManagerWithPosition(lp_params)
+
+    runtime = _make_runtime()
+    runtime.venues = {"uni-base": lp_mgr}
+    runtime.lp_managers = {"uni-base": lp_mgr}
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    venue_status = next(v for v in response.json()["venues"] if v["name"] == "uni-base")
+    params = venue_status["params"]
+    assert params["sd_multiplier"] == "3.5"
+    assert params["downside_skew"] == "0.6"
+    assert params["min_tick_width"] == 200

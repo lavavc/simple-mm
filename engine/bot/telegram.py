@@ -104,13 +104,41 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not runtime.venues:
         await message.reply_text("No venues configured.")
         return
-    lines = ["*LP Positions*"]
+    lines = ["*Positions*"]
     for name, venue in runtime.venues.items():
         try:
-            pos = await venue.get_position()
+            lp_manager = runtime.lp_managers.get(name)
+            if lp_manager is not None:
+                pos = await lp_manager.get_position_as_schema()
+            else:
+                pos = await venue.get_position()
             lines.append(f"\n*{name}*")
             for token, amt in pos.balances.items():
                 lines.append(f"  {token}: {amt:.4f}")
+            if pos.lp_position:
+                label = (
+                    f"token_id: {pos.lp_position.token_id}"
+                    if pos.lp_position.token_id is not None
+                    else "token_id: unavailable"
+                )
+                lines.append(f"  {label}")
+                lines.append(f"  snapshot_status: {pos.lp_position.snapshot_status}")
+                if pos.lp_position.snapshot_message:
+                    lines.append(f"  snapshot_message: {pos.lp_position.snapshot_message}")
+                if pos.lp_position.range_min is not None and pos.lp_position.range_max is not None:
+                    lines.append(
+                        f"  range: {pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
+                    )
+                else:
+                    lines.append("  range: unavailable")
+                if pos.lp_position.in_range is None:
+                    lines.append("  in_range: unknown")
+                else:
+                    lines.append(f"  in_range: {'yes' if pos.lp_position.in_range else 'no'}")
+                if pos.position_value_usd is not None:
+                    lines.append(f"  value_usd: {pos.position_value_usd:.4f}")
+                if pos.lp_position.our_share_pct is not None:
+                    lines.append(f"  our_share_pct: {pos.lp_position.our_share_pct:.4f}")
         except Exception as e:
             lines.append(f"\n*{name}*: error ({e})")
     await message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -288,18 +316,17 @@ async def _do_withdraw(
     action_type: str = "manual_withdraw",
     triggered_by: str = "telegram:withdraw",
 ) -> str:
-    from engine.venues.dex.lp_v4 import V4LPAdapter
     runtime = _require_runtime()
     if venue == "all":
-        targets = {k: v for k, v in runtime.venues.items() if isinstance(v, V4LPAdapter)}
-    elif venue in runtime.venues and isinstance(runtime.venues[venue], V4LPAdapter):
-        targets = {venue: cast(V4LPAdapter, runtime.venues[venue])}
+        targets = dict(runtime.lp_managers)
+    elif venue in runtime.lp_managers:
+        targets = {venue: runtime.lp_managers[venue]}
     else:
         return f"❌ Venue {venue} not found or not a DEX."
     results = []
-    for name, adapter in targets.items():
+    for name, lp_manager in targets.items():
         venue_results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
-            adapter,
+            lp_manager,
             recipient=to_address,
             action_type=action_type,
             triggered_by=triggered_by,

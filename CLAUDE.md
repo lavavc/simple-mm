@@ -17,8 +17,9 @@ Important consequences:
 - `dashboard/docs/` explains intended behavior, but it is not allowed to overrule working code when the code, types, and tests already define the live contract.
 - If docs and code disagree, fix the docs in the same change unless the code is clearly wrong and is being changed deliberately.
 - Prefer concrete typed sources over prose when behavior is subtle:
+  - `engine/types.py` — all shared domain types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`, order book types, account types, arb-domain types, etc.)
   - `engine/arb/routing/route_registry.py`
-  - `engine/api/schemas.py`
+  - `engine/api/schemas.py` — HTTP-specific response types only (`VenueStatus`, `SystemStatus`, etc.)
   - `engine/db/backend.py`
   - `engine/venues/base.py`
   - `engine/web3_utils.py`
@@ -29,13 +30,17 @@ Documentation should stay succinct and concept-first. Avoid adding large code bl
 
 These boundaries are intentional and should stay sharp:
 
-- `engine/venues/` contains thin adapters over on-chain contracts and external APIs. No strategy logic belongs there.
+- `engine/types.py` is the zero-dependency home for all shared domain types. Any layer may import from here. `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
+- `engine/venues/` contains thin adapters over on-chain contracts and external APIs. No strategy logic belongs there. LP position management is not part of a venue adapter; it lives in `engine/lp/uniswap_v4.py`.
 - `engine/market/` owns shared market data, normalization, pool cache state, volume tracking, and gas data. No execution policy belongs there.
-- `engine/lp/` owns LP strategy and rebalancing only. LP code should not grow arb-specific knowledge.
+- Portfolio totals are governed by the explicit registry in `engine/market/portfolio_registry.py`. Unregistered venue positions must not silently affect global totals.
+- Shared service modules under `engine/market/` must stay packageable and importable in isolation. Do not make them depend on `engine/api/`, concrete venue adapters, or eager package exports that drag in higher layers. Imports from `engine/types.py` are allowed.
+- `engine/lp/` owns LP strategy, rebalancing, and V4 position management (`V4PositionManager`). LP code should not grow arb-specific knowledge.
 - `engine/arb/` owns arbitrage detection, routing, execution, and risk. Arb code should not depend on LP internals.
 - `engine/db/` is the persistence layer. High-level modules should depend on narrow store protocols from `engine/db/backend.py`, not concrete query modules or repository internals.
 - `engine/scheduler/core.py` is a wiring shell. Timers, APScheduler lifecycle, and websocket wiring belong there; job behavior belongs in `engine/scheduler/jobs/` or the domain modules they call.
 - `engine/main.py` is the wiring edge. It builds runtime state and connects long-lived services. Do not move business logic there.
+- In `EngineRuntime`, `venues` and `lp_managers` are parallel dicts keyed by venue name. Routes and jobs that need LP position state go to `lp_managers`; routes and jobs that need swap execution or price queries go to `venues`.
 
 The engine should also stay easy to split into separately shippable packages:
 
@@ -150,6 +155,7 @@ These are the critical invariants for arb changes. Review all of them when touch
   - `dashboard/docs/arbitrage/*.md` for arb behavior
   - `dashboard/docs/lp/*.md` for LP behavior
   - `README.md` for local setup, checks, and CI expectations
+- When adding a venue that contributes to global portfolio totals, update `engine/market/portfolio_registry.py` and the closest relevant dashboard docs in the same change.
 - Non-obvious invariants should be test-backed. The most important ones currently are:
   - router sizing and tiebreak behavior
   - half-open persistence and recovery

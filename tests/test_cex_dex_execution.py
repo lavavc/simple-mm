@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from eth_abi import encode
 
-from engine.api.schemas import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
+from engine.types import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
 from engine.arb.engine import ArbitrageEngine
 from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 from engine.arb.routing.router import RouteCandidate, SelectedRoute

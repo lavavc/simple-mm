@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from engine.api.schemas import PriceQuote
+from engine.types import PriceQuote
 from engine.market.price_aggregation import (
     PriceNormalizer,
     BlendedPriceCalculator,

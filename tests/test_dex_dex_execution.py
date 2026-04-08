@@ -21,7 +21,7 @@ def mock_dex_dex_estimate(monkeypatch):
     """Seed pool estimate so _execute_route doesn't abort on cold cache in unit tests."""
     monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: _FAKE_ESTIMATE)
 
-from engine.api.schemas import ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
+from engine.types import ArbitrageParams, DexArbOpportunity, PriceQuote, TxResult
 from engine.arb.engine import ArbitrageEngine
 from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 from engine.arb.routing.router import RouteCandidate, SelectedRoute

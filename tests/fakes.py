@@ -6,9 +6,9 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.api.schemas import TxResult
+from engine.types import LPPosition, Position, TxResult
 from tests.conftest_params import make_dex_params
-from engine.venues.dex.lp_v4 import V4LPAdapter
+from engine.venues.dex.v4 import BaseV4DexAdapter
 from engine.venues.dex.shared import PositionState
 
 
@@ -27,7 +27,7 @@ class _DummyContract:
 
 
 class FakeDexAdapter:
-    """In-process double for V4LPAdapter. No Web3, no RPC.
+    """In-process double for V4PositionManager / BaseV4DexAdapter. No Web3, no RPC.
 
     Configurable to succeed or fail on any operation.
     Tracks minted positions and transfers for assertions.
@@ -52,6 +52,7 @@ class FakeDexAdapter:
         self._mint_fails = mint_fails
         self.params = make_dex_params(rebalance_threshold_percent=Decimal("2.0"))
         self.minted: list[dict] = []
+        self._position_balances = {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
 
         class _Config:
             token0_decimals = 6
@@ -60,6 +61,7 @@ class FakeDexAdapter:
             token1_symbol = "USDC"
             token0_address = "0xcngn"
             token1_address = "0xusdc"
+            invert_price = False
 
         self.config = _Config()
         self.config.tick_spacing = tick_spacing
@@ -76,6 +78,39 @@ class FakeDexAdapter:
 
     def get_position_state(self, token_id: int) -> "PositionState | None":
         return next((p for p in self._positions if p.token_id == token_id), None)
+
+    def get_portfolio_balances(self) -> dict[str, Decimal]:
+        if len(self._positions) > 1:
+            return {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+        return dict(self._position_balances)
+
+    async def get_position(self) -> Position:
+        lp_position = None
+        if self._positions:
+            token_id = str(self._positions[0].token_id) if len(self._positions) == 1 else None
+            snapshot_message = None
+            if len(self._positions) > 1:
+                snapshot_message = (
+                    "Multiple LP NFTs detected; automatic LP management is halted until manual cleanup."
+                )
+            lp_position = LPPosition(
+                token_id=token_id,
+                liquidity=str(self._positions[0].liquidity) if len(self._positions) == 1 else None,
+                range_min=self._positions[0].price_lower if len(self._positions) == 1 else None,
+                range_max=self._positions[0].price_upper if len(self._positions) == 1 else None,
+                in_range=self._positions[0].in_range if len(self._positions) == 1 else None,
+                our_share_pct=None,
+                snapshot_status="live" if len(self._positions) == 1 else "degraded",
+                snapshot_message=snapshot_message,
+            )
+        return Position(
+            venue=self.name,
+            pair="cNGN/USDC",
+            timestamp=0,
+            balances=dict(self._position_balances),
+            lp_position=lp_position,
+            position_value_usd=None,
+        )
 
     def calculate_mint_amounts(self) -> tuple[int, int]:
         return (
@@ -152,6 +187,6 @@ class FakeCexAdapter:
         return False, Decimal("0"), self._sell_price, "simulated sell failure"
 
 
-# Register FakeDexAdapter as a virtual subclass of V4LPAdapter so that
-# isinstance(fake, V4LPAdapter) returns True in scheduler tests.
-V4LPAdapter.register(FakeDexAdapter)
+# Register FakeDexAdapter as a virtual subclass of BaseV4DexAdapter so that
+# isinstance(fake, BaseV4DexAdapter) returns True for WS subscription tests.
+BaseV4DexAdapter.register(FakeDexAdapter)

@@ -20,7 +20,7 @@ from typing import Optional
 
 import structlog
 
-from engine.api.schemas import PriceQuote
+from engine.types import PriceQuote
 from engine.db.backend import PriceHistoryStoreProtocol
 from engine.market.venue_prices import VenuePriceAggregator, VenuePrice
 

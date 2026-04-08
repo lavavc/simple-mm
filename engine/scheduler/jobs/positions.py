@@ -31,35 +31,21 @@ class PositionJobs:
         self.context.broadcast({"type": "positions", "data": [position.model_dump() for position in positions]})
 
     async def check_portfolio_delta(self) -> None:
-        if not self.context.blended_calculator:
+        if not self.context.portfolio_exposure_calculator:
             return
 
         try:
-            blended = await self.context.blended_calculator.get_blended_price()
-            if blended.vwap <= 0:
-                logger.warning("blended_vwap_zero_for_delta_check")
-                return
-
-            total_cngn = Decimal("0")
-            total_usdt = Decimal("0")
-            total_usdc = Decimal("0")
-            for name, venue in self.context.venues.items():
-                try:
-                    position = await venue.get_position()
-                    total_cngn += position.balances.get("cngn", Decimal("0"))
-                    total_usdt += position.balances.get("usdt", Decimal("0"))
-                    total_usdc += position.balances.get("usdc", Decimal("0"))
-                except Exception as exc:
-                    logger.warning("position_fetch_failed_delta", venue=name, error=str(exc))
-
-            cngn_usd_value = total_cngn * blended.vwap
-            total_stable_usd = total_usdt + total_usdc
-            total_usd_value = cngn_usd_value + total_stable_usd
+            exposure = await self.context.portfolio_exposure_calculator.calculate()
+            total_cngn = exposure.total_cngn
+            total_usdt = exposure.total_usdt
+            total_usdc = exposure.total_usdc
+            total_usd_value = exposure.total_usd_value
             if total_usd_value <= 0:
                 return
 
-            delta_ratio = cngn_usd_value / total_usd_value
-            target = self.context.config.target_delta_ratio
+            target = exposure.target_delta
+            delta_ratio = exposure.delta_ratio
+            cngn_usd_value = total_usd_value - total_usdt - total_usdc
             deviation_percent = abs(delta_ratio - target) / target * 100 if target > 0 else Decimal("0")
 
             self.context.broadcast(
@@ -74,10 +60,18 @@ class PositionJobs:
                         "delta_ratio": float(delta_ratio),
                         "target_delta": float(target),
                         "deviation_percent": float(deviation_percent),
-                        "blended_vwap": float(blended.vwap),
-                        "blended_twap_5m": float(blended.twap_5m),
-                        "blended_twap_1h": float(blended.twap_1h),
-                        "confidence": blended.confidence,
+                        "sources": [
+                            {
+                                "source": source.source,
+                                "kind": source.kind,
+                                "balances": {
+                                    token: float(amount)
+                                    for token, amount in source.balances.items()
+                                },
+                                "usd_value": float(source.usd_value),
+                            }
+                            for source in exposure.sources
+                        ],
                     },
                 }
             )
@@ -86,7 +80,7 @@ class PositionJobs:
                 self.context.arbitrage_engine.update_portfolio_snapshot(
                     cngn_usd_value,
                     total_usd_value,
-                    blended.vwap,
+                    (cngn_usd_value / total_cngn) if total_cngn > 0 else Decimal("0"),
                 )
 
             logger.info(
@@ -95,7 +89,6 @@ class PositionJobs:
                 target=float(target),
                 deviation_percent=float(deviation_percent),
                 total_usd=float(total_usd_value),
-                blended_vwap=float(blended.vwap),
             )
 
             if deviation_percent > self.context.config.delta_alert_threshold_percent:

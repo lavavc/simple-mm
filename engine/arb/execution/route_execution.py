@@ -183,7 +183,7 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
 
         if buy_is_cex or sell_is_cex:
             net_spread_bps = c.signal.get("optimal_arb", {}).get("net_spread_bps", 0)
-            from engine.api.schemas import ArbitrageOpportunity as ArbOpp
+            from engine.types import ArbitrageOpportunity as ArbOpp
 
             await arbitrage_store.insert_arbitrage_opportunity(ArbOpp(
                 id=opp_id,

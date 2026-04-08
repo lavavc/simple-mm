@@ -7,17 +7,19 @@ order: 2
 
 The engine is organised in layers. Each layer depends only on layers below it.
 
-**`engine/venues/`** — thin adapters over on-chain contracts and CEX APIs. No strategy logic lives here. Adapters expose a uniform interface: `get_position()`, `execute_swap()`, `mint_position()`, etc.
+**`engine/types.py`** — zero-dependency home for all shared domain types. Any layer may import from here freely. Covers cross-cutting types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`), order book types (`OrderBookLevel`, `OrderBookDepth`), config-adjacent params (`CexParams`, `WalletParams`), account types (`AccountInfo`, `AccountBalanceResponse`, `Alert`, etc.), and arb-domain types (`ArbitrageOpportunity`, `ArbitrageTrade`, `ArbitrageStatus`, etc.). `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
 
-**`engine/market/`** — shared market data: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), and gas cost oracle (`gas_oracle.py`). No business logic — only data collection and normalisation.
+**`engine/venues/`** — thin adapters over on-chain contracts and CEX APIs. No strategy logic lives here. Adapters expose a uniform interface: `get_position()`, `swap()`, `get_current_price()`, etc. LP position management is **not** part of the adapter; it lives in `engine/lp/uniswap_v4.py`.
 
-**`engine/lp/`** — LP strategy layer. `strategy.py` contains pure math functions (EWMA stats, tick range calculation). `rebalancer.py` orchestrates the position lifecycle: check→remove→remint. Nothing here knows arb exists. `DexParams` lives in `engine/config.py` (shared configuration type); tick/ratio protocol math lives in `venues/dex/shared.py`. LP range-setting and rerange decisions are venue-local and should stay extractable into a standalone market-maker package.
+**`engine/market/`** — shared market data and layer-safe shared services: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), gas cost oracle (`gas_oracle.py`), and the global portfolio snapshot service (`portfolio_exposure.py` + `portfolio_registry.py`). These modules must stay importable in isolation: no HTTP-specific schemas, no concrete venue adapters, and no eager package exports that pull in higher layers. Imports from `engine/types.py` are allowed.
+
+**`engine/lp/`** — LP strategy and position management. `strategy.py` contains pure math (EWMA stats, tick range calculation). `rebalancer.py` orchestrates the position lifecycle: check→remove→remint. `uniswap_v4.py` owns `V4PositionManager`, which manages all LP position operations for a single V4 pool (position queries, portfolio balances, mint/remove/ratio-swap). Nothing here knows arb exists. `DexParams` lives in `engine/config.py`; tick/ratio protocol math lives in `venues/dex/shared.py`.
 
 **`engine/arb/`** — arbitrage layer. Internally grouped into four subdirectories: `detection/` (opportunity finding for CEX-DEX and DEX-DEX paths), `execution/` (route execution, preflight checks, half-open recovery), `risk/` (inventory tracking, trade history), `routing/` (route registry and size selection). Nothing here knows LP exists.
 
 **`engine/db/`** — persistence layer. `repository.py` is a thin lifecycle container over SQLite connection management and schema bootstrap. It exposes focused domain stores (`system_state`, `prices`, `positions`, `actions`, `alerts`, `venue_config`, `arbitrage`, `history`, `pool_metrics`) and narrow protocols in `backend.py` so consumers depend only on the store surface they actually use.
 
-**Wiring layer** — `engine/main.py` builds the long-lived runtime, stores it on `app.state.runtime`, and wires together venues, market data, arb, scheduler, Telegram, and the DB stores. `engine/api/` exposes runtime state over HTTP. `engine/scheduler/` runs timed jobs and websocket listeners. `engine/accounts.py` manages HD wallet derivation.
+**Wiring layer** — `engine/main.py` builds the long-lived runtime, stores it on `app.state.runtime`, and wires together venues, LP managers, market data, arb, scheduler, Telegram, and the DB stores. `engine/api/` exposes runtime state over HTTP. `engine/scheduler/` runs timed jobs and websocket listeners. `engine/accounts.py` manages HD wallet derivation.
 
 ---
 
@@ -27,13 +29,16 @@ At startup the app constructs a single `EngineRuntime` in `engine/runtime.py`. I
 
 - `db`
 - `scheduler`
-- `venues`
+- `venues` — `dict[str, VenueAdapter]`, keyed by venue name; owns swap execution and price queries
+- `lp_managers` — `dict[str, V4PositionManager]`, keyed by venue name; owns LP position management for DEX venues. Routes that need LP data go here; routes that need swap/price data go to `venues`.
 - `price_aggregator`
 - `arbitrage_engine`
 - `account_manager`
 - `blended_calculator`
 - `normalizer`
 - `token_contracts`
+- `portfolio_exposure_calculator`
+- `portfolio_source_registry`
 - `quidax_lp`
 
 FastAPI routes resolve everything from `app.state.runtime` via shared dependencies in `engine/api/deps.py`. There is no parallel `app.state.db` or module-global route state.
@@ -62,9 +67,11 @@ The scheduler follows the same pattern:
 
 **Arb signal out:** Detection signal → `arb/routing/router.select_route` → `arb/execution/route_execution.execute_route` → on-chain transaction → DB insert.
 
-**LP cycle:** Scheduler timer → `lp/rebalancer.check_and_rebalance` → `lp/strategy.calculate_tick_range` → `venues/dex/lp_v4.mint_position`.
+**LP cycle:** Scheduler timer → `lp/rebalancer.check_and_rebalance` → `lp/strategy.calculate_tick_range` → `lp/uniswap_v4.V4PositionManager.mint_position`.
 
 **API read path:** HTTP request → `api/deps.get_runtime` → domain router in `engine/api/routes/` → runtime service or DB store → response model.
+
+**Global portfolio path:** HTTP request or scheduler tick → `market/portfolio_exposure.py` → all account-manager balances + registered additive sources from `market/portfolio_registry.py` → `/positions/global`, `/portfolio/exposure`, or `portfolio_delta` broadcast.
 
 **Scheduler job path:** `TradingScheduler.start()` registers timers → delegated job coordinator in `engine/scheduler/jobs/` executes the business logic → events are broadcast over websocket/Telegram and persisted via domain stores.
 
@@ -80,6 +87,9 @@ These invariants keep layers independently testable and extractable:
 - `lp/` and `arb/` never import from each other
 - `venues/` never imports from `lp/` or `arb/`
 - All layers may import from `engine/config.py` (shared configuration types)
+- All layers may import from `engine/types.py` (shared domain types: `Position`, `LPPosition`, `PriceQuote`, `TxResult`)
+- `engine/market/portfolio_exposure.py` must not import from `engine/api/`, concrete venue adapters, or eager package exports from `engine.db`
+- `engine/api/schemas.py` contains only HTTP-specific response types. All other shared types belong in `engine/types.py`
 
 This is also the packageability rule:
 
@@ -122,8 +132,10 @@ Arbitrage thresholds use the `ARBITRAGE_*` prefix (e.g. `ARBITRAGE_MIN_PROFIT_US
 
 | Goal | Start reading here |
 |---|---|
-| Add a venue | `engine/venues/base.py` → `engine/venues/dex/uniswap_base.py` |
+| Add a venue | `engine/venues/base.py` → venue adapter → route registry; if it contributes to global totals, also add one explicit entry in `engine/market/portfolio_registry.py` |
+| Add a shared domain type | `engine/types.py` — add it here if it is used outside `engine/api/` |
 | Tune LP strategy | `engine/lp/strategy.py` + `engine/config.py` LP section |
+| Inspect LP position state | `engine/lp/uniswap_v4.py` (`V4PositionManager`) |
 | Understand arb detection | `engine/arb/detection/cex_dex.py` and `dex_dex.py` |
 | Trace an arb execution | `engine/arb/routing/route_registry.py` → `engine/arb/execution/route_execution.py` |
 | Change scheduler timing | `engine/scheduler/core.py` + `engine/scheduler/config.py` |

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from engine.api.deps import get_repository
-from engine.api.schemas import Alert
+from engine.types import Alert
 from engine.db.repository import DatabaseRepository
 
 router = APIRouter()

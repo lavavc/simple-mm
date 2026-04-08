@@ -6,7 +6,7 @@ import json
 
 import aiosqlite
 
-from engine.api.schemas import Position
+from engine.types import Position
 
 
 async def insert_position(conn: aiosqlite.Connection, position: Position) -> None:

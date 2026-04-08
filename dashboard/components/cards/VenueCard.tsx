@@ -103,12 +103,31 @@ export function VenueCard({ venue }: VenueCardProps) {
             </div>
             {venue.position.lp_position && (
               <div className="mt-2">
-                <Badge
-                  variant={venue.position.lp_position.in_range ? 'success' : 'warning'}
-                  className="text-xs"
-                >
-                  LP {venue.position.lp_position.in_range ? 'In Range' : 'Out of Range'}
-                </Badge>
+                {(() => {
+                  const lp = venue.position!.lp_position!;
+                  const variant =
+                    lp.snapshot_status === 'degraded'
+                      ? 'destructive'
+                      : lp.in_range
+                        ? 'success'
+                        : 'warning';
+                  const label =
+                    lp.snapshot_status === 'degraded'
+                      ? 'LP Degraded Snapshot'
+                      : lp.in_range
+                        ? 'LP In Range'
+                        : 'LP Out of Range';
+                  return (
+                    <Badge variant={variant} className="text-xs">
+                      {label}
+                    </Badge>
+                  );
+                })()}
+                {venue.position.lp_position.snapshot_message && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {venue.position.lp_position.snapshot_message}
+                  </p>
+                )}
               </div>
             )}
             {(venue.position.volume_24h_usd != null || venue.position.position_value_usd != null) && (

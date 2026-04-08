@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 
-from engine.api.schemas import AccountBalanceResponse
+from engine.types import AccountBalanceResponse
 from engine.config import settings
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import SchedulerState

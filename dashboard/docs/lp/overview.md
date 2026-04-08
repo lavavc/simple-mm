@@ -32,6 +32,15 @@ V4 pools do not emit a convenient `PositionUpdated` event. The engine reconstruc
 
 Pool state itself (sqrtPriceX96, current tick, in-range liquidity) is updated inline from V4 Swap events — zero RPC calls during normal operation.
 
+### Snapshot states
+
+Operator-facing LP views now distinguish two states:
+
+- **`live`** — composition was computed from a current pool read
+- **`degraded`** — the LP NFT still exists, but the engine can only show token IDs / static metadata; composition and valuation are unavailable
+
+An LP position therefore does not disappear just because live composition reads fail. The degraded summary keeps the NFT visible even when valuation cannot be computed safely.
+
 ## Position value and fee share
 
 The dashboard shows **Position Value** — the USD value of the tokens held in the LP position — computed from exact tick math using the position's `tickLower`, `tickUpper`, and the current `sqrtPriceX96`:

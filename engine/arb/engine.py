@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 import structlog
 
-from engine.api.schemas import ArbitrageParams, ArbitrageStatus, DexArbOpportunity
+from engine.types import ArbitrageParams, ArbitrageStatus, DexArbOpportunity
 from engine.arb.execution.executor import ArbitrageExecutor
 from engine.arb.risk.history import ArbitrageHistoryRecorder
 from engine.arb.risk.inventory import InventoryTracker
@@ -283,7 +283,7 @@ class ArbitrageEngine:
             curve_data = await loop.run_in_executor(None, generate_dex_profit_curve)
             if curve_data:
                 # Persist pool prices to DB for history charts
-                from engine.api.schemas import PriceQuote
+                from engine.types import PriceQuote
                 now_ms = int(time.time() * 1000)
                 for key in ("uni-bsc", "uni-base"):
                     price_val = curve_data.get("prices", {}).get(key)

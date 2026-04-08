@@ -11,7 +11,7 @@ import structlog
 
 from engine.api.deps import get_repository, get_runtime, require_arbitrage_engine, verify_token
 from engine.api.protocols import DepthVenue
-from engine.api.schemas import (
+from engine.types import (
     ArbitrageHistoryItem,
     ArbitrageOpportunity,
     ArbitrageParams,
