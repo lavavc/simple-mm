@@ -40,12 +40,21 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+_TRANSFER_EVENT_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
+
 
 POSITION_MANAGER_ABI = [
     {
         "inputs": [{"name": "owner", "type": "address"}],
         "name": "balanceOf",
         "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "tokenId", "type": "uint256"}],
+        "name": "ownerOf",
+        "outputs": [{"name": "", "type": "address"}],
         "stateMutability": "view",
         "type": "function",
     },
@@ -246,15 +255,84 @@ class V4PositionManager:
             balance = self._position_manager_contract.functions.balanceOf(
                 self._lp_account.address
             ).call()
-            return [
-                self._position_manager_contract.functions.tokenOfOwnerByIndex(
-                    self._lp_account.address, i
-                ).call()
-                for i in range(balance)
-            ]
+            if balance == 0:
+                return []
+            try:
+                return [
+                    self._position_manager_contract.functions.tokenOfOwnerByIndex(
+                        self._lp_account.address, i
+                    ).call()
+                    for i in range(balance)
+                ]
+            except Exception as e:
+                logger.warning(
+                    "token_of_owner_by_index_failed_falling_back_to_logs",
+                    venue=self.name,
+                    error=str(e),
+                )
+                return self._get_owned_positions_from_logs(expected_balance=balance)
         except Exception as e:
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
+
+    def _get_owned_positions_from_logs(self, *, expected_balance: int | None = None) -> list[int]:
+        """Fallback ownership discovery for non-enumerable PositionManager NFTs."""
+        if not self._position_manager_contract:
+            return []
+
+        owner = Web3.to_checksum_address(self._lp_account.address)
+        owner_topic = "0x" + owner[2:].lower().rjust(64, "0")
+
+        try:
+            incoming = self._w3.eth.get_logs({
+                "address": self._position_manager_contract.address,
+                "fromBlock": 0,
+                "toBlock": "latest",
+                "topics": [_TRANSFER_EVENT_TOPIC, None, owner_topic],
+            })
+            outgoing = self._w3.eth.get_logs({
+                "address": self._position_manager_contract.address,
+                "fromBlock": 0,
+                "toBlock": "latest",
+                "topics": [_TRANSFER_EVENT_TOPIC, owner_topic],
+            })
+        except Exception as e:
+            logger.warning("get_owned_positions_logs_failed", venue=self.name, error=str(e))
+            return []
+
+        candidate_ids: set[int] = set()
+        for log in incoming:
+            if len(log["topics"]) > 3:
+                candidate_ids.add(int(log["topics"][3].hex(), 16))
+        for log in outgoing:
+            if len(log["topics"]) > 3:
+                candidate_ids.add(int(log["topics"][3].hex(), 16))
+
+        owned: list[int] = []
+        for token_id in sorted(candidate_ids):
+            try:
+                current_owner = self._position_manager_contract.functions.ownerOf(token_id).call()
+            except Exception as e:
+                logger.warning(
+                    "position_owner_lookup_failed",
+                    venue=self.name,
+                    token_id=token_id,
+                    error=str(e),
+                )
+                continue
+            if Web3.to_checksum_address(current_owner) == owner:
+                owned.append(token_id)
+
+        if expected_balance is not None and len(owned) != expected_balance:
+            logger.warning(
+                "position_balance_mismatch_after_log_fallback",
+                venue=self.name,
+                expected_balance=expected_balance,
+                discovered=len(owned),
+                token_ids=owned,
+            )
+
+        return owned
 
     def _get_live_pool_snapshot(self) -> LPMarketSnapshot | None:
         """Return the latest live market state needed to evaluate LP positions."""

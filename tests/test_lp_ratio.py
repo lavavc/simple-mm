@@ -430,6 +430,44 @@ class TestActiveLpPositionSnapshot:
 
         assert balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
 
+    def test_get_owned_positions_falls_back_to_transfer_logs_when_not_enumerable(self):
+        owner = "0x" + "cc" * 20
+        token_ids = [101, 202]
+
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.balanceOf.return_value.call.return_value = 2
+        position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.side_effect = Exception("no data")
+
+        def owner_of_side_effect(token_id: int):
+            call = MagicMock()
+            call.call.return_value = owner
+            return call
+
+        position_manager_contract.functions.ownerOf.side_effect = owner_of_side_effect
+
+        log_entries = [
+            {"topics": [b"", b"", b"", token_id.to_bytes(32, "big")]}
+            for token_id in token_ids
+        ]
+        w3 = MagicMock()
+        w3.eth.get_logs.side_effect = [log_entries, []]
+
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _lp_account=SimpleNamespace(address=owner),
+            _w3=w3,
+        )
+        adapter._get_owned_positions_from_logs = MethodType(
+            V4PositionManager._get_owned_positions_from_logs,
+            adapter,
+        )
+
+        owned = V4PositionManager.get_owned_positions(adapter)
+
+        assert owned == token_ids
+
     @pytest.mark.asyncio
     async def test_lp_token_approvals_include_permit2_for_position_manager(self):
         token0 = MagicMock()
