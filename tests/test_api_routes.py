@@ -109,29 +109,6 @@ def test_status_route_reads_db_and_runtime_services():
     runtime.db.system_state.get_system_state.assert_awaited_once_with("trading_enabled")
 
 
-def test_status_route_preserves_non_uniform_legacy_cex_ladder_params():
-    runtime = _make_runtime()
-    runtime.venues = {
-        "quidax": _DummyCexVenue(
-            CexParams(
-                ladder_enabled=True,
-                ladder_offsets_ngn=[1, 3, 5, 10],
-                order_size_usdt=Decimal("10"),
-            )
-        )
-    }
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/status")
-
-    assert response.status_code == 200
-    params = response.json()["venues"][0]["params"]
-    assert params["ladder_offsets_ngn"] == [1, 3, 5, 10]
-    assert "spread_offset_ngn" not in params
-    assert "ladder_step_ngn" not in params
-    assert "ladder_levels_per_side" not in params
-
 
 def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
     runtime = _make_runtime()
@@ -280,105 +257,6 @@ async def test_update_venue_params_persists_full_lp_params():
         "ewma_lambda",
     }
 
-
-@pytest.mark.asyncio
-async def test_update_venue_params_preserves_non_uniform_legacy_cex_ladder():
-    runtime = _make_runtime()
-    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
-    runtime.venues = {
-        "quidax": _DummyCexVenue(
-            CexParams(
-                ladder_enabled=True,
-                ladder_offsets_ngn=[1, 3, 5, 10],
-                order_size_usdt=Decimal("10"),
-            )
-        )
-    }
-
-    response = await venue_routes.update_venue_params(
-        "quidax",
-        {"anchor_requote_threshold_bps": 25},
-        runtime=runtime,
-        db=runtime.db,
-    )
-
-    assert response == {"venue": "quidax", "params": {"anchor_requote_threshold_bps": 25}}
-    runtime.db.venue_config.update_venue_config.assert_awaited_once()
-    venue_arg, saved_params = runtime.db.venue_config.update_venue_config.await_args.args
-    assert venue_arg == "quidax"
-    assert saved_params["ladder_offsets_ngn"] == [1, 3, 5, 10]
-    assert "spread_offset_ngn" not in saved_params
-    assert "ladder_step_ngn" not in saved_params
-    assert "ladder_levels_per_side" not in saved_params
-    assert saved_params["anchor_requote_threshold_bps"] == 25
-
-
-@pytest.mark.asyncio
-async def test_update_venue_params_rejects_partial_migration_of_non_uniform_legacy_cex_ladder():
-    runtime = _make_runtime()
-    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
-    runtime.venues = {
-        "quidax": _DummyCexVenue(
-            CexParams(
-                ladder_enabled=True,
-                ladder_offsets_ngn=[1, 3, 5, 10],
-                order_size_usdt=Decimal("10"),
-            )
-        )
-    }
-
-    with pytest.raises(venue_routes.HTTPException) as exc_info:
-        await venue_routes.update_venue_params(
-            "quidax",
-            {"ladder_step_ngn": 2},
-            runtime=runtime,
-            db=runtime.db,
-        )
-
-    assert exc_info.value.status_code == 400
-    assert "Legacy custom ladder offsets must be migrated" in str(exc_info.value.detail)
-    runtime.db.venue_config.update_venue_config.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_update_venue_params_allows_full_migration_of_non_uniform_legacy_cex_ladder():
-    runtime = _make_runtime()
-    runtime.db.venue_config = SimpleNamespace(update_venue_config=AsyncMock())
-    runtime.venues = {
-        "quidax": _DummyCexVenue(
-            CexParams(
-                ladder_enabled=True,
-                ladder_offsets_ngn=[1, 3, 5, 10],
-                order_size_usdt=Decimal("10"),
-            )
-        )
-    }
-
-    response = await venue_routes.update_venue_params(
-        "quidax",
-        {
-            "spread_offset_ngn": 50,
-            "ladder_step_ngn": 1,
-            "ladder_levels_per_side": 20,
-        },
-        runtime=runtime,
-        db=runtime.db,
-    )
-
-    assert response == {
-        "venue": "quidax",
-        "params": {
-            "spread_offset_ngn": 50,
-            "ladder_step_ngn": 1,
-            "ladder_levels_per_side": 20,
-        },
-    }
-    runtime.db.venue_config.update_venue_config.assert_awaited_once()
-    _venue_arg, saved_params = runtime.db.venue_config.update_venue_config.await_args.args
-    assert saved_params["spread_offset_ngn"] == 50
-    assert saved_params["ladder_step_ngn"] == 1
-    assert saved_params["ladder_levels_per_side"] == 20
-    assert "ladder_offsets_ngn" not in saved_params
 
 
 @pytest.mark.asyncio

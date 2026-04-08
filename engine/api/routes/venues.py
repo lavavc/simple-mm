@@ -179,27 +179,10 @@ async def update_venue_params(
             lp_manager.params.model_dump(mode="json"),
         )
     elif hasattr(venue_adapter, "params"):
-        merged = venue_adapter.params.to_params_payload(mode="json")
-        ladder_migration_fields = {"spread_offset_ngn", "ladder_step_ngn", "ladder_levels_per_side"}
-        provided_ladder_migration_fields = ladder_migration_fields.intersection(params)
-        if (
-            merged.get("ladder_offsets_ngn")
-            and provided_ladder_migration_fields
-            and provided_ladder_migration_fields != ladder_migration_fields
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Legacy custom ladder offsets must be migrated by setting "
-                    "spread_offset_ngn, ladder_step_ngn, and ladder_levels_per_side together."
-                ),
-            )
+        merged = venue_adapter.params.model_dump(mode="json")
         merged.update(params)
         venue_adapter.params = CexParams(**merged)
-        await db.venue_config.update_venue_config(
-            venue,
-            venue_adapter.params.to_params_payload(mode="json"),
-        )
+        await db.venue_config.update_venue_config(venue, venue_adapter.params.model_dump(mode="json"))
     else:
         await db.venue_config.update_venue_config(venue, params)
 

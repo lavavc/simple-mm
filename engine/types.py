@@ -9,14 +9,9 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from engine.config import settings
-from engine.venues.cex.ladder_config import (
-    cex_params_payload,
-    hydrate_ladder_fields_from_legacy_offsets,
-    resolve_ladder_offsets,
-)
 
 
 # === Venue / position types ===
@@ -101,45 +96,18 @@ class CexParams(BaseModel):
     spread_offset_ngn: int = Field(default=50, ge=0)
     ladder_step_ngn: int = Field(default=1, ge=1)
     ladder_levels_per_side: int = Field(default=1, ge=1)
-    # Legacy compatibility for persisted configs that stored explicit offsets.
-    ladder_offsets_ngn: Optional[list[int]] = Field(default=None, exclude=True, repr=False)
     anchor_source: CexAnchorSource = "blended"
     anchor_requote_threshold_bps: int = 0
     anchor_requote_cooldown_seconds: int = 30
     order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
     order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
 
-    @model_validator(mode="after")
-    def _hydrate_new_ladder_fields_from_legacy_offsets(self) -> "CexParams":
-        (
-            self.spread_offset_ngn,
-            self.ladder_step_ngn,
-            self.ladder_levels_per_side,
-            self.ladder_offsets_ngn,
-        ) = hydrate_ladder_fields_from_legacy_offsets(
-            spread_offset_ngn=self.spread_offset_ngn,
-            ladder_step_ngn=self.ladder_step_ngn,
-            ladder_levels_per_side=self.ladder_levels_per_side,
-            legacy_offsets=self.ladder_offsets_ngn,
-            provided_fields=set(self.model_fields_set),
-        )
-        return self
-
     @property
     def resolved_ladder_offsets_ngn(self) -> list[int]:
-        return resolve_ladder_offsets(
-            spread_offset_ngn=self.spread_offset_ngn,
-            ladder_step_ngn=self.ladder_step_ngn,
-            ladder_levels_per_side=self.ladder_levels_per_side,
-            legacy_offsets=self.ladder_offsets_ngn,
-        )
-
-    def to_params_payload(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
-        return cex_params_payload(
-            base_payload=self.model_dump(mode=mode),
-            legacy_offsets=self.ladder_offsets_ngn,
-            mode=mode,
-        )
+        return [
+            self.spread_offset_ngn + index * self.ladder_step_ngn
+            for index in range(self.ladder_levels_per_side)
+        ]
 
 
 class WalletParams(BaseModel):

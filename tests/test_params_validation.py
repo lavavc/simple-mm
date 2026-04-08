@@ -114,34 +114,6 @@ class TestCexParamsValidation:
         assert params.order_size_cngn == Decimal("10000")
         assert params.order_size_usdt == Decimal("100")
 
-    def test_legacy_ladder_offsets_still_restore_cleanly(self):
-        params = CexParams(ladder_offsets_ngn=[3, 5])
-
-        assert params.spread_offset_ngn == 3
-        assert params.ladder_step_ngn == 2
-        assert params.ladder_levels_per_side == 2
-        assert params.resolved_ladder_offsets_ngn == [3, 5]
-        assert params.ladder_offsets_ngn is None
-
-    def test_non_uniform_legacy_ladder_offsets_are_preserved(self):
-        params = CexParams(ladder_offsets_ngn=[1, 3, 5, 10])
-
-        assert params.spread_offset_ngn == 1
-        assert params.ladder_step_ngn == 1
-        assert params.ladder_levels_per_side == 4
-        assert params.resolved_ladder_offsets_ngn == [1, 3, 5, 10]
-        assert params.ladder_offsets_ngn == [1, 3, 5, 10]
-
-    def test_explicit_new_fields_override_legacy_offsets(self):
-        params = CexParams(
-            spread_offset_ngn=50,
-            ladder_step_ngn=1,
-            ladder_levels_per_side=20,
-            ladder_offsets_ngn=[3, 5],
-        )
-
-        assert params.resolved_ladder_offsets_ngn == list(range(50, 70))
-
     def test_serialization(self):
         params = CexParams(order_size_cngn=Decimal("5000"))
         data = params.model_dump()
@@ -154,16 +126,6 @@ class TestCexParamsValidation:
         assert data["anchor_source"] == "blended"
         assert data["anchor_requote_cooldown_seconds"] == 30
         assert "ladder_offsets_ngn" not in data
-
-    def test_non_uniform_legacy_ladder_offsets_round_trip_for_storage(self):
-        params = CexParams(ladder_offsets_ngn=[1, 3, 5, 10], order_size_usdt=Decimal("10"))
-        data = params.to_params_payload(mode="json")
-
-        assert data["ladder_offsets_ngn"] == [1, 3, 5, 10]
-        assert "spread_offset_ngn" not in data
-        assert "ladder_step_ngn" not in data
-        assert "ladder_levels_per_side" not in data
-        assert CexParams(**data).resolved_ladder_offsets_ngn == [1, 3, 5, 10]
 
 
 class TestWalletParamsValidation:
