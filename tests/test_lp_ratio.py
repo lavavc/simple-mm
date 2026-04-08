@@ -491,6 +491,7 @@ class TestActiveLpPositionSnapshot:
                 pool_id="0x" + "ab" * 32,
                 token0_decimals=6,
                 token1_decimals=6,
+                invert_price=False,
             ),
         )
 
