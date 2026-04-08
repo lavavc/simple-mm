@@ -491,6 +491,10 @@ class TestActiveLpPositionSnapshot:
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
         adapter._approve_lp_tokens_if_needed = AsyncMock()
+        adapter._compute_required_token_amounts_raw = MethodType(
+            V4PositionManager._compute_required_token_amounts_raw,
+            adapter,
+        )
 
         result = await V4PositionManager.mint_position(adapter, 1_000_000, 2_000_000, -120, 120)
 
