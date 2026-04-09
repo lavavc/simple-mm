@@ -208,10 +208,11 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
 
                       let usdValue = Number(amount) || 0;
                       if (isCngn) {
-                        // Use exact slippage-adjusted liquidation if available, else live spot
-                        usdValue = cNGNValueUSD > 0
-                          ? cNGNValueUSD
-                          : (Number(amount) || 0) * spotPrice;
+                        // DEX LP venues: value LP position tokens at mid price.
+                        // CEX venues: use slippage-adjusted liquidation value from order book.
+                        usdValue = lpPosition
+                          ? (Number(amount) || 0) * spotPrice
+                          : cNGNValueUSD > 0 ? cNGNValueUSD : (Number(amount) || 0) * spotPrice;
                       }
 
                       return (
@@ -220,17 +221,9 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                             <span className={`text-[11px] uppercase tracking-widest font-bold ${isCngn ? 'text-emerald-500' : 'text-blue-500'}`}>{token}</span>
                             <span className="text-sm font-mono text-white">{formatNumber(Number(amount) || 0, isCngn ? 0 : 2)}</span>
                           </div>
-
-                          {isCngn && cNGNValueUSD > 0 ? (
-                            <div className="border-t border-white/[0.05] pt-2">
-                              <div className="text-[9px] text-white/30 font-mono uppercase tracking-widest mb-1">cNGN val</div>
-                              <div className="text-[10px] font-mono text-amber-400/90">${formatNumber(cNGNValueUSD, 2)}</div>
-                            </div>
-                          ) : (
-                            <div className="text-[10px] text-white/50 font-mono text-right border-t border-white/[0.05] pt-2">
-                              ≈ ${formatNumber(usdValue, 2)}
-                            </div>
-                          )}
+                          <div className="text-[10px] text-white/50 font-mono text-right border-t border-white/[0.05] pt-2">
+                            ≈ ${formatNumber(usdValue, 2)}
+                          </div>
                         </div>
                       );
                     })}
@@ -250,7 +243,9 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                           const isC = t.toLowerCase() === 'cngn';
                           let v = Number(a) || 0;
                           if (isC) {
-                            v = cNGNValueUSD > 0 ? cNGNValueUSD : (Number(a) || 0) * spotPrice;
+                            v = lpPosition
+                              ? (Number(a) || 0) * spotPrice
+                              : cNGNValueUSD > 0 ? cNGNValueUSD : (Number(a) || 0) * spotPrice;
                           }
                           return acc + v;
                         }, 0), 2
