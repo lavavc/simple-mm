@@ -20,6 +20,7 @@ from engine.lp.types import (
     LPStaticPositionMetadata,
     _V4_LP_BURN_POSITION,
     _V4_LP_DECREASE_LIQUIDITY,
+    _V4_LP_INCREASE_LIQUIDITY,
     _V4_LP_MINT_POSITION,
     _V4_LP_SETTLE_PAIR,
     _V4_LP_TAKE_PAIR,
@@ -28,7 +29,7 @@ from engine.venues.dex.shared import (
     ERC20_ABI,
     PositionState,
     _Q96,
-    _tick_to_sqrt_x96,
+    _tick_to_sqrt_price_x96,
     compute_required_ratio,
     sqrt_price_x96_to_decimal,
     tick_to_price,
@@ -204,6 +205,13 @@ class LPVenueProtocol(Protocol):
         amount1: int,
         tick_lower: int,
         tick_upper: int,
+    ) -> TxResult: ...
+
+    async def increase_liquidity(
+        self,
+        token_id: int,
+        amount0: int,
+        amount1: int,
     ) -> TxResult: ...
 
     async def remove_position(
@@ -568,8 +576,8 @@ class V4PositionManager:
     ) -> tuple[Decimal, Decimal]:
         """Compute the exact token amounts held inside the LP NFT at the current price."""
         liquidity = pos_state.liquidity
-        sqrt_lower = int(_tick_to_sqrt_x96(pos_state.tick_lower))
-        sqrt_upper = int(_tick_to_sqrt_x96(pos_state.tick_upper))
+        sqrt_lower = _tick_to_sqrt_price_x96(pos_state.tick_lower)
+        sqrt_upper = _tick_to_sqrt_price_x96(pos_state.tick_upper)
         sqrt_price = int(sqrt_price_x96)
 
         t0_scale = Decimal(10 ** self.config.token0_decimals)
@@ -909,6 +917,84 @@ class V4PositionManager:
         )
         return await self._tx._send_transaction(tx, self._lp_account)
 
+    async def increase_liquidity(
+        self,
+        token_id: int,
+        amount0: int,
+        amount1: int,
+    ) -> TxResult:
+        """Add liquidity to an existing V4 LP position via PositionManager.modifyLiquidities."""
+        if not self._position_manager_contract:
+            return TxResult(hash="", status="failed", error="no position_manager configured")
+
+        metadata = self._get_static_position_metadata(token_id)
+        if metadata is None:
+            return TxResult(hash="", status="failed", error=f"position metadata unavailable for token {token_id}")
+
+        await self._approve_lp_tokens_if_needed()
+
+        pool_id_bytes = bytes.fromhex(self.config.pool_id[2:])
+        slot0 = self._state_view.functions.getSlot0(pool_id_bytes).call()
+        sqrt_price_x96 = int(slot0[0])
+
+        available0 = amount0
+        available1 = amount1
+        reserve_target0 = int(Decimal("0.01") * Decimal(10 ** self.config.token0_decimals))
+        reserve_target1 = int(Decimal("0.01") * Decimal(10 ** self.config.token1_decimals))
+        reserve0 = min(reserve_target0, available0 // 2)
+        reserve1 = min(reserve_target1, available1 // 2)
+        amount0 = max(available0 - reserve0, 0)
+        amount1 = max(available1 - reserve1, 0)
+
+        liquidity_delta = self._compute_liquidity_from_amounts(
+            sqrt_price_x96, metadata.tick_lower, metadata.tick_upper, amount0, amount1
+        )
+        if liquidity_delta == 0:
+            return TxResult(hash="", status="failed", error="computed zero liquidity delta")
+
+        amount0_max = available0
+        amount1_max = available1
+
+        currency0, currency1, _, _, _ = self._resolve_pool_key()
+
+        actions = bytes([_V4_LP_INCREASE_LIQUIDITY, _V4_LP_SETTLE_PAIR])
+        params = [
+            encode(
+                ["uint256", "uint256", "uint128", "uint128", "bytes"],
+                [token_id, liquidity_delta, amount0_max, amount1_max, b""],
+            ),
+            encode(["address", "address"], [currency0, currency1]),
+        ]
+        unlock_data = encode(["bytes", "bytes[]"], [actions, params])
+
+        deadline = self._w3.eth.get_block("latest")["timestamp"] + 300
+        tx_params = self._tx._get_tx_params(self._lp_account)
+        tx_params["value"] = Wei(0)
+        tx_params["gas"] = 2_000_000
+        tx = self._position_manager_contract.functions.modifyLiquidities(
+            unlock_data, deadline
+        ).build_transaction(tx_params)
+        estimate_params: TxParams = {
+            "from": tx["from"],
+            "to": tx["to"],
+            "data": tx["data"],
+            "value": Wei(0),
+        }
+        estimated = self._w3.eth.estimate_gas(estimate_params)
+        tx["gas"] = int(estimated * 1.2)
+
+        logger.info(
+            "v4_increase_liquidity",
+            venue=self.name,
+            token_id=token_id,
+            liquidity_delta=liquidity_delta,
+            amount0=amount0,
+            amount1=amount1,
+            amount0_max=amount0_max,
+            amount1_max=amount1_max,
+        )
+        return await self._tx._send_transaction(tx, self._lp_account)
+
     async def remove_position(
         self, token_id: int, recipient: str | None = None
     ) -> TxResult:
@@ -1097,8 +1183,8 @@ class V4PositionManager:
         amount1: int,
     ) -> int:
         """Convert token amounts + tick range to V4 liquidity units."""
-        sqrt_a = int(_tick_to_sqrt_x96(tick_lower))
-        sqrt_b = int(_tick_to_sqrt_x96(tick_upper))
+        sqrt_a = _tick_to_sqrt_price_x96(tick_lower)
+        sqrt_b = _tick_to_sqrt_price_x96(tick_upper)
         sqrt_p = sqrt_price_x96
 
         if sqrt_p <= sqrt_a:
