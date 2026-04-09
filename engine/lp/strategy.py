@@ -6,7 +6,7 @@ from decimal import Decimal
 import structlog
 
 from engine.config import DexParams
-from engine.venues.dex.shared import _tick_to_sqrt_x96, price_to_tick, _Q96
+from engine.venues.dex.shared import price_to_tick, _Q96
 
 logger = structlog.get_logger()
 
