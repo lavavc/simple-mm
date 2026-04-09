@@ -301,6 +301,10 @@ class TradingScheduler:
         self.state.trading_enabled = True
         await self.context.system_state_store.set_system_state("trading_enabled", "true")
         self.broadcast({"type": "system", "status": "running"})
+        try:
+            await self._sync_cex_orders()
+        except Exception as exc:
+            logger.warning("trading_resume_sync_failed", error=str(exc))
         logger.info("trading_resumed")
 
     async def _update_gas_oracle(self) -> None:
