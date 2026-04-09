@@ -113,6 +113,10 @@ class Settings(BaseSettings):
     quidax_onchain_min_cngn: Decimal = Field(default=Decimal("10000"))
     quidax_onchain_min_usdt: Decimal = Field(default=Decimal("10"))
 
+    # LP auto-topup thresholds — idle wallet funds above these trigger increase_liquidity
+    lp_topup_threshold_usdc: Decimal = Field(default=Decimal("100"))
+    lp_topup_threshold_cngn: Decimal = Field(default=Decimal("10000"))
+
     # Account management
     use_test_accounts: bool = False  # Use Anvil test mnemonic (for local dev)
     wallet_mnemonic: str = Field(default="", description="BIP39 mnemonic for HD wallet derivation")

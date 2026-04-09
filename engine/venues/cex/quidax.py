@@ -3,7 +3,7 @@
 import asyncio
 import time
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 import httpx
 import structlog
@@ -14,7 +14,8 @@ from engine.venues.base import VenueAdapter
 from engine.venues.cex.ladder_planner import (
     LadderOrderTarget,
     build_ladder_order_targets,
-    requires_requote,
+    estimate_existing_anchor,
+    get_requote_reason,
 )
 from engine.venues.cex.order_values import decimal_from_order_value
 from engine.venues.cex.quidax_client import QuidaxApiClient
@@ -59,6 +60,7 @@ class QuidaxAdapter(VenueAdapter):
         funding_role: str = "quidax-trade-fund",
         alert_store: AlertStoreProtocol | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
+        broadcast: Callable[[dict[str, Any]], Any] | None = None,
     ):
         """
         Initialize Quidax adapter.
@@ -98,6 +100,7 @@ class QuidaxAdapter(VenueAdapter):
         self._last_ladder_requote_at: float = 0
         self.enabled = True
         self.paused = False
+        self._broadcast = broadcast
         if alert_store is None:
             raise ValueError("QuidaxAdapter requires an alert store")
         self.alert_store = alert_store
@@ -147,6 +150,40 @@ class QuidaxAdapter(VenueAdapter):
             )
 
         return effective_order_size_cngn, effective_order_size_usdt
+
+    async def _emit_anchor_requote_alert(
+        self,
+        *,
+        previous_anchor: Decimal | None,
+        reference_price: Decimal,
+        replaced_orders: int,
+        orders_placed: int,
+    ) -> None:
+        previous_anchor_text = f"{previous_anchor:.2f}" if previous_anchor is not None else "unknown"
+        message = (
+            f"Quidax {self.name} anchor moved from {previous_anchor_text} to {reference_price:.2f} NGN; "
+            f"replaced {replaced_orders} resting orders with {orders_placed} fresh ladder orders."
+        )
+        dedupe_key = (
+            f"quidax_anchor_requote:{self.name}:{previous_anchor_text}:{reference_price:.2f}:{replaced_orders}"
+        )
+        alert_id = await self.alert_store.insert_alert(
+            severity="warning",
+            category="cex",
+            message=message,
+            dedup=True,
+            dedupe_key=dedupe_key,
+        )
+        if alert_id and self._broadcast:
+            self._broadcast(
+                {
+                    "type": "alert",
+                    "severity": "warning",
+                    "message": message,
+                    "dedupe_key": dedupe_key,
+                    "cooldown_s": 30,
+                }
+            )
 
     def _format_limit_order(self, side: str, price: Decimal, amount: Decimal) -> tuple[Decimal, Decimal]:
         """Apply Quidax market precision rules before submitting a limit order."""
@@ -706,11 +743,15 @@ class QuidaxAdapter(VenueAdapter):
             format_limit_order=self._format_limit_order,
         )
         existing_orders = await self.get_open_orders()
-        if existing_orders and not requires_requote(
-            existing_orders=existing_orders,
-            desired_orders=desired_orders,
-            threshold_bps=Decimal(str(self.params.anchor_requote_threshold_bps)),
-        ):
+        requote_reason: str | None = None
+        previous_anchor: Decimal | None = None
+        if existing_orders:
+            requote_reason = get_requote_reason(
+                existing_orders=existing_orders,
+                desired_orders=desired_orders,
+                threshold_bps=Decimal(str(self.params.anchor_requote_threshold_bps)),
+            )
+        if existing_orders and requote_reason is None:
             logger.info(
                 "quidax_ladder_requote_skipped",
                 reference_price_ngn=float(reference_price),
@@ -720,6 +761,8 @@ class QuidaxAdapter(VenueAdapter):
             return
 
         if existing_orders:
+            if requote_reason == "anchor_move":
+                previous_anchor = estimate_existing_anchor(existing_orders)
             cooldown_seconds = max(0, int(self.params.anchor_requote_cooldown_seconds))
             if cooldown_seconds > 0 and self._last_ladder_requote_at > 0:
                 elapsed = time.time() - self._last_ladder_requote_at
@@ -778,6 +821,13 @@ class QuidaxAdapter(VenueAdapter):
         )
         if orders_placed > 0:
             self._last_ladder_requote_at = time.time()
+            if existing_orders and requote_reason == "anchor_move":
+                await self._emit_anchor_requote_alert(
+                    previous_anchor=previous_anchor,
+                    reference_price=reference_price,
+                    replaced_orders=len(existing_orders),
+                    orders_placed=orders_placed,
+                )
 
 
     async def handle_webhook(self, event: dict[str, Any]) -> None:

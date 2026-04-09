@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from engine.types import TxResult
 
 # V4 PositionManager action codes from Uniswap v4-periphery Actions.sol
+_V4_LP_INCREASE_LIQUIDITY = 0   # 0x00
 _V4_LP_DECREASE_LIQUIDITY = 1   # 0x01
 _V4_LP_MINT_POSITION      = 2   # 0x02
 _V4_LP_BURN_POSITION      = 3   # 0x03

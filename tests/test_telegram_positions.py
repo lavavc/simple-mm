@@ -1,9 +1,10 @@
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from engine.types import LPPosition, Position
+from engine.types import LPPosition, Position, VenueOrderSummary
 import engine.bot.telegram as telegram
 from tests.fakes import FakeDexAdapter
 
@@ -199,3 +200,119 @@ async def test_cmd_positions_shows_no_active_lp_position(monkeypatch):
     assert "*uni-base*" in reply_text
     assert "cngn: 0.0000" in reply_text
     assert "usdc: 0.0000" in reply_text
+
+
+@pytest.mark.asyncio
+async def test_cmd_orders_defaults_to_quidax_and_lists_open_orders(monkeypatch):
+    venue = SimpleNamespace(
+        get_open_order_summaries=AsyncMock(
+            return_value=[
+                VenueOrderSummary(
+                    id="ord-1",
+                    market="usdtcngn",
+                    side="buy",
+                    status="wait",
+                    price=Decimal("1345.10"),
+                    volume=Decimal("1.48"),
+                    remaining_volume=Decimal("1.48"),
+                    executed_volume=Decimal("0"),
+                    notional=Decimal("1990.748"),
+                    created_at=1712520000000,
+                )
+            ]
+        )
+    )
+
+    message = _FakeMessage()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id="12345"),
+        effective_message=message,
+    )
+
+    monkeypatch.setattr(telegram, "_settings", SimpleNamespace(telegram_chat_id="12345"))
+    monkeypatch.setattr(
+        telegram,
+        "_runtime",
+        SimpleNamespace(venues={"quidax": venue}, lp_managers={}, quidax_lp=None),
+    )
+
+    await telegram.cmd_orders(update, SimpleNamespace(args=[]))
+
+    reply_text = message.reply_text.await_args.args[0]
+    assert "*Open Orders · quidax*" in reply_text
+    assert "count: 1" in reply_text
+    assert "`BUY` `wait` `usdtcngn`" in reply_text
+    assert "1.4800 @ 1345.1000" in reply_text
+    assert "`ord-1`" in reply_text
+    venue.get_open_order_summaries.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cmd_orders_reports_when_no_open_orders(monkeypatch):
+    venue = SimpleNamespace(get_open_order_summaries=AsyncMock(return_value=[]))
+
+    message = _FakeMessage()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id="12345"),
+        effective_message=message,
+    )
+
+    monkeypatch.setattr(telegram, "_settings", SimpleNamespace(telegram_chat_id="12345"))
+    monkeypatch.setattr(
+        telegram,
+        "_runtime",
+        SimpleNamespace(venues={"quidax": venue}, lp_managers={}, quidax_lp=None),
+    )
+
+    await telegram.cmd_orders(update, SimpleNamespace(args=[]))
+
+    message.reply_text.assert_awaited_once_with("No open orders on quidax.")
+
+
+@pytest.mark.asyncio
+async def test_cmd_orders_prefers_dedicated_quidax_lp_when_available(monkeypatch):
+    main_venue = SimpleNamespace(get_open_order_summaries=AsyncMock(return_value=[]))
+    lp_venue = SimpleNamespace(
+        get_open_order_summaries=AsyncMock(
+            return_value=[
+                VenueOrderSummary(
+                    id="lp-1",
+                    market="usdtcngn",
+                    side="sell",
+                    status="wait",
+                    price=Decimal("1445.10"),
+                    volume=Decimal("1.43"),
+                    remaining_volume=Decimal("1.43"),
+                    executed_volume=Decimal("0"),
+                    notional=Decimal("2066.493"),
+                    created_at=1712520000000,
+                )
+            ]
+        )
+    )
+
+    message = _FakeMessage()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id="12345"),
+        effective_message=message,
+    )
+
+    monkeypatch.setattr(telegram, "_settings", SimpleNamespace(telegram_chat_id="12345"))
+    monkeypatch.setattr(
+        telegram,
+        "_runtime",
+        SimpleNamespace(
+            venues={"quidax": main_venue, "quidax-lp": lp_venue},
+            lp_managers={},
+            quidax_lp=lp_venue,
+        ),
+    )
+
+    await telegram.cmd_orders(update, SimpleNamespace(args=[]))
+
+    reply_text = message.reply_text.await_args.args[0]
+    assert "*Open Orders · quidax-lp*" in reply_text
+    assert "`SELL` `wait` `usdtcngn`" in reply_text
+    assert "`lp-1`" in reply_text
+    main_venue.get_open_order_summaries.assert_not_awaited()
+    lp_venue.get_open_order_summaries.assert_awaited_once()

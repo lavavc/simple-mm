@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import structlog
 
+from engine.config import settings
 from engine.db.backend import ActionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
 from engine.lp import strategy
 from engine.lp.types import LPBalanceSwapResult
@@ -158,6 +159,30 @@ class LPRebalancer:
                     position.token_id,
                     position,
                     triggered_by="auto:range_exit_rebalance",
+                )
+        else:
+            amount0, amount1 = venue.calculate_mint_amounts()
+            # Thresholds are expressed as human amounts; apply to the correct token by symbol.
+            is_token0_cngn = "NGN" in venue.config.token0_symbol.upper()
+            if is_token0_cngn:
+                threshold0 = int(settings.lp_topup_threshold_cngn * 10 ** venue.config.token0_decimals)
+                threshold1 = int(settings.lp_topup_threshold_usdc * 10 ** venue.config.token1_decimals)
+            else:
+                threshold0 = int(settings.lp_topup_threshold_usdc * 10 ** venue.config.token0_decimals)
+                threshold1 = int(settings.lp_topup_threshold_cngn * 10 ** venue.config.token1_decimals)
+            if amount0 >= threshold0 or amount1 >= threshold1:
+                logger.info(
+                    "idle_funds_above_topup_threshold",
+                    venue=venue.name,
+                    token_id=position.token_id,
+                    idle0=amount0,
+                    idle1=amount1,
+                )
+                await self._topup_position_locked(
+                    venue,
+                    position.token_id,
+                    amount0,
+                    amount1,
                 )
 
     async def create_position(
@@ -324,6 +349,67 @@ class LPRebalancer:
 
         except Exception as e:
             logger.error("create_dex_position_failed", venue=venue.name, error=str(e))
+            return False
+
+    async def _topup_position_locked(
+        self,
+        venue: LPVenueProtocol,
+        token_id: int,
+        amount0: int,
+        amount1: int,
+    ) -> bool:
+        """Ratio-swap idle wallet funds then increase_liquidity on the existing in-range position."""
+        try:
+            metadata = venue.get_position_state(token_id)
+            if metadata is None:
+                logger.warning("topup_skipped_no_metadata", venue=venue.name, token_id=token_id)
+                return False
+
+            prep_result = await venue.prepare_lp_balance(metadata.tick_lower, metadata.tick_upper)
+            if prep_result is not None:
+                await self._record_ratio_swap(
+                    venue,
+                    prep_result,
+                    triggered_by="auto:topup",
+                    tick_lower=metadata.tick_lower,
+                    tick_upper=metadata.tick_upper,
+                )
+                if prep_result.tx_result.status != "confirmed":
+                    return False
+
+            amount0, amount1 = venue.calculate_mint_amounts()
+            if amount0 == 0 and amount1 == 0:
+                logger.warning("no_funds_for_topup", venue=venue.name, token_id=token_id)
+                return False
+
+            result = await venue.increase_liquidity(token_id, amount0, amount1)
+
+            await self._action_store.insert_action(
+                venue=venue.name,
+                action_type="increase_liquidity",
+                status=result.status,
+                tx_hash=result.hash or None,
+                error=result.error,
+                triggered_by="auto:topup",
+                metadata={
+                    "token_id": token_id,
+                    "amount0_raw": amount0,
+                    "amount1_raw": amount1,
+                },
+            )
+            if result.status == "confirmed":
+                logger.info("lp_topup_complete", venue=venue.name, token_id=token_id, tx_hash=result.hash)
+                self.broadcast({
+                    "type": "action",
+                    "data": {"venue": venue.name, "action": "liquidity_increased", "tx": result.hash},
+                })
+                return True
+            else:
+                logger.error("lp_topup_failed", venue=venue.name, token_id=token_id, error=result.error)
+                return False
+
+        except Exception as e:
+            logger.error("topup_position_failed", venue=venue.name, token_id=token_id, error=str(e))
             return False
 
     async def rebalance(
