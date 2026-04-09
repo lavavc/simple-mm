@@ -22,7 +22,11 @@ class PositionJobs:
         positions = []
         for name, venue in self.context.venues.items():
             try:
-                position = await venue.get_position()
+                lp_manager = self.context.lp_managers.get(name)
+                if lp_manager is not None:
+                    position = await lp_manager.get_position_as_schema()
+                else:
+                    position = await venue.get_position()
                 positions.append(position)
                 await self.context.position_store.insert_position(position)
             except Exception as exc:

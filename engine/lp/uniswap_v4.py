@@ -127,6 +127,10 @@ def _decode_position_info(info_bytes32: bytes) -> tuple[int, int]:
     return tick_lower, tick_upper
 
 
+def _is_not_minted_error(error: Exception) -> bool:
+    return "NOT_MINTED" in str(error).upper()
+
+
 class V4TxContext(Protocol):
     """Transaction capabilities that V4PositionManager needs from the swap adapter.
 
@@ -252,6 +256,8 @@ class V4PositionManager:
         self._lp_account = tx_context.lp_account
         self._lp_approvals_done: set[str] = set()
         self._pool_key: tuple[str, str, int, int, str] | None = None
+        self._token_index_lookup_supported: bool | None = None
+        self._known_not_minted_token_ids: set[int] = set()
 
     # === Pool key ===
 
@@ -272,20 +278,30 @@ class V4PositionManager:
             ).call()
             if balance == 0:
                 return []
-            try:
-                return [
-                    self._position_manager_contract.functions.tokenOfOwnerByIndex(
-                        self._lp_account.address, i
-                    ).call()
-                    for i in range(balance)
-                ]
-            except Exception as e:
-                logger.warning(
-                    "token_of_owner_by_index_failed_falling_back_to_logs",
-                    venue=self.name,
-                    error=str(e),
-                )
-                return self._get_owned_positions_from_logs(expected_balance=balance)
+            token_index_lookup_supported = getattr(
+                self,
+                "_token_index_lookup_supported",
+                None,
+            )
+            if token_index_lookup_supported is not False:
+                try:
+                    owned = [
+                        self._position_manager_contract.functions.tokenOfOwnerByIndex(
+                            self._lp_account.address, i
+                        ).call()
+                        for i in range(balance)
+                    ]
+                    self._token_index_lookup_supported = True
+                    return owned
+                except Exception as e:
+                    if token_index_lookup_supported is None:
+                        logger.info(
+                            "token_of_owner_by_index_unavailable_using_log_fallback",
+                            venue=self.name,
+                            error=str(e),
+                        )
+                    self._token_index_lookup_supported = False
+            return self._get_owned_positions_from_logs(expected_balance=balance)
         except Exception as e:
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
@@ -323,11 +339,21 @@ class V4PositionManager:
             if len(log["topics"]) > 3:
                 candidate_ids.add(int(log["topics"][3].hex(), 16))
 
+        known_not_minted = getattr(self, "_known_not_minted_token_ids", None)
+        if known_not_minted is None:
+            known_not_minted = set()
+            self._known_not_minted_token_ids = known_not_minted
+
         owned: list[int] = []
         for token_id in sorted(candidate_ids):
+            if token_id in known_not_minted:
+                continue
             try:
                 current_owner = self._position_manager_contract.functions.ownerOf(token_id).call()
             except Exception as e:
+                if _is_not_minted_error(e):
+                    known_not_minted.add(token_id)
+                    continue
                 logger.warning(
                     "position_owner_lookup_failed",
                     venue=self.name,

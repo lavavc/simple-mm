@@ -469,6 +469,57 @@ class TestActiveLpPositionSnapshot:
 
         assert owned == token_ids
 
+    def test_get_owned_positions_caches_fallback_and_skips_not_minted_tokens(self):
+        owner = "0x" + "cc" * 20
+        valid_token_id = 202
+        burned_token_id = 101
+
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.balanceOf.return_value.call.return_value = 1
+        position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.side_effect = Exception("no data")
+
+        owner_lookup_calls: list[int] = []
+
+        def owner_of_side_effect(token_id: int):
+            call = MagicMock()
+            owner_lookup_calls.append(token_id)
+            if token_id == burned_token_id:
+                call.call.side_effect = Exception("execution reverted: NOT_MINTED")
+            else:
+                call.call.return_value = owner
+            return call
+
+        position_manager_contract.functions.ownerOf.side_effect = owner_of_side_effect
+
+        log_entries = [
+            {"topics": [b"", b"", b"", burned_token_id.to_bytes(32, "big")]},
+            {"topics": [b"", b"", b"", valid_token_id.to_bytes(32, "big")]},
+        ]
+        w3 = MagicMock()
+        w3.eth.get_logs.side_effect = [log_entries, [], log_entries, []]
+
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _lp_account=SimpleNamespace(address=owner),
+            _w3=w3,
+        )
+        adapter._get_owned_positions_from_logs = MethodType(
+            V4PositionManager._get_owned_positions_from_logs,
+            adapter,
+        )
+
+        first_owned = V4PositionManager.get_owned_positions(adapter)
+        second_owned = V4PositionManager.get_owned_positions(adapter)
+
+        assert first_owned == [valid_token_id]
+        assert second_owned == [valid_token_id]
+        assert getattr(adapter, "_token_index_lookup_supported") is False
+        assert getattr(adapter, "_known_not_minted_token_ids") == {burned_token_id}
+        assert position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.call_count == 1
+        assert owner_lookup_calls == [burned_token_id, valid_token_id, valid_token_id]
+
     def test_static_position_metadata_uses_position_manager_liquidity_by_token_id(self):
         token_id = 77
         tick_lower = -120

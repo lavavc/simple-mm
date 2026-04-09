@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { formatNumber } from '@/lib/utils';
 import { useStatus, usePortfolioValuation } from '@/lib/hooks/useQueries';
 import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge, ExternalLink } from 'lucide-react';
@@ -190,7 +189,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
               <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Wallet className="h-4 w-4 text-white/60" />
-                  VENUE INVENTORY
+                  ACTIVE CAPITAL
                 </div>
                 {isSyncing && <div className="h-1.5 w-1.5 bg-white/20 rounded-full animate-ping" />}
               </div>
@@ -199,7 +198,12 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
               {venue.position?.balances ? (
                 <div className="p-4 space-y-4">
                   <div className="grid grid-cols-2 gap-4">
-                    {Object.entries(venue.position.balances).map(([token, amount]) => {
+                    {Object.entries(venue.position.balances).filter(([token]) => {
+                      const t = token.toLowerCase();
+                      if (venue.name === 'uni-base' && t === 'usdt') return false;
+                      if (venue.name === 'uni-bsc' && t === 'usdc') return false;
+                      return true;
+                    }).map(([token, amount]) => {
                       const isCngn = token.toLowerCase() === 'cngn';
 
                       let usdValue = Number(amount) || 0;
@@ -237,7 +241,12 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                     <span className="text-[10px] text-white/40 font-mono uppercase tracking-widest">Total Liquid Value</span>
                     <span className="text-sm font-mono text-white/90 font-bold">
                       ${formatNumber(
-                        Object.entries(venue.position.balances).reduce((acc, [t, a]) => {
+                        Object.entries(venue.position.balances).filter(([t]) => {
+                          const tl = t.toLowerCase();
+                          if (venue.name === 'uni-base' && tl === 'usdt') return false;
+                          if (venue.name === 'uni-bsc' && tl === 'usdc') return false;
+                          return true;
+                        }).reduce((acc, [t, a]) => {
                           const isC = t.toLowerCase() === 'cngn';
                           let v = Number(a) || 0;
                           if (isC) {
@@ -304,9 +313,11 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
 
                 <div className="bg-black/40 p-3.5 rounded-sm border border-white/[0.02] space-y-4">
                   <div className="flex justify-between items-end">
-                    <div className="text-[10px] text-white/50 uppercase tracking-widest">Active Liquidity Volume</div>
+                    <div className="text-[10px] text-white/50 uppercase tracking-widest">Position Value</div>
                     <div className={`text-lg font-mono ${lpStatusClasses?.liquidity ?? 'text-emerald-400'}`}>
-                      {lpPosition.liquidity != null ? formatNumber(Number(lpPosition.liquidity), 0) : 'Unavailable'}
+                      {venue.position?.position_value_usd != null
+                        ? `$${formatNumber(Number(venue.position.position_value_usd), 2)}`
+                        : 'Unavailable'}
                     </div>
                   </div>
 
@@ -419,11 +430,8 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
         {/* Bottom Row: Parameters (Detailed List) */}
         <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
           <CardHeader className="p-3 border-b border-white/[0.02]">
-            <div className="flex items-center justify-between">
-              <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
-                <Settings className="h-4 w-4 text-white/60" /> PROTOCOL PARAMETERS & CONSTRAINTS
-              </div>
-              <Button disabled variant="outline" className="h-7 bg-transparent border-white/[0.05] text-[10px] font-mono uppercase tracking-widest text-emerald-500/70 hover:text-emerald-400 hover:border-emerald-500/30 hover:bg-emerald-500/10">Modify Constraints</Button>
+            <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
+              <Settings className="h-4 w-4 text-white/60" /> PROTOCOL PARAMETERS & CONSTRAINTS
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -435,29 +443,36 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                       <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Pricing Model SD Multiplier</div>
                       <div className="text-[10px] font-mono text-white/50 mt-1">Width of liquidity curve in standard deviations</div>
                     </div>
-                    <div className="text-sm font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-sm border border-emerald-500/20">1.50x</div>
-                  </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Max Capital Allocation</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Percentage of total inventory authorized for deployment</div>
+                    <div className="text-sm font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-sm border border-emerald-500/20">
+                      {venue.params?.sd_multiplier != null ? `${Number(venue.params.sd_multiplier).toFixed(2)}x` : '—'}
                     </div>
-                    <div className="text-sm font-mono text-blue-400 bg-blue-500/10 px-3 py-1 rounded-sm border border-blue-500/20">80.0%</div>
                   </div>
                   <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
                     <div>
                       <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Rebalance Threshold Delta</div>
                       <div className="text-[10px] font-mono text-white/50 mt-1">Imbalance trigger required to automatically reposition liquidity</div>
                     </div>
-                    <div className="text-sm font-mono text-yellow-400 bg-yellow-500/10 px-3 py-1 rounded-sm border border-yellow-500/20">5.0%</div>
+                    <div className="text-sm font-mono text-yellow-400 bg-yellow-500/10 px-3 py-1 rounded-sm border border-yellow-500/20">
+                      {venue.params?.rebalance_threshold_percent != null ? `${Number(venue.params.rebalance_threshold_percent).toFixed(1)}%` : '—'}
+                    </div>
                   </div>
                   <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
                     <div>
                       <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Max Execution Slippage</div>
                       <div className="text-[10px] font-mono text-white/50 mt-1">Hard cap on cross-pool slippage tolerance</div>
                     </div>
-                    <div className="text-sm font-mono text-red-400 bg-red-500/10 px-3 py-1 rounded-sm border border-red-500/20">1.0%</div>
-
+                    <div className="text-sm font-mono text-red-400 bg-red-500/10 px-3 py-1 rounded-sm border border-red-500/20">
+                      {venue.params?.max_slippage_percent != null ? `${Number(venue.params.max_slippage_percent).toFixed(1)}%` : '—'}
+                    </div>
+                  </div>
+                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                    <div>
+                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Exponentially Weighted Moving Average</div>
+                      <div className="text-[10px] font-mono text-white/50 mt-1">Decay factor for historical price weighting. High value → more weight to history; low value → more weight to recent movements.</div>
+                    </div>
+                    <div className="text-sm font-mono text-purple-400 bg-purple-500/10 px-3 py-1 rounded-sm border border-purple-500/20">
+                      {venue.params?.ewma_lambda != null ? Number(venue.params.ewma_lambda).toFixed(3) : '—'}
+                    </div>
                   </div>
                 </>
               )}
@@ -509,7 +524,7 @@ export default function VenuesPage() {
   const { data: status, isLoading } = useStatus();
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
 
-  const venues = status?.venues || [];
+  const venues = (status?.venues || []).filter(v => v.name !== 'bybit' && v.name !== 'assetchain');
   const isSyncing = isLoading;
 
   const displayedVenue = selectedVenue
