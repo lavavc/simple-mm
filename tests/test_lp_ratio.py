@@ -822,3 +822,163 @@ class TestV4GetPosition:
         assert result.lp_position is not None
         assert result.lp_position.snapshot_status == "degraded"
         assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+
+
+# =============================================================================
+# LPRebalancer topup trigger logic
+# =============================================================================
+
+
+def _make_fake_venue(
+    *,
+    token_ids: list[int],
+    position_state: "PositionState | None",
+    amount0: int,
+    amount1: int,
+    increase_result: "TxResult",
+    token0_symbol: str = "cNGN",
+    token0_decimals: int = 18,
+    token1_decimals: int = 6,
+) -> SimpleNamespace:
+    """Minimal fake LPVenueProtocol for rebalancer topup tests."""
+    from engine.config import DexParams
+    from decimal import Decimal
+
+    venue = SimpleNamespace()
+    venue.name = "uni-base"
+    venue.params = DexParams(
+        sd_multiplier=Decimal("2.75"),
+        ewma_lambda=Decimal("0.975"),
+        downside_skew=Decimal("0.45"),
+        min_tick_width=100,
+        max_tick_width=1000,
+        rebalance_threshold_percent=Decimal("10"),
+        max_slippage_percent=Decimal("1"),
+    )
+    venue.config = SimpleNamespace(
+        token0_symbol=token0_symbol,
+        token1_symbol="USDC",
+        token0_address="0x" + "aa" * 20,
+        token1_address="0x" + "bb" * 20,
+        token0_decimals=token0_decimals,
+        token1_decimals=token1_decimals,
+    )
+    venue.get_owned_positions = lambda: token_ids
+    venue.get_position_state = lambda token_id: position_state
+    venue.calculate_mint_amounts = lambda: (amount0, amount1)
+    venue.prepare_lp_balance = AsyncMock(return_value=None)
+    venue.increase_liquidity = AsyncMock(return_value=increase_result)
+    venue.mint_position = AsyncMock(return_value=TxResult(hash="0xmint", status="confirmed"))
+    venue.remove_position = AsyncMock(return_value=TxResult(hash="0xrm", status="confirmed"))
+    return venue
+
+
+def _make_rebalancer() -> "LPRebalancer":
+    from engine.lp.rebalancer import LPRebalancer
+    from unittest.mock import MagicMock, AsyncMock
+
+    action_store = MagicMock()
+    action_store.insert_action = AsyncMock()
+    return LPRebalancer(
+        broadcast=lambda _: None,
+        price_store=MagicMock(),
+        venue_config_store=MagicMock(),
+        action_store=action_store,
+    )
+
+
+class TestTopupTrigger:
+    """Unit tests for the idle-fund topup branch in LPRebalancer."""
+
+    def _in_range_position(self) -> "PositionState":
+        return _make_position_state(
+            token_id=42,
+            tick_lower=-1000,
+            tick_upper=1000,
+            current_price=Decimal("1"),
+            in_range=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_topup_fires_when_idle_cngn_exceeds_threshold(self):
+        """If idle cNGN > lp_topup_threshold_cngn, increase_liquidity is called."""
+        from engine.config import settings
+        threshold_raw = int(settings.lp_topup_threshold_cngn * 10 ** 18)
+        idle0 = threshold_raw + 1  # just above threshold
+
+        venue = _make_fake_venue(
+            token_ids=[42],
+            position_state=self._in_range_position(),
+            amount0=idle0,
+            amount1=0,
+            increase_result=TxResult(hash="0xtopup", status="confirmed"),
+        )
+        rebalancer = _make_rebalancer()
+        await rebalancer._check_and_rebalance_locked(venue)
+        venue.increase_liquidity.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_topup_fires_when_idle_usdc_exceeds_threshold(self):
+        """If idle USDC > lp_topup_threshold_usdc, increase_liquidity is called."""
+        from engine.config import settings
+        threshold_raw = int(settings.lp_topup_threshold_usdc * 10 ** 6)
+        idle1 = threshold_raw + 1  # just above threshold
+
+        venue = _make_fake_venue(
+            token_ids=[42],
+            position_state=self._in_range_position(),
+            amount0=0,
+            amount1=idle1,
+            increase_result=TxResult(hash="0xtopup", status="confirmed"),
+        )
+        rebalancer = _make_rebalancer()
+        await rebalancer._check_and_rebalance_locked(venue)
+        venue.increase_liquidity.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_topup_does_not_fire_below_threshold(self):
+        """Idle funds below both thresholds: increase_liquidity must NOT be called."""
+        from engine.config import settings
+        below0 = int(settings.lp_topup_threshold_cngn * 10 ** 18) - 1
+        below1 = int(settings.lp_topup_threshold_usdc * 10 ** 6) - 1
+
+        venue = _make_fake_venue(
+            token_ids=[42],
+            position_state=self._in_range_position(),
+            amount0=below0,
+            amount1=below1,
+            increase_result=TxResult(hash="0xtopup", status="confirmed"),
+        )
+        rebalancer = _make_rebalancer()
+        await rebalancer._check_and_rebalance_locked(venue)
+        venue.increase_liquidity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_topup_not_triggered_when_out_of_range(self):
+        """Out-of-range position with idle funds goes through rebalance, not topup."""
+        from engine.config import settings
+        idle0 = int(settings.lp_topup_threshold_cngn * 10 ** 18) * 10  # far above threshold
+
+        out_of_range_pos = _make_position_state(
+            token_id=42,
+            tick_lower=-1000,
+            tick_upper=1000,
+            current_price=Decimal("10"),  # well above upper range
+            in_range=False,
+        )
+        # Need a proper price_upper for out-of-range distance calc
+        from engine.venues.dex.shared import PositionState as PS
+        out_of_range_pos.price_upper = Decimal("1.1")
+        out_of_range_pos.price_lower = Decimal("0.9")
+
+        venue = _make_fake_venue(
+            token_ids=[42],
+            position_state=out_of_range_pos,
+            amount0=idle0,
+            amount1=0,
+            increase_result=TxResult(hash="0xtopup", status="confirmed"),
+        )
+        # remove_position needs a valid TxResult; mint_position also
+        rebalancer = _make_rebalancer()
+        await rebalancer._check_and_rebalance_locked(venue)
+        venue.increase_liquidity.assert_not_called()

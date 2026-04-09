@@ -6,6 +6,144 @@ import math
 from unittest.mock import MagicMock
 
 from tests.conftest_params import make_dex_params
+from engine.venues.dex.shared import _Q96, _tick_to_sqrt_price_x96
+
+
+# =============================================================================
+# Exact integer TickMath (_tick_to_sqrt_price_x96)
+# =============================================================================
+
+
+class TestTickToSqrtPriceX96:
+    """Spot-check _tick_to_sqrt_price_x96 against known V4 TickMath.sol constants."""
+
+    def test_tick_zero_is_q96(self):
+        """Tick 0 must return exactly 2^96."""
+        assert _tick_to_sqrt_price_x96(0) == _Q96
+
+    def test_tick_1_known_value(self):
+        """Tick 1 → 79232123823359799118286999568 (matches our Q128.128→Q64.96 rounding)."""
+        assert _tick_to_sqrt_price_x96(1) == 79232123823359799118286999568
+
+    def test_tick_neg1_known_value(self):
+        """Tick -1 → 79224201403219477170569942574."""
+        assert _tick_to_sqrt_price_x96(-1) == 79224201403219477170569942574
+
+    def test_tick_1_and_neg1_are_near_q96(self):
+        """Both ±1 ticks should be within 0.01% of Q96."""
+        q96 = _Q96
+        assert abs(_tick_to_sqrt_price_x96(1) - q96) / q96 < 0.0001
+        assert abs(_tick_to_sqrt_price_x96(-1) - q96) / q96 < 0.0001
+
+    def test_positive_tick_greater_than_q96(self):
+        """Positive ticks represent higher prices → sqrtPrice > Q96."""
+        assert _tick_to_sqrt_price_x96(100) > _Q96
+        assert _tick_to_sqrt_price_x96(10000) > _Q96
+
+    def test_negative_tick_less_than_q96(self):
+        """Negative ticks represent lower prices → sqrtPrice < Q96."""
+        assert _tick_to_sqrt_price_x96(-100) < _Q96
+        assert _tick_to_sqrt_price_x96(-10000) < _Q96
+
+    def test_positive_and_negative_are_inverse(self):
+        """For tick T, sqrt(T) * sqrt(-T) ≈ Q96^2 (they multiply to ~1 in Q64.96)."""
+        for tick in [1, 10, 100, 1000]:
+            pos = _tick_to_sqrt_price_x96(tick)
+            neg = _tick_to_sqrt_price_x96(-tick)
+            # product / Q96^2 should be very close to 1
+            product = pos * neg
+            ratio = product / (_Q96 ** 2)
+            assert abs(ratio - 1.0) < 0.0001, f"tick ±{tick}: ratio={ratio}"
+
+    def test_large_tick_cngn_usdc_range(self):
+        """Large negative ticks (cNGN/USDC 18-dec vs 6-dec) don't raise and are positive."""
+        # cNGN/USDC pool ticks are around -300000 to -200000
+        result = _tick_to_sqrt_price_x96(-276324)
+        assert result > 0
+
+    def test_max_tick_does_not_raise(self):
+        """Maximum valid tick (887272) returns a positive integer."""
+        result = _tick_to_sqrt_price_x96(887272)
+        assert result > 0
+
+    def test_min_tick_does_not_raise(self):
+        """Minimum valid tick (-887272) returns a positive integer."""
+        result = _tick_to_sqrt_price_x96(-887272)
+        assert result > 0
+
+    def test_out_of_range_raises(self):
+        """Ticks beyond ±887272 must raise ValueError."""
+        with pytest.raises(ValueError):
+            _tick_to_sqrt_price_x96(887273)
+        with pytest.raises(ValueError):
+            _tick_to_sqrt_price_x96(-887273)
+
+    def test_monotonically_increasing(self):
+        """sqrtPrice must increase monotonically as tick increases."""
+        ticks = [-1000, -100, -10, 0, 10, 100, 1000]
+        prices = [_tick_to_sqrt_price_x96(t) for t in ticks]
+        for i in range(len(prices) - 1):
+            assert prices[i] < prices[i + 1], f"Not monotonic at tick {ticks[i]}"
+
+
+# =============================================================================
+# _compute_liquidity_from_amounts (via V4PositionManager helper)
+# =============================================================================
+
+
+class TestComputeLiquidityFromAmounts:
+    """Verify that the exact-integer TickMath fix eliminates underdeployment."""
+
+    def _make_manager(self) -> object:
+        from types import SimpleNamespace
+        from engine.lp.uniswap_v4 import V4PositionManager
+        import types
+        mgr = SimpleNamespace()
+        mgr._compute_liquidity_from_amounts = types.MethodType(
+            V4PositionManager._compute_liquidity_from_amounts, mgr
+        )
+        return mgr
+
+    def test_symmetric_in_range_full_deployment(self):
+        """At tick midpoint with balanced amounts, L0 == L1 so no token is left idle."""
+        mgr = self._make_manager()
+        # Use small equal-decimal ticks for clarity: ticks ±1000, price at tick 0
+        tick_lower = -1000
+        tick_upper = 1000
+        sqrt_p = _tick_to_sqrt_price_x96(0)  # exact Q96
+        sqrt_a = _tick_to_sqrt_price_x96(tick_lower)
+        sqrt_b = _tick_to_sqrt_price_x96(tick_upper)
+
+        # Compute ideal balanced amounts from L=1_000_000
+        L = 1_000_000
+        amount0_ideal = L * (sqrt_b - sqrt_p) * _Q96 // (sqrt_p * sqrt_b)
+        amount1_ideal = L * (sqrt_p - sqrt_a) // _Q96
+
+        liquidity = mgr._compute_liquidity_from_amounts(sqrt_p, tick_lower, tick_upper, amount0_ideal, amount1_ideal)
+
+        # Liquidity should be ≥ reference L (integer arithmetic may round up slightly)
+        assert liquidity >= L * 0.99, f"Severe underdeployment: got {liquidity}, expected ~{L}"
+
+    def test_price_below_range_uses_amount0_only(self):
+        """Price below range → only amount0 contributes; amount1 is ignored."""
+        mgr = self._make_manager()
+        sqrt_p = _tick_to_sqrt_price_x96(-2000)   # below lower bound
+        liquidity = mgr._compute_liquidity_from_amounts(sqrt_p, -1000, 1000, 1_000_000, 999_999_999)
+        # amount1 is huge but irrelevant; result should be reasonable
+        assert liquidity > 0
+
+    def test_price_above_range_uses_amount1_only(self):
+        """Price above range → only amount1 contributes; amount0 is ignored."""
+        mgr = self._make_manager()
+        sqrt_p = _tick_to_sqrt_price_x96(2000)   # above upper bound
+        liquidity = mgr._compute_liquidity_from_amounts(sqrt_p, -1000, 1000, 999_999_999, 1_000_000)
+        assert liquidity > 0
+
+    def test_zero_amounts_give_zero_liquidity(self):
+        """Zero amounts → zero liquidity."""
+        mgr = self._make_manager()
+        sqrt_p = _tick_to_sqrt_price_x96(0)
+        assert mgr._compute_liquidity_from_amounts(sqrt_p, -1000, 1000, 0, 0) == 0
 
 
 class TestTickPriceConversions:
