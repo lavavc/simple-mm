@@ -97,11 +97,25 @@ class LPRebalancer:
         self._active_multi_position_incidents.pop(venue.name, None)
         if not token_ids:
             amount0, amount1 = venue.calculate_mint_amounts()
-            if amount0 > 0 or amount1 > 0:
+            is_token0_cngn = "NGN" in venue.config.token0_symbol.upper()
+            if is_token0_cngn:
+                threshold0 = int(settings.lp_topup_threshold_cngn * 10 ** venue.config.token0_decimals)
+                threshold1 = int(settings.lp_topup_threshold_usdc * 10 ** venue.config.token1_decimals)
+            else:
+                threshold0 = int(settings.lp_topup_threshold_usdc * 10 ** venue.config.token0_decimals)
+                threshold1 = int(settings.lp_topup_threshold_cngn * 10 ** venue.config.token1_decimals)
+            if amount0 >= threshold0 or amount1 >= threshold1:
                 logger.info("no_position_funds_available_minting", venue=venue.name)
                 await self._create_position_locked(venue, triggered_by="auto:initial_mint")
             else:
-                logger.debug("no_dex_position_no_funds", venue=venue.name)
+                logger.debug(
+                    "no_dex_position_insufficient_funds",
+                    venue=venue.name,
+                    amount0=amount0,
+                    amount1=amount1,
+                    threshold0=threshold0,
+                    threshold1=threshold1,
+                )
             return
 
         position = venue.get_position_state(token_ids[0])

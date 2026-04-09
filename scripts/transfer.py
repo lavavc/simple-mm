@@ -2,6 +2,7 @@
 
 Usage:
     python scripts/transfer.py --role uni-bsc-trade --token USDT --to 0x... --amount 50
+    python scripts/transfer.py --role uni-bsc-trade --token USDT --to 0x... --amount max
     python scripts/transfer.py --role uni-bsc-trade --token BNB --to 0x... --amount 0.01
 
 Roles: uni-base-lp, uni-base-trade, blockradar, quidax-trade-fund, quidax-lp,
@@ -9,6 +10,8 @@ Roles: uni-base-lp, uni-base-trade, blockradar, quidax-trade-fund, quidax-lp,
 Tokens by chain:
   Base (8453) : CNGN, USDC, USDT, ETH
   BSC  (56)   : CNGN, USDT, BNB
+
+Use --amount max to transfer the full ERC20 balance (not supported for native tokens).
 """
 
 import argparse
@@ -44,7 +47,7 @@ async def main():
         help="Token symbol (CNGN, USDT, USDC, BNB, ETH)",
     )
     parser.add_argument("--to", required=True, dest="to_address", help="Destination address")
-    parser.add_argument("--amount", required=True, type=Decimal, help="Amount to transfer")
+    parser.add_argument("--amount", required=True, help="Amount to transfer, or 'max' for full ERC20 balance")
     args = parser.parse_args()
 
     role = AccountRole(args.role)
@@ -64,9 +67,19 @@ async def main():
             )
         token_address = TOKEN_ADDRESSES[token_key]
 
+    if args.amount.lower() == "max":
+        if is_native:
+            raise SystemExit("--amount max is not supported for native tokens (gas cost unknown).")
+        balance = await mgr.get_balance(role, {chain_id: {token_symbol: token_address}})
+        transfer_amount = balance.token_balances.get(token_symbol)
+        if transfer_amount is None or transfer_amount <= 0:
+            raise SystemExit(f"No {token_symbol} balance available to transfer.")
+    else:
+        transfer_amount = Decimal(args.amount)
+
     from_address = mgr.get_address(role)
 
-    print(f"\nTransfer {args.amount} {token_symbol}")
+    print(f"\nTransfer {transfer_amount} {token_symbol}")
     print(f"  From : {from_address} ({role.value})")
     print(f"  To   : {args.to_address}")
     if is_native:
@@ -79,9 +92,9 @@ async def main():
         raise SystemExit("Aborted.")
 
     if is_native:
-        tx_hash = await mgr.transfer_native(role, args.to_address, args.amount)
+        tx_hash = await mgr.transfer_native(role, args.to_address, transfer_amount)
     else:
-        tx_hash = await mgr.transfer_erc20(role, token_address, args.to_address, args.amount)
+        tx_hash = await mgr.transfer_erc20(role, token_address, args.to_address, transfer_amount)
     print(f"Sent: {tx_hash}")
 
 
