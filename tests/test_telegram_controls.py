@@ -150,6 +150,7 @@ async def test_handle_callback_pause_venue_sets_paused_and_cancels_orders(monkey
     runtime = SimpleNamespace(
         scheduler=SimpleNamespace(),
         venues={"quidax": quidax},
+        db=SimpleNamespace(system_state=SimpleNamespace(set_system_state=AsyncMock())),
     )
     query = _FakeQuery("confirm:pause_venue:quidax")
     update = SimpleNamespace(callback_query=query)
@@ -180,6 +181,7 @@ async def test_handle_callback_resume_venue_syncs_when_global_trading_enabled(mo
         venues={"quidax": quidax},
         blended_calculator=None,
         price_aggregator=None,
+        db=SimpleNamespace(system_state=SimpleNamespace(set_system_state=AsyncMock())),
     )
     query = _FakeQuery("confirm:resume_venue:quidax")
     update = SimpleNamespace(callback_query=query)
@@ -212,6 +214,7 @@ async def test_handle_callback_resume_venue_skips_sync_when_global_trading_pause
         venues={"quidax": quidax},
         blended_calculator=None,
         price_aggregator=None,
+        db=SimpleNamespace(system_state=SimpleNamespace(set_system_state=AsyncMock())),
     )
     query = _FakeQuery("confirm:resume_venue:quidax")
     update = SimpleNamespace(callback_query=query)

@@ -85,18 +85,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
   };
   const isActive = venue.enabled && !venue.paused;
 
-  // Fake telemetry
-  const [latency, setLatency] = useState(12);
-  const [blockHeight, setBlockHeight] = useState(18349200);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setLatency(10 + Math.floor(Math.random() * 8));
-      setBlockHeight(prev => prev + (Math.random() > 0.7 ? 1 : 0));
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
   const { data: valuationData } = usePortfolioValuation();
 
   // Map venue -> wallet roles that belong to it
@@ -150,30 +138,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             </div>
 
             <div className="h-px w-full bg-white/[0.05]"></div>
-          </CardContent>
-        </Card>
-
-        {/* System Telemetry */}
-        <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
-          <CardHeader className="p-3 border-b border-white/[0.02]">
-            <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
-              <Server className="h-4 w-4" />
-              NODE TELEMETRY
-            </div>
-          </CardHeader>
-          <CardContent className="p-3 space-y-3">
-            <div className="flex justify-between items-center bg-black/40 p-2.5 rounded-sm border border-white/[0.02] text-[10px] font-mono">
-              <div className="flex items-center gap-2 text-white/60"><ActivityIcon className="h-3.5 w-3.5" /> RPC Latency</div>
-              <div className="text-emerald-400 text-xs">{isSyncing ? '--' : `${latency}ms`}</div>
-            </div>
-            <div className="flex justify-between items-center bg-black/40 p-2.5 rounded-sm border border-white/[0.02] text-[10px] font-mono">
-              <div className="flex items-center gap-2 text-white/60"><Database className="h-3.5 w-3.5" /> Chain ID</div>
-              <div className="text-white/80 text-xs">{info.chainId}</div>
-            </div>
-            <div className="flex justify-between items-center bg-black/40 p-2.5 rounded-sm border border-white/[0.02] text-[10px] font-mono">
-              <div className="flex items-center gap-2 text-white/60"><Network className="h-3.5 w-3.5" /> Block Height</div>
-              <div className="text-blue-400 text-xs">{isSyncing ? '--' : formatNumber(blockHeight, 0).replace(/,/g, '')}</div>
-            </div>
           </CardContent>
         </Card>
       </div>

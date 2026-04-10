@@ -328,6 +328,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         scheduler.state.trading_enabled = False
         logger.info("trading_restored_paused")
 
+    for venue_name, venue in venues.items():
+        paused_state = await db.system_state.get_system_state(f"venue_paused:{venue_name}")
+        if paused_state == "true":
+            venue.paused = True
+            logger.info("venue_restored_paused", venue=venue_name)
+
     scheduler.start()
 
     if settings.telegram_bot_token:
