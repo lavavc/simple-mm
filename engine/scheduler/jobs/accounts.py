@@ -68,6 +68,8 @@ class AccountJobs:
             balances = await self.context.account_manager.check_all_balances(self.context.token_contracts)
             self.state.last_balances = list(balances)
             for balance in balances:
+                if balance.needs_refill and self._lp_account_has_active_position(balance.role):
+                    continue
                 if balance.needs_refill:
                     logger.warning(
                         "account_needs_refill",
@@ -98,6 +100,16 @@ class AccountJobs:
             await self.broadcast_account_balances(list(balances))
         except Exception as exc:
             logger.error("balance_check_failed", error=str(exc))
+
+    def _lp_account_has_active_position(self, role: str) -> bool:
+        """Return True if role is an LP account whose tokens are deployed in an active LP position."""
+        if not role.endswith("-lp"):
+            return False
+        venue_name = role[: -len("-lp")]
+        manager = self.context.lp_managers.get(venue_name)
+        if manager is None:
+            return False
+        return manager.get_active_lp_position_snapshot() is not None
 
     async def auto_fund_quidax(self, adapter: Any, account_role_str: str) -> None:
         if not self.context.account_manager:
