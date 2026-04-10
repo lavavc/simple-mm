@@ -53,6 +53,7 @@ async def pause_venue_now(
     venue = get_runtime_venue(runtime, venue_name)
     if set_paused:
         venue.paused = True
+        await runtime.db.system_state.set_system_state(f"venue_paused:{venue_name}", "true")
 
     cancel_all_orders = getattr(venue, "cancel_all_orders", None)
     if callable(cancel_all_orders):
@@ -66,6 +67,7 @@ async def resume_venue_now(
 ) -> tuple[SyncVenueOutcome | None, str | None]:
     venue = get_runtime_venue(runtime, venue_name)
     venue.paused = False
+    await runtime.db.system_state.set_system_state(f"venue_paused:{venue_name}", "false")
     if not runtime.scheduler.trading_enabled:
         return None, "trading_paused"
 

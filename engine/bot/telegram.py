@@ -88,28 +88,46 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     runtime = _require_runtime()
     trading_state = await runtime.db.system_state.get_system_state("trading_enabled")
     trading = trading_state != "false"
+
     cb = False
-    arb_line = "❌ Not configured"
+    arb_status = None
     if runtime.arbitrage_engine:
-        s = await runtime.arbitrage_engine.get_status()
-        cb = s.circuit_breaker_active
-        if not s.enabled:
-            arb_line = "⏸ Detection paused"
-        elif not s.execute_cex_dex and not s.execute_dex_dex:
-            arb_line = "👁 Detection only (execution off)"
+        arb_status = await runtime.arbitrage_engine.get_status()
+        cb = arb_status.circuit_breaker_active
+
+    if not trading:
+        text = (
+            f"Engine: ⏸ Paused\n"
+            f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
+        )
+    else:
+        if arb_status is None:
+            arb_line = "❌ Not configured"
+        elif not arb_status.enabled:
+            arb_line = "⏸ Paused"
         else:
-            parts = []
-            if s.execute_cex_dex:
-                parts.append("cex-dex")
-            if s.execute_dex_dex:
-                parts.append("dex-dex")
-            arb_line = f"✅ Executing ({', '.join(parts)})"
-    text = (
-        f"*Engine Status*\n"
-        f"Trading: {'✅ Running' if trading else '⏸ Paused'}\n"
-        f"Arb: {arb_line}\n"
-        f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
-    )
+            arb_line = (
+                f"cex-dex {'✅' if arb_status.execute_cex_dex else '⏸'}"
+                f"  dex-dex {'✅' if arb_status.execute_dex_dex else '⏸'}"
+            )
+
+        lp_venue_names: list[str] = []
+        for key in ("quidax-lp", "quidax"):
+            if key in runtime.venues:
+                lp_venue_names.append(key)
+                break
+        lp_venue_names += list(runtime.lp_managers)
+        lp_parts = [
+            f"{name} {'⏸' if (v := runtime.venues.get(name)) and v.paused else '✅'}"
+            for name in lp_venue_names
+        ]
+
+        text = (
+            f"Engine: ✅ Running\n"
+            f"Arb: {arb_line}\n"
+            f"LP: {'  '.join(lp_parts)}\n"
+            f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
+        )
     await message.reply_text(text, parse_mode="Markdown")
 
 
