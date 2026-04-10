@@ -40,7 +40,7 @@ class _DummyCexVenue(_DummyVenue):
 
 def _make_runtime() -> EngineRuntime:
     db = SimpleNamespace(
-        system_state=SimpleNamespace(get_system_state=AsyncMock(return_value="true")),
+        system_state=SimpleNamespace(get_system_state=AsyncMock(return_value="true"), set_system_state=AsyncMock()),
         arbitrage=SimpleNamespace(get_arbitrage_opportunity=AsyncMock(return_value=None)),
     )
     scheduler = SimpleNamespace(
