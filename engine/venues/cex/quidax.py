@@ -537,16 +537,18 @@ class QuidaxAdapter(VenueAdapter):
             async with cancel_semaphore:
                 return await _cancel_order(order)
 
-        cancel_results = await asyncio.gather(*[_cancel_with_limit(order) for order in cancelable_orders])
-        for order_id, result in cancel_results:
-            if not order_id:
+        cancel_results: list[tuple[str | None, str]] = await asyncio.gather(
+            *[_cancel_with_limit(order) for order in cancelable_orders]
+        )
+        for cancelled_order_id, result in cancel_results:
+            if not cancelled_order_id:
                 continue
             if result == "terminal":
-                terminal_cancelled_ids.add(order_id)
+                terminal_cancelled_ids.add(cancelled_order_id)
             elif result == "pending":
-                pending_cancel_ids.add(order_id)
+                pending_cancel_ids.add(cancelled_order_id)
             else:
-                failed_cancel_ids.add(order_id)
+                failed_cancel_ids.add(cancelled_order_id)
 
         settling_cancel_ids = terminal_cancelled_ids | pending_cancel_ids
         remaining_settling_ids = set(settling_cancel_ids)
