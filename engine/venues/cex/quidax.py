@@ -198,8 +198,11 @@ class QuidaxAdapter(VenueAdapter):
             return rounded_price, rounded_amount
         return price, amount
 
-    async def _get_tracked_open_order_rows(self) -> list[dict[str, Any]]:
-        return await self._order_state.get_open_order_rows(self._api.fetch_order_by_id)
+    async def _get_tracked_open_order_rows(self, live_order_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        return await self._order_state.get_open_order_rows(
+            self._api.fetch_order_by_id,
+            live_order_ids=live_order_ids,
+        )
 
     async def _track_open_order(
         self,
@@ -335,7 +338,9 @@ class QuidaxAdapter(VenueAdapter):
                 if order_market_matches(order, self.market) and is_order_open(order)
             ]
             if open_rows:
-                tracked_rows = await self._get_tracked_open_order_rows()
+                tracked_rows = await self._get_tracked_open_order_rows(
+                    live_order_ids={str(order.get("id", "")) for order in open_rows if order.get("id")}
+                )
                 tracked_by_id = {str(order.get("id", "")): order for order in tracked_rows}
                 for order in open_rows:
                     tracked_by_id.pop(str(order.get("id", "")), None)

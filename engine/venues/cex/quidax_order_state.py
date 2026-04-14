@@ -100,14 +100,16 @@ class QuidaxTrackedOrderState:
     async def get_open_order_rows(
         self,
         fetch_order_by_id: Callable[[str], Awaitable[tuple[str, dict[str, Any] | None]]],
+        live_order_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         await self.ensure_loaded()
         removed_pending_ids: set[str] = set()
         status_updates: dict[str, str] = {}
+        known_live_ids = live_order_ids or set()
 
         for tracked in self._tracked_open_orders:
             order_id = str(tracked.get("id", ""))
-            if not order_id or str(tracked.get("status") or "").lower() != "pending_cancel":
+            if not order_id or order_id in known_live_ids:
                 continue
 
             resolution, order = await fetch_order_by_id(order_id)

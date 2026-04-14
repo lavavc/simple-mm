@@ -908,6 +908,42 @@ class TestDexArbCurveStream:
         sched.market_jobs._schedule_dex_bootstrap.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_gas_update_failure_with_cached_values_only_logs(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.market_jobs._schedule_dex_bootstrap = MagicMock()
+
+        with patch("engine.market.gas_oracle.update", AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch("engine.market.gas_oracle.gas_usd_base", return_value=Decimal("1")), \
+             patch("engine.market.gas_oracle.gas_usd_bsc", return_value=Decimal("1")):
+            await sched._update_gas_oracle()
+
+        sched.market_jobs._schedule_dex_bootstrap.assert_not_called()
+        assert broadcasts == []
+
+    @pytest.mark.asyncio
+    async def test_gas_update_failure_without_cached_values_broadcasts_critical(self):
+        broadcasts = []
+        db = MockDB()
+        sched = _build_scheduler({}, broadcasts, db)
+        sched.market_jobs._schedule_dex_bootstrap = MagicMock()
+
+        with patch("engine.market.gas_oracle.update", AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch("engine.market.gas_oracle.gas_usd_base", return_value=None), \
+             patch("engine.market.gas_oracle.gas_usd_bsc", return_value=None):
+            await sched._update_gas_oracle()
+
+        sched.market_jobs._schedule_dex_bootstrap.assert_not_called()
+        assert broadcasts == [
+            {
+                "type": "alert",
+                "severity": "critical",
+                "message": "Gas oracle fetch failed — trading blocked until prices recover. (boom)",
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_skips_dex_recalc_when_ws_healthy(self):
         broadcasts = []
         db = MockDB()
