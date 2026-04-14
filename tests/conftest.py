@@ -251,6 +251,7 @@ def seeded_pool_cache(monkeypatch):
     from engine.market import gas_oracle as _go
     monkeypatch.setitem(_go._state, "gas_usd_base", Decimal("0.003"))
     monkeypatch.setitem(_go._state, "gas_usd_bsc", Decimal("0.005"))
+    monkeypatch.setitem(_go._state, "last_updated_monotonic", time.monotonic())
 
     return {"uni-base": base_key, "uni-bsc": bsc_key, "cache": fake_cache}
 

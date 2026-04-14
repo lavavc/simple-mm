@@ -428,6 +428,32 @@ class QuidaxAdapter(VenueAdapter):
             return 0
 
         client = await self._get_client()
+        pending_missing_marker_key = "_tracked_missing_lookup_seen_once"
+        cancelable_orders: list[dict[str, Any]] = []
+
+        for order in orders:
+            order_id = str(order.get("id", ""))
+            if not order_id:
+                continue
+            if not order.get(pending_missing_marker_key):
+                cancelable_orders.append(order)
+                continue
+
+            resolution, confirmed_order = await self._api.fetch_order_by_id(order_id)
+            if resolution == "missing":
+                await self._remove_tracked_open_order(order_id)
+                continue
+            if resolution == "found" and isinstance(confirmed_order, dict):
+                if is_order_terminal(confirmed_order):
+                    await self._remove_tracked_open_order(order_id)
+                    continue
+                cancelable_orders.append(confirmed_order)
+                continue
+            cancelable_orders.append(order)
+
+        if not cancelable_orders:
+            logger.info("cancelled_orders", count=0, total=len(orders), pending=0, remaining=0)
+            return 0
 
         terminal_cancelled_ids: set[str] = set()
         pending_cancel_ids: set[str] = set()
@@ -505,13 +531,13 @@ class QuidaxAdapter(VenueAdapter):
                 logger.warning("cancel_order_failed", order_id=order_id, error=str(e))
             return order_id, "failed"
 
-        cancel_semaphore = asyncio.Semaphore(min(_ORDER_CANCEL_CONCURRENCY, len(orders)))
+        cancel_semaphore = asyncio.Semaphore(min(_ORDER_CANCEL_CONCURRENCY, len(cancelable_orders)))
 
         async def _cancel_with_limit(order: dict[str, Any]) -> tuple[str | None, str]:
             async with cancel_semaphore:
                 return await _cancel_order(order)
 
-        cancel_results = await asyncio.gather(*[_cancel_with_limit(order) for order in orders])
+        cancel_results = await asyncio.gather(*[_cancel_with_limit(order) for order in cancelable_orders])
         for order_id, result in cancel_results:
             if not order_id:
                 continue

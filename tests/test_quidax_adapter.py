@@ -562,7 +562,7 @@ async def test_get_open_orders_clears_pending_cancel_tracked_orders_when_order_i
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_clears_wait_tracked_orders_when_order_is_missing():
+async def test_get_open_orders_marks_wait_tracked_orders_missing_once_before_pruning():
     state_store = _FakeSystemStateStore()
     state_store.values["quidax:tracked_open_orders"] = json.dumps(
         [
@@ -591,11 +591,53 @@ async def test_get_open_orders_clears_wait_tracked_orders_when_order_is_missing(
     fake_client.get = _get  # type: ignore[method-assign]
     adapter._get_client = AsyncMock(return_value=fake_client)
 
-    orders = await adapter.get_open_orders()
-    remaining = await adapter._get_tracked_open_order_rows()
+    first_orders = await adapter.get_open_orders()
+    first_state = json.loads(state_store.values["quidax:tracked_open_orders"])
+    second_orders = await adapter.get_open_orders()
+    second_remaining = await adapter._get_tracked_open_order_rows()
 
-    assert orders == []
-    assert remaining == []
+    assert [order["id"] for order in first_orders] == ["ord-1"]
+    assert [order["id"] for order in first_state] == ["ord-1"]
+    assert first_state[0]["_missing_lookup_seen_once"] is True
+    assert second_orders == []
+    assert second_remaining == []
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_keeps_wait_tracked_orders_when_missing_timestamp_is_unknown():
+    state_store = _FakeSystemStateStore()
+    state_store.values["quidax:tracked_open_orders"] = json.dumps(
+        [
+            {
+                "id": "ord-1",
+                "market": "usdtcngn",
+                "side": "sell",
+                "status": "wait",
+                "price": "1445.11",
+                "volume": "1.43",
+                "remaining_volume": "1.43",
+                "executed_volume": "0",
+            }
+        ]
+    )
+    adapter = _make_adapter(system_state_store=state_store)
+    fake_client = _FakeClient({"status": "success", "data": []})
+
+    async def _get(url: str, *_args, **kwargs) -> _FakeResponse:
+        fake_client.get_calls.append(kwargs.get("params"))
+        if "/orders/ord-1" in url:
+            return _FakeResponse({}, status_code=404)
+        return _FakeResponse({"status": "success", "data": []})
+
+    fake_client.get = _get  # type: ignore[method-assign]
+    adapter._get_client = AsyncMock(return_value=fake_client)
+
+    orders = await adapter.get_open_orders()
+    tracked_state = json.loads(state_store.values["quidax:tracked_open_orders"])
+
+    assert [order["id"] for order in orders] == ["ord-1"]
+    assert [order["id"] for order in tracked_state] == ["ord-1"]
+    assert tracked_state[0]["_missing_lookup_seen_once"] is True
 
 
 @pytest.mark.asyncio

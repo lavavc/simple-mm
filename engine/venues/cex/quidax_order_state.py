@@ -18,6 +18,8 @@ logger = structlog.get_logger()
 class QuidaxTrackedOrderState:
     """Persist and reconcile locally tracked Quidax open orders."""
 
+    _MISSING_LOOKUP_SEEN_ONCE_KEY = "_missing_lookup_seen_once"
+
     def __init__(
         self,
         *,
@@ -94,8 +96,24 @@ class QuidaxTrackedOrderState:
             "remaining_volume": tracked.get("remaining_volume") or tracked.get("volume", "0"),
             "executed_volume": tracked.get("executed_volume", "0"),
             "created_at": tracked.get("created_at"),
+            "_tracked_missing_lookup_seen_once": self._missing_lookup_seen_once(tracked),
             "_tracked_local": True,
         }
+
+    def _missing_lookup_seen_once(self, tracked: dict[str, Any]) -> bool:
+        return bool(tracked.get(self._MISSING_LOOKUP_SEEN_ONCE_KEY))
+
+    def _mark_missing_lookup_seen_once(self, tracked: dict[str, Any]) -> bool:
+        if self._missing_lookup_seen_once(tracked):
+            return False
+        tracked[self._MISSING_LOOKUP_SEEN_ONCE_KEY] = True
+        return True
+
+    def _clear_missing_lookup_seen_once(self, tracked: dict[str, Any]) -> bool:
+        if self._MISSING_LOOKUP_SEEN_ONCE_KEY not in tracked:
+            return False
+        tracked.pop(self._MISSING_LOOKUP_SEEN_ONCE_KEY, None)
+        return True
 
     async def get_open_order_rows(
         self,
@@ -105,6 +123,7 @@ class QuidaxTrackedOrderState:
         await self.ensure_loaded()
         removed_pending_ids: set[str] = set()
         status_updates: dict[str, str] = {}
+        changed = False
         known_live_ids = live_order_ids or set()
 
         for tracked in self._tracked_open_orders:
@@ -114,7 +133,12 @@ class QuidaxTrackedOrderState:
 
             resolution, order = await fetch_order_by_id(order_id)
             if resolution == "missing":
-                removed_pending_ids.add(order_id)
+                status = str(tracked.get("status") or "").lower()
+                if status == "pending_cancel" or self._missing_lookup_seen_once(tracked):
+                    removed_pending_ids.add(order_id)
+                    continue
+                if self._mark_missing_lookup_seen_once(tracked):
+                    changed = True
                 continue
 
             if resolution == "found" and isinstance(order, dict):
@@ -122,11 +146,13 @@ class QuidaxTrackedOrderState:
                     removed_pending_ids.add(order_id)
                     continue
 
+                if self._clear_missing_lookup_seen_once(tracked):
+                    changed = True
+
                 remote_status = str(order.get("state") or order.get("status") or "").lower()
                 if remote_status and remote_status != str(tracked.get("status") or "").lower():
                     status_updates[order_id] = remote_status
 
-        changed = False
         if removed_pending_ids:
             self._tracked_open_orders = [
                 order for order in self._tracked_open_orders if str(order.get("id", "")) not in removed_pending_ids
@@ -229,6 +255,9 @@ class QuidaxTrackedOrderState:
             if is_order_terminal(row):
                 removed_ids.add(order_id)
                 continue
+
+            if self._clear_missing_lookup_seen_once(order):
+                changed = True
 
             status = str(row.get("state") or row.get("status") or "").lower()
             if status and status != str(order.get("status") or "").lower():
