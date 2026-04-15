@@ -166,7 +166,7 @@ class TradingScheduler:
 
         self.scheduler.add_job(
             self._update_gas_oracle,
-            IntervalTrigger(seconds=30),
+            IntervalTrigger(seconds=60),
             id="gas_oracle_update",
             replace_existing=True,
             max_instances=1,

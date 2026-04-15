@@ -198,8 +198,11 @@ class QuidaxAdapter(VenueAdapter):
             return rounded_price, rounded_amount
         return price, amount
 
-    async def _get_tracked_open_order_rows(self) -> list[dict[str, Any]]:
-        return await self._order_state.get_open_order_rows(self._api.fetch_order_by_id)
+    async def _get_tracked_open_order_rows(self, live_order_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        return await self._order_state.get_open_order_rows(
+            self._api.fetch_order_by_id,
+            live_order_ids=live_order_ids,
+        )
 
     async def _track_open_order(
         self,
@@ -335,7 +338,9 @@ class QuidaxAdapter(VenueAdapter):
                 if order_market_matches(order, self.market) and is_order_open(order)
             ]
             if open_rows:
-                tracked_rows = await self._get_tracked_open_order_rows()
+                tracked_rows = await self._get_tracked_open_order_rows(
+                    live_order_ids={str(order.get("id", "")) for order in open_rows if order.get("id")}
+                )
                 tracked_by_id = {str(order.get("id", "")): order for order in tracked_rows}
                 for order in open_rows:
                     tracked_by_id.pop(str(order.get("id", "")), None)
@@ -423,6 +428,32 @@ class QuidaxAdapter(VenueAdapter):
             return 0
 
         client = await self._get_client()
+        pending_missing_marker_key = "_tracked_missing_lookup_seen_once"
+        cancelable_orders: list[dict[str, Any]] = []
+
+        for order in orders:
+            order_id = str(order.get("id", ""))
+            if not order_id:
+                continue
+            if not order.get(pending_missing_marker_key):
+                cancelable_orders.append(order)
+                continue
+
+            resolution, confirmed_order = await self._api.fetch_order_by_id(order_id)
+            if resolution == "missing":
+                await self._remove_tracked_open_order(order_id)
+                continue
+            if resolution == "found" and isinstance(confirmed_order, dict):
+                if is_order_terminal(confirmed_order):
+                    await self._remove_tracked_open_order(order_id)
+                    continue
+                cancelable_orders.append(confirmed_order)
+                continue
+            cancelable_orders.append(order)
+
+        if not cancelable_orders:
+            logger.info("cancelled_orders", count=0, total=len(orders), pending=0, remaining=0)
+            return 0
 
         terminal_cancelled_ids: set[str] = set()
         pending_cancel_ids: set[str] = set()
@@ -500,22 +531,24 @@ class QuidaxAdapter(VenueAdapter):
                 logger.warning("cancel_order_failed", order_id=order_id, error=str(e))
             return order_id, "failed"
 
-        cancel_semaphore = asyncio.Semaphore(min(_ORDER_CANCEL_CONCURRENCY, len(orders)))
+        cancel_semaphore = asyncio.Semaphore(min(_ORDER_CANCEL_CONCURRENCY, len(cancelable_orders)))
 
         async def _cancel_with_limit(order: dict[str, Any]) -> tuple[str | None, str]:
             async with cancel_semaphore:
                 return await _cancel_order(order)
 
-        cancel_results = await asyncio.gather(*[_cancel_with_limit(order) for order in orders])
-        for order_id, result in cancel_results:
-            if not order_id:
+        cancel_results: list[tuple[str | None, str]] = await asyncio.gather(
+            *[_cancel_with_limit(order) for order in cancelable_orders]
+        )
+        for cancelled_order_id, result in cancel_results:
+            if not cancelled_order_id:
                 continue
             if result == "terminal":
-                terminal_cancelled_ids.add(order_id)
+                terminal_cancelled_ids.add(cancelled_order_id)
             elif result == "pending":
-                pending_cancel_ids.add(order_id)
+                pending_cancel_ids.add(cancelled_order_id)
             else:
-                failed_cancel_ids.add(order_id)
+                failed_cancel_ids.add(cancelled_order_id)
 
         settling_cancel_ids = terminal_cancelled_ids | pending_cancel_ids
         remaining_settling_ids = set(settling_cancel_ids)

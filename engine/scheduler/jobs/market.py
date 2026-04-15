@@ -39,13 +39,14 @@ class MarketJobs:
             self._schedule_dex_bootstrap()
         except RuntimeError as exc:
             logger.error("gas_oracle_update_failed", error=str(exc))
-            self.context.broadcast(
-                {
-                    "type": "alert",
-                    "severity": "critical",
-                    "message": f"Gas oracle fetch failed — trading blocked until prices recover. ({exc})",
-                }
-            )
+            if gas_oracle.gas_usd_base() is None or gas_oracle.gas_usd_bsc() is None:
+                self.context.broadcast(
+                    {
+                        "type": "alert",
+                        "severity": "critical",
+                        "message": f"Gas oracle fetch failed — trading blocked until prices recover. ({exc})",
+                    }
+                )
 
     async def update_price(self) -> None:
         try:

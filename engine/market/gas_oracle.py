@@ -10,8 +10,11 @@ Requires ALCHEMY_KEY in settings for native token prices.
 Gas prices are fetched from each chain via eth_gasPrice.
 """
 
-import asyncio
 from decimal import Decimal
+import asyncio
+import time
+from typing import Any
+
 import structlog
 import httpx
 from web3 import AsyncWeb3
@@ -23,14 +26,27 @@ GAS_UNITS_BASE: int = 200_000   # Uniswap V4 on Base
 GAS_UNITS_BSC: int = 200_000    # Uniswap V4 on BSC
 
 # State is empty until first successful fetch. None means "not yet fetched".
-_state: dict[str, Decimal] = {}
+_state: dict[str, Any] = {}
+
+STALENESS_LIMIT_SECONDS = 300
+
+
+def _is_fresh() -> bool:
+    last_updated = _state.get("last_updated_monotonic")
+    if not isinstance(last_updated, (int, float)):
+        return False
+    return (time.monotonic() - float(last_updated)) <= STALENESS_LIMIT_SECONDS
 
 
 def gas_usd_base() -> Decimal | None:
+    if not _is_fresh():
+        return None
     return _state.get("gas_usd_base")
 
 
 def gas_usd_bsc() -> Decimal | None:
+    if not _is_fresh():
+        return None
     return _state.get("gas_usd_bsc")
 
 
@@ -71,6 +87,7 @@ async def update() -> None:
     _state["bnb_usd"] = bnb_usd
     _state["gas_usd_base"] = gas_gwei_base * GAS_UNITS_BASE / Decimal(10**9) * eth_usd
     _state["gas_usd_bsc"]  = gas_gwei_bsc  * GAS_UNITS_BSC  / Decimal(10**9) * bnb_usd
+    _state["last_updated_monotonic"] = time.monotonic()
 
     logger.info(
         "gas_oracle_updated",
