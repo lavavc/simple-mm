@@ -114,7 +114,7 @@ def _public_order_summary(order: VenueOrderSummary) -> PublicVenueOrderSummary:
 async def _get_venue_order_summaries(venue: str, venue_adapter: Any) -> list[VenueOrderSummary]:
     get_open_order_summaries = getattr(venue_adapter, "get_open_order_summaries", None)
     if callable(get_open_order_summaries):
-        return await get_open_order_summaries()
+        return cast(list[VenueOrderSummary], await get_open_order_summaries())
 
     get_open_orders = getattr(venue_adapter, "get_open_orders", None)
     if callable(get_open_orders):
