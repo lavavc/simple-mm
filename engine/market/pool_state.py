@@ -12,10 +12,22 @@ import structlog
 from web3 import AsyncWeb3
 
 from engine.config import settings
-from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+from engine.types import V4PoolReadConfig
 from engine.venues.dex.pool_reader import PoolReadConfig
-from engine.venues.dex.shared import V4PoolReadConfig
 from engine.web3_utils import as_hexstr
+
+# AssetChain is watch-only; config lives here since pool_state owns the seeding logic
+ASSETCHAIN_POOL_READ_CONFIG = PoolReadConfig(
+    rpc_url=settings.assetchain_rpc_url,
+    pool_address=settings.assetchain_pool_address,
+    token0_address=settings.usdt_assetchain_address,
+    token1_address=settings.cngn_assetchain_address,
+    token0_symbol="USDT",
+    token1_symbol="cNGN",
+    token0_decimals=18,
+    token1_decimals=6,
+    invert_price=True,
+)
 
 logger = structlog.get_logger()
 getcontext().prec = 50

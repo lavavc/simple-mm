@@ -590,7 +590,7 @@ def create_venue_aggregator(
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
         
-    from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
+    from engine.market.pool_state import ASSETCHAIN_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 

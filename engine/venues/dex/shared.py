@@ -105,24 +105,6 @@ class PositionState:
     in_range: bool
 
 
-@dataclass
-class V4PoolReadConfig:
-    """Minimal config for read-only V4 pool price fetching via StateView."""
-
-    pool_manager: str
-    state_view: str
-    pool_address: str
-    rpc_url: str
-    token0_address: str
-    token1_address: str
-    token0_symbol: str
-    token1_symbol: str
-    token0_decimals: int
-    token1_decimals: int
-    invert_price: bool = False
-    chain_id_str: str = ""
-
-
 def sqrt_price_x96_to_decimal(
     sqrt_price_x96: int,
     token0_decimals: int,

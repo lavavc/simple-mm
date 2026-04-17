@@ -2,7 +2,7 @@
 
 import dataclasses
 
-from .shared import V4PoolReadConfig
+from engine.types import V4PoolReadConfig
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 from engine.config import DexParams
 from engine.config import settings, Settings

@@ -6,14 +6,13 @@ engine/api/schemas.py contains only HTTP-specific response wrappers.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation as _InvalidOperation
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from engine.config import settings
-
-from decimal import InvalidOperation as _InvalidOperation
 
 
 def coerce_decimal(value: Any) -> Optional[Decimal]:
@@ -26,6 +25,27 @@ def coerce_decimal(value: Any) -> Optional[Decimal]:
         return Decimal(str(value))
     except (ValueError, _InvalidOperation):
         return None
+
+
+# === Pool read configs ===
+
+
+@dataclass
+class V4PoolReadConfig:
+    """Minimal config for read-only V4 pool price fetching via StateView."""
+
+    pool_manager: str
+    state_view: str
+    pool_address: str
+    rpc_url: str
+    token0_address: str
+    token1_address: str
+    token0_symbol: str
+    token1_symbol: str
+    token0_decimals: int
+    token1_decimals: int
+    invert_price: bool = False
+    chain_id_str: str = ""
 
 
 # === Venue / position types ===
