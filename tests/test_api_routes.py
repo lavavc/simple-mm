@@ -1,5 +1,6 @@
 """API route tests for runtime-based dependency resolution."""
 
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,7 +16,7 @@ from engine.api.routes import venues as venue_routes
 from engine.config import DexParams
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
-from engine.types import ArbitrageOpportunity, CexParams, LPPosition, Position
+from engine.types import ArbitrageOpportunity, CexParams, LPPosition, Position, VenueOrderSummary
 
 
 class _DummyVenue:
@@ -39,8 +40,11 @@ class _DummyCexVenue(_DummyVenue):
 
 
 def _make_runtime() -> EngineRuntime:
+    async def _get_system_state(key: str) -> str | None:
+        return "true" if key == "trading_enabled" else None
+
     db = SimpleNamespace(
-        system_state=SimpleNamespace(get_system_state=AsyncMock(return_value="true"), set_system_state=AsyncMock()),
+        system_state=SimpleNamespace(get_system_state=AsyncMock(side_effect=_get_system_state), set_system_state=AsyncMock()),
         arbitrage=SimpleNamespace(get_arbitrage_opportunity=AsyncMock(return_value=None)),
     )
     scheduler = SimpleNamespace(
@@ -106,8 +110,88 @@ def test_status_route_reads_db_and_runtime_services():
     assert body["trading_enabled"] is True
     assert body["last_price_update"] == 123000
     assert body["venues"][0]["name"] == "quidax"
-    runtime.db.system_state.get_system_state.assert_awaited_once_with("trading_enabled")
+    runtime.db.system_state.get_system_state.assert_any_await("trading_enabled")
 
+
+def test_status_route_includes_last_ladder_anchor_price_from_system_state():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "quidax": _DummyCexVenue(CexParams(anchor_source="quidax")),
+    }
+    runtime.db.system_state.get_system_state = AsyncMock(
+        side_effect=lambda key: (
+            json.dumps({"reference_price_ngn": "1408.75", "updated_at_ms": 123})
+            if key == "quidax:last_ladder_anchor_price_ngn"
+            else ("true" if key == "trading_enabled" else None)
+        )
+    )
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1436.50"))
+    )
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    venue_status = next(v for v in response.json()["venues"] if v["name"] == "quidax")
+    assert venue_status["last_ladder_anchor_price_ngn"] == "1408.75"
+
+
+def test_status_route_includes_quidax_anchor_price_from_scheduler():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "quidax": _DummyCexVenue(CexParams(anchor_source="quidax")),
+    }
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1436.50"))
+    )
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    venue_status = next(v for v in response.json()["venues"] if v["name"] == "quidax")
+    assert venue_status["anchor_price_ngn"] == "1436.50"
+
+
+def test_public_quidax_orders_route_omits_order_ids():
+    runtime = _make_runtime()
+    runtime.venues = {
+        "quidax": SimpleNamespace(
+            enabled=True,
+            paused=False,
+            market="usdtcngn",
+            params=CexParams(),
+            get_open_order_summaries=AsyncMock(
+                return_value=[
+                    VenueOrderSummary(
+                        id="order-123",
+                        market="usdtcngn",
+                        side="sell",
+                        status="wait",
+                        price=Decimal("1445.48"),
+                        volume=Decimal("1.43"),
+                        remaining_volume=Decimal("1.43"),
+                        executed_volume=Decimal("0"),
+                        notional=Decimal("2067.0364"),
+                        created_at=123000,
+                    )
+                ]
+            ),
+        )
+    }
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/api/venues/quidax/orders/public")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["orders"][0]["market"] == "usdtcngn"
+    assert "id" not in body["orders"][0]
 
 
 def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():

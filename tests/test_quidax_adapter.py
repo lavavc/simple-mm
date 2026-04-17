@@ -167,6 +167,43 @@ async def test_sync_order_ladder_raises_when_no_orders_are_accepted():
 
 
 @pytest.mark.asyncio
+async def test_sync_order_ladder_broadcasts_snapshot_before_refusing_stacking():
+    broadcasts: list[dict[str, object]] = []
+    adapter = _make_adapter(
+        CexParams(
+            ladder_enabled=True,
+            spread_offset_ngn=50,
+            ladder_step_ngn=1,
+            ladder_levels_per_side=1,
+            order_size_cngn=Decimal("2000"),
+            order_size_usdt=Decimal("10"),
+        ),
+        broadcast=broadcasts.append,
+    )
+    adapter.get_open_orders = AsyncMock(
+        side_effect=[
+            [
+                {"id": "old-1", "side": "buy", "price": "1300.00", "volume": "1.53"},
+                {"id": "old-2", "side": "sell", "price": "1500.00", "volume": "1.42"},
+            ],
+            [
+                {"id": "old-1", "side": "buy", "price": "1300.00", "volume": "1.53"},
+            ],
+        ]
+    )
+    adapter.cancel_all_orders = AsyncMock()
+    adapter.place_order = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="prior open orders remain: 1 still open"):
+        await adapter.sync_order_ladder(Decimal("1400"))
+
+    assert broadcasts and broadcasts[-1]["type"] == "quidax_open_orders"
+    payload = broadcasts[-1]["data"]
+    assert payload["count"] == 1
+    assert all("id" not in order for order in payload["orders"])
+
+
+@pytest.mark.asyncio
 async def test_sync_order_ladder_refuses_to_stack_when_open_orders_remain():
     adapter = _make_adapter(
         CexParams(
@@ -190,6 +227,7 @@ async def test_sync_order_ladder_refuses_to_stack_when_open_orders_remain():
 
 @pytest.mark.asyncio
 async def test_sync_order_ladder_skips_requote_when_existing_orders_are_within_threshold():
+    broadcasts: list[dict[str, object]] = []
     adapter = _make_adapter(
         CexParams(
             ladder_enabled=True,
@@ -209,15 +247,21 @@ async def test_sync_order_ladder_skips_requote_when_existing_orders_are_within_t
     )
     adapter.cancel_all_orders = AsyncMock()
     adapter.place_order = AsyncMock()
+    adapter._broadcast = broadcasts.append
 
     await adapter.sync_order_ladder(Decimal("1395.56"))
 
     adapter.cancel_all_orders.assert_not_awaited()
     adapter.place_order.assert_not_awaited()
+    assert broadcasts and broadcasts[-1]["type"] == "quidax_open_orders"
+    payload = broadcasts[-1]["data"]
+    assert payload["count"] == 2
+    assert all("id" not in order for order in payload["orders"])
 
 
 @pytest.mark.asyncio
 async def test_sync_order_ladder_skips_during_requote_cooldown():
+    broadcasts: list[dict[str, object]] = []
     adapter = _make_adapter(
         CexParams(
             ladder_enabled=True,
@@ -239,11 +283,16 @@ async def test_sync_order_ladder_skips_during_requote_cooldown():
     adapter.cancel_all_orders = AsyncMock()
     adapter.place_order = AsyncMock()
     adapter._last_ladder_requote_at = time.time()
+    adapter._broadcast = broadcasts.append
 
     await adapter.sync_order_ladder(Decimal("1395.56"))
 
     adapter.cancel_all_orders.assert_not_awaited()
     adapter.place_order.assert_not_awaited()
+    assert broadcasts and broadcasts[-1]["type"] == "quidax_open_orders"
+    payload = broadcasts[-1]["data"]
+    assert payload["count"] == 2
+    assert all("id" not in order for order in payload["orders"])
 
 
 @pytest.mark.asyncio
@@ -270,6 +319,30 @@ async def test_sync_order_ladder_broadcasts_warning_when_anchor_move_requotes():
                 {"id": "b", "side": "sell", "price": "1500.00", "volume": "1.42"},
             ],
             [],
+            [
+                {
+                    "id": "new-buy",
+                    "market": {"id": "usdtcngn"},
+                    "side": "buy",
+                    "status": "wait",
+                    "price": "1345.00",
+                    "volume": {"amount": "1.48"},
+                    "remaining_volume": {"amount": "1.48"},
+                    "executed_volume": {"amount": "0"},
+                    "created_at": 1712521000000,
+                },
+                {
+                    "id": "new-sell",
+                    "market": {"id": "usdtcngn"},
+                    "side": "sell",
+                    "status": "wait",
+                    "price": "1445.00",
+                    "volume": {"amount": "1.42"},
+                    "remaining_volume": {"amount": "1.42"},
+                    "executed_volume": {"amount": "0"},
+                    "created_at": 1712521001000,
+                },
+            ],
         ]
     )
     adapter.cancel_all_orders = AsyncMock()
@@ -283,15 +356,137 @@ async def test_sync_order_ladder_broadcasts_warning_when_anchor_move_requotes():
     assert alert_kwargs["category"] == "cex"
     assert "anchor moved" in alert_kwargs["message"]
     assert "1395.56" in alert_kwargs["message"]
-    assert broadcasts == [
-        {
-            "type": "alert",
-            "severity": "warning",
-            "message": alert_kwargs["message"],
-            "dedupe_key": alert_kwargs["dedupe_key"],
-            "cooldown_s": 30,
-        }
-    ]
+    assert broadcasts[0] == {
+        "type": "quidax_open_orders",
+        "data": {"venue": "quidax", "market": "usdtcngn", "count": 0, "orders": []},
+    }
+    assert broadcasts[1]["type"] == "quidax_open_orders"
+    assert broadcasts[1]["data"]["count"] == 2
+    assert all("id" not in order for order in broadcasts[1]["data"]["orders"])
+    assert broadcasts[2] == {
+        "type": "alert",
+        "severity": "warning",
+        "message": alert_kwargs["message"],
+        "dedupe_key": alert_kwargs["dedupe_key"],
+        "cooldown_s": 30,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_order_ladder_broadcasts_empty_snapshot_before_requote_failure():
+    broadcasts: list[dict[str, object]] = []
+    adapter = _make_adapter(
+        CexParams(
+            ladder_enabled=True,
+            spread_offset_ngn=50,
+            ladder_step_ngn=1,
+            ladder_levels_per_side=1,
+            anchor_requote_threshold_bps=10,
+            order_size_cngn=Decimal("2000"),
+            order_size_usdt=Decimal("10"),
+        ),
+        broadcast=broadcasts.append,
+    )
+    adapter.get_open_orders = AsyncMock(
+        side_effect=[
+            [
+                {"id": "a", "side": "buy", "price": "1300.00", "volume": "1.53"},
+                {"id": "b", "side": "sell", "price": "1500.00", "volume": "1.42"},
+            ],
+            [],
+        ]
+    )
+    adapter.cancel_all_orders = AsyncMock()
+    adapter.place_order = AsyncMock(side_effect=ValueError("rejected"))
+
+    with pytest.raises(RuntimeError, match="buy@1350.00:rejected; sell@1450.00:rejected"):
+        await adapter.sync_order_ladder(Decimal("1400"))
+
+    assert broadcasts and broadcasts[0]["type"] == "quidax_open_orders"
+    payload = broadcasts[0]["data"]
+    assert payload["count"] == 0
+    assert payload["orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_sync_order_ladder_broadcasts_sanitized_open_orders_snapshot():
+    broadcasts: list[dict[str, object]] = []
+    adapter = _make_adapter(
+        CexParams(
+            ladder_enabled=True,
+            spread_offset_ngn=3,
+            ladder_step_ngn=2,
+            ladder_levels_per_side=1,
+            order_size_cngn=Decimal("2000"),
+            order_size_usdt=Decimal("10"),
+        ),
+        broadcast=broadcasts.append,
+    )
+    adapter.get_open_orders = AsyncMock(
+        side_effect=[
+            [],
+            [
+                {
+                    "id": "buy-1",
+                    "market": {"id": "usdtcngn"},
+                    "side": "buy",
+                    "status": "wait",
+                    "price": "1397.00",
+                    "volume": {"amount": "1.43"},
+                    "remaining_volume": {"amount": "1.43"},
+                    "executed_volume": {"amount": "0"},
+                    "created_at": 1712520000000,
+                },
+                {
+                    "id": "sell-1",
+                    "market": {"id": "usdtcngn"},
+                    "side": "sell",
+                    "status": "wait",
+                    "price": "1403.00",
+                    "volume": {"amount": "1.42"},
+                    "remaining_volume": {"amount": "1.42"},
+                    "executed_volume": {"amount": "0"},
+                    "created_at": 1712520001000,
+                },
+            ],
+        ]
+    )
+    adapter.cancel_all_orders = AsyncMock()
+    adapter.place_order = AsyncMock()
+
+    await adapter.sync_order_ladder(Decimal("1400"))
+
+    assert broadcasts and broadcasts[-1]["type"] == "quidax_open_orders"
+    payload = broadcasts[-1]["data"]
+    assert payload["venue"] == "quidax"
+    assert payload["count"] == 2
+    assert all("id" not in order for order in payload["orders"])
+    assert [order["side"] for order in payload["orders"]] == ["sell", "buy"]
+
+
+@pytest.mark.asyncio
+async def test_sync_order_ladder_persists_last_ladder_anchor_price():
+    state_store = _FakeSystemStateStore()
+    adapter = _make_adapter(
+        CexParams(
+            ladder_enabled=True,
+            spread_offset_ngn=3,
+            ladder_step_ngn=2,
+            ladder_levels_per_side=1,
+            order_size_cngn=Decimal("2000"),
+            order_size_usdt=Decimal("10"),
+        ),
+        system_state_store=state_store,
+    )
+    adapter.get_open_orders = AsyncMock(return_value=[])
+    adapter.cancel_all_orders = AsyncMock()
+    adapter.place_order = AsyncMock()
+
+    await adapter.sync_order_ladder(Decimal("1400"))
+
+    persisted = json.loads(state_store.values["quidax:last_ladder_anchor_price_ngn"])
+    assert persisted["reference_price_ngn"] == "1400"
+    assert int(persisted["updated_at_ms"]) > 0
 
 
 @pytest.mark.asyncio

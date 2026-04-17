@@ -14,6 +14,7 @@ RETAINED_EVENT_TYPES = {
     "quidax_dex_arb_curve",
     "quidax_dex_optimal_arb",
     "quidax_orderbook_depth",
+    "quidax_open_orders",
     "venue_prices",
     "positions",
     "portfolio_delta",
@@ -57,6 +58,14 @@ class ConnectionManager:
 
     def _retained_event_key(self, event: dict[str, Any]) -> str | None:
         event_type = event.get("type")
+        if event_type == "quidax_open_orders":
+            data = event.get("data")
+            if isinstance(data, dict):
+                venue = str(data.get("venue") or "").strip()
+                if venue:
+                    return f"{event_type}:{venue}"
+            return str(event_type)
+
         if event_type not in RETAINED_EVENT_TYPES:
             return None
 

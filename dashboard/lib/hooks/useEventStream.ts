@@ -25,6 +25,7 @@ const EVENT_TO_KEYS: Record<string, string[][]> = {
   arbitrage_opportunity: [['opportunities'], ['arbitrageStatus']],
   arbitrage_completed: [['opportunities'], ['arbitrageStatus']],
   quidax_orderbook_depth: [['quidaxDepth']],
+  quidax_open_orders: [['status']],
   action: [], // logged only — no cache to invalidate
 };
 
@@ -78,6 +79,10 @@ export function useEventStream() {
 
         if (event.type === 'quidax_orderbook_depth' && event.data) {
           qc.setQueryData(['quidaxDepth'], event.data);
+        }
+
+        if (event.type === 'quidax_open_orders' && event.data) {
+          qc.setQueryData(['venueOrders', event.data.venue ?? 'quidax'], event.data);
         }
 
         if (event.type === 'account_balances' && event.data) {

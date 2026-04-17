@@ -3,17 +3,74 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from decimal import Decimal
+import json
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from engine.api.deps import get_runtime, require_scheduler, verify_token
 from engine.api.schemas import SystemStatus, VenuePriceResponse, VenueStatus
 from engine.runtime import EngineRuntime
 from engine.scheduler import TradingScheduler
+from engine.types import CexAnchorSource
 import structlog
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+
+async def _get_anchor_price_ngn(
+    runtime: EngineRuntime,
+    anchor_source: CexAnchorSource,
+) -> Decimal | None:
+    market_jobs = getattr(runtime.scheduler, "market_jobs", None)
+    get_reference_price_ngn = getattr(market_jobs, "get_reference_price_ngn", None)
+    if not callable(get_reference_price_ngn):
+        return None
+
+    try:
+        anchor_price = await get_reference_price_ngn(anchor_source=anchor_source)
+    except Exception as exc:
+        logger.warning(
+            "venue_anchor_price_unavailable",
+            anchor_source=anchor_source,
+            error=str(exc),
+        )
+        return None
+
+    return anchor_price if anchor_price and anchor_price > 0 else None
+
+
+async def _get_last_ladder_anchor_price_ngn(runtime: EngineRuntime, venue_name: str) -> Decimal | None:
+    try:
+        raw = await runtime.db.system_state.get_system_state(f"{venue_name}:last_ladder_anchor_price_ngn")
+    except Exception as exc:
+        logger.warning(
+            "venue_last_ladder_anchor_unavailable",
+            venue=venue_name,
+            error=str(exc),
+        )
+        return None
+
+    if not raw:
+        return None
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = raw
+
+    candidate: Any
+    if isinstance(payload, dict):
+        candidate = payload.get("reference_price_ngn") or payload.get("price") or payload.get("anchor_price_ngn")
+    else:
+        candidate = payload
+
+    try:
+        value = Decimal(str(candidate))
+    except Exception:
+        return None
+    return value if value > 0 else None
 
 
 @router.get("/status", response_model=SystemStatus)
@@ -22,6 +79,7 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
     venue_prices = runtime.price_aggregator.get_all_prices() if runtime.price_aggregator else {}
 
     venue_statuses: list[VenueStatus] = []
+    anchor_price_cache: dict[CexAnchorSource, Decimal | None] = {}
     for name, venue in runtime.venues.items():
         lp_manager = runtime.lp_managers.get(name)
         try:
@@ -50,6 +108,15 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
         else:
             params = None
 
+        anchor_price_ngn = None
+        anchor_source = cast(CexAnchorSource | None, params.get("anchor_source") if params else None)
+        if anchor_source is not None:
+            if anchor_source not in anchor_price_cache:
+                anchor_price_cache[anchor_source] = await _get_anchor_price_ngn(runtime, anchor_source)
+            anchor_price_ngn = anchor_price_cache[anchor_source]
+
+        last_ladder_anchor_price_ngn = await _get_last_ladder_anchor_price_ngn(runtime, name)
+
         venue_statuses.append(
             VenueStatus(
                 name=name,
@@ -58,6 +125,8 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
                 position=position,
                 price=price_response,
                 params=params,
+                anchor_price_ngn=anchor_price_ngn,
+                last_ladder_anchor_price_ngn=last_ladder_anchor_price_ngn,
             )
         )
 
@@ -76,6 +145,8 @@ async def get_status(runtime: EngineRuntime = Depends(get_runtime)) -> SystemSta
                         error=price_data.error,
                         age_seconds=price_data.age_seconds,
                     ),
+                    anchor_price_ngn=None,
+                    last_ladder_anchor_price_ngn=None,
                 )
             )
 

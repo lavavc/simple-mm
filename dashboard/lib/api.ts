@@ -2,6 +2,7 @@ import type {
   PriceSnapshot,
   VenuePriceResponse,
   SystemStatus,
+  VenueOrdersResponse,
   GlobalPosition,
   Position,
   ArbitrageStatus,
@@ -40,6 +41,10 @@ export const api = {
 
   getVenuePrice: (venue: string): Promise<VenuePriceResponse> =>
     fetchJson(`${API_BASE}/prices/${venue}`),
+
+  getVenueOrders: async (venue: string): Promise<VenueOrdersResponse> => {
+    return fetchJson(`${API_BASE}/venues/${venue}/orders/public`);
+  },
 
   getBlendedPrice: (): Promise<BlendedPriceResponse> =>
     fetchJson(`${API_BASE}/prices/blended`),

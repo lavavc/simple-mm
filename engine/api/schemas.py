@@ -17,6 +17,8 @@ __all__ = [
     "OrderBookDepthResponse",
     "VenueOrderSummary",
     "VenueOrdersResponse",
+    "PublicVenueOrderSummary",
+    "PublicVenueOrdersResponse",
     "VenueStatus",
     "SystemStatus",
     "GlobalPosition",
@@ -56,6 +58,29 @@ class VenueOrdersResponse(BaseModel):
     orders: list[VenueOrderSummary]
 
 
+class PublicVenueOrderSummary(BaseModel):
+    """Sanitized open-order row for frontend surfaces."""
+
+    market: Optional[str] = None
+    side: str
+    status: Optional[str] = None
+    price: Decimal
+    volume: Decimal
+    remaining_volume: Decimal
+    executed_volume: Decimal
+    notional: Decimal
+    created_at: Optional[int] = None
+
+
+class PublicVenueOrdersResponse(BaseModel):
+    """Sanitized open-order snapshot for a venue."""
+
+    venue: str
+    market: Optional[str] = None
+    count: int
+    orders: list[PublicVenueOrderSummary]
+
+
 class VenueStatus(BaseModel):
     """Status of a trading venue."""
 
@@ -66,6 +91,8 @@ class VenueStatus(BaseModel):
     position: Optional[Position] = None
     price: Optional[VenuePriceResponse] = None
     params: Optional[dict[str, Any]] = None  # Live venue parameters (DexParams, CexParams, etc.)
+    anchor_price_ngn: Optional[Decimal] = None
+    last_ladder_anchor_price_ngn: Optional[Decimal] = None
 
 
 class SystemStatus(BaseModel):

@@ -1,42 +1,39 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { formatNumber } from '@/lib/utils';
-import { useStatus, usePortfolioValuation } from '@/lib/hooks/useQueries';
+import { Badge } from '@/components/ui/badge';
+import { cn, formatBps, formatNumber } from '@/lib/utils';
+import { useStatus, usePortfolioValuation, useVenueOrders } from '@/lib/hooks/useQueries';
 import { Play, Pause, RotateCcw, Database, Settings, Activity as ActivityIcon, Wallet, Zap, Server, Network, ShieldCheck, Gauge, ExternalLink } from 'lucide-react';
 import type { LPPosition, VenueStatus } from '@/types';
 import { PoolMetricsChart } from '@/components/charts/PoolMetricsChart';
 
 const venueInfo: Record<
   string,
-  { name: string; chain: string; chainId: number; type: string; description: string }
+  { name: string; chain: string; type: string; description: string }
 > = {
   'uni-base': {
     name: 'Uniswap Base',
     chain: 'Base',
-    chainId: 8453,
     type: 'DEX',
     description: 'Uniswap V4 pool on Base. Primary DEX for cNGN/USDC pair.',
   },
   quidax: {
     name: 'Quidax',
     chain: 'CEX',
-    chainId: 0,
     type: 'CEX',
     description: 'Nigerian crypto exchange. Order ladder management for cNGN/USDT.',
   },
   'uni-bsc': {
     name: 'Uniswap BSC',
     chain: 'BSC',
-    chainId: 56,
     type: 'DEX',
     description: 'Uniswap V4 pool on BSC. Primary DEX for cNGN/USDT pair.',
   },
   blockradar: {
     name: 'Blockradar',
     chain: 'Base',
-    chainId: 8453,
     type: 'Wallet',
     description: 'B2C wallet integration. Rate setting and liquidity management.',
   }
@@ -75,15 +72,57 @@ function getLpStatusLabel(lp: LPPosition): string {
   return lp.in_range ? 'IN RANGE' : 'OUT RANGE';
 }
 
-function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: boolean }) {
+function formatVenueParamValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'boolean') return value ? 'ON' : 'OFF';
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? formatNumber(value, 0) : formatNumber(value, 3);
+  }
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (value.trim() !== '' && Number.isFinite(numeric)) {
+      return Number.isInteger(numeric) ? formatNumber(numeric, 0) : formatNumber(numeric, 3);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => formatVenueParamValue(item)).join(', ');
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function isVenueOperational(venue: VenueStatus) {
+  return venue.enabled && !venue.paused;
+}
+
+function ToggleBadge({ on }: { on: boolean }) {
+  return (
+    <Badge variant={on ? 'success' : 'warning'} className="text-[9px] uppercase tracking-widest font-mono h-5 px-2">
+      {on ? 'ON' : 'OFF'}
+    </Badge>
+  );
+}
+
+function VenueDetail({
+  venue,
+  isSyncing,
+  globalTradingEnabled,
+}: {
+  venue: VenueStatus;
+  isSyncing: boolean;
+  globalTradingEnabled: boolean;
+}) {
   const info = venueInfo[venue.name] || {
     name: venue.name,
     chain: 'Unknown',
-    chainId: 0,
     type: 'Unknown',
     description: '',
   };
-  const isActive = venue.enabled && !venue.paused;
+  const isVenueActive = isVenueOperational(venue);
 
   const { data: valuationData } = usePortfolioValuation();
 
@@ -109,6 +148,95 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
   const lpStatusLabel = lpPosition ? getLpStatusLabel(lpPosition) : null;
   const lpRangeAvailable = lpPosition?.range_min != null && lpPosition?.range_max != null;
 
+  const {
+    data: quidaxOrdersResponse,
+    isLoading: quidaxOrdersLoading,
+    error: quidaxOrdersError,
+  } = useVenueOrders(venue.name, venue.name === 'quidax');
+  const quidaxOrders = quidaxOrdersResponse?.orders ?? [];
+  const quidaxSellOrders = quidaxOrders
+    .filter((order) => order.side === 'sell')
+    .sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0));
+  const quidaxBuyOrders = quidaxOrders
+    .filter((order) => order.side === 'buy')
+    .sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0));
+  const quidaxMaxSellNotional = quidaxSellOrders.reduce(
+    (max, order) => Math.max(max, Number(order.notional) || 0),
+    0,
+  );
+  const quidaxMaxBuyNotional = quidaxBuyOrders.reduce(
+    (max, order) => Math.max(max, Number(order.notional) || 0),
+    0,
+  );
+  const quidaxPrice = venue.price?.pair === 'cNGN/USDT' && venue.price?.quote?.mid
+    ? 1 / Number(venue.price.quote.mid)
+    : Number(venue.price?.quote?.mid) || 0;
+  const quidaxCurrentAnchorPrice = Number(venue.anchor_price_ngn) || 0;
+  const quidaxAnchorSource = typeof venue.params?.anchor_source === 'string'
+    ? venue.params.anchor_source
+    : 'blended';
+  const quidaxAnchorSourceLabel = {
+    blended: 'BLENDED',
+    dex_vwap: 'DEX VWAP',
+    quidax: 'QUIDAX',
+  }[quidaxAnchorSource] ?? quidaxAnchorSource.toUpperCase();
+  const quidaxLastLadderAnchorPrice = Number(venue.last_ladder_anchor_price_ngn) || 0;
+  const quidaxAnchorDeltaBps = quidaxCurrentAnchorPrice > 0 && quidaxLastLadderAnchorPrice > 0
+    ? ((quidaxCurrentAnchorPrice - quidaxLastLadderAnchorPrice) / quidaxLastLadderAnchorPrice) * 10000
+    : null;
+  const quidaxAnchorThresholdBps = Number(venue.params?.anchor_requote_threshold_bps) || 0;
+  const quidaxAnchorDeltaBpsExceeded = quidaxAnchorDeltaBps != null && Math.abs(quidaxAnchorDeltaBps) > quidaxAnchorThresholdBps;
+
+  const quidaxParamRows: Array<{ key: string; label: string; description: string }> = venue.name === 'quidax'
+    ? [
+        {
+          key: 'ladder_enabled',
+          label: 'Ladder Enabled',
+          description: 'Master toggle for Quidax ladder quoting',
+        },
+        {
+          key: 'spread_offset_ngn',
+          label: 'Spread Offset NGN',
+          description: 'Anchor distance from the mid price',
+        },
+        {
+          key: 'ladder_step_ngn',
+          label: 'Ladder Step NGN',
+          description: 'Distance between ladder tiers',
+        },
+        {
+          key: 'ladder_levels_per_side',
+          label: 'Ladder Levels / Side',
+          description: 'How many tiers are stacked per side',
+        },
+        {
+          key: 'anchor_source',
+          label: 'Anchor Source',
+          description: 'Reference used to position the ladder',
+        },
+        {
+          key: 'anchor_requote_threshold_bps',
+          label: 'Requote Threshold',
+          description: 'Anchor move required before requoting',
+        },
+        {
+          key: 'anchor_requote_cooldown_seconds',
+          label: 'Requote Cooldown',
+          description: 'Minimum time between anchor refreshes',
+        },
+        {
+          key: 'order_size_cngn',
+          label: 'Order Size cNGN',
+          description: 'Sell-side notional per resting order',
+        },
+        {
+          key: 'order_size_usdt',
+          label: 'Order Size USDT',
+          description: 'Buy-side notional per resting order',
+        },
+      ]
+    : [];
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
       {/* LEFT COLUMN: Controls & Status */}
@@ -121,9 +249,9 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                 <ShieldCheck className="h-4 w-4 text-emerald-500/70" />
                 TARGET VENUE
               </div>
-              <span className={`flex h-1.5 w-1.5 relative ${isActive ? 'opacity-100' : 'opacity-50'}`}>
-                {isActive && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>}
-                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${isActive ? 'bg-emerald-500' : 'bg-yellow-500'}`}></span>
+              <span className={`flex h-1.5 w-1.5 relative ${isVenueActive ? 'opacity-100' : 'opacity-50'}`}>
+                {isVenueActive && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>}
+                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${isVenueActive ? 'bg-emerald-500' : 'bg-yellow-500'}`}></span>
               </span>
             </div>
           </CardHeader>
@@ -138,6 +266,39 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             </div>
 
             <div className="h-px w-full bg-white/[0.05]"></div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
+          <CardHeader className="p-3 border-b border-white/[0.02]">
+            <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
+              <ActivityIcon className="h-4 w-4 text-white/60" /> CONTROL STATE
+            </div>
+          </CardHeader>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3 bg-black/40 border border-white/[0.02] rounded-sm p-2.5">
+              <div>
+                <div className="text-[10px] text-white/50 uppercase tracking-widest">Global Trading</div>
+                <div className="text-[10px] text-white/30 font-mono mt-1">System-wide arb and venue control</div>
+              </div>
+              <ToggleBadge on={globalTradingEnabled} />
+            </div>
+            <div className="flex items-center justify-between gap-3 bg-black/40 border border-white/[0.02] rounded-sm p-2.5">
+              <div>
+                <div className="text-[10px] text-white/50 uppercase tracking-widest">Venue Active</div>
+                <div className="text-[10px] text-white/30 font-mono mt-1">Venue enabled and not paused</div>
+              </div>
+              <ToggleBadge on={isVenueActive} />
+            </div>
+            {venue.name === 'quidax' && (
+              <div className="flex items-center justify-between gap-3 bg-black/40 border border-white/[0.02] rounded-sm p-2.5">
+                <div>
+                  <div className="text-[10px] text-white/50 uppercase tracking-widest">Ladder Enabled</div>
+                  <div className="text-[10px] text-white/30 font-mono mt-1">Quidax ladder quote engine</div>
+                </div>
+                <ToggleBadge on={Boolean(venue.params?.['ladder_enabled'])} />
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -310,6 +471,41 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                 </div>
               </CardContent>
             </Card>
+          ) : venue.name === 'quidax' ? (
+            <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
+              <CardHeader className="p-3 border-b border-white/[0.02]">
+                <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
+                  <Settings className="h-4 w-4 text-white/60" /> QUIDAX PARAMETERS
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="divide-y divide-white/[0.02]">
+                  {quidaxParamRows.map((row) => {
+                    const rawValue = venue.params?.[row.key];
+                    const isToggle = typeof rawValue === 'boolean';
+                    const valueText = formatVenueParamValue(rawValue);
+                    return (
+                      <div key={row.key} className="p-3.5 flex items-center justify-between gap-4 hover:bg-white/[0.01] transition-colors">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">{row.label}</div>
+                          <div className="text-[10px] font-mono text-white/50 mt-1">{row.description}</div>
+                        </div>
+                        <div className={cn(
+                          'shrink-0 text-sm font-mono px-3 py-1 rounded-sm border',
+                          isToggle
+                            ? rawValue
+                              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                              : 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20'
+                            : 'text-white/80 bg-white/5 border-white/10',
+                        )}>
+                          {valueText}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
           ) : (
             <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
               <CardHeader className="p-3 border-b border-white/[0.02]">
@@ -334,7 +530,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                       <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">{venue.price?.pair || 'cNGN/USD'}</span>
                     </div>
 
-                    {venue.name === 'quidax' && venue.price?.quote && (
+                    {['uni-base', 'uni-bsc'].includes(venue.name) && venue.price?.quote && (
                       <div className="flex gap-6 mb-4">
                         <div className="text-center">
                           <div className="text-[8px] text-white/30 font-mono uppercase tracking-widest mb-1">BID</div>
@@ -435,31 +631,6 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                   </div>
                 </>
               )}
-              {venue.name === 'quidax' && (
-                <>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Order Ladder Tiers</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Number of active orders distributed around mid-price</div>
-                    </div>
-                    <div className="text-sm font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-sm border border-emerald-500/20">10</div>
-                  </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Execution Tick Increment</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Price step between ladder tiers</div>
-                    </div>
-                    <div className="text-sm font-mono text-white/80 bg-white/5 px-3 py-1 rounded-sm border border-white/10">0.000001</div>
-                  </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Liquidity Density (per Lvl)</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Capital assigned to each generated order tier</div>
-                    </div>
-                    <div className="text-sm font-mono text-blue-400 bg-blue-500/10 px-3 py-1 rounded-sm border border-blue-500/20">5.0%</div>
-                  </div>
-                </>
-              )}
               {venue.name === 'blockradar' && (
 
                 <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
@@ -473,6 +644,147 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
             </div>
           </CardContent>
         </Card>
+
+        {venue.name === 'quidax' && (
+          <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
+            <CardHeader className="p-3 border-b border-white/[0.02] flex flex-row items-center justify-between">
+              <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
+                <RotateCcw className="h-4 w-4 text-white/60" /> OPEN ORDERS
+              </div>
+              <div className="text-[10px] font-mono uppercase tracking-widest text-white/50">
+                {quidaxOrdersResponse?.count ?? 0} open
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {quidaxOrdersLoading ? (
+                <div className="p-6 text-center text-[11px] font-mono text-white/40 uppercase tracking-widest">
+                  Fetching open orders...
+                </div>
+              ) : quidaxOrdersError ? (
+                <div className="p-6 text-center text-[11px] font-mono text-red-400">
+                  {quidaxOrdersError instanceof Error ? quidaxOrdersError.message : 'Failed to load Quidax orders'}
+                </div>
+              ) : quidaxOrders.length > 0 ? (
+                <div className="divide-y divide-white/[0.02]">
+                  <div className="grid grid-cols-[1fr_1fr_1fr] gap-3 px-3 py-2 text-[10px] font-mono uppercase tracking-widest text-white/35 border-b border-white/[0.03]">
+                    <span>Price</span>
+                    <span className="text-right">Size</span>
+                    <span className="text-right">cNGN</span>
+                  </div>
+
+                  <div className="px-3 py-2 flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-red-400/80 bg-red-500/5 border-b border-white/[0.03]">
+                    <span>Sells</span>
+                    <span>{quidaxSellOrders.length} open</span>
+                  </div>
+                  {quidaxSellOrders.map((order, index) => (
+                    <div
+                      key={`sell-${order.market ?? 'quidax'}-${index}`}
+                      className="relative overflow-hidden px-3 py-3 hover:bg-white/[0.01] transition-colors"
+                    >
+                      <div
+                        className="absolute inset-y-0 right-0 -z-10 bg-red-500/8"
+                        style={{
+                          width: `${quidaxMaxSellNotional > 0 ? Math.min(100, ((Number(order.notional) || 0) / quidaxMaxSellNotional) * 100) : 0}%`,
+                        }}
+                      />
+                      <div className="grid grid-cols-[1fr_1fr_1fr] gap-3 items-center">
+                        <div className="font-mono text-sm text-red-400">
+                          {formatNumber(Number(order.price), 4)}
+                        </div>
+                        <div className="text-right font-mono text-sm text-white">
+                          {formatNumber(Number(order.remaining_volume ?? order.volume), 2)}
+                        </div>
+                        <div className="text-right font-mono text-sm text-white/80">
+                          {formatNumber(Number(order.notional), 2)} cNGN
+                        </div>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[9px] font-mono uppercase tracking-widest text-white/35">
+                        <span>
+                          Vol {formatNumber(Number(order.volume), 2)} · Rem {formatNumber(Number(order.remaining_volume), 2)} · Exec {formatNumber(Number(order.executed_volume), 2)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="px-3 py-3 border-y border-white/[0.03] bg-black/40">
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="text-[10px] uppercase tracking-[0.35em] text-white/40 font-mono">QUIDAX PRICE</span>
+                      <span className="text-xl font-mono text-white">
+                        {quidaxPrice > 0 ? formatNumber(quidaxPrice, 2) : '—'}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-widest text-white/40 font-mono">cNGN</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-center gap-2">
+                      <span className="text-[10px] uppercase tracking-[0.35em] text-emerald-400/70 font-mono">CURRENT ANCHOR PRICE</span>
+                      <span className="text-sm font-mono text-emerald-400">
+                        {quidaxCurrentAnchorPrice > 0 ? formatNumber(quidaxCurrentAnchorPrice, 2) : '—'}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-widest text-emerald-400/50 font-mono">cNGN</span>
+                    </div>
+                    <div className="mt-1 text-center text-[10px] font-mono uppercase tracking-widest text-emerald-400/45">
+                      Source: {quidaxAnchorSourceLabel}
+                    </div>
+                    <div className="mt-3 flex items-center justify-center gap-2">
+                      <span className="text-[10px] uppercase tracking-[0.35em] text-white/40 font-mono">LAST LADDER ANCHOR PRICE</span>
+                      <span className="text-sm font-mono text-white">
+                        {quidaxLastLadderAnchorPrice > 0 ? formatNumber(quidaxLastLadderAnchorPrice, 2) : '—'}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-widest text-white/40 font-mono">cNGN</span>
+                    </div>
+                    <div className={cn(
+                      'mt-1 text-center text-[10px] font-mono uppercase tracking-widest',
+                      quidaxAnchorDeltaBps == null
+                        ? 'text-white/40'
+                        : quidaxAnchorDeltaBpsExceeded
+                          ? 'text-red-400'
+                          : 'text-emerald-400/60',
+                    )}>
+                      DELTA {quidaxAnchorDeltaBps == null ? '—' : formatBps(quidaxAnchorDeltaBps)}
+                    </div>
+                  </div>
+
+                  <div className="px-3 py-2 flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-emerald-400/80 bg-emerald-500/5 border-b border-white/[0.03]">
+                    <span>Buys</span>
+                    <span>{quidaxBuyOrders.length} open</span>
+                  </div>
+                  {quidaxBuyOrders.map((order, index) => (
+                    <div
+                      key={`buy-${order.market ?? 'quidax'}-${index}`}
+                      className="relative overflow-hidden px-3 py-3 hover:bg-white/[0.01] transition-colors"
+                    >
+                      <div
+                        className="absolute inset-y-0 right-0 -z-10 bg-emerald-500/8"
+                        style={{
+                          width: `${quidaxMaxBuyNotional > 0 ? Math.min(100, ((Number(order.notional) || 0) / quidaxMaxBuyNotional) * 100) : 0}%`,
+                        }}
+                      />
+                      <div className="grid grid-cols-[1fr_1fr_1fr] gap-3 items-center">
+                        <div className="font-mono text-sm text-emerald-400">
+                          {formatNumber(Number(order.price), 4)}
+                        </div>
+                        <div className="text-right font-mono text-sm text-white">
+                          {formatNumber(Number(order.remaining_volume ?? order.volume), 2)}
+                        </div>
+                        <div className="text-right font-mono text-sm text-white/80">
+                          {formatNumber(Number(order.notional), 2)} cNGN
+                        </div>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[9px] font-mono uppercase tracking-widest text-white/35">
+                        <span>
+                          Vol {formatNumber(Number(order.volume), 2)} · Rem {formatNumber(Number(order.remaining_volume), 2)} · Exec {formatNumber(Number(order.executed_volume), 2)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-10 flex flex-col items-center justify-center text-center text-[11px] font-mono text-white/40 uppercase tracking-widest">
+                  No open Quidax orders
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
 
@@ -483,7 +795,13 @@ export default function VenuesPage() {
   const { data: status, isLoading } = useStatus();
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
 
-  const venues = (status?.venues || []).filter(v => v.name !== 'bybit' && v.name !== 'assetchain');
+  const venues = [...(status?.venues || [])]
+    .filter(v => v.name !== 'bybit' && v.name !== 'assetchain')
+    .sort((a, b) => {
+      if (a.name === 'quidax') return -1;
+      if (b.name === 'quidax') return 1;
+      return a.name.localeCompare(b.name);
+    });
   const isSyncing = isLoading;
 
   const displayedVenue = selectedVenue
@@ -529,7 +847,7 @@ export default function VenuesPage() {
           ) : (
             venues.map((venue) => {
               const info = venueInfo[venue.name];
-              const isActive = venue.enabled && !venue.paused;
+              const isActive = isVenueOperational(venue);
               const isSelected = (selectedVenue || venues[0]?.name) === venue.name;
 
               return (
@@ -551,7 +869,11 @@ export default function VenuesPage() {
 
         {/* Selected venue detail */}
         {displayedVenue ? (
-          <VenueDetail venue={displayedVenue} isSyncing={isSyncing} />
+        <VenueDetail
+          venue={displayedVenue}
+          isSyncing={isSyncing}
+          globalTradingEnabled={status?.trading_enabled ?? false}
+        />
         ) : isSyncing ? (
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 animate-in fade-in duration-500">
             {/* LEFT COLUMN: SKELETON */}
