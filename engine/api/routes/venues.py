@@ -11,7 +11,7 @@ from pydantic import BaseModel, field_validator
 from web3 import Web3
 
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
-from engine.api.protocols import DepthVenue, WebhookVenue
+from engine.venues.base import DepthVenue, WebhookVenue
 from engine.api.schemas import OrderBookDepthResponse, VenueOrdersResponse
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository

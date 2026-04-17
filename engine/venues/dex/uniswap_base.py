@@ -1,5 +1,7 @@
 """Uniswap V4 Base configs and swap execution adapter."""
 
+import dataclasses
+
 from .shared import V4PoolReadConfig
 from .v4 import BaseV4DexAdapter, V4ExecutionConfig
 from engine.config import DexParams
@@ -65,28 +67,7 @@ class UniswapBaseV4Adapter(BaseV4DexAdapter):
 
         config = UNISWAP_BASE_EXECUTION_CONFIG
         if rpc_url:
-            config = V4ExecutionConfig(
-                chain_id=config.chain_id,
-                chain_name=config.chain_name,
-                rpc_url=rpc_url,
-                pool_manager=config.pool_manager,
-                state_view=config.state_view,
-                pool_id=config.pool_id,
-                universal_router=config.universal_router,
-                permit2=config.permit2,
-                token0_address=config.token0_address,
-                token1_address=config.token1_address,
-                token0_symbol=config.token0_symbol,
-                token1_symbol=config.token1_symbol,
-                token0_decimals=config.token0_decimals,
-                token1_decimals=config.token1_decimals,
-                fee=config.fee,
-                tick_spacing=config.tick_spacing,
-                hooks=config.hooks,
-                invert_price=config.invert_price,
-                cngn_is_token0=config.cngn_is_token0,
-                position_manager=config.position_manager,
-            )
+            config = dataclasses.replace(config, rpc_url=rpc_url)
 
         super().__init__(
             config=config,

@@ -20,7 +20,6 @@ from engine.market.dex_volume import get_pool_volume_24h_usd
 
 if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
-    from engine.venues.dex.pool_reader_v3 import PoolPriceReader
 
 logger = structlog.get_logger()
 

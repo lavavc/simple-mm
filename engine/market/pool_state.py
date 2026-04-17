@@ -13,7 +13,7 @@ from web3 import AsyncWeb3
 
 from engine.config import settings
 from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
-from engine.venues.dex.pool_reader_v3 import PoolReadConfig
+from engine.venues.dex.pool_reader import PoolReadConfig
 from engine.venues.dex.shared import V4PoolReadConfig
 from engine.web3_utils import as_hexstr
 
@@ -170,7 +170,7 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
         else:
             liquidity_raw = await state_view.functions.getLiquidity(pool_id_bytes).call()
             liquidity = Decimal(liquidity_raw)
-            logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)  # noqa: keep v4_ prefix for V4-specific path
+            logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,
@@ -211,7 +211,6 @@ async def seed_dex_pool_states() -> None:
     await update_single_v4_pool_state(UNISWAP_BSC_POOL_READ_CONFIG)
     await update_single_v4_pool_state(UNISWAP_BASE_POOL_READ_CONFIG)
 
-# ========== CONCENTRATED LIQUIDITY SWAP MATH ==========
 # Identical formula for both V3 and V4 pools (same CFMM invariant).
 # Single-tick approximation: uses cached sqrtPrice and liquidity as constants.
 

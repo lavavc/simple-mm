@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import structlog
 
 from engine.api.deps import get_repository, get_runtime, require_arbitrage_engine, verify_token
-from engine.api.protocols import DepthVenue
+from engine.venues.base import DepthVenue
 from engine.types import (
     ArbitrageHistoryItem,
     ArbitrageOpportunity,
@@ -87,8 +87,8 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
             depth = await cast(DepthVenue, quidax_venue).get_order_book_depth(limit=50)
             if depth and depth.asks:
                 quidax_asks = depth.asks
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("valuation_quidax_depth_failed", error=str(exc))
 
     bsc_sqrt, bsc_liq, _, bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
     base_sqrt, base_liq, _, base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
@@ -114,8 +114,8 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
                         },
                     )
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("valuation_quidax_position_failed", error=str(exc))
 
     result: dict[str, Any] = {}
     for balance in valuation_balances:
@@ -133,7 +133,8 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
                         value_usd = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)
                     elif role in ("uni-base-trade", "uni-base-lp") and base_sqrt and base_liq is not None and base_fee is not None:
                         value_usd = dex_holdings_value(amount, base_sqrt, base_liq, base_fee, 6, 6, cngn_is_token0=True)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("valuation_cngn_value_failed", role=role, token=token, error=str(exc))
                     value_usd = Decimal("0")
                 venue_result[token] = {"amount": float(amount), "value_usd": float(value_usd)}
             else:

@@ -11,7 +11,8 @@ import structlog
 from engine.types import CexAnchorSource
 from engine.market.venue_prices import VenuePrice
 from engine.scheduler.context import SchedulerContext
-from engine.scheduler.types import SchedulerState, SyncOrderLadderVenueProtocol
+from engine.scheduler.types import SchedulerState
+from engine.venues.base import SyncOrderLadderVenue
 
 logger = structlog.get_logger()
 
@@ -102,7 +103,7 @@ class MarketJobs:
                 anchor_source: CexAnchorSource = getattr(getattr(quidax_mm, "params", None), "anchor_source", "blended")
                 reference_price = await self.get_reference_price_ngn(anchor_source=anchor_source)
                 if reference_price:
-                    await cast(SyncOrderLadderVenueProtocol, quidax_mm).sync_order_ladder(reference_price)
+                    await cast(SyncOrderLadderVenue, quidax_mm).sync_order_ladder(reference_price)
             except Exception as exc:
                 logger.error("cex_sync_failed", error=str(exc))
 

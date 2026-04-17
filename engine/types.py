@@ -13,6 +13,20 @@ from pydantic import BaseModel, Field
 
 from engine.config import settings
 
+from decimal import InvalidOperation as _InvalidOperation
+
+
+def coerce_decimal(value: Any) -> Optional[Decimal]:
+    """Coerce a value to Decimal, returning None for None inputs."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (ValueError, _InvalidOperation):
+        return None
+
 
 # === Venue / position types ===
 
