@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, cast
 
 import structlog
 
-from engine.arb.listener import WalletActivitySubscription
+from engine.types import WalletActivitySubscription
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import SchedulerState
 from engine.venues.base import DepthVenue

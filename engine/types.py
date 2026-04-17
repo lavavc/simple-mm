@@ -365,6 +365,15 @@ class ArbitrageHistoryItem(BaseModel):
     sell_tx_hash: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class WalletActivitySubscription:
+    """Wallet + token pair to watch for executable inventory changes."""
+
+    venue_name: str
+    wallet_address: str
+    token_address: str
+
+
 class ArbitrageStatus(BaseModel):
     """Current status of the arbitrage engine."""
 

@@ -13,7 +13,7 @@ from web3 import AsyncWeb3
 
 from engine.config import settings
 from engine.types import V4PoolReadConfig
-from engine.web3_utils import as_hexstr
+from engine.web3_utils import as_hexstr, coerce_hex_bytes
 
 logger = structlog.get_logger()
 getcontext().prec = 50
@@ -183,6 +183,36 @@ def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick
         "sqrt_p": Decimal(sqrt_p),
         "timestamp": time.time(),
     }
+
+
+def handle_v4_swap_log(pool_config: V4PoolReadConfig, log: dict[str, Any]) -> None:
+    """Parse a V4 Swap event log, update pool cache and record volume — zero RPC calls."""
+    try:
+        data_bytes = coerce_hex_bytes(log.get("data", "0x"))
+
+        if len(data_bytes) < 192:
+            logger.warning("v4_swap_event_data_too_short", length=len(data_bytes))
+            return
+
+        # V4 Swap non-indexed data layout (32 bytes each):
+        # [0:32]   amount0 (int128)
+        # [32:64]  amount1 (int128)
+        # [64:96]  sqrtPriceX96 (uint160)
+        # [96:128] liquidity (uint128)
+        # [128:160] tick (int24, signed)
+        # [160:192] fee (uint24)
+        sqrt_p = int.from_bytes(data_bytes[64:96], "big")
+        liquidity = int.from_bytes(data_bytes[96:128], "big")
+        tick = int.from_bytes(data_bytes[128:160], "big", signed=True)
+        fee = int.from_bytes(data_bytes[160:192], "big")
+
+        update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
+
+        from engine.market.dex_volume import event_id_from_log, record_live_v4_swap_volume
+        record_live_v4_swap_volume(pool_config, data_bytes, event_id=event_id_from_log(log))
+        logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
+    except Exception as e:
+        logger.error("v4_swap_event_parse_failed", error=str(e))
 
 
 async def seed_pool_states() -> None:
