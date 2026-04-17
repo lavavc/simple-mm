@@ -237,6 +237,7 @@ class ArbitrageOpportunity(BaseModel):
     recommended_size_usd: Decimal
     expected_profit_usd: Decimal
     status: Literal["detected", "executing", "completed", "abandoned", "expired", "half_open"]
+    direction: str = ""
     actual_profit_usd: Optional[Decimal] = None
     reason: Optional[str] = None  # Why it was abandoned/expired
     buy_amount_cngn: Optional[Decimal] = None

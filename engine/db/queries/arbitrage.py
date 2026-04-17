@@ -9,16 +9,6 @@ from typing import Any
 import aiosqlite
 
 from engine.types import ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity, coerce_decimal
-from engine.arb.routing.route_registry import ROUTES
-
-
-def _cex_direction_for_venues(buy_venue: str, sell_venue: str) -> str:
-    for route in ROUTES:
-        if route.pipeline != "cex_dex":
-            continue
-        if route.buy_leg.venue == buy_venue and route.sell_leg.venue == sell_venue:
-            return route.direction
-    raise ValueError(f"Unknown CEX route: {buy_venue} -> {sell_venue}")
 
 
 def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
@@ -27,6 +17,7 @@ def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
         timestamp=row["detected_at_ms"],
         buy_venue=row["buy_venue"],
         sell_venue=row["sell_venue"],
+        direction=row["direction"],
         buy_price=Decimal(str(row["signal_price_buy"])),
         sell_price=Decimal(str(row["signal_price_sell"])),
         gross_spread_bps=row["gross_spread_bps"],
@@ -98,7 +89,7 @@ async def upsert_cex_attempt(
         """,
         (
             opp.id,
-            _cex_direction_for_venues(opp.buy_venue, opp.sell_venue),
+            opp.direction,
             opp.buy_venue,
             opp.sell_venue,
             opp.timestamp,

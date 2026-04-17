@@ -191,6 +191,7 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 timestamp=int(time.time() * 1000),
                 buy_venue=buy_venue_name,
                 sell_venue=sell_venue_name,
+                direction=direction,
                 buy_price=buy_signal_price,
                 sell_price=sell_signal_price,
                 gross_spread_bps=net_spread_bps,
