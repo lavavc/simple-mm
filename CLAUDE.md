@@ -1,173 +1,87 @@
 ## Voice
-
-Never use first-person singular pronouns. When there is a need to refer to the model, use "Claude" or "Codex". If that is grammatically awkward, use collaborative pronouns such as "we", "us", and "our".
-
-Address directly. Never refer to "the user".
+No first-person singular wfor self-reference. Use Claude/Codex when referring to the model, or we/us/our.
 
 ## Source Of Truth
+Code and typed contracts → tests pinning non-obvious behavior → docs in `dashboard/docs/`.
 
-Source-of-truth order matters:
+Docs must not overrule working code. If docs and code disagree, fix the docs in the same change unless the code is deliberately being corrected.
 
-1. Code and typed contracts.
-2. Tests that pin non-obvious behavior.
-3. Operator-facing docs in `dashboard/docs/` and setup docs like `README.md`.
-
-Important consequences:
-
-- `dashboard/docs/` explains intended behavior, but it is not allowed to overrule working code when the code, types, and tests already define the live contract.
-- If docs and code disagree, fix the docs in the same change unless the code is clearly wrong and is being changed deliberately.
-- Prefer concrete typed sources over prose when behavior is subtle:
-  - `engine/types.py` — all shared domain types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`, order book types, account types, arb-domain types, etc.)
-  - `engine/arb/routing/route_registry.py`
-  - `engine/api/schemas.py` — HTTP-specific response types only (`VenueStatus`, `SystemStatus`, etc.)
-  - `engine/db/backend.py`
-  - `engine/venues/base.py`
-  - `engine/web3_utils.py`
-
-Documentation should stay succinct and concept-first. Avoid adding large code blocks unless a command or interface would otherwise be ambiguous.
+Authoritative typed sources:
+- `engine/types.py` — all shared domain types
+- `engine/arb/routing/route_registry.py`
+- `engine/api/schemas.py` — HTTP-specific response wrappers only
+- `engine/db/backend.py`, `engine/venues/base.py`, `engine/web3_utils.py`
 
 ## Architecture Rules
 
-These boundaries are intentional and should stay sharp:
-
-- `engine/types.py` is the zero-dependency home for all shared domain types. Any layer may import from here. `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
-- `engine/venues/` contains thin adapters over on-chain contracts and external APIs. No strategy logic belongs there. LP position management is not part of a venue adapter; it lives in `engine/lp/uniswap_v4.py`.
-- `engine/market/` owns shared market data, normalization, pool cache state, volume tracking, and gas data. No execution policy belongs there.
-- Portfolio totals are governed by the explicit registry in `engine/market/portfolio_registry.py`. Unregistered venue positions must not silently affect global totals.
-- Shared service modules under `engine/market/` must stay packageable and importable in isolation. Do not make them depend on `engine/api/`, concrete venue adapters, or eager package exports that drag in higher layers. Imports from `engine/types.py` are allowed.
-- `engine/lp/` owns LP strategy, rebalancing, and V4 position management (`V4PositionManager`). LP code should not grow arb-specific knowledge.
-- `engine/arb/` owns arbitrage detection, routing, execution, and risk. Arb code should not depend on LP internals.
-- `engine/db/` is the persistence layer. High-level modules should depend on narrow store protocols from `engine/db/backend.py`, not concrete query modules or repository internals.
-- `engine/scheduler/core.py` is a wiring shell. Timers, APScheduler lifecycle, and websocket wiring belong there; job behavior belongs in `engine/scheduler/jobs/` or the domain modules they call.
-- `engine/main.py` is the wiring edge. It builds runtime state and connects long-lived services. Do not move business logic there.
-- In `EngineRuntime`, `venues` and `lp_managers` are parallel dicts keyed by venue name. Routes and jobs that need LP position state go to `lp_managers`; routes and jobs that need swap execution or price queries go to `venues`.
-
-The engine should also stay easy to split into separately shippable packages:
-
-- Prices/dashboard
-- LP / market-maker-in-a-box
-- Arbitrage
-
-That means cross-subsystem dependencies should be avoided by default and added only with explicit justification. In particular:
-
-- LP core decisions must stay LP-local. Range setting, rerange triggers, and LP lifecycle control should not depend on blended fair value or arb components.
-- LP may depend on shared neutral infrastructure such as venue adapters, scheduler wiring, DB store protocols, and pool-state/cache utilities.
-- Venue-local EWMA or other venue-local historical triggers are acceptable LP enhancements because they preserve packageability.
-
-When adding a new dependency edge, preserve the current layer model unless there is a deliberate architectural change.
+- `engine/types.py` is zero-dependency; any layer may import from here.
+- No module outside `engine/api/` imports from `engine/api/`. `engine/api/schemas.py` holds HTTP-specific wrappers only and does not re-export from `engine/types.py`.
+- `engine/venues/` — thin adapters only. No strategy, LP, or arb logic.
+- `engine/market/` — market data, pool cache, volume, gas. No execution policy. Must stay importable in isolation: no `engine/api/` or concrete adapter imports.
+- `engine/lp/` — LP strategy and V4 position management. No arb-specific knowledge.
+- `engine/arb/` — detection, routing, execution, risk. No LP internals.
+- `engine/db/` — depend on store protocols in `engine/db/backend.py`, not concrete query modules.
+- `engine/scheduler/core.py` and `engine/main.py` are wiring shells. Business logic belongs in domain modules or `engine/scheduler/jobs/`.
+- In `EngineRuntime`, `venues` and `lp_managers` are parallel dicts keyed by venue name. LP position state → `lp_managers`; swap execution or price queries → `venues`.
+- Portfolio totals are governed by `engine/market/portfolio_registry.py`. Unregistered positions must not silently affect global totals.
+- The engine must stay splittable into three packages (Prices/dashboard, LP, Arbitrage). Cross-subsystem dependencies need explicit justification. 
+- LP core decisions (range setting, rerange, lifecycle) must not depend on arb or blended fair value. 
 
 ## Code Style
 
-In order of priority:
-
-- No safe defaults for gas or other fee estimations. Fail quickly and alert instead of silently assuming profitability.
-- Add the least code possible to solve the problem.
-- Avoid complexity, dead abstractions, and compatibility shims.
-- Do not keep unused fields, parameters, or dataclass attributes after a refactor.
-- Add comments or docstrings only when the logic would otherwise be hard to reconstruct.
-- Prefer precise types, protocols, and narrowing helpers over broad `Any` or cast-heavy silencing.
-- When working at Web3 boundaries, normalize once and keep the representation consistent all the way through.
+- No safe defaults for anything. Fail quickly and alert.
+- No defensive coding, dead abstractions, or compatibility shims.
+- No unused fields, parameters, or dataclass attributes after a refactor.
+- Comments only where logic cannot be reconstructed without them.
+- Prefer precise types, protocols, and narrowing helpers over `Any`.
+- Normalize once at Web3 boundaries; keep the representation consistent throughout.
 
 ## Execution Flow Invariants
 
-These are the critical invariants for arb changes. Review all of them when touching detection, routing, execution, recovery, or arb persistence.
+Review all when touching detection, routing, execution, recovery, or arb persistence.
 
-### Route And Sizing Invariants
+**Route and sizing**
+- `engine/arb/routing/route_registry.py` is the sole source of truth for direction, pipeline, leg type, venue names, and `cngn_effect`. No duplicate direction lists or ad hoc classifiers elsewhere.
+- `select_route()` produces a decision (ranking, adjusted size, rescored profit, inventory tiebreaking). `SelectedRoute` holds routed size and profit metadata only — no execution-time token amounts or live state.
 
-- `engine/arb/routing/route_registry.py` is the only source of truth for route direction, pipeline, leg type, venue names, and `cngn_effect`. Do not create duplicate direction lists or ad hoc route classifiers elsewhere.
-- `select_route()` produces a route decision, not a bag of execution-time token amounts. Routing owns:
-  - candidate ranking
-  - adjusted USD size
-  - expected profit rescoring after caps
-  - inventory alignment tiebreaking
-- `SelectedRoute` should stay limited to routed size and profit metadata. Do not add swap-output amounts or other live execution state there.
+**Inventory**
+- Inventory is venue-local. `quidax`, `uni-base`, `uni-bsc` balances are independent and capped independently. A fill on one venue makes nothing available on another.
+- Router caps protect both legs: buy-side stablecoin and sell-side cNGN.
 
-### Inventory And Venue Invariants
+**Serialization**
+- `_arb_executing` serializes all execution and recovery across both pipelines. No queue — signals during a live trade or recovery are skipped.
 
-- Inventory is venue-local. `quidax`, `uni-base`, and `uni-bsc` balances are independent and must be capped independently.
-- A CEX fill does not make tokens available in a DEX trade wallet, and a DEX fill does not make tokens available on Quidax.
-- Router caps must continue to protect both legs:
-  - buy-side stablecoin balance
-  - sell-side cNGN balance
+**Preflight**
+- All on-chain legs must be preflighted with `simulate_swap()` before the live transaction. CEX REST legs are the explicit exception.
+- Error handling in `engine/arb/execution/preflight.py` is intentionally asymmetric: `balance` errors zero inventory for the venue; `rpc`, `permit2`, and `unknown` errors do not mutate inventory; `pool_paused` trips the circuit breaker. Do not widen inventory mutation without a concrete incident-driven reason.
 
-### Serialization Invariants
+**Live amounts**
+- Execution derives amounts locally at execution time. CEX sell legs use the actual buy fill. DEX sell legs use the preflight cNGN estimate — not a routing field or live wallet balance. Recovery uses persisted `buy_amount_cngn`, never a fresh wallet query.
 
-- `_arb_executing` serializes all live execution and all recovery across both pipelines. There is no arb queue. If a signal arrives while another trade or recovery is in flight, it is skipped.
-
-### Preflight Invariants
-
-- Any on-chain leg that can be simulated must be preflighted with `simulate_swap()` before sending the live transaction.
-- CEX REST legs are the explicit exception because there is no on-chain preflight surface.
-- Preflight error handling in `engine/arb/execution/preflight.py` is intentionally asymmetric:
-  - `balance` errors zero inventory for the affected venue
-  - `rpc`, `permit2`, and `unknown` errors do not mutate inventory
-  - `pool_paused` trips the circuit breaker
-- Do not broaden inventory mutation beyond the balance case without a concrete incident-driven reason.
-
-### Live Amount Invariants
-
-- Execution derives live amounts locally. Detection and routing provide the route and routed USD size, but execution recomputes the amounts it needs at execution time.
-- CEX sell legs use the actual buy fill.
-- DEX sell legs in the main execution path use the preflight cNGN estimate computed at execution time, not a carried routing field and not the live wallet balance.
-- Recovery uses persisted `buy_amount_cngn`, never a fresh wallet balance query, so reversal logic cannot accidentally consume unrelated inventory.
-
-### Half-Open And Recovery Invariants
-
-- A half-open trade is any path where the buy succeeded and the sell failed.
-- Half-open handling must persist recovery-critical state immediately, especially:
-  - `buy_tx_hash`
-  - `buy_amount_cngn`
-  - executed size / status
-- Half-open flows trip the circuit breaker immediately.
-- CEX-DEX and DEX-DEX recovery are different flows and must stay separate.
-- DEX-DEX recovery first retries the sell if preflight now passes; otherwise it reverses the buy.
-- CEX-DEX recovery reverses the buy leg on the venue that can unwind the position, using the stored buy amount.
+**Half-open and recovery**
+- Half-open = buy succeeded, sell failed. Immediately persist `buy_tx_hash`, `buy_amount_cngn`, executed size/status. Immediately trip the circuit breaker.
+- CEX-DEX and DEX-DEX recovery are separate flows. DEX-DEX: retry sell if preflight passes, else reverse the buy. CEX-DEX: reverse the buy using the stored buy amount.
 
 ## Persistence And DB Invariants
 
-- High-level modules should depend on store protocols from `engine/db/backend.py`, not concrete repository/query implementations.
-- CEX-DEX and DEX-DEX use different persistence paths. Preserve that split:
-  - `update_arbitrage_opportunity(...)`
-  - `update_dex_arbitrage_execution_state(...)`
-- Recovery-critical fields such as `buy_amount_cngn` must never be dropped by later updates.
-- When working with Optional numeric fields loaded from DB or schemas, never use truthiness if zero is meaningful. Use `is not None`.
-- `engine/arb/risk/history.py` is the append-only lifecycle surface. When route metadata is available, pipeline and direction should come from the route registry, not ad hoc strings.
+- CEX-DEX and DEX-DEX use separate persistence paths: `update_arbitrage_opportunity` / `update_dex_arbitrage_execution_state`. Preserve that split.
+- `buy_amount_cngn` and other recovery-critical fields must never be dropped by later updates.
+- For Optional numeric fields from DB or schemas: use `is not None`, never truthiness when zero is meaningful.
+- `engine/arb/risk/history.py` is append-only. Pipeline and direction come from the route registry.
 
 ## Scheduler Invariants
 
-- `TradingScheduler` owns lifecycle and job registration, not business logic.
-- Shared dependencies should flow through `SchedulerContext` and narrow protocols, not through direct imports of the entire runtime container.
-- Websocket-driven arb updates and wallet activity are part of scheduler orchestration. Do not add parallel ad hoc listeners for the same responsibilities.
-- DEX arb bootstrap is intentionally gated: seed pool state, seed gas, then allow the first DEX-DEX update.
+- `TradingScheduler` owns lifecycle and job registration only. Dependencies flow through `SchedulerContext` and narrow protocols. Do not add parallel ad hoc listeners for WS-driven arb updates or wallet activity.
+- DEX arb bootstrap is gated: seed pool state → seed gas → first DEX-DEX update.
 
 ## Web3 And Typing Invariants
 
-- `engine/web3_utils.py` is the shared normalization boundary for hashes, topics, and log data. Reuse it instead of open-coding bytes/hex conversions.
-- Application-level and DB-level transaction hashes should remain plain `str`.
-- Web3 request payloads should use the actual typed shapes the library expects, such as `HexStr`, `TxParams`, and `Wei`, instead of untyped dicts where practical.
-- `engine/` is the strict-mypy surface. Do not weaken typing there casually.
-- When code starts from `VenueAdapter` and needs DEX-only behavior, narrow through `is_dex_execution_venue(...)` instead of scattered `hasattr(...)` checks or unchecked casts.
+- `engine/web3_utils.py` normalizes hashes, topics, log data. Reuse it — no open-coded bytes/hex conversions.
+- Transaction hashes at application and DB level stay plain `str`. Request payloads use typed shapes (`HexStr`, `TxParams`, `Wei`).
+- `engine/` is the strict-mypy surface. Narrow from `VenueAdapter` through `is_dex_execution_venue(...)` — not `hasattr` checks or unchecked casts.
 
 ## Docs And Test Hygiene
 
-- When changing behavior, update the closest relevant docs in the same change:
-  - `dashboard/docs/architecture.md` for structure
-  - `dashboard/docs/arbitrage/*.md` for arb behavior
-  - `dashboard/docs/lp/*.md` for LP behavior
-  - `README.md` for local setup, checks, and CI expectations
-- When adding a venue that contributes to global portfolio totals, update `engine/market/portfolio_registry.py` and the closest relevant dashboard docs in the same change.
-- Non-obvious invariants should be test-backed. The most important ones currently are:
-  - router sizing and tiebreak behavior
-  - half-open persistence and recovery
-  - bytes/hex normalization at Web3 boundaries
-  - Optional-zero persistence behavior
-- Do not leave docs describing a behavior that tests or code no longer implement.
+When changing behavior, update the closest relevant docs in the same commit: `dashboard/docs/architecture.md`, `dashboard/docs/arbitrage/*.md`, `dashboard/docs/lp/*.md`, `README.md`. When adding a venue that contributes to global totals, update `engine/market/portfolio_registry.py` and the relevant docs.
 
-## Domain Appendix
-
-These are still intentionally hard constraints:
-
-- Price confidence is capped at `0.9`.
-- Confidence drops by `0.2` per missing venue, flooring at `0.0`.
-
-If changing those rules, update both the code and the arbitrage/market-data docs together.
+Non-obvious invariants must be test-backed: router sizing/tiebreaking, half-open persistence and recovery, bytes/hex normalization, Optional-zero persistence.

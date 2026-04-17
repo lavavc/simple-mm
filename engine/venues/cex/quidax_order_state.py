@@ -44,7 +44,11 @@ class QuidaxTrackedOrderState:
         if self.system_state_store is None:
             return
 
-        raw = await self.system_state_store.get_system_state(self.tracked_orders_state_key())
+        try:
+            raw = await self.system_state_store.get_system_state(self.tracked_orders_state_key())
+        except Exception as exc:
+            logger.warning("quidax_tracked_orders_load_failed", venue=self.venue_name, error=str(exc))
+            return
 
         if not raw:
             return
@@ -73,10 +77,13 @@ class QuidaxTrackedOrderState:
         if self.system_state_store is None:
             return
 
-        await self.system_state_store.set_system_state(
-            self.tracked_orders_state_key(),
-            self._tracked_open_orders,
-        )
+        try:
+            await self.system_state_store.set_system_state(
+                self.tracked_orders_state_key(),
+                self._tracked_open_orders,
+            )
+        except Exception as exc:
+            logger.warning("quidax_tracked_orders_persist_failed", venue=self.venue_name, error=str(exc))
 
     def tracked_order_to_row(self, tracked: dict[str, Any]) -> dict[str, Any]:
         return {

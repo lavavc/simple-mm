@@ -13,21 +13,7 @@ from web3 import AsyncWeb3
 
 from engine.config import settings
 from engine.types import V4PoolReadConfig
-from engine.venues.dex.pool_reader import PoolReadConfig
 from engine.web3_utils import as_hexstr
-
-# AssetChain is watch-only; config lives here since pool_state owns the seeding logic
-ASSETCHAIN_POOL_READ_CONFIG = PoolReadConfig(
-    rpc_url=settings.assetchain_rpc_url,
-    pool_address=settings.assetchain_pool_address,
-    token0_address=settings.usdt_assetchain_address,
-    token1_address=settings.cngn_assetchain_address,
-    token0_symbol="USDT",
-    token1_symbol="cNGN",
-    token0_decimals=18,
-    token1_decimals=6,
-    invert_price=True,
-)
 
 logger = structlog.get_logger()
 getcontext().prec = 50
@@ -97,11 +83,10 @@ def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | 
         return data["sqrt_p"], data["liquidity"], data.get("timestamp"), data.get("fee")
     return None, None, None, None
 
-async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str | None = None) -> bool:
+async def update_single_pool_state(rpc_url: str, pool_address: str) -> bool:
     """Fetches the state for a single V3-compatible pool and updates the cache. Returns True if successful."""
-    rpc_url = rpc_url_override or config.rpc_url
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
-    pool = w3.to_checksum_address(config.pool_address)
+    pool = w3.to_checksum_address(pool_address)
 
     try:
         slot0_raw = await w3.eth.call({"to": pool, "data": as_hexstr(SLOT0_SELECTOR)})
@@ -110,32 +95,24 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
         tick_bytes = slot0_raw[32:64][-3:]
         tick = int.from_bytes(tick_bytes, "big", signed=True)
 
-        cached_data = _POOL_CACHE.get(config.pool_address)
+        cached_data = _POOL_CACHE.get(pool_address)
 
         if cached_data and cached_data["tick"] == tick:
             liquidity = cached_data["liquidity"]
             cached_fee = cached_data.get("fee")
             if cached_fee is not None:
-                # Tick unchanged and fee is known — use the cache as-is.
                 fee = cached_fee
-                logger.debug("pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
+                logger.debug("pool_cache_hit_liquidity", pool=pool_address, tick=tick)
             else:
-                # Fee was None from a previous failed fetch. Retry now so a
-                # transient RPC error doesn't leave us blocked indefinitely
-                # just because the tick hasn't changed.
-                logger.info(
-                    "pool_fee_cache_null_retrying",
-                    pool=config.pool_address,
-                    tick=tick,
-                )
-                fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
+                logger.info("pool_fee_cache_null_retrying", pool=pool_address, tick=tick)
+                fee = await _fetch_fee_with_retry(w3, pool, pool_address)
         else:
             liquidity_raw = await w3.eth.call({"to": pool, "data": as_hexstr(LIQUIDITY_SELECTOR)})
             liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
-            fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
-            logger.debug("pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
+            fee = await _fetch_fee_with_retry(w3, pool, pool_address)
+            logger.debug("pool_cache_miss_fetching_liquidity", pool=pool_address, tick=tick)
 
-        _POOL_CACHE[config.pool_address] = {
+        _POOL_CACHE[pool_address] = {
             "tick": tick,
             "liquidity": liquidity,
             "fee": fee,
@@ -146,14 +123,14 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
         if fee is None:
             logger.warning(
                 "pool_state_incomplete",
-                pool=config.pool_address,
+                pool=pool_address,
                 reason="fee fetch failed — state cached but marked incomplete",
             )
             return False
 
         return True
     except Exception as e:
-        logger.error("pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=config.pool_address)
+        logger.error("pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=pool_address)
         return False
 
 
@@ -212,7 +189,7 @@ async def seed_pool_states() -> None:
     """Initializes the memory state manager by fetching all pools once."""
     logger.info("seeding_initial_pool_states")
     await seed_dex_pool_states()
-    await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
+    await update_single_pool_state(settings.assetchain_rpc_url, settings.assetchain_pool_address)
 
 
 async def seed_dex_pool_states() -> None:

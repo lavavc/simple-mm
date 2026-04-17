@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 import httpx
 import structlog
 
+from engine.config import settings
 from engine.types import PriceQuote
 from engine.market.dex_volume import get_pool_volume_24h_usd
 
@@ -590,7 +591,6 @@ def create_venue_aggregator(
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
         
-    from engine.market.pool_state import ASSETCHAIN_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
@@ -612,7 +612,7 @@ def create_venue_aggregator(
         DexAdapterPriceSource(
             venue_name="assetchain",
             pair="cNGN/USDT",
-            pool_address=ASSETCHAIN_POOL_READ_CONFIG.pool_address,
+            pool_address=settings.assetchain_pool_address,
         )
     )
 

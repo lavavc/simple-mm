@@ -422,12 +422,15 @@ class ArbitrageWebSocketListener:
                     market_update=market_update,
                     wallet_venues=wallet_venues,
                 )
-                if market_update and self.on_update:
-                    await self.on_update()
-                if wallet_venues and self.on_wallet_event:
-                    await self.on_wallet_event(wallet_venues)
-                if (market_update or wallet_venues) and self.on_dex_event:
-                    await self.on_dex_event()
+                try:
+                    if market_update and self.on_update:
+                        await self.on_update()
+                    if wallet_venues and self.on_wallet_event:
+                        await self.on_wallet_event(wallet_venues)
+                    if (market_update or wallet_venues) and self.on_dex_event:
+                        await self.on_dex_event()
+                except Exception as exc:
+                    logger.error("event_driven_arb_calc_failed", error=str(exc), exc_info=True)
 
                 if not self._pending_market_update and not self._pending_wallet_venues:
                     break

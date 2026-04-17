@@ -57,10 +57,6 @@ class WebhookVenue(Protocol):
     async def handle_webhook(self, event: dict[str, Any]) -> None: ...
 
 
-class CloseableVenue(Protocol):
-    async def close(self) -> None: ...
-
-
 def is_dex_execution_venue(venue: VenueAdapter) -> TypeGuard[DexExecutionVenue]:
     """Return True when a venue exposes the on-chain execution surface."""
     return all(
@@ -78,7 +74,3 @@ def is_dex_execution_venue(venue: VenueAdapter) -> TypeGuard[DexExecutionVenue]:
             "ensure_trade_approvals",
         )
     )
-
-
-def is_closeable(venue: VenueAdapter) -> TypeGuard[CloseableVenue]:
-    return hasattr(venue, "close")
