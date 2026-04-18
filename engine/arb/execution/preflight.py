@@ -3,18 +3,10 @@
 from decimal import Decimal
 from typing import Any
 import structlog
+
+from engine.types import coerce_decimal
+
 logger = structlog.get_logger()
-
-
-def _coerce_decimal(value: Any) -> Decimal | None:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return None
 
 
 def _fmt_decimal(value: Decimal | None, places: int = 2) -> str | None:
@@ -55,17 +47,17 @@ def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, An
         details["direction"] = direction
         lines.append(f"Direction: {direction}")
 
-    size_usd = _coerce_decimal(log_ctx.get("size_usd"))
+    size_usd = coerce_decimal(log_ctx.get("size_usd"))
     if size_usd is not None:
         details["size_usd"] = float(size_usd)
         lines.append(f"Trade size: {_fmt_usd(size_usd)}")
 
-    sell_cngn_est = _coerce_decimal(log_ctx.get("sell_cngn_est"))
+    sell_cngn_est = coerce_decimal(log_ctx.get("sell_cngn_est"))
     if sell_cngn_est is not None:
         details["sell_cngn_est"] = float(sell_cngn_est)
         lines.append(f"Estimated sell: {_fmt_decimal(sell_cngn_est)} cNGN")
 
-    min_out_usd = _coerce_decimal(log_ctx.get("min_out_usd"))
+    min_out_usd = coerce_decimal(log_ctx.get("min_out_usd"))
     if min_out_usd is not None:
         details["min_out_usd"] = float(min_out_usd)
         lines.append(f"Min out: {_fmt_usd(min_out_usd)}")
@@ -77,7 +69,7 @@ def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, An
     wallet_symbol = log_ctx.get("wallet_symbol") or _infer_wallet_symbol(venue, wallet_asset)
     details["wallet_symbol"] = wallet_symbol
 
-    wallet_amount = _coerce_decimal(log_ctx.get("wallet_amount"))
+    wallet_amount = coerce_decimal(log_ctx.get("wallet_amount"))
     if wallet_amount is None:
         if wallet_asset == "stable":
             wallet_amount = engine.inventory.state.per_account_stable.get(venue_name)
@@ -86,7 +78,7 @@ def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, An
     if wallet_amount is not None:
         details["wallet_amount"] = float(wallet_amount)
 
-    sell_price_usd = _coerce_decimal(log_ctx.get("sell_price_usd"))
+    sell_price_usd = coerce_decimal(log_ctx.get("sell_price_usd"))
     if sell_price_usd is None or sell_price_usd <= 0:
         snapshot_price = engine.inventory.state.cngn_price_usd
         if snapshot_price > 0:
@@ -94,7 +86,7 @@ def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, An
     if sell_price_usd is not None and sell_price_usd > 0:
         details["sell_price_usd"] = float(sell_price_usd)
 
-    wallet_usd = _coerce_decimal(log_ctx.get("wallet_amount_usd"))
+    wallet_usd = coerce_decimal(log_ctx.get("wallet_amount_usd"))
     if wallet_usd is None and wallet_amount is not None:
         if wallet_asset == "stable":
             wallet_usd = wallet_amount
@@ -118,7 +110,7 @@ def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, An
             wallet_bits.append(f"~{_fmt_usd(wallet_usd)}")
         lines.append(f"Wallet: {' | '.join(wallet_bits)}")
 
-    required_amount = _coerce_decimal(log_ctx.get("required_amount"))
+    required_amount = coerce_decimal(log_ctx.get("required_amount"))
     required_symbol = str(log_ctx.get("required_symbol") or wallet_symbol)
     if required_amount is None and sell_cngn_est is not None and wallet_asset == "cngn":
         required_amount = sell_cngn_est

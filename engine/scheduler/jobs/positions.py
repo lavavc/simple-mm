@@ -8,7 +8,8 @@ from typing import Any
 import structlog
 
 from engine.scheduler.context import SchedulerContext
-from engine.scheduler.types import DepthVenueProtocol, SchedulerState
+from engine.scheduler.types import SchedulerState
+from engine.venues.base import DepthVenue
 
 logger = structlog.get_logger()
 
@@ -116,7 +117,7 @@ class PositionJobs:
         except Exception as exc:
             logger.error("portfolio_delta_check_failed", error=str(exc))
 
-    async def get_balances_for_valuation(self, quidax: DepthVenueProtocol) -> list[Any]:
+    async def get_balances_for_valuation(self, quidax: DepthVenue) -> list[Any]:
         from types import SimpleNamespace
 
         last_balances = self.state.last_balances

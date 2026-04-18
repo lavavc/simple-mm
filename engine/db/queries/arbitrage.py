@@ -8,23 +8,7 @@ from typing import Any
 
 import aiosqlite
 
-from engine.types import ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity
-from engine.arb.routing.route_registry import ROUTES
-
-
-def _to_decimal(value: Any) -> Decimal | None:
-    if value is None:
-        return None
-    return Decimal(str(value))
-
-
-def _cex_direction_for_venues(buy_venue: str, sell_venue: str) -> str:
-    for route in ROUTES:
-        if route.pipeline != "cex_dex":
-            continue
-        if route.buy_leg.venue == buy_venue and route.sell_leg.venue == sell_venue:
-            return route.direction
-    raise ValueError(f"Unknown CEX route: {buy_venue} -> {sell_venue}")
+from engine.types import ArbitrageOpportunity, ArbitrageTrade, DexArbOpportunity, coerce_decimal
 
 
 def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
@@ -33,6 +17,7 @@ def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
         timestamp=row["detected_at_ms"],
         buy_venue=row["buy_venue"],
         sell_venue=row["sell_venue"],
+        direction=row["direction"],
         buy_price=Decimal(str(row["signal_price_buy"])),
         sell_price=Decimal(str(row["signal_price_sell"])),
         gross_spread_bps=row["gross_spread_bps"],
@@ -40,9 +25,9 @@ def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
         recommended_size_usd=Decimal(str(row["optimal_size_usd"])),
         expected_profit_usd=Decimal(str(row["expected_profit_usd"])),
         status=row["status"],
-        actual_profit_usd=_to_decimal(row["actual_profit_usd"]),
+        actual_profit_usd=coerce_decimal(row["actual_profit_usd"]),
         reason=row["reason"],
-        buy_amount_cngn=_to_decimal(row["buy_amount_cngn"]),
+        buy_amount_cngn=coerce_decimal(row["buy_amount_cngn"]),
         buy_tx_hash=row["buy_tx_hash"],
     )
 
@@ -58,18 +43,18 @@ def _dex_opp_from_row(row: aiosqlite.Row) -> DexArbOpportunity:
         expected_usd_out=Decimal(str(row["expected_usd_out"])),
         status=row["status"],
         net_spread_bps=row["net_spread_bps"],
-        actual_profit_usd=_to_decimal(row["actual_profit_usd"]),
+        actual_profit_usd=coerce_decimal(row["actual_profit_usd"]),
         reason=row["reason"],
-        uni_bsc_price=_to_decimal(row["uni_bsc_price"]),
-        uni_base_price=_to_decimal(row["uni_base_price"]),
+        uni_bsc_price=coerce_decimal(row["uni_bsc_price"]),
+        uni_base_price=coerce_decimal(row["uni_base_price"]),
         buy_tx_hash=row["buy_tx_hash"],
         sell_tx_hash=row["sell_tx_hash"],
         slippage_tolerance_bps=row["slippage_tolerance_bps"],
         uni_bsc_fee_bps=row["uni_bsc_fee_bps"],
         uni_base_fee_bps=row["uni_base_fee_bps"],
-        gas_usd=_to_decimal(row["gas_usd"]),
-        buy_amount_cngn=_to_decimal(row["buy_amount_cngn"]),
-        executed_size_usd=_to_decimal(row["executed_size_usd"]),
+        gas_usd=coerce_decimal(row["gas_usd"]),
+        buy_amount_cngn=coerce_decimal(row["buy_amount_cngn"]),
+        executed_size_usd=coerce_decimal(row["executed_size_usd"]),
     )
 
 
@@ -104,7 +89,7 @@ async def upsert_cex_attempt(
         """,
         (
             opp.id,
-            _cex_direction_for_venues(opp.buy_venue, opp.sell_venue),
+            opp.direction,
             opp.buy_venue,
             opp.sell_venue,
             opp.timestamp,
@@ -456,7 +441,7 @@ async def get_legs(
             venue=row["venue"],
             side=row["leg_role"],
             amount=Decimal(str(row["amount"])),
-            price=_to_decimal(row["price"]),
+            price=coerce_decimal(row["price"]),
             tx_hash=row["tx_hash"],
             status=row["status"],
             timestamp=row["timestamp_ms"],

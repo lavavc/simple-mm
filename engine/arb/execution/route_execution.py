@@ -9,7 +9,8 @@ from typing import Any
 
 import structlog
 
-from engine.arb.execution.preflight import _coerce_decimal, _handle_preflight_error
+from engine.arb.execution.preflight import _handle_preflight_error
+from engine.types import coerce_decimal
 from engine.arb.routing.route_registry import TradeRoute
 from engine.arb.routing.router import SelectedRoute
 from engine.venues.base import is_dex_execution_venue
@@ -117,7 +118,7 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
             )
             if sell_err:
                 clean_sell_err = _clean_revert(sell_err)
-                sell_price_usd = _coerce_decimal(c.signal.get("prices", {}).get(sell_venue_name))
+                sell_price_usd = coerce_decimal(c.signal.get("prices", {}).get(sell_venue_name))
                 _handle_preflight_error(
                     engine,
                     sell_venue_name,
@@ -190,6 +191,7 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 timestamp=int(time.time() * 1000),
                 buy_venue=buy_venue_name,
                 sell_venue=sell_venue_name,
+                direction=direction,
                 buy_price=buy_signal_price,
                 sell_price=sell_signal_price,
                 gross_spread_bps=net_spread_bps,

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Literal, Protocol, cast
 
-from engine.api.helpers.pricing import get_reference_price_ngn
-from engine.api.protocols import SyncOrderLadderVenue
+import structlog
+
 from engine.runtime import EngineRuntime
-from engine.venues.base import VenueAdapter
+from engine.venues.base import SyncOrderLadderVenue, VenueAdapter
+
+logger = structlog.get_logger()
 
 SyncVenueOutcome = Literal["sync_triggered", "position_refreshed"]
 
@@ -25,6 +28,24 @@ def get_runtime_venue(runtime: EngineRuntime, venue_name: str) -> VenueAdapter:
     return venue
 
 
+async def _get_reference_price_ngn(runtime: EngineRuntime) -> Decimal | None:
+    if runtime.blended_calculator:
+        try:
+            blended = await runtime.blended_calculator.get_blended_price()
+            if blended.reference_price_ngn > 0:
+                return blended.reference_price_ngn
+        except Exception as exc:
+            logger.warning("blended_reference_price_unavailable", error=str(exc))
+    if runtime.price_aggregator:
+        bybit = runtime.price_aggregator.get_price("bybit")
+        if bybit and bybit.quote and bybit.quote.mid > 0:
+            return bybit.quote.mid
+        quidax = runtime.price_aggregator.get_price("quidax")
+        if quidax and quidax.quote and quidax.quote.mid > 0:
+            return Decimal("1") / quidax.quote.mid
+    return None
+
+
 async def sync_venue_now(runtime: EngineRuntime, venue_name: str) -> SyncVenueOutcome:
     venue = get_runtime_venue(runtime, venue_name)
     anchor_source = getattr(getattr(venue, "params", None), "anchor_source", "blended")
@@ -33,7 +54,7 @@ async def sync_venue_now(runtime: EngineRuntime, venue_name: str) -> SyncVenueOu
     if callable(get_anchor_reference_price):
         ref_price = await get_anchor_reference_price(anchor_source=anchor_source)
     else:
-        ref_price = await get_reference_price_ngn(runtime)
+        ref_price = await _get_reference_price_ngn(runtime)
 
     sync_order_ladder = getattr(venue, "sync_order_ladder", None)
     if callable(sync_order_ladder) and ref_price:

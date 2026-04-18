@@ -61,19 +61,12 @@ class InventoryTracker:
     """
 
     def __init__(self, params: ArbitrageParams):
-        """
-        Initialize inventory tracker.
-
-        Args:
-            params: Arbitrage parameters with limits
-        """
         self.params = params
         self._state = InventoryState()
         self._reset_daily_if_needed()
 
     @property
     def state(self) -> InventoryState:
-        """Get current inventory state."""
         self._reset_daily_if_needed()
         return self._state
 
@@ -109,22 +102,11 @@ class InventoryTracker:
         buy_venue: str = "",
         sell_venue: str = "",
     ) -> tuple[bool, Optional[str]]:
-        """
-        Check if a trade is allowed given current limits.
-
-        Args:
-            trade_size_usd: Size of proposed trade in USD
-
-        Returns:
-            (allowed, reason) - reason is None if allowed, else explanation
-        """
         self._reset_daily_if_needed()
 
-        # 1. Check circuit breaker
         if self._state.circuit_breaker_active:
             return False, f"Circuit breaker active: {self._state.circuit_breaker_reason}"
 
-        # 2. Check rolling 24h volume limit
         new_volume = self._rolling_volume_usd() + trade_size_usd
         if new_volume > self.params.max_daily_volume_usd:
             return False, (
@@ -132,7 +114,6 @@ class InventoryTracker:
                 f"{float(new_volume):.2f} > {float(self.params.max_daily_volume_usd):.2f}"
             )
 
-        # 3. Check inventory imbalance
         # Assume worst case: trade increases imbalance
         potential_imbalance = abs(self._state.cngn_imbalance_usd) + trade_size_usd
         if potential_imbalance > self.params.max_inventory_imbalance_usd:
@@ -141,18 +122,16 @@ class InventoryTracker:
                 f"{float(potential_imbalance):.2f} > {float(self.params.max_inventory_imbalance_usd):.2f}"
             )
 
-        # 4. Check daily loss limit
         if self._state.daily_loss_usd >= self.params.max_daily_loss_usd:
             return False, (
                 f"Daily loss limit reached: "
                 f"{float(self._state.daily_loss_usd):.2f} >= {float(self.params.max_daily_loss_usd):.2f}"
             )
 
-        # 5. Per-account stablecoin — block if buy-side venue is flagged low
+        # Block if buy-side venue has flagged low stablecoin
         if buy_venue and buy_venue in self._state.low_inventory_venues:
             return False, f"Low stablecoin inventory on {buy_venue} — rebalance needed"
 
-        # 6. Global delta ratio — pre-trade portfolio guard
         if self._state.total_portfolio_usd > 0:
             current_ratio = self._state.cngn_value_usd / self._state.total_portfolio_usd
             if current_ratio >= self.params.max_delta_ratio:
@@ -170,15 +149,6 @@ class InventoryTracker:
         buy_venue: str,
         sell_venue: str,
     ) -> None:
-        """
-        Record that a trade has started (for tracking).
-
-        Args:
-            opportunity_id: ID of the arbitrage opportunity
-            size_usd: Trade size in USD
-            buy_venue: Venue buying from
-            sell_venue: Venue selling to
-        """
         self._state.last_trade_timestamp = int(time.time() * 1000)
 
         logger.info(
@@ -197,16 +167,6 @@ class InventoryTracker:
         cngn_delta: Decimal,
         cngn_price_usd: Decimal | None = None,
     ) -> None:
-        """
-        Record a completed trade for daily tracking.
-
-        Args:
-            opportunity_id: ID of the arbitrage opportunity
-            size_usd: Trade size in USD
-            profit_usd: Actual profit (can be negative)
-            cngn_delta: Change in cNGN holdings (positive = bought, negative = sold)
-            cngn_price_usd: cNGN/USD price for proper imbalance calculation
-        """
         self._reset_daily_if_needed()
 
         self._state.trade_log.append((int(time.time() * 1000), size_usd))
@@ -216,8 +176,7 @@ class InventoryTracker:
         else:
             self._state.daily_loss_usd += abs(profit_usd)
 
-        # Update inventory imbalance in USD terms
-        # cngn_delta is in cNGN units, convert to USD using reference price
+        # cngn_delta is cNGN units; convert to USD
         if cngn_price_usd and cngn_price_usd > 0:
             imbalance_delta_usd = cngn_delta * cngn_price_usd
         else:
@@ -230,7 +189,6 @@ class InventoryTracker:
             )
         self._state.cngn_imbalance_usd += imbalance_delta_usd
 
-        # Reset consecutive failures on success
         if profit_usd >= 0:
             self._state.consecutive_failures = 0
 
@@ -244,20 +202,12 @@ class InventoryTracker:
             inventory_imbalance=float(self._state.cngn_imbalance_usd),
         )
 
-        # Check if we should trigger circuit breaker on loss
         if self._state.daily_loss_usd >= self.params.max_daily_loss_usd:
             self._trigger_circuit_breaker(
                 f"Daily loss limit reached: ${float(self._state.daily_loss_usd):.2f}"
             )
 
     def record_trade_failure(self, opportunity_id: str, error: str) -> None:
-        """
-        Record a failed trade for circuit breaker tracking.
-
-        Args:
-            opportunity_id: ID of the arbitrage opportunity
-            error: Error description
-        """
         self._state.consecutive_failures += 1
 
         logger.warning(
@@ -273,12 +223,6 @@ class InventoryTracker:
             )
 
     def _trigger_circuit_breaker(self, reason: str) -> None:
-        """
-        Activate circuit breaker to stop trading.
-
-        Args:
-            reason: Why the circuit breaker was triggered
-        """
         self._state.circuit_breaker_active = True
         self._state.circuit_breaker_reason = reason
 
