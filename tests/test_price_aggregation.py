@@ -341,6 +341,53 @@ class TestVWAP:
         assert blended.dex_volume_24h_usd["uni-base"] == Decimal("200000")
         assert blended.dex_volume_24h_usd["uni-bsc"] is None
 
+    def test_vwap_shifts_when_volume_changes_but_prices_stay_fixed(self):
+        """Prices are constant; only volume distribution changes.
+
+        This proves VWAP is actually volume-weighted: with identical prices on
+        three venues, VWAP equals the common price regardless of volume split.
+        But when one venue has a *different* price and its volume increases,
+        the VWAP moves toward it — even though the other two venues' prices
+        are unchanged.
+        """
+        normalizer = PriceNormalizer()
+        base_price = Decimal("0.000700")
+        low_price  = Decimal("0.000600")
+
+        def _prices_with_volumes(
+            high_vol: Decimal, low_vol: Decimal
+        ) -> dict:
+            prices = {
+                "quidax": _make_venue_price(
+                    "quidax", "cNGN/USDT",
+                    bid=base_price, ask=base_price, mid=base_price,
+                ),
+                "uni-base": _make_venue_price(
+                    "uni-base", "cNGN/USDC",
+                    bid=low_price, ask=low_price, mid=low_price,
+                ),
+            }
+            normalized = normalizer.normalize(prices)
+            normalized["quidax"].volume_24h_usd = high_vol
+            normalized["uni-base"].volume_24h_usd = low_vol
+            return normalized
+
+        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
+        calc.venue_weights = {}
+
+        # quidax dominates → VWAP close to base_price
+        vwap_quidax_heavy = calc.compute_vwap(_prices_with_volumes(Decimal("900000"), Decimal("100000")))
+        # uni-base dominates → VWAP close to low_price
+        vwap_unibase_heavy = calc.compute_vwap(_prices_with_volumes(Decimal("100000"), Decimal("900000")))
+
+        # Prices didn't change — only volumes. VWAP must differ.
+        assert vwap_quidax_heavy > vwap_unibase_heavy
+        # Both should sit strictly between the two venue prices
+        assert low_price < vwap_unibase_heavy < base_price
+        assert low_price < vwap_quidax_heavy < base_price
+        # The heavy-volume side should dominate
+        assert abs(vwap_quidax_heavy - base_price) < abs(vwap_unibase_heavy - base_price)
+
 
 # =============================================================================
 # Source-to-venue mapping

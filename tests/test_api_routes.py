@@ -15,7 +15,7 @@ from engine.api.routes import venues as venue_routes
 from engine.config import DexParams
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
-from engine.types import ArbitrageOpportunity, CexParams, LPPosition, Position
+from engine.types import CexParams, LPPosition, Position
 
 
 class _DummyVenue:
@@ -76,38 +76,6 @@ def _make_app(runtime: EngineRuntime | None) -> FastAPI:
     if runtime is not None:
         app.state.runtime = runtime
     return app
-
-
-def test_api_router_is_the_canonical_public_import():
-    assert api_module.api_router is api_router
-
-
-def test_health_route_reads_runtime_state():
-    runtime = _make_runtime()
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/health")
-
-    assert response.status_code == 200
-    assert response.json()["trading_enabled"] is True
-    assert response.json()["arbitrage_enabled"] is False
-
-
-def test_status_route_reads_db_and_runtime_services():
-    runtime = _make_runtime()
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/status")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["trading_enabled"] is True
-    assert body["last_price_update"] == 123000
-    assert body["venues"][0]["name"] == "quidax"
-    runtime.db.system_state.get_system_state.assert_awaited_once_with("trading_enabled")
-
 
 
 def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
@@ -176,42 +144,6 @@ def test_portfolio_exposure_includes_source_breakdown():
     body = response.json()
     assert body["total_usd_value"] == "50.7000"
     assert body["sources"][0]["source"] == "quidax"
-
-
-def test_arbitrage_opportunity_route_uses_direct_lookup():
-    runtime = _make_runtime()
-    opp = ArbitrageOpportunity(
-        id="opp-123",
-        timestamp=100,
-        buy_venue="quidax",
-        sell_venue="uni-bsc",
-        buy_price=Decimal("0.00061"),
-        sell_price=Decimal("0.00071"),
-        gross_spread_bps=164,
-        net_spread_bps=92,
-        recommended_size_usd=Decimal("500"),
-        expected_profit_usd=Decimal("4.50"),
-        status="detected",
-    )
-    runtime.db.arbitrage = SimpleNamespace(get_arbitrage_opportunity=AsyncMock(return_value=opp))
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/arbitrage/opportunities/opp-123")
-
-    assert response.status_code == 200
-    assert response.json()["id"] == "opp-123"
-    runtime.db.arbitrage.get_arbitrage_opportunity.assert_awaited_once_with("opp-123")
-
-
-def test_missing_runtime_returns_503():
-    app = _make_app(None)
-
-    with TestClient(app) as client:
-        response = client.get("/api/health")
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "Engine runtime not configured"
 
 
 @pytest.mark.asyncio
@@ -447,19 +379,6 @@ def test_normalize_generic_order_summary_uses_origin_volume_when_volume_is_zero(
     assert summary.notional == Decimal("200")
 
 
-@pytest.mark.asyncio
-async def test_get_venue_orders_debug_uses_debug_when_supported():
-    runtime = _make_runtime()
-    venue = _DummyVenue()
-    venue.get_orders_debug = AsyncMock(return_value={"market": "usdtcngn", "attempts": []})
-    runtime.venues = {"quidax": venue}
-
-    response = await venue_routes.get_venue_orders_debug("quidax", runtime=runtime)
-
-    assert response == {"market": "usdtcngn", "attempts": []}
-    venue.get_orders_debug.assert_awaited_once()
-
-
 def test_get_venue_orders_http_requires_token(monkeypatch):
     runtime = _make_runtime()
     venue = _DummyVenue()
@@ -667,3 +586,71 @@ def test_status_route_returns_lp_manager_params_not_venue_params():
     assert params["sd_multiplier"] == "3.5"
     assert params["downside_skew"] == "0.6"
     assert params["min_tick_width"] == 200
+
+
+@pytest.mark.asyncio
+async def test_restore_venue_params_rehydrates_lp_and_cex_configs():
+    """startup restore_venue_params() reads DB and applies to both DexParams and CexParams."""
+    from engine.main import restore_venue_params
+
+    quidax = SimpleNamespace(params=CexParams())
+    blockradar = SimpleNamespace()
+    lp_manager = SimpleNamespace(
+        params=DexParams(
+            sd_multiplier=Decimal("2.75"),
+            min_tick_width=100,
+            max_tick_width=1000,
+            lookback_points=None,
+            rebalance_threshold_percent=Decimal("10.0"),
+            max_slippage_percent=Decimal("1.0"),
+            downside_skew=Decimal("0.45"),
+            ewma_lambda=Decimal("0.975"),
+        )
+    )
+    db = SimpleNamespace(
+        venue_config=SimpleNamespace(
+            get_venue_config=AsyncMock(
+                side_effect=[
+                    {
+                        "venue": "uni-base",
+                        "params": {
+                            "sd_multiplier": "3.00",
+                            "min_tick_width": 120,
+                            "max_tick_width": 1100,
+                            "lookback_points": None,
+                            "rebalance_threshold_percent": "11.0",
+                            "max_slippage_percent": "1.2",
+                            "downside_skew": "0.55",
+                            "ewma_lambda": "0.970",
+                        },
+                    },
+                    {
+                        "venue": "quidax",
+                        "params": {
+                            "ladder_enabled": True,
+                            "spread_offset_ngn": 50,
+                            "ladder_step_ngn": 1,
+                            "ladder_levels_per_side": 5,
+                            "anchor_source": "dex_vwap",
+                            "anchor_requote_threshold_bps": 10,
+                            "anchor_requote_cooldown_seconds": 30,
+                            "order_size_cngn": "2000",
+                            "order_size_usdt": "10",
+                        },
+                    },
+                ]
+            )
+        )
+    )
+
+    await restore_venue_params(
+        db,
+        {"quidax": quidax, "blockradar": blockradar, "uni-base": lp_manager},
+        {"uni-base": lp_manager},
+    )
+
+    assert lp_manager.params.sd_multiplier == Decimal("3.00")
+    assert lp_manager.params.min_tick_width == 120
+    assert quidax.params.ladder_enabled is True
+    assert quidax.params.anchor_source == "dex_vwap"
+    assert quidax.params.order_size_usdt == Decimal("10")

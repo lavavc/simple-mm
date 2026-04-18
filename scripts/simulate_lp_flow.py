@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import sys
 import tempfile
@@ -20,6 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Reusable fork helpers (shared with tests/fork_helpers.py)
+sys.path.insert(0, str(ROOT / "tests"))
+from fork_helpers import (  # noqa: E402
+    fund_native_balance as _fund_native_balance,
+    impersonated_account as _impersonated_account,
+    transfer_erc20_from_unlocked as _transfer_erc20_from_unlocked,
+    find_token_donor as _find_token_donor,
+    seed_prices as _seed_prices_helper,
+)
+
 from engine.accounts import AccountManager, AccountRole
 from engine.config import settings
 from engine.db.repository import DatabaseRepository, open_repository
@@ -32,7 +41,6 @@ from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 
 _ANVIL_DEFAULT_SENDER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 _SINK_ADDRESS = "0x000000000000000000000000000000000000dEaD"
-_TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 
 
 def _decimal_to_str(value: Any) -> Any:
@@ -203,46 +211,8 @@ def _display_range(config: Any, tick_lower: int, tick_upper: int) -> tuple[Decim
     )
 
 
-def _fund_native_balance(w3: Web3, address: str, amount_eth: Decimal) -> None:
-    amount_wei = int(amount_eth * Decimal(10 ** 18))
-    response = w3.provider.make_request("anvil_setBalance", [address, hex(amount_wei)])
-    if response.get("error"):
-        raise RuntimeError(f"anvil_setBalance failed: {response['error']}")
-
-
-def _topic_to_address(topic: Any) -> str:
-    topic_hex = Web3.to_hex(topic)
-    return Web3.to_checksum_address("0x" + topic_hex[-40:])
-
-
-def _build_unlocked_tx_params(w3: Web3, from_address: str) -> dict[str, Any]:
-    checksum = Web3.to_checksum_address(from_address)
-    block = w3.eth.get_block("latest")
-    if "baseFeePerGas" in block:
-        base_fee = int(block["baseFeePerGas"])
-    else:
-        base_fee = int(w3.eth.gas_price)
-    priority_fee = int(w3.to_wei(0.1, "gwei"))
-    return {
-        "from": checksum,
-        "nonce": w3.eth.get_transaction_count(checksum, "pending"),
-        "chainId": w3.eth.chain_id,
-        "maxFeePerGas": (2 * base_fee) + priority_fee,
-        "maxPriorityFeePerGas": priority_fee,
-        "value": 0,
-    }
-
-
-@contextlib.contextmanager
-def _impersonated_account(w3: Web3, address: str):
-    checksum = Web3.to_checksum_address(address)
-    response = w3.provider.make_request("anvil_impersonateAccount", [checksum])
-    if response.get("error"):
-        raise RuntimeError(f"anvil_impersonateAccount failed for {checksum}: {response['error']}")
-    try:
-        yield checksum
-    finally:
-        w3.provider.make_request("anvil_stopImpersonatingAccount", [checksum])
+# _fund_native_balance, _impersonated_account, _transfer_erc20_from_unlocked,
+# _find_token_donor are imported from tests/fork_helpers.py at the top of this file.
 
 
 async def _transfer_erc20_from_lp(
@@ -278,94 +248,6 @@ async def _transfer_erc20_from_lp(
         )
     return result.hash
 
-
-def _transfer_erc20_from_unlocked(
-    w3: Web3,
-    token_contract: Any,
-    *,
-    sender: str,
-    recipient: str,
-    amount_raw: int,
-) -> str:
-    if amount_raw <= 0:
-        return ""
-
-    checksum_sender = Web3.to_checksum_address(sender)
-    _fund_native_balance(w3, checksum_sender, Decimal("1"))
-    tx_params = _build_unlocked_tx_params(w3, checksum_sender)
-    tx = token_contract.functions.transfer(
-        Web3.to_checksum_address(recipient),
-        int(amount_raw),
-    ).build_transaction(tx_params)
-    estimated = w3.eth.estimate_gas(
-        {
-            "from": tx["from"],
-            "to": tx["to"],
-            "data": tx["data"],
-            "value": tx.get("value", 0),
-        }
-    )
-    tx["gas"] = int(estimated * 1.2)
-    tx_hash = w3.eth.send_transaction(tx)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-    if receipt["status"] != 1:
-        raise RuntimeError(
-            f"ERC20 transfer from impersonated donor {checksum_sender} failed"
-        )
-    return Web3.to_hex(tx_hash)
-
-
-def _find_token_donor(
-    w3: Web3,
-    token_contract: Any,
-    *,
-    min_balance_raw: int,
-    exclude: set[str],
-    lookback_blocks: int = 2_000,
-    batch_size: int = 50,
-    max_candidates: int = 300,
-) -> str:
-    latest = w3.eth.block_number
-    floor = max(latest - lookback_blocks, 0)
-    seen = {Web3.to_checksum_address(addr).lower() for addr in exclude}
-    checked = 0
-
-    for end_block in range(latest, floor - 1, -batch_size):
-        start_block = max(floor, end_block - batch_size + 1)
-        logs = w3.eth.get_logs(
-            {
-                "address": Web3.to_checksum_address(token_contract.address),
-                "fromBlock": start_block,
-                "toBlock": end_block,
-                "topics": [_TRANSFER_TOPIC],
-            }
-        )
-        for log in reversed(logs):
-            for topic_idx in (1, 2):
-                if len(log["topics"]) <= topic_idx:
-                    continue
-                candidate = _topic_to_address(log["topics"][topic_idx])
-                candidate_lower = candidate.lower()
-                if candidate_lower in seen or candidate == Web3.to_checksum_address(_SINK_ADDRESS):
-                    continue
-                seen.add(candidate_lower)
-                checked += 1
-                try:
-                    if token_contract.functions.balanceOf(candidate).call() >= min_balance_raw:
-                        return candidate
-                except Exception:
-                    continue
-                if checked >= max_candidates:
-                    break
-            if checked >= max_candidates:
-                break
-        if checked >= max_candidates:
-            break
-
-    raise RuntimeError(
-        f"Could not find a recent holder with at least {min_balance_raw} units of token "
-        f"{token_contract.address} in the last {lookback_blocks} blocks."
-    )
 
 
 async def _fund_lp_wallet_for_swap(
@@ -457,19 +339,9 @@ async def _seed_prices(
     count: int,
     spacing_ms: int = 60_000,
 ) -> list[PriceQuote]:
-    now_ms = int(time.time() * 1000)
-    seeded: list[PriceQuote] = []
-    for idx in range(count):
-        seeded_quote = PriceQuote(
-            source="uni-base_pool",
-            timestamp=now_ms - ((count - idx) * spacing_ms),
-            bid=quote.bid,
-            ask=quote.ask,
-            mid=quote.mid,
-        )
-        await repo.prices.insert_price_snapshot(seeded_quote)
-        seeded.append(seeded_quote)
-    return seeded
+    return await _seed_prices_helper(
+        repo, quote, count=count, source="uni-base_pool", spacing_ms=spacing_ms
+    )
 
 
 async def _collect_actions(repo: DatabaseRepository) -> list[dict[str, Any]]:
