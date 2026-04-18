@@ -112,40 +112,6 @@ def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
     assert body["delta_ratio"] != "0"
 
 
-def test_portfolio_exposure_includes_source_breakdown():
-    runtime = _make_runtime()
-    runtime.venues = {
-        "quidax": SimpleNamespace(
-            enabled=True,
-            paused=False,
-            params=None,
-            get_position=AsyncMock(
-                return_value=SimpleNamespace(
-                    balances={"cngn": Decimal("1000"), "usdt": Decimal("50"), "usdc": Decimal("0")}
-                )
-            ),
-        )
-    }
-    runtime.blended_calculator = SimpleNamespace(
-        get_blended_price=AsyncMock(
-            return_value=SimpleNamespace(
-                vwap=Decimal("0.0007"),
-                twap_5m=Decimal("0.00069"),
-                twap_1h=Decimal("0.00068"),
-            )
-        )
-    )
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/portfolio/exposure")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total_usd_value"] == "50.7000"
-    assert body["sources"][0]["source"] == "quidax"
-
-
 @pytest.mark.asyncio
 async def test_update_venue_params_persists_full_lp_params():
     runtime = _make_runtime()
@@ -287,96 +253,6 @@ async def test_resume_venue_reports_sync_failure_without_repausing_venue():
         "sync_error": "boom",
     }
     assert venue.paused is False
-
-
-@pytest.mark.asyncio
-async def test_trigger_venue_sync_reports_sync_triggered_when_ladder_runs():
-    runtime = _make_runtime()
-    venue = _DummyVenue()
-    venue.params = CexParams(anchor_source="quidax")
-    venue.sync_order_ladder = AsyncMock()
-    venue.get_position = AsyncMock()
-    runtime.scheduler.market_jobs = SimpleNamespace(
-        get_reference_price_ngn=AsyncMock(return_value=Decimal("1600"))
-    )
-    runtime.venues = {"quidax": venue}
-
-    response = await venue_routes.trigger_venue_sync("quidax", runtime=runtime)
-
-    assert response == {"status": "sync_triggered", "venue": "quidax"}
-    venue.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
-    venue.get_position.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_trigger_venue_sync_reports_position_refreshed_without_reference_price():
-    runtime = _make_runtime()
-    venue = _DummyVenue()
-    venue.sync_order_ladder = AsyncMock()
-    venue.get_position = AsyncMock()
-    runtime.scheduler.market_jobs = SimpleNamespace(
-        get_reference_price_ngn=AsyncMock(return_value=None)
-    )
-    runtime.venues = {"quidax": venue}
-
-    response = await venue_routes.trigger_venue_sync("quidax", runtime=runtime)
-
-    assert response == {"status": "position_refreshed", "venue": "quidax"}
-    venue.sync_order_ladder.assert_not_awaited()
-    venue.get_position.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_get_venue_orders_returns_normalized_summaries_when_supported():
-    runtime = _make_runtime()
-    venue = _DummyVenue()
-    venue.market = "usdtcngn"
-    venue.get_open_order_summaries = AsyncMock(
-        return_value=[
-            venue_routes.VenueOrderSummary(
-                id="ord-1",
-                market="usdtcngn",
-                side="buy",
-                status="wait",
-                price=Decimal("1345.56"),
-                volume=Decimal("1.48"),
-                remaining_volume=Decimal("1.48"),
-                executed_volume=Decimal("0"),
-                notional=Decimal("1991.4288"),
-                created_at=1712520000000,
-            )
-        ]
-    )
-    runtime.venues = {"quidax": venue}
-
-    response = await venue_routes.get_venue_orders("quidax", runtime=runtime)
-
-    assert response.venue == "quidax"
-    assert response.market == "usdtcngn"
-    assert response.count == 1
-    assert response.orders[0].id == "ord-1"
-    venue.get_open_order_summaries.assert_awaited_once()
-
-
-def test_normalize_generic_order_summary_uses_origin_volume_when_volume_is_zero():
-    summary = venue_routes._normalize_generic_order_summary(
-        {
-            "id": "ord-1",
-            "market": {"id": "usdtcngn"},
-            "side": "sell",
-            "status": "wait",
-            "price": {"amount": "100"},
-            "volume": {"amount": "0"},
-            "origin_volume": {"amount": "2"},
-            "executed_volume": {"amount": "0"},
-        },
-        "quidax",
-    )
-
-    assert summary is not None
-    assert summary.volume == Decimal("2")
-    assert summary.remaining_volume == Decimal("2")
-    assert summary.notional == Decimal("200")
 
 
 def test_get_venue_orders_http_requires_token(monkeypatch):

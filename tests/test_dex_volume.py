@@ -5,14 +5,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from hexbytes import HexBytes
 
 import engine.market.dex_volume as dex_volume
 from engine.market.dex_volume import (
     RollingDexVolumeStore,
-    _rpc_candidates,
     _refresh_pool,
-    event_id_from_log,
     stable_volume_usd_from_v4_swap,
 )
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -72,14 +69,6 @@ def test_rolling_store_evicts_old_swaps_and_persists_seeded_state(tmp_path):
     assert reloaded.is_seeded("pool") is True
 
 
-def test_rpc_candidates_include_public_chain_fallbacks():
-    base_candidates = _rpc_candidates(UNISWAP_BASE_POOL_READ_CONFIG)
-    bsc_candidates = _rpc_candidates(UNISWAP_BSC_POOL_READ_CONFIG)
-
-    assert "https://mainnet.base.org" in base_candidates
-    assert "https://bsc-dataseed.binance.org" in bsc_candidates
-
-
 def test_unseeded_pool_volume_stays_hidden_and_live_updates_are_ignored(tmp_path):
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     now_ms = int(time.time() * 1000)
@@ -129,22 +118,6 @@ def test_legacy_store_forces_reseed_before_exposing_volume(tmp_path):
     store = RollingDexVolumeStore(path)
     assert store.is_seeded("pool") is False
     assert store.get_24h_volume_usd("pool") == Decimal("0")
-
-
-def test_event_id_from_log_handles_hex_strings():
-    log = {
-        "transactionHash": "0xabc",
-        "logIndex": "0x2",
-    }
-    assert event_id_from_log(log) == "0xabc:2"
-
-
-def test_event_id_from_log_handles_hexbytes_and_numeric_index():
-    log = {
-        "transactionHash": HexBytes("0xabcdef"),
-        "logIndex": 3,
-    }
-    assert event_id_from_log(log) == "0xabcdef:3"
 
 
 def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):

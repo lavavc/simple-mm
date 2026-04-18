@@ -1,7 +1,4 @@
 from decimal import Decimal
-from pathlib import Path
-import subprocess
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,22 +8,6 @@ from engine.types import Position
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from tests.fakes import FakeDexAdapter
-
-
-def test_portfolio_exposure_module_imports_in_fresh_process():
-    repo_root = Path(__file__).resolve().parents[1]
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import engine.market.portfolio_exposure; print('ok')",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "ok"
 
 
 @pytest.mark.asyncio

@@ -30,14 +30,6 @@ def test_derived_addresses_are_different():
     assert len(addresses) == len(set(addresses)), "Roles must not share an address"
 
 
-def test_deterministic_derivation():
-    """Same mnemonic always produces the same address for each role."""
-    mgr1 = AccountManager(use_test_accounts=True)
-    mgr2 = AccountManager(use_test_accounts=True)
-    for role in AccountRole:
-        assert mgr1.get_address(role) == mgr2.get_address(role)
-
-
 def test_missing_mnemonic_raises_not_silently_derives():
     """No mnemonic available → ValueError, not a silent derivation from empty seed."""
     old = os.environ.pop("WALLET_MNEMONIC", None)

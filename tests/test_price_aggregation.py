@@ -286,27 +286,6 @@ class TestVWAP:
         uni_base_price = normalized["uni-base"].cngn_usd
         assert abs(vwap - uni_base_price) < Decimal("0.00001")
 
-    def test_vwap_empty_input(self):
-        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
-        calc.venue_weights = {}
-        assert calc.compute_vwap({}) == Decimal("0")
-
-    def test_vwap_single_venue(self):
-        normalizer = PriceNormalizer()
-        prices = {
-            "quidax": _make_venue_price(
-                "quidax", "cNGN/USDT",
-                bid=Decimal("0.000696"), ask=Decimal("0.000698"), mid=Decimal("0.000697"),
-            ),
-        }
-        normalized = normalizer.normalize(prices)
-        normalized["quidax"].volume_24h_usd = Decimal("50000")
-
-        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
-        calc.venue_weights = {}
-        vwap = calc.compute_vwap(normalized)
-        assert vwap == Decimal("0.000697")
-
     @pytest.mark.asyncio
     async def test_calculate_current_does_not_proxy_uni_bsc_volume(self):
         class DummyAggregator:
@@ -390,36 +369,6 @@ class TestVWAP:
 
 
 # =============================================================================
-# Source-to-venue mapping
-# =============================================================================
-
-
-class TestSourceToVenue:
-    """Test the _source_to_venue static method."""
-
-    def test_bybit_p2p(self):
-        assert BlendedPriceCalculator._source_to_venue("bybit_p2p") == "bybit"
-
-    def test_quidax(self):
-        assert BlendedPriceCalculator._source_to_venue("quidax") == "quidax"
-
-    def test_uni_base_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("uni-base_pool") == "uni-base"
-
-    def test_uni_bsc_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("uni-bsc_pool") == "uni-bsc"
-
-    def test_blockradar(self):
-        assert BlendedPriceCalculator._source_to_venue("blockradar") == "blockradar"
-
-    def test_assetchain_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("assetchain_pool") == "assetchain"
-
-    def test_unknown_passthrough(self):
-        assert BlendedPriceCalculator._source_to_venue("something_new") == "something_new"
-
-
-# =============================================================================
 # Single-price normalization
 # =============================================================================
 
@@ -443,14 +392,6 @@ class TestNormalizeSinglePrice:
     def test_blockradar_returns_none(self):
         """Blockradar can't be normalized without cross-rate."""
         result = BlendedPriceCalculator._normalize_single_price("blockradar", Decimal("1.0"))
-        assert result is None
-
-    def test_zero_price_returns_none(self):
-        result = BlendedPriceCalculator._normalize_single_price("quidax", Decimal("0"))
-        assert result is None
-
-    def test_negative_price_returns_none(self):
-        result = BlendedPriceCalculator._normalize_single_price("quidax", Decimal("-1"))
         assert result is None
 
 

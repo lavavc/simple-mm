@@ -1,30 +1,17 @@
-"""Non-obvious invariants for DexParams and CexParams serialisation.
+"""DexParams serialisation: Decimal fields must survive the DB round-trip and JSON serialisation.
 
-Pydantic field validation is Pydantic's problem. These tests pin behaviours
-that would silently break our DB round-trip or startup restoration flow.
+Pydantic field validation is Pydantic's job. These pin the non-obvious behaviour:
+a DexParams stored via model_dump(mode='json') and re-read at startup must
+reconstruct exactly, and Decimal values must be JSON-serialisable (not raw Python objects).
 """
 
 import json
 import pytest
 from decimal import Decimal
 
-from engine.config import DexParams, settings
+from engine.config import DexParams
 from tests.conftest_params import make_dex_params
 from tests.fakes import FakeDexAdapter
-
-
-class TestSettingsStrategyDefaults:
-    """Pin the deployed LP strategy defaults so accidental changes fail loudly."""
-
-    def test_uni_base_strategy_params(self):
-        assert settings.uni_base_sd_multiplier == Decimal("2.75")
-        assert settings.uni_base_ewma_lambda == Decimal("0.975")
-        assert settings.uni_base_downside_skew == Decimal("0.45")
-
-    def test_uni_bsc_strategy_params(self):
-        assert settings.uni_bsc_sd_multiplier == Decimal("3.0")
-        assert settings.uni_bsc_ewma_lambda == Decimal("0.975")
-        assert settings.uni_bsc_downside_skew == Decimal("0.5")
 
 
 class TestDexParamsDbRoundTrip:

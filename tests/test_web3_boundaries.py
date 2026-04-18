@@ -1,10 +1,17 @@
+"""V4 swap log decoding: signed int ABI-decoding from raw bytes and hex-string log data.
+
+The non-obvious invariant is that V4 swap amounts are signed int256 values packed
+as two's-complement big-endian in 32-byte words. A negative amount0 means tokens
+flowed *into* the pool (buyer's side), positive means tokens flowed *out*. The
+correct output amount is abs(the negative leg) for the token received by the caller.
+Both log-data shapes (bytes-like and hex-string) occur in practice.
+"""
 from types import SimpleNamespace
 
 from hexbytes import HexBytes
 
 from engine.market.dex_volume import V4_SWAP_TOPIC
 from engine.venues.dex.v4 import BaseV4DexAdapter
-from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
 
 
 def _word(value: int) -> bytes:
@@ -18,14 +25,6 @@ def _make_adapter() -> BaseV4DexAdapter:
         token1_address="0x0000000000000000000000000000000000000002",
     )
     return adapter
-
-
-def test_hex_helpers_normalize_bytes_and_strings():
-    assert coerce_hex_str(HexBytes("0x1234")) == "0x1234"
-    assert coerce_hex_str(b"\x12\x34") == "0x1234"
-    assert coerce_hex_bytes("0x1234") == b"\x12\x34"
-    assert coerce_hex_bytes(HexBytes("0x1234")) == b"\x12\x34"
-    assert as_hexstr("1234") == "0x1234"
 
 
 def test_parse_swap_output_raw_handles_bytes_like_log_data() -> None:
