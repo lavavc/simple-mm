@@ -53,7 +53,6 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
             return_value=[
                 SimpleNamespace(role="uni-base-lp", token_balances={"cNGN": Decimal("50"), "USDC": Decimal("5")}),
                 SimpleNamespace(role="uni-base-trade", token_balances={"cNGN": Decimal("10"), "USDC": Decimal("2")}),
-                SimpleNamespace(role="quidax-trade-fund", token_balances={"cNGN": Decimal("20"), "USDT": Decimal("3")}),
                 SimpleNamespace(role="blockradar", token_balances={"cNGN": Decimal("30"), "USDC": Decimal("4")}),
             ]
         )
@@ -81,20 +80,18 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
 
     exposure = await calculator.calculate()
 
-    assert exposure.total_cngn == Decimal("1610")
-    assert exposure.total_usdt == Decimal("23")
+    assert exposure.total_cngn == Decimal("1590")
+    assert exposure.total_usdt == Decimal("20")
     assert exposure.total_usdc == Decimal("36")
-    assert exposure.total_usd_value == Decimal("60.1270")
+    assert exposure.total_usd_value == Decimal("57.1130")
     assert [source.source for source in exposure.sources] == [
         "uni-base-lp",
         "uni-base-trade",
-        "quidax-trade-fund",
         "blockradar",
         "uni-base",
         "quidax",
     ]
     assert [source.kind for source in exposure.sources] == [
-        "account",
         "account",
         "account",
         "account",

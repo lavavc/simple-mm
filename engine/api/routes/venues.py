@@ -253,14 +253,14 @@ async def deposit_to_blockradar(
 
 @router.get("/venues/quidax/deposit-address/{currency}")
 async def get_quidax_deposit_address(currency: str) -> dict[str, Any]:
-    if not settings.quidax_deposit_address:
-        raise HTTPException(status_code=503, detail="QUIDAX_DEPOSIT_ADDRESS not configured")
+    if not settings.quidax_trade_address:
+        raise HTTPException(status_code=503, detail="QUIDAX_TRADE_ADDRESS not configured")
 
     return {
         "status": "success",
         "data": {
             "currency": currency.upper(),
-            "address": settings.quidax_deposit_address,
+            "address": settings.quidax_trade_address,
         },
     }
 

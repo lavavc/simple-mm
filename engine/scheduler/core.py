@@ -215,30 +215,6 @@ class TradingScheduler:
             )
             logger.info("balance_check_job_registered")
 
-            quidax_arb = self.context.venues.get("quidax")
-            if quidax_arb:
-                import functools
-
-                self.scheduler.add_job(
-                    functools.partial(self.account_jobs.auto_fund_quidax, quidax_arb, "quidax-trade-fund"),
-                    IntervalTrigger(seconds=self.config.balance_check_interval),
-                    id="auto_fund_quidax_arb",
-                    replace_existing=True,
-                )
-                logger.info("auto_fund_quidax_arb_job_registered")
-
-            quidax_lp = self.context.quidax_lp or self.context.venues.get("quidax-lp")
-            if quidax_lp:
-                import functools
-
-                self.scheduler.add_job(
-                    functools.partial(self.account_jobs.auto_fund_quidax, quidax_lp, "quidax-lp"),
-                    IntervalTrigger(seconds=self.config.balance_check_interval),
-                    id="auto_fund_quidax_lp",
-                    replace_existing=True,
-                )
-                logger.info("auto_fund_quidax_lp_job_registered")
-
         if self.context.portfolio_exposure_calculator:
             self.scheduler.add_job(
                 self._check_portfolio_delta,

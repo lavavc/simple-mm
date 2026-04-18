@@ -137,7 +137,7 @@ class PositionJobs:
             if quidax_position and quidax_position.balances:
                 balances.append(
                     SimpleNamespace(
-                        role="quidax-exchange",
+                        role="quidax-trade",
                         token_balances={
                             "cNGN": Decimal(str(quidax_position.balances.get("cngn", 0))),
                             "USDT": Decimal(str(quidax_position.balances.get("usdt", 0))),

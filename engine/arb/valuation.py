@@ -54,7 +54,7 @@ def portfolio_value(quidax_depth: Any, balances: list[Any], cex_fee: Decimal = Q
         return result
 
     # Quidax CEX valuation
-    quidax_bal = next((b for b in balances if b.role == "quidax-exchange"), None)
+    quidax_bal = next((b for b in balances if b.role == "quidax-trade"), None)
     if quidax_bal:
         result["quidax_usdt"] = float(quidax_bal.token_balances.get("USDT", Decimal(0)))
         if quidax_depth and quidax_depth.asks:

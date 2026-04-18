@@ -107,7 +107,7 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
 
                 valuation_balances.append(
                     SimpleNamespace(
-                        role="quidax-exchange",
+                        role="quidax-trade",
                         token_balances={
                             "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
                             "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
@@ -127,7 +127,7 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
             if token.lower() == "cngn" and amount > 0:
                 value_usd = Decimal("0")
                 try:
-                    if role in ("quidax-exchange", "quidax-lp", "quidax-trade-fund") and quidax_asks:
+                    if role == "quidax-trade" and quidax_asks:
                         value_usd = cex_holdings_value(quidax_asks, amount, QUIDAX_FEE)
                     elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt and bsc_liq is not None and bsc_fee is not None:
                         value_usd = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)

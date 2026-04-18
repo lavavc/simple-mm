@@ -35,15 +35,20 @@ class AccountJobs:
             for balance in balances
         ]
 
-        quidax_adapter = self.context.venues.get("quidax")
-        if quidax_adapter:
+        quidax_venues = [("quidax", "quidax-trade", settings.quidax_trade_address)]
+        if settings.quidax_lp_is_separate:
+            quidax_venues.append(("quidax-lp", "quidax-lp", settings.quidax_lp_address))
+        for venue_name, role_name, address in quidax_venues:
+            adapter = self.context.venues.get(venue_name)
+            if adapter is None:
+                continue
             try:
-                position = await quidax_adapter.get_position()
+                position = await adapter.get_position()
                 if position and position.balances:
                     payload.append(
                         AccountBalanceResponse(
-                            role="quidax-exchange",
-                            address=settings.quidax_deposit_address,
+                            role=role_name,
+                            address=address,
                             chain_id=0,
                             native_balance=Decimal("0"),
                             native_symbol="",
@@ -56,7 +61,7 @@ class AccountJobs:
                         ).model_dump()
                     )
             except Exception as exc:
-                logger.warning("quidax_exchange_balance_broadcast_failed", error=str(exc))
+                logger.warning("quidax_exchange_balance_broadcast_failed", venue=venue_name, error=str(exc))
 
         self.context.broadcast({"type": "account_balances", "data": payload})
 
@@ -111,64 +116,3 @@ class AccountJobs:
             return False
         return manager.get_active_lp_position_snapshot() is not None
 
-    async def auto_fund_quidax(self, adapter: Any, account_role_str: str) -> None:
-        if not self.context.account_manager:
-            return
-
-        from engine.accounts import AccountRole
-
-        account_role = AccountRole(account_role_str)
-        position = await adapter.get_position()
-        balances = position.balances
-
-        token_contracts = {"cNGN": settings.cngn_bsc_address, "USDT": settings.usdt_bsc_address}
-        on_chain = await self.context.account_manager.get_balance(account_role, token_contracts)
-        on_chain_balances = on_chain.token_balances
-
-        tokens = [
-            ("cngn", "cNGN", settings.cngn_bsc_address, settings.quidax_min_cngn, settings.quidax_top_up_cngn, settings.quidax_onchain_min_cngn),
-            ("usdt", "USDT", settings.usdt_bsc_address, settings.quidax_min_usdt, settings.quidax_top_up_usdt, settings.quidax_onchain_min_usdt),
-        ]
-
-        for cex_key, chain_key, contract, min_cex, top_up, min_onchain in tokens:
-            if balances.get(cex_key, Decimal("0")) >= min_cex:
-                continue
-            chain_amount = on_chain_balances.get(chain_key, Decimal("0"))
-            if chain_amount > min_onchain + top_up:
-                deposit_address = settings.quidax_deposit_address
-                if deposit_address:
-                    tx_hash = await self.context.account_manager.transfer_erc20(
-                        account_role,
-                        contract,
-                        deposit_address,
-                        top_up,
-                    )
-                    logger.info(
-                        "auto_fund_quidax",
-                        role=account_role_str,
-                        token=chain_key,
-                        amount=float(top_up),
-                        tx=tx_hash,
-                    )
-                else:
-                    logger.warning(
-                        "quidax_deposit_address_missing",
-                        role=account_role_str,
-                        token=cex_key,
-                    )
-            else:
-                await self.context.alert_store.insert_alert(
-                    severity="warning",
-                    category="refill",
-                    message=(
-                        f"On-chain {chain_key} for {account_role_str} insufficient "
-                        f"({float(chain_amount):.2f}); manual refill needed"
-                    ),
-                    dedup=True,
-                )
-                self.context.broadcast(
-                    {
-                        "type": "refill_alert",
-                        "data": {"role": account_role_str, "token": chain_key, "on_chain": float(chain_amount)},
-                    }
-                )

@@ -62,28 +62,32 @@ async def get_all_account_balances(
             for balance in balances
         ]
 
-        quidax_adapter = runtime.venues.get("quidax")
-        if quidax_adapter:
+        quidax_venues = [("quidax", "quidax-trade", settings.quidax_trade_address)]
+        if settings.quidax_lp_is_separate:
+            quidax_venues.append(("quidax-lp", "quidax-lp", settings.quidax_lp_address))
+        for venue_name, role_name, address in quidax_venues:
+            adapter = runtime.venues.get(venue_name)
+            if adapter is None:
+                continue
             try:
-                pos = await quidax_adapter.get_position()
-                normalized = {
-                    "cNGN": pos.balances.get("cngn", Decimal("0")),
-                    "USDT": pos.balances.get("usdt", Decimal("0")),
-                }
+                pos = await adapter.get_position()
                 result.append(
                     AccountBalanceResponse(
-                        role="quidax-exchange",
-                        address=settings.quidax_deposit_address,
+                        role=role_name,
+                        address=address,
                         chain_id=0,
                         native_balance=Decimal("0"),
                         native_symbol="",
-                        token_balances=normalized,
+                        token_balances={
+                            "cNGN": pos.balances.get("cngn", Decimal("0")),
+                            "USDT": pos.balances.get("usdt", Decimal("0")),
+                        },
                         needs_refill=False,
                         refill_reasons=[],
                     )
                 )
             except Exception as exc:
-                logger.warning("quidax_exchange_balance_fetch_failed", error=str(exc))
+                logger.warning("quidax_exchange_balance_fetch_failed", venue=venue_name, error=str(exc))
         return result
     except Exception as exc:
         logger.error("balance_fetch_failed", error=str(exc))
