@@ -1,6 +1,7 @@
-"""Base classes for venue adapters."""
+"""Base classes and capability protocols for venue adapters."""
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Any, Optional, Protocol, TypeGuard
 
 from engine.types import Position, PriceQuote, TxResult
@@ -14,21 +15,15 @@ class VenueAdapter(ABC):
     paused: bool = False
 
     @abstractmethod
-    async def get_position(self) -> Position:
-        """Get current position at this venue."""
-        pass
+    async def get_position(self) -> Position: ...
 
     @abstractmethod
-    async def get_current_price(self) -> Optional[PriceQuote]:
-        """Get current price from this venue (if applicable)."""
-        pass
+    async def get_current_price(self) -> Optional[PriceQuote]: ...
 
     def pause(self) -> None:
-        """Pause this venue."""
         self.paused = True
 
     def resume(self) -> None:
-        """Resume this venue."""
         self.paused = False
 
 
@@ -43,17 +38,23 @@ class DexExecutionVenue(Protocol):
     cngn_token: Any
     trade_account: Any
 
-    async def get_current_price(self) -> Optional[PriceQuote]:
-        """Get the current price from the venue."""
+    async def get_current_price(self) -> Optional[PriceQuote]: ...
+    async def swap(self, token_in: str, amount_in: int, min_amount_out: int) -> TxResult: ...
+    def simulate_swap(self, token_in: str, amount_in: int, min_amount_out: int) -> str | None: ...
+    async def ensure_trade_approvals(self) -> None: ...
 
-    async def swap(self, token_in: str, amount_in: int, min_amount_out: int) -> TxResult:
-        """Execute a swap."""
 
-    def simulate_swap(self, token_in: str, amount_in: int, min_amount_out: int) -> str | None:
-        """Run the swap as a preflight simulation."""
+class SyncOrderLadderVenue(Protocol):
+    async def sync_order_ladder(self, reference_price_ngn: Decimal) -> None: ...
 
-    async def ensure_trade_approvals(self) -> None:
-        """Ensure the venue is approved for trading."""
+
+class DepthVenue(Protocol):
+    async def get_order_book_depth(self, limit: int = 50) -> Any: ...
+    async def get_position(self) -> Any: ...
+
+
+class WebhookVenue(Protocol):
+    async def handle_webhook(self, event: dict[str, Any]) -> None: ...
 
 
 def is_dex_execution_venue(venue: VenueAdapter) -> TypeGuard[DexExecutionVenue]:

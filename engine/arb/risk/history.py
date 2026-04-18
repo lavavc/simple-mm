@@ -11,6 +11,7 @@ import structlog
 from engine.types import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryWalletSnapshot,
+    coerce_decimal,
 )
 from engine.arb.routing.route_registry import Pipeline, ROUTES_BY_DIRECTION
 from engine.arb.routing.router import SelectedRoute
@@ -27,16 +28,6 @@ _STABLE_SYMBOLS = {
 
 logger = structlog.get_logger()
 
-
-def _to_decimal(value: Any) -> Optional[Decimal]:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return None
 
 
 class ArbitrageHistoryRecorder:
@@ -156,7 +147,7 @@ class ArbitrageHistoryRecorder:
                 route,
                 event_type="executed",
                 status="completed",
-                actual_profit_usd=_to_decimal(actual_profit_usd),
+                actual_profit_usd=coerce_decimal(actual_profit_usd),
                 executed_size_usd=route.adjusted_size_usd,
                 buy_tx_hash=buy_tx_hash,
                 sell_tx_hash=sell_tx_hash,
@@ -194,12 +185,12 @@ class ArbitrageHistoryRecorder:
                 buy_venue=buy_venue,
                 sell_venue=sell_venue,
                 status=status,
-                optimal_size_usd=_to_decimal(optimal_size_usd),
-                routed_size_usd=_to_decimal(routed_size_usd),
-                executed_size_usd=_to_decimal(executed_size_usd),
-                expected_profit_usd=_to_decimal(expected_profit_usd),
-                actual_profit_usd=_to_decimal(actual_profit_usd),
-                net_profit_usd=_to_decimal(net_profit_usd),
+                optimal_size_usd=coerce_decimal(optimal_size_usd),
+                routed_size_usd=coerce_decimal(routed_size_usd),
+                executed_size_usd=coerce_decimal(executed_size_usd),
+                expected_profit_usd=coerce_decimal(expected_profit_usd),
+                actual_profit_usd=coerce_decimal(actual_profit_usd),
+                net_profit_usd=coerce_decimal(net_profit_usd),
                 net_spread_bps=net_spread_bps,
                 reason=reason,
                 buy_tx_hash=buy_tx_hash,

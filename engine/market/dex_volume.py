@@ -18,7 +18,7 @@ from web3 import AsyncWeb3
 from web3.middleware import async_geth_poa_middleware  # type: ignore[attr-defined]
 
 from engine.config import settings
-from engine.venues.dex.shared import V4PoolReadConfig
+from engine.types import V4PoolReadConfig
 from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
 
 logger = structlog.get_logger()

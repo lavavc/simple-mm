@@ -339,6 +339,7 @@ class TestDexArbOpportunities:
         cex_dex_opp = ArbitrageOpportunity(
             id="cex-1", timestamp=int(time.time() * 1000),
             buy_venue="quidax", sell_venue="uni-base",
+            direction="QUIDAX_TO_UNI_BASE",
             buy_price=Decimal("0.000605"), sell_price=Decimal("0.000615"),
             gross_spread_bps=17, net_spread_bps=7,
             recommended_size_usd=Decimal("500"), expected_profit_usd=Decimal("1.50"),
@@ -641,6 +642,7 @@ class TestArbitrageHistory:
             timestamp=100,
             buy_venue="quidax",
             sell_venue="uni-bsc",
+            direction="QUIDAX_TO_UNI_BSC",
             buy_price=Decimal("0.00061"),
             sell_price=Decimal("0.00071"),
             gross_spread_bps=164,

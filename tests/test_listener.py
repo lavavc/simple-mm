@@ -6,10 +6,10 @@ import pytest
 
 from engine.arb.listener import (
     ERC20_TRANSFER_TOPIC,
-    WalletActivitySubscription,
     build_wallet_transfer_filters,
     matching_wallet_venues,
 )
+from engine.types import WalletActivitySubscription
 
 
 _WALLET = "0x74b479868e3B8a21BDE4bb09F85177aCF9976A2d"

@@ -12,10 +12,8 @@ import structlog
 from web3 import AsyncWeb3
 
 from engine.config import settings
-from engine.venues.dex.assetchain import ASSETCHAIN_POOL_READ_CONFIG
-from engine.venues.dex.pool_reader_v3 import PoolReadConfig
-from engine.venues.dex.shared import V4PoolReadConfig
-from engine.web3_utils import as_hexstr
+from engine.types import V4PoolReadConfig
+from engine.web3_utils import as_hexstr, coerce_hex_bytes
 
 logger = structlog.get_logger()
 getcontext().prec = 50
@@ -85,11 +83,10 @@ def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | 
         return data["sqrt_p"], data["liquidity"], data.get("timestamp"), data.get("fee")
     return None, None, None, None
 
-async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str | None = None) -> bool:
+async def update_single_pool_state(rpc_url: str, pool_address: str) -> bool:
     """Fetches the state for a single V3-compatible pool and updates the cache. Returns True if successful."""
-    rpc_url = rpc_url_override or config.rpc_url
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
-    pool = w3.to_checksum_address(config.pool_address)
+    pool = w3.to_checksum_address(pool_address)
 
     try:
         slot0_raw = await w3.eth.call({"to": pool, "data": as_hexstr(SLOT0_SELECTOR)})
@@ -98,32 +95,24 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
         tick_bytes = slot0_raw[32:64][-3:]
         tick = int.from_bytes(tick_bytes, "big", signed=True)
 
-        cached_data = _POOL_CACHE.get(config.pool_address)
+        cached_data = _POOL_CACHE.get(pool_address)
 
         if cached_data and cached_data["tick"] == tick:
             liquidity = cached_data["liquidity"]
             cached_fee = cached_data.get("fee")
             if cached_fee is not None:
-                # Tick unchanged and fee is known — use the cache as-is.
                 fee = cached_fee
-                logger.debug("pool_cache_hit_liquidity", pool=config.pool_address, tick=tick)
+                logger.debug("pool_cache_hit_liquidity", pool=pool_address, tick=tick)
             else:
-                # Fee was None from a previous failed fetch. Retry now so a
-                # transient RPC error doesn't leave us blocked indefinitely
-                # just because the tick hasn't changed.
-                logger.info(
-                    "pool_fee_cache_null_retrying",
-                    pool=config.pool_address,
-                    tick=tick,
-                )
-                fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
+                logger.info("pool_fee_cache_null_retrying", pool=pool_address, tick=tick)
+                fee = await _fetch_fee_with_retry(w3, pool, pool_address)
         else:
             liquidity_raw = await w3.eth.call({"to": pool, "data": as_hexstr(LIQUIDITY_SELECTOR)})
             liquidity = Decimal(int.from_bytes(liquidity_raw[:32], "big"))
-            fee = await _fetch_fee_with_retry(w3, pool, config.pool_address)
-            logger.debug("pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
+            fee = await _fetch_fee_with_retry(w3, pool, pool_address)
+            logger.debug("pool_cache_miss_fetching_liquidity", pool=pool_address, tick=tick)
 
-        _POOL_CACHE[config.pool_address] = {
+        _POOL_CACHE[pool_address] = {
             "tick": tick,
             "liquidity": liquidity,
             "fee": fee,
@@ -134,14 +123,14 @@ async def update_single_pool_state(config: PoolReadConfig, rpc_url_override: str
         if fee is None:
             logger.warning(
                 "pool_state_incomplete",
-                pool=config.pool_address,
+                pool=pool_address,
                 reason="fee fetch failed — state cached but marked incomplete",
             )
             return False
 
         return True
     except Exception as e:
-        logger.error("pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=config.pool_address)
+        logger.error("pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=pool_address)
         return False
 
 
@@ -170,7 +159,7 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
         else:
             liquidity_raw = await state_view.functions.getLiquidity(pool_id_bytes).call()
             liquidity = Decimal(liquidity_raw)
-            logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)  # noqa: keep v4_ prefix for V4-specific path
+            logger.debug("v4_pool_cache_miss_fetching_liquidity", pool=config.pool_address, tick=tick)
 
         _POOL_CACHE[config.pool_address] = {
             "tick": tick,
@@ -196,11 +185,41 @@ def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick
     }
 
 
+def handle_v4_swap_log(pool_config: V4PoolReadConfig, log: dict[str, Any]) -> None:
+    """Parse a V4 Swap event log, update pool cache and record volume — zero RPC calls."""
+    try:
+        data_bytes = coerce_hex_bytes(log.get("data", "0x"))
+
+        if len(data_bytes) < 192:
+            logger.warning("v4_swap_event_data_too_short", length=len(data_bytes))
+            return
+
+        # V4 Swap non-indexed data layout (32 bytes each):
+        # [0:32]   amount0 (int128)
+        # [32:64]  amount1 (int128)
+        # [64:96]  sqrtPriceX96 (uint160)
+        # [96:128] liquidity (uint128)
+        # [128:160] tick (int24, signed)
+        # [160:192] fee (uint24)
+        sqrt_p = int.from_bytes(data_bytes[64:96], "big")
+        liquidity = int.from_bytes(data_bytes[96:128], "big")
+        tick = int.from_bytes(data_bytes[128:160], "big", signed=True)
+        fee = int.from_bytes(data_bytes[160:192], "big")
+
+        update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
+
+        from engine.market.dex_volume import event_id_from_log, record_live_v4_swap_volume
+        record_live_v4_swap_volume(pool_config, data_bytes, event_id=event_id_from_log(log))
+        logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
+    except Exception as e:
+        logger.error("v4_swap_event_parse_failed", error=str(e))
+
+
 async def seed_pool_states() -> None:
     """Initializes the memory state manager by fetching all pools once."""
     logger.info("seeding_initial_pool_states")
     await seed_dex_pool_states()
-    await update_single_pool_state(ASSETCHAIN_POOL_READ_CONFIG, settings.assetchain_rpc_url)
+    await update_single_pool_state(settings.assetchain_rpc_url, settings.assetchain_pool_address)
 
 
 async def seed_dex_pool_states() -> None:
@@ -211,7 +230,6 @@ async def seed_dex_pool_states() -> None:
     await update_single_v4_pool_state(UNISWAP_BSC_POOL_READ_CONFIG)
     await update_single_v4_pool_state(UNISWAP_BASE_POOL_READ_CONFIG)
 
-# ========== CONCENTRATED LIQUIDITY SWAP MATH ==========
 # Identical formula for both V3 and V4 pools (same CFMM invariant).
 # Single-tick approximation: uses cached sqrtPrice and liquidity as constants.
 

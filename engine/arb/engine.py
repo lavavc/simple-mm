@@ -171,7 +171,7 @@ class ArbitrageEngine:
                     self._pool_seed_task = asyncio.create_task(seed_pool_states())
                 logger.warning("cex_dex_curve_pool_cache_cold_seeding")
         except Exception as e:
-            logger.error("cex_dex_curve_compute_failed", error=str(e))
+            logger.error("cex_dex_curve_compute_failed", error=str(e), exc_info=True)
 
     async def _execute_route(self, route_def: TradeRoute, route: SelectedRoute, opp_id: str) -> None:
         await _execute_route_impl(self, route_def, route, opp_id)
@@ -297,7 +297,7 @@ class ArbitrageEngine:
                         ))
                 self.broadcast({"type": "dex_arb_curve", "data": curve_data})
         except Exception as e:
-            logger.error("dex_curve_compute_failed", error=str(e))
+            logger.error("dex_curve_compute_failed", error=str(e), exc_info=True)
 
     # ------------------------------------------------------------------
     # Status, params, risk

@@ -15,7 +15,6 @@ from engine.types import LPPosition, OrderBookLevel, Position, PriceQuote, Venue
 __all__ = [
     "VenuePriceResponse",
     "OrderBookDepthResponse",
-    "VenueOrderSummary",
     "VenueOrdersResponse",
     "VenueStatus",
     "SystemStatus",

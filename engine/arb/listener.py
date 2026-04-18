@@ -1,38 +1,22 @@
 import asyncio
 import json
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 import structlog
 import websockets
 
 from engine.config import settings
-from engine.market.pool_state import update_single_v4_pool_state
-from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+from engine.market.dex_volume import V4_SWAP_TOPIC, sync_pool_volume_24h
+from engine.market.pool_state import handle_v4_swap_log, update_single_v4_pool_state
+from engine.types import WalletActivitySubscription
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-from engine.market.dex_volume import (
-    V4_SWAP_TOPIC,
-    event_id_from_log,
-    record_live_v4_swap_volume,
-    sync_pool_volume_24h,
-)
-from engine.market.pool_state import update_pool_state_from_event
-from engine.web3_utils import coerce_hex_bytes
+from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
 logger = structlog.get_logger()
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 _WSS_IDLE_RECV_TIMEOUT_SECONDS = 30
 _WSS_PING_TIMEOUT_SECONDS = 10
-
-
-@dataclass(frozen=True)
-class WalletActivitySubscription:
-    """Wallet + token pair to watch for executable inventory changes."""
-
-    venue_name: str
-    wallet_address: str
-    token_address: str
 
 
 def _normalize_address(value: str | None) -> str | None:
@@ -243,7 +227,7 @@ class ArbitrageWebSocketListener:
 
                     def _handle_subscription_event(subscription: dict[str, Any], log: dict[str, Any]) -> None:
                         if subscription["kind"] == "pool_swap":
-                            self._parse_and_update_state(log, subscription["pool_config"])
+                            handle_v4_swap_log(subscription["pool_config"], log)
                             self._trigger_market_update(chain_name)
                             return
 
@@ -336,37 +320,6 @@ class ArbitrageWebSocketListener:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
-    def _parse_and_update_state(self, log: dict[str, Any], pool_config: Any) -> None:
-        """Parse V4 Swap event data and update the pool cache — zero RPC calls."""
-        try:
-            data_bytes = coerce_hex_bytes(log.get("data", "0x"))
-
-            if len(data_bytes) < 192:
-                logger.warning("v4_swap_event_data_too_short", length=len(data_bytes))
-                return
-
-            # V4 Swap non-indexed data layout (32 bytes each):
-            # [0:32]   amount0 (int128)
-            # [32:64]  amount1 (int128)
-            # [64:96]  sqrtPriceX96 (uint160)
-            # [96:128] liquidity (uint128)
-            # [128:160] tick (int24, signed)
-            # [160:192] fee (uint24)
-            sqrt_p = int.from_bytes(data_bytes[64:96], "big")
-            liquidity = int.from_bytes(data_bytes[96:128], "big")
-            tick = int.from_bytes(data_bytes[128:160], "big", signed=True)
-            fee = int.from_bytes(data_bytes[160:192], "big")
-
-            update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
-            record_live_v4_swap_volume(
-                pool_config,
-                data_bytes,
-                event_id=event_id_from_log(log),
-            )
-            logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
-        except Exception as e:
-            logger.error("v4_swap_event_parse_failed", error=str(e))
-
     def _ensure_pending_calculation(self) -> None:
         if self._pending_calculation and not self._pending_calculation.done():
             return
@@ -417,20 +370,20 @@ class ArbitrageWebSocketListener:
                 if not market_update and not wallet_venues:
                     break
 
+                logger.info(
+                    "executing_event_driven_arb_calc",
+                    market_update=market_update,
+                    wallet_venues=wallet_venues,
+                )
                 try:
-                    logger.info(
-                        "executing_event_driven_arb_calc",
-                        market_update=market_update,
-                        wallet_venues=wallet_venues,
-                    )
                     if market_update and self.on_update:
                         await self.on_update()
                     if wallet_venues and self.on_wallet_event:
                         await self.on_wallet_event(wallet_venues)
                     if (market_update or wallet_venues) and self.on_dex_event:
                         await self.on_dex_event()
-                except Exception as e:
-                    logger.error("event_driven_arb_calc_failed", error=str(e))
+                except Exception as exc:
+                    logger.error("event_driven_arb_calc_failed", error=str(exc), exc_info=True)
 
                 if not self._pending_market_update and not self._pending_wallet_venues:
                     break

@@ -7,9 +7,10 @@ from typing import Any, Awaitable, Callable, cast
 
 import structlog
 
-from engine.arb.listener import WalletActivitySubscription
+from engine.types import WalletActivitySubscription
 from engine.scheduler.context import SchedulerContext
-from engine.scheduler.types import DepthVenueProtocol, SchedulerState
+from engine.scheduler.types import SchedulerState
+from engine.venues.base import DepthVenue
 from engine.venues.dex.v4 import BaseV4DexAdapter
 
 logger = structlog.get_logger()
@@ -22,7 +23,7 @@ class ArbitrageJobs:
         state: SchedulerState,
         *,
         update_gas_oracle: Callable[[], Awaitable[None]],
-        get_balances_for_valuation: Callable[[DepthVenueProtocol], Awaitable[list[Any]]],
+        get_balances_for_valuation: Callable[[DepthVenue], Awaitable[list[Any]]],
         broadcast_account_balances: Callable[[list[Any]], Awaitable[None]],
     ) -> None:
         self.context = context
@@ -81,7 +82,12 @@ class ArbitrageJobs:
             await self.context.arbitrage_engine.on_dex_dex_update()
             self.state.dex_bootstrap_pending = False
         except Exception as exc:
-            logger.error("dex_arb_bootstrap_failed", error=str(exc))
+            logger.error("dex_arb_bootstrap_failed", error=str(exc), exc_info=True)
+            self.context.broadcast({
+                "type": "alert",
+                "severity": "critical",
+                "message": f"DEX arb bootstrap failed — DEX arbitrage will not run until next retry: {exc}",
+            })
 
     async def stream_dex_arb_curve(self) -> None:
         try:
@@ -90,7 +96,7 @@ class ArbitrageJobs:
             if self.context.arbitrage_engine and not ws_healthy:
                 await self.context.arbitrage_engine.on_dex_dex_update()
         except Exception as exc:
-            logger.error("dex_arb_curve_stream_failed", error=str(exc))
+            logger.error("dex_arb_curve_stream_failed", error=str(exc), exc_info=True)
 
     async def stream_quidax_depth(self) -> None:
         try:
@@ -98,7 +104,7 @@ class ArbitrageJobs:
             if not quidax:
                 return
 
-            depth = await cast(DepthVenueProtocol, quidax).get_order_book_depth(limit=20)
+            depth = await cast(DepthVenue, quidax).get_order_book_depth(limit=20)
             if not depth:
                 if self.state.quidax_depth_ok:
                     self.state.quidax_depth_ok = False
@@ -123,7 +129,7 @@ class ArbitrageJobs:
             )
 
             if self.context.arbitrage_engine:
-                balances = await self._get_balances_for_valuation(cast(DepthVenueProtocol, quidax))
+                balances = await self._get_balances_for_valuation(cast(DepthVenue, quidax))
                 await self.context.arbitrage_engine.on_cex_dex_depth(depth, balances)
         except Exception as exc:
             logger.error("quidax_depth_stream_failed", error=str(exc))

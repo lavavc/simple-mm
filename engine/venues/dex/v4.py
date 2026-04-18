@@ -351,7 +351,7 @@ class BaseV4DexAdapter(VenueAdapter):
         v4_input = encode(["bytes", "bytes[]"], [actions, params])
         tx_params = self._get_tx_params(acct, block=block)
         tx_params["value"] = Wei(0)
-        tx_params["gas"] = 2_000_000  # placeholder; swap() replaces this with estimate_gas × 1.2
+        tx_params["gas"] = 2_000_000  # overwritten by estimate_gas × 1.2 in swap()
         tx = self.universal_router.functions.execute(_UR_COMMAND_V4_SWAP, [v4_input], deadline).build_transaction(tx_params)
         return tx, deadline
 

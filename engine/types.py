@@ -6,12 +6,46 @@ engine/api/schemas.py contains only HTTP-specific response wrappers.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation as _InvalidOperation
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from engine.config import settings
+
+
+def coerce_decimal(value: Any) -> Optional[Decimal]:
+    """Coerce a value to Decimal, returning None for None inputs."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (ValueError, _InvalidOperation):
+        return None
+
+
+# === Pool read configs ===
+
+
+@dataclass
+class V4PoolReadConfig:
+    """Minimal config for read-only V4 pool price fetching via StateView."""
+
+    pool_manager: str
+    state_view: str
+    pool_address: str
+    rpc_url: str
+    token0_address: str
+    token1_address: str
+    token0_symbol: str
+    token1_symbol: str
+    token0_decimals: int
+    token1_decimals: int
+    invert_price: bool = False
+    chain_id_str: str = ""
 
 
 # === Venue / position types ===
@@ -223,6 +257,7 @@ class ArbitrageOpportunity(BaseModel):
     recommended_size_usd: Decimal
     expected_profit_usd: Decimal
     status: Literal["detected", "executing", "completed", "abandoned", "expired", "half_open"]
+    direction: str = ""
     actual_profit_usd: Optional[Decimal] = None
     reason: Optional[str] = None  # Why it was abandoned/expired
     buy_amount_cngn: Optional[Decimal] = None
@@ -328,6 +363,15 @@ class ArbitrageHistoryItem(BaseModel):
     sell_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
     buy_tx_hash: Optional[str] = None
     sell_tx_hash: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class WalletActivitySubscription:
+    """Wallet + token pair to watch for executable inventory changes."""
+
+    venue_name: str
+    wallet_address: str
+    token_address: str
 
 
 class ArbitrageStatus(BaseModel):
