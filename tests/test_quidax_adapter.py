@@ -1,11 +1,13 @@
 """Non-obvious Quidax adapter invariants: ladder math, drift thresholds, safety guards.
 
-Order-tracking state machine tests (tracked_open_orders reconciliation, pending_cancel
-lifecycle, missing-lookup heuristics) are omitted — those test internal book-keeping
-that is largely self-contained and not linked to arb or LP correctness.
+Order-tracking state machine internals (pending_cancel lifecycle, missing-lookup
+heuristics) are omitted, but when the API returns an empty book and our
+local state knows about a previously placed order, get_open_orders() must return
+that tracked order so sync_order_ladder() refuses to stack a new ladder on top.
 
-These tests pin the invariants that, if broken, would silently place mis-sized orders,
-fail to requote when the market moves, or stack orders on top of open ones.
+The rest of the tests pin the invariants that, if broken, would silently place 
+mis-sized orders, fail to requote when the market moves, or stack orders on top 
+of open ones.
 """
 import time
 from decimal import Decimal
@@ -323,3 +325,70 @@ def test_normalize_order_summary_uses_origin_volume_when_volume_is_zero():
     assert summary.volume == Decimal("2")
     assert summary.remaining_volume == Decimal("2")
     assert summary.notional == Decimal("200")
+
+
+@pytest.mark.asyncio
+async def test_sync_order_ladder_does_not_stack_when_api_empty_but_tracked_order_exists():
+    """API returns an empty book, but _order_state holds a locally-tracked order.
+
+    The tracked fallback in get_open_orders() must surface the order. With a mocked
+    cancel_all_orders() that doesn't actually remove it, the post-cancel stacking
+    guard fires and raises rather than placing a new ladder on top.
+
+    If the tracked fallback breaks, get_open_orders() returns [] → the initial
+    existing_orders check is skipped → place_order fires blindly → CEX exposure doubles.
+    """
+    adapter = _make_adapter(
+        CexParams(
+            ladder_enabled=True,
+            spread_offset_ngn=50,
+            ladder_step_ngn=1,
+            ladder_levels_per_side=1,
+            anchor_requote_threshold_bps=10,
+            order_size_cngn=Decimal("2000"),
+            order_size_usdt=Decimal("10"),
+        )
+    )
+    adapter.place_order = AsyncMock()
+    adapter.cancel_all_orders = AsyncMock()  # no-op: order stays in tracked state
+
+    # Seed the tracked state directly — bypasses persistence (system_state_store=None).
+    adapter._order_state._tracked_open_orders_loaded = True
+    adapter._order_state._tracked_open_orders = [
+        {
+            "id": "tracked-1",
+            "market": "usdtcngn",
+            "side": "buy",
+            "status": "wait",
+            "price": "1345.56",
+            "volume": "1.48",
+            "remaining_volume": "1.48",
+        }
+    ]
+
+    # API returns empty on all attempts — tracked fallback must kick in.
+    adapter._api.fetch_orders_payload = AsyncMock(return_value={"status": "success", "data": []})
+    # fetch_order_by_id confirms the tracked order is still open (not cancelled).
+    adapter._api.fetch_order_by_id = AsyncMock(
+        return_value=(
+            "found",
+            {
+                "id": "tracked-1",
+                "market": {"id": "usdtcngn"},
+                "side": "buy",
+                "state": "wait",
+                "price": {"amount": "1345.56"},
+                "volume": {"amount": "1.48"},
+                "remaining_volume": {"amount": "1.48"},
+                "executed_volume": {"amount": "0"},
+            },
+        )
+    )
+
+    # The stacking guard fires: cancel was mocked, tracked order is still returned,
+    # so the post-cancel check raises rather than stacking a new ladder.
+    with pytest.raises(RuntimeError, match="prior open orders remain"):
+        await adapter.sync_order_ladder(Decimal("1395.56"))
+
+    # Regardless of which guard fires, place_order must never be called.
+    adapter.place_order.assert_not_awaited()

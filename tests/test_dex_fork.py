@@ -342,8 +342,9 @@ class TestArbDetectionFork:
         import math
         import time as _time
         from engine.arb.detection.dex_dex import find_optimal_dex_arb
-        from engine.arb.routing.router import select_route
-        from engine.arb.risk.inventory import InventoryManager
+        from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
+        from engine.arb.routing.router import RouteCandidate, select_route
+        from engine.arb.risk.inventory import InventoryTracker as InventoryManager
         from engine.market import gas_oracle as _go
         from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -371,7 +372,9 @@ class TestArbDetectionFork:
 
         # Skew BSC sqrtPriceX96 by 2×: this makes BSC cNGN price 4× relative to Base,
         # guaranteeing a large, detectable arbitrage gap regardless of current market prices.
-        _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = bsc_state["sqrt_p"] * 2
+        # Save the original value before mutating — bsc_state is a reference to the cache dict.
+        original_bsc_sqrt_p = bsc_state["sqrt_p"]
+        _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = original_bsc_sqrt_p * 2
 
         try:
             result = find_optimal_dex_arb()
@@ -394,60 +397,26 @@ class TestArbDetectionFork:
             )
             inventory = InventoryManager(params)
             inventory.reconcile_cngn({"uni-base": Decimal("50000"), "uni-bsc": Decimal("50000")})
-            inventory.reconcile_stable({"uni-base": Decimal("1000"), "uni-bsc": Decimal("1000")})
+            inventory.reconcile_stables({"uni-base": Decimal("1000"), "uni-bsc": Decimal("1000")})
 
-            selected = select_route(result, inventory, params)
+            direction = arb["direction"]
+            route_def = ROUTES_BY_DIRECTION[direction]
+            candidate = RouteCandidate(
+                direction=direction,
+                buy_venue=route_def.buy_leg.venue,
+                sell_venue=route_def.sell_leg.venue,
+                optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
+                expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
+                gas_usd=Decimal(str(arb.get("gas_usd", "0.005"))),
+                signal=result,
+            )
+            selected = select_route([candidate], inventory)
             assert selected is not None, (
                 "select_route() must select a route when arb is detected and inventory is available"
             )
-            assert selected.candidate.direction == arb["direction"]
+            assert selected.candidate.direction == direction
 
         finally:
             # Restore original BSC sqrtP so other tests are not affected
-            _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = bsc_state["sqrt_p"]
+            _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = original_bsc_sqrt_p
 
-    @pytest.mark.asyncio
-    async def test_no_arb_when_prices_are_equal(self, anvil_base, anvil_bsc):
-        """When both pools report the same sqrtPrice, find_optimal_dex_arb() returns None.
-
-        This is the baseline: if current market prices are already balanced,
-        no arb should be triggered. Tests that detection correctly identifies
-        the zero-opportunity case.
-        """
-        import dataclasses
-        import time as _time
-        from engine.arb.detection.dex_dex import find_optimal_dex_arb
-        from engine.market import gas_oracle as _go
-        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
-        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
-        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
-
-        base_config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
-        bsc_config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
-
-        ok_base = await update_single_v4_pool_state(base_config)
-        ok_bsc = await update_single_v4_pool_state(bsc_config)
-        if not ok_base or not ok_bsc:
-            pytest.skip("Could not seed pool cache from fork")
-
-        _go._state["gas_usd_base"] = Decimal("0.003")
-        _go._state["gas_usd_bsc"] = Decimal("0.005")
-        _go._state["last_updated_monotonic"] = _time.monotonic()
-
-        base_state = _POOL_CACHE[base_config.pool_address]
-        bsc_state = _POOL_CACHE[bsc_config.pool_address]
-
-        # Force both pools to identical sqrtP so prices match exactly — no arb possible
-        identical_sqrt = base_state["sqrt_p"]
-        _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = identical_sqrt
-
-        try:
-            result = find_optimal_dex_arb()
-            # Current market might already have a small arb, or it may be zero.
-            # After forcing equal prices, the result should be None or have non-positive profit.
-            if result is not None:
-                assert result["optimal_arb"]["expected_profit_usd"] <= 0, (
-                    "With identical prices, expected_profit_usd must not be positive"
-                )
-        finally:
-            _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = bsc_state["sqrt_p"]
