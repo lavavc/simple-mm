@@ -9,6 +9,7 @@ The rest of the tests pin the invariants that, if broken, would silently place
 mis-sized orders, fail to requote when the market moves, or stack orders on top 
 of open ones.
 """
+import json
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -34,6 +35,17 @@ class _FakeResponse:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
+class _FakeSystemStateStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get_system_state(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set_system_state(self, key: str, value: object) -> None:
+        self.values[key] = value if isinstance(value, str) else json.dumps(value)
+
+
 class _FakeClient:
     def __init__(self, payload: dict, status_code: int = 200) -> None:
         self.payload = payload
@@ -51,6 +63,7 @@ class _FakeClient:
 def _make_adapter(
     params: CexParams | None = None,
     *,
+    system_state_store: _FakeSystemStateStore | None = None,
     alert_store: object | None = None,
     broadcast: object | None = None,
 ) -> QuidaxAdapter:
@@ -58,7 +71,7 @@ def _make_adapter(
         api_key="test-key",
         params=params,
         alert_store=alert_store or SimpleNamespace(insert_alert=AsyncMock()),
-        system_state_store=None,
+        system_state_store=system_state_store,
         broadcast=broadcast,
     )
 
@@ -223,6 +236,7 @@ async def test_sync_order_ladder_refuses_to_stack_when_open_orders_remain():
 @pytest.mark.asyncio
 async def test_sync_order_ladder_skips_requote_when_existing_orders_are_within_threshold():
     """Within threshold_bps, existing orders are still valid — no cancel/replace cycle."""
+    broadcasts: list[dict[str, object]] = []
     adapter = _make_adapter(
         CexParams(
             ladder_enabled=True,
@@ -257,6 +271,7 @@ async def test_sync_order_ladder_skips_requote_when_existing_orders_are_within_t
 @pytest.mark.asyncio
 async def test_sync_order_ladder_skips_during_requote_cooldown():
     """Even if anchor moved beyond threshold, cooldown window prevents thrashing."""
+    broadcasts: list[dict[str, object]] = []
     adapter = _make_adapter(
         CexParams(
             ladder_enabled=True,
