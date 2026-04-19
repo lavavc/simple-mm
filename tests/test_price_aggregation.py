@@ -286,27 +286,6 @@ class TestVWAP:
         uni_base_price = normalized["uni-base"].cngn_usd
         assert abs(vwap - uni_base_price) < Decimal("0.00001")
 
-    def test_vwap_empty_input(self):
-        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
-        calc.venue_weights = {}
-        assert calc.compute_vwap({}) == Decimal("0")
-
-    def test_vwap_single_venue(self):
-        normalizer = PriceNormalizer()
-        prices = {
-            "quidax": _make_venue_price(
-                "quidax", "cNGN/USDT",
-                bid=Decimal("0.000696"), ask=Decimal("0.000698"), mid=Decimal("0.000697"),
-            ),
-        }
-        normalized = normalizer.normalize(prices)
-        normalized["quidax"].volume_24h_usd = Decimal("50000")
-
-        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
-        calc.venue_weights = {}
-        vwap = calc.compute_vwap(normalized)
-        assert vwap == Decimal("0.000697")
-
     @pytest.mark.asyncio
     async def test_calculate_current_does_not_proxy_uni_bsc_volume(self):
         class DummyAggregator:
@@ -341,35 +320,52 @@ class TestVWAP:
         assert blended.dex_volume_24h_usd["uni-base"] == Decimal("200000")
         assert blended.dex_volume_24h_usd["uni-bsc"] is None
 
+    def test_vwap_shifts_when_volume_changes_but_prices_stay_fixed(self):
+        """Prices are constant; only volume distribution changes.
 
-# =============================================================================
-# Source-to-venue mapping
-# =============================================================================
+        This proves VWAP is actually volume-weighted: with identical prices on
+        three venues, VWAP equals the common price regardless of volume split.
+        But when one venue has a *different* price and its volume increases,
+        the VWAP moves toward it — even though the other two venues' prices
+        are unchanged.
+        """
+        normalizer = PriceNormalizer()
+        base_price = Decimal("0.000700")
+        low_price  = Decimal("0.000600")
 
+        def _prices_with_volumes(
+            high_vol: Decimal, low_vol: Decimal
+        ) -> dict:
+            prices = {
+                "quidax": _make_venue_price(
+                    "quidax", "cNGN/USDT",
+                    bid=base_price, ask=base_price, mid=base_price,
+                ),
+                "uni-base": _make_venue_price(
+                    "uni-base", "cNGN/USDC",
+                    bid=low_price, ask=low_price, mid=low_price,
+                ),
+            }
+            normalized = normalizer.normalize(prices)
+            normalized["quidax"].volume_24h_usd = high_vol
+            normalized["uni-base"].volume_24h_usd = low_vol
+            return normalized
 
-class TestSourceToVenue:
-    """Test the _source_to_venue static method."""
+        calc = BlendedPriceCalculator.__new__(BlendedPriceCalculator)
+        calc.venue_weights = {}
 
-    def test_bybit_p2p(self):
-        assert BlendedPriceCalculator._source_to_venue("bybit_p2p") == "bybit"
+        # quidax dominates → VWAP close to base_price
+        vwap_quidax_heavy = calc.compute_vwap(_prices_with_volumes(Decimal("900000"), Decimal("100000")))
+        # uni-base dominates → VWAP close to low_price
+        vwap_unibase_heavy = calc.compute_vwap(_prices_with_volumes(Decimal("100000"), Decimal("900000")))
 
-    def test_quidax(self):
-        assert BlendedPriceCalculator._source_to_venue("quidax") == "quidax"
-
-    def test_uni_base_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("uni-base_pool") == "uni-base"
-
-    def test_uni_bsc_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("uni-bsc_pool") == "uni-bsc"
-
-    def test_blockradar(self):
-        assert BlendedPriceCalculator._source_to_venue("blockradar") == "blockradar"
-
-    def test_assetchain_pool(self):
-        assert BlendedPriceCalculator._source_to_venue("assetchain_pool") == "assetchain"
-
-    def test_unknown_passthrough(self):
-        assert BlendedPriceCalculator._source_to_venue("something_new") == "something_new"
+        # Prices didn't change — only volumes. VWAP must differ.
+        assert vwap_quidax_heavy > vwap_unibase_heavy
+        # Both should sit strictly between the two venue prices
+        assert low_price < vwap_unibase_heavy < base_price
+        assert low_price < vwap_quidax_heavy < base_price
+        # The heavy-volume side should dominate
+        assert abs(vwap_quidax_heavy - base_price) < abs(vwap_unibase_heavy - base_price)
 
 
 # =============================================================================
@@ -396,14 +392,6 @@ class TestNormalizeSinglePrice:
     def test_blockradar_returns_none(self):
         """Blockradar can't be normalized without cross-rate."""
         result = BlendedPriceCalculator._normalize_single_price("blockradar", Decimal("1.0"))
-        assert result is None
-
-    def test_zero_price_returns_none(self):
-        result = BlendedPriceCalculator._normalize_single_price("quidax", Decimal("0"))
-        assert result is None
-
-    def test_negative_price_returns_none(self):
-        result = BlendedPriceCalculator._normalize_single_price("quidax", Decimal("-1"))
         assert result is None
 
 

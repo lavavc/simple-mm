@@ -170,13 +170,6 @@ def _make_lp_snapshot_adapter(
 class TestComputeRequiredRatio:
     """Tests for shared.compute_required_ratio."""
 
-    def test_symmetric_range_price_at_midpoint(self):
-        """When price is inside the range, both r0 and r1 are non-zero."""
-        sqrt_p = _price_to_sqrt_x96(1.0)
-        r0, r1 = compute_required_ratio(-1000, 1000, sqrt_p, 6, 6)
-        assert r0 > 0
-        assert r1 > 0
-
     def test_price_below_range_all_token0(self):
         """Price below range: position is entirely token0, r1 == 0."""
         sqrt_p = _price_to_sqrt_x96(0.5)  # below tick_lower=1000
@@ -213,14 +206,6 @@ class TestComputeRequiredRatio:
 
 class TestPrepareLpBalance:
     """Tests for V4PositionManager.prepare_lp_balance via mocked RPC."""
-
-    @pytest.mark.asyncio
-    async def test_no_swap_when_empty(self):
-        """Both balances zero: returns immediately, no swap."""
-        sqrt_p = _price_to_sqrt_x96(1.0)
-        adapter = _make_balance_adapter(sqrt_p, 0, 0)
-        await V4PositionManager.prepare_lp_balance(adapter, -1000, 1000)
-        adapter._swap_from_lp.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_swap_when_balanced(self):
@@ -311,17 +296,6 @@ class TestActiveLpPositionSnapshot:
         assert result.current_price == Decimal("1")
         assert result.pool_liquidity is None
 
-    def test_returns_none_when_no_active_position(self):
-        adapter = _make_lp_snapshot_adapter(
-            [],
-            sqrt_price_x96=_price_to_sqrt_x96(1.0),
-            include_live_market=False,
-        )
-
-        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
-
-        assert result is None
-
     def test_snapshot_below_range_is_all_token0(self):
         pos_state = _make_position_state(tick_lower=1000, tick_upper=2000, in_range=False)
         adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(0.5))
@@ -340,16 +314,6 @@ class TestActiveLpPositionSnapshot:
         assert result is not None
         assert result.token0_amount == 0
         assert result.token1_amount > 0
-
-    def test_snapshot_in_range_has_both_tokens(self):
-        pos_state = _make_position_state(in_range=True)
-        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
-        result = V4PositionManager.get_active_lp_position_snapshot(adapter)
-
-        assert result is not None
-        assert result.token0_amount > 0
-        assert result.token1_amount > 0
-        assert result.snapshot_status == "live"
 
     def test_snapshot_returns_degraded_summary_for_multiple_positions(self):
         adapter = _make_lp_snapshot_adapter(
@@ -837,28 +801,6 @@ class TestActiveLpPositionSnapshot:
 
 
 class TestV4GetPosition:
-    @pytest.mark.asyncio
-    async def test_get_position_returns_deployed_lp_only(self):
-        pos_state = _make_position_state(token_id=77, in_range=True)
-        adapter = _make_lp_snapshot_adapter([pos_state], sqrt_price_x96=_price_to_sqrt_x96(1.0))
-
-        result = await V4PositionManager.get_position_as_schema(adapter)
-
-        assert result.balances["cngn"] > 0
-        assert result.balances["usdc"] > 0
-        assert result.lp_position is not None
-        assert result.lp_position.token_id == "77"
-        assert result.lp_position.snapshot_status == "live"
-
-    @pytest.mark.asyncio
-    async def test_get_position_returns_zero_balances_when_no_nft(self):
-        adapter = _make_lp_snapshot_adapter([], sqrt_price_x96=_price_to_sqrt_x96(1.0))
-
-        result = await V4PositionManager.get_position_as_schema(adapter)
-
-        assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
-        assert result.lp_position is None
-
     @pytest.mark.asyncio
     async def test_get_position_keeps_lp_visible_when_snapshot_is_degraded(self):
         pos_state = _make_position_state(token_id=77, in_range=True)

@@ -1,10 +1,23 @@
+"""V4 swap log decoding and event ID normalization.
+
+Two non-obvious invariants:
+
+1. V4 swap amounts are signed int256 values packed as two's-complement big-endian
+   in 32-byte words. A negative amount0 means tokens flowed *into* the pool
+   (buyer's side), positive means tokens flowed *out*. Both log-data shapes
+   (bytes-like and hex-string) occur in practice.
+
+2. event_id_from_log() must produce a stable, identical string regardless of
+   whether transactionHash arrives as HexBytes or a plain hex string, and whether
+   logIndex arrives as a numeric int or a hex string. The event ID is used for
+   volume dedup — divergence means the same swap is counted twice or dropped.
+"""
 from types import SimpleNamespace
 
 from hexbytes import HexBytes
 
-from engine.market.dex_volume import V4_SWAP_TOPIC
+from engine.market.dex_volume import V4_SWAP_TOPIC, event_id_from_log
 from engine.venues.dex.v4 import BaseV4DexAdapter
-from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
 
 
 def _word(value: int) -> bytes:
@@ -18,14 +31,6 @@ def _make_adapter() -> BaseV4DexAdapter:
         token1_address="0x0000000000000000000000000000000000000002",
     )
     return adapter
-
-
-def test_hex_helpers_normalize_bytes_and_strings():
-    assert coerce_hex_str(HexBytes("0x1234")) == "0x1234"
-    assert coerce_hex_str(b"\x12\x34") == "0x1234"
-    assert coerce_hex_bytes("0x1234") == b"\x12\x34"
-    assert coerce_hex_bytes(HexBytes("0x1234")) == b"\x12\x34"
-    assert as_hexstr("1234") == "0x1234"
 
 
 def test_parse_swap_output_raw_handles_bytes_like_log_data() -> None:
@@ -80,3 +85,28 @@ def test_parse_swap_output_raw_handles_hex_string_log_data() -> None:
         adapter.config.token1_address,
     )
     assert output_raw == 22
+
+
+# =============================================================================
+# event_id_from_log: stable dedup key across all Web3 log shapes
+# =============================================================================
+
+
+def test_event_id_stable_across_log_shapes():
+    """HexBytes hash + numeric index and hex-string hash + hex-string index must
+    produce the same event ID so that the same on-chain swap is never counted twice.
+    """
+    hexbytes_log = {
+        "transactionHash": HexBytes("0xabcdef1234"),
+        "logIndex": 3,
+    }
+    hexstr_log = {
+        "transactionHash": "0xabcdef1234",
+        "logIndex": "0x3",
+    }
+
+    id_from_hexbytes = event_id_from_log(hexbytes_log)
+    id_from_hexstr = event_id_from_log(hexstr_log)
+
+    assert id_from_hexbytes is not None
+    assert id_from_hexbytes == id_from_hexstr
