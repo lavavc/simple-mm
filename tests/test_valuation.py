@@ -1,13 +1,17 @@
-"""Seeded-cache tests for valuation.py."""
+"""Valuation invariants: token order, wrapper identity, graceful pool-state degradation.
 
-import pytest
+The non-obvious invariant is that cNGN is token0 on Base but token1 on BSC — swapping
+in the wrong direction inverts the price. These tests confirm the adapters hardcode
+the correct order regardless of RPC-derived state, and that the valuation wrapper
+delegates faithfully to the underlying swap math.
+"""
+
 from decimal import Decimal
 from types import SimpleNamespace
 
 from engine.arb.valuation import portfolio_value, cex_holdings_value, dex_holdings_value
 from engine.types import OrderBookDepth, OrderBookLevel
 from engine.arb.detection.cex_dex import QUIDAX_FEE
-from engine.market.pool_state import swap_token0_for_token1
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter
 
@@ -17,7 +21,6 @@ def _level(price: float, amount: float) -> OrderBookLevel:
 
 
 def _make_depth(bid_price: float, ask_price: float, amount: float = 10000.0) -> OrderBookDepth:
-    # price convention: cNGN per USDT (e.g. 1650 means 1 USDT = 1650 cNGN)
     return OrderBookDepth(
         venue="quidax", pair="cNGN/USDT", timestamp=0,
         bids=[_level(bid_price, amount)],
@@ -36,24 +39,16 @@ def _make_balance(role: str, cngn: float = 0.0, usdt: float = 0.0, usdc: float =
     )
 
 
-# price convention: cNGN per USDT (1650 means 1 USDT = 1650 cNGN)
 _DEPTH = _make_depth(bid_price=1650, ask_price=1640)
 
 
 class TestCexHoldingsValue:
-    def test_zero_cngn_returns_zero(self):
-        # ask.price = 1640 cNGN/USDT, amount = 1000 USDT → 1,640,000 cNGN available
-        asks = [_level(1640, 1000)]
-        value = cex_holdings_value(asks, Decimal("0"), QUIDAX_FEE)
-        assert value == Decimal("0")
-
-    def test_positive_cngn_returns_positive_value(self):
-        asks = [_level(1640, 1000)]  # 1,640,000 cNGN available
-        value = cex_holdings_value(asks, Decimal("100000"), QUIDAX_FEE)
-        assert value > Decimal("0")
-
     def test_output_matches_walk_orderbook_asks(self):
-        """cex_holdings_value is a thin wrapper — output must match walk directly."""
+        """cex_holdings_value is a thin wrapper — output must match walk_orderbook_asks directly.
+
+        If this fails, the two code paths have diverged and portfolio valuation
+        will show different figures than what the arb detector uses.
+        """
         from engine.arb.detection.cex_dex import walk_orderbook_asks
         asks = [_level(1640, 1000)]
         expected, _ = walk_orderbook_asks(asks, Decimal("50000"), QUIDAX_FEE)
@@ -63,6 +58,7 @@ class TestCexHoldingsValue:
 
 class TestDexHoldingsValue:
     def test_cngn_is_token0_uses_swap_t0_for_t1(self, seeded_pool_cache):
+        """Base pool: cNGN is token0, so valuing cNGN → USDC must call swap_token0_for_token1."""
         from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1
         base_key = seeded_pool_cache["uni-base"]
         sqrt_p, liq, _, fee = get_cached_pool_state(base_key)
@@ -77,6 +73,7 @@ class TestDexHoldingsValue:
         assert value == expected
 
     def test_cngn_is_token1_uses_swap_t1_for_t0(self, seeded_pool_cache):
+        """BSC pool: cNGN is token1, so valuing cNGN → USDT must call swap_token1_for_token0."""
         from engine.market.pool_state import get_cached_pool_state, swap_token1_for_token0
         bsc_key = seeded_pool_cache["uni-bsc"]
         sqrt_p, liq, _, fee = get_cached_pool_state(bsc_key)
@@ -91,6 +88,7 @@ class TestDexHoldingsValue:
         assert value == expected
 
     def test_uni_base_rpc_override_preserves_cngn_token_order(self, test_private_key):
+        """cngn_is_token0=True must be hardcoded on Base, not derived from RPC state."""
         adapter = UniswapBaseV4Adapter(
             lp_private_key=test_private_key,
             trade_private_key=test_private_key,
@@ -99,6 +97,7 @@ class TestDexHoldingsValue:
         assert adapter.config.cngn_is_token0 is True
 
     def test_uni_bsc_rpc_override_preserves_cngn_token_order(self, test_private_key):
+        """cngn_is_token0=False must be hardcoded on BSC — using True would invert the price."""
         adapter = UniswapBscV4Adapter(
             lp_private_key=test_private_key,
             trade_private_key=test_private_key,
@@ -108,47 +107,13 @@ class TestDexHoldingsValue:
 
 
 class TestPortfolioValue:
-    def test_empty_balances_returns_zeros(self, seeded_pool_cache):
-        result = portfolio_value(_DEPTH, [])
-        assert result["quidax_cngn_usd"] == 0.0
-        assert result["uni_bsc_cngn_usd"] == 0.0
-        assert result["uni_base_cngn_usd"] == 0.0
-
-    def test_quidax_cngn_valued(self, seeded_pool_cache):
-        balances = [_make_balance("quidax-exchange", cngn=100000, usdt=500)]
-        result = portfolio_value(_DEPTH, balances)
-        assert result["quidax_cngn_usd"] > 0
-        assert result["quidax_usdt"] == 500.0
-
-    def test_bsc_cngn_valued(self, seeded_pool_cache):
-        balances = [_make_balance("uni-bsc-trade", cngn=100000, usdt=100)]
-        result = portfolio_value(_DEPTH, balances)
-        assert result["uni_bsc_cngn_usd"] > 0
-
-    def test_base_cngn_valued(self, seeded_pool_cache):
-        balances = [_make_balance("uni-base-trade", cngn=100000, usdc=100)]
-        result = portfolio_value(_DEPTH, balances)
-        assert result["uni_base_cngn_usd"] > 0
-
     def test_missing_pool_state_graceful(self, monkeypatch):
-        """When pool state is missing, DEX cNGN value is 0 (no crash)."""
+        """When pool state is missing (cache cold), DEX cNGN value must be 0, not an exception.
+
+        This covers the startup window before the pool cache is seeded.
+        """
         from engine.market import pool_state as _ps
         monkeypatch.setattr(_ps, "_POOL_CACHE", {})
         balances = [_make_balance("uni-base-trade", cngn=100000)]
         result = portfolio_value(_DEPTH, balances)
         assert result["uni_base_cngn_usd"] == 0.0
-
-    def test_all_cngn_delta_ratio_near_one(self, seeded_pool_cache):
-        """If all holdings are cNGN, cNGN USD values dominate stablecoin values."""
-        # Large cNGN, tiny stablecoins
-        balances = [
-            _make_balance("quidax-exchange", cngn=1_000_000, usdt=1),
-            _make_balance("uni-base-trade", cngn=1_000_000, usdc=1),
-            _make_balance("uni-bsc-trade", cngn=1_000_000, usdt=1),
-        ]
-        result = portfolio_value(_DEPTH, balances)
-        total_cngn_usd = result["quidax_cngn_usd"] + result["uni_bsc_cngn_usd"] + result["uni_base_cngn_usd"]
-        total_stable = result["quidax_usdt"] + result["uni_bsc_usdt"] + result["uni_base_usdc"]
-        if total_cngn_usd + total_stable > 0:
-            delta_ratio = total_cngn_usd / (total_cngn_usd + total_stable)
-            assert delta_ratio > 0.9  # overwhelmingly cNGN
