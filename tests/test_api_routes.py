@@ -1,5 +1,6 @@
 """API route tests for runtime-based dependency resolution."""
 
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,8 +40,11 @@ class _DummyCexVenue(_DummyVenue):
 
 
 def _make_runtime() -> EngineRuntime:
+    async def _get_system_state(key: str) -> str | None:
+        return "true" if key == "trading_enabled" else None
+
     db = SimpleNamespace(
-        system_state=SimpleNamespace(get_system_state=AsyncMock(return_value="true"), set_system_state=AsyncMock()),
+        system_state=SimpleNamespace(get_system_state=AsyncMock(side_effect=_get_system_state), set_system_state=AsyncMock()),
         arbitrage=SimpleNamespace(get_arbitrage_opportunity=AsyncMock(return_value=None)),
     )
     scheduler = SimpleNamespace(

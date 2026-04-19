@@ -12,7 +12,12 @@ from web3 import Web3
 
 from engine.api.deps import get_repository, get_runtime, require_account_manager, verify_token
 from engine.venues.base import DepthVenue, WebhookVenue
-from engine.api.schemas import OrderBookDepthResponse, VenueOrdersResponse
+from engine.api.schemas import (
+    OrderBookDepthResponse,
+    PublicVenueOrderSummary,
+    PublicVenueOrdersResponse,
+    VenueOrdersResponse,
+)
 from engine.config import DexParams, settings
 from engine.db.repository import DatabaseRepository
 from engine.runtime import EngineRuntime
@@ -90,6 +95,37 @@ def _normalize_generic_order_summary(order: dict[str, Any], venue: str) -> Venue
         notional=price * (remaining_volume if remaining_volume > 0 else volume),
         created_at=None,
     )
+
+
+def _public_order_summary(order: VenueOrderSummary) -> PublicVenueOrderSummary:
+    return PublicVenueOrderSummary(
+        market=order.market,
+        side=order.side,
+        status=order.status,
+        price=order.price,
+        volume=order.volume,
+        remaining_volume=order.remaining_volume,
+        executed_volume=order.executed_volume,
+        notional=order.notional,
+        created_at=order.created_at,
+    )
+
+
+async def _get_venue_order_summaries(venue: str, venue_adapter: Any) -> list[VenueOrderSummary]:
+    get_open_order_summaries = getattr(venue_adapter, "get_open_order_summaries", None)
+    if callable(get_open_order_summaries):
+        return cast(list[VenueOrderSummary], await get_open_order_summaries())
+
+    get_open_orders = getattr(venue_adapter, "get_open_orders", None)
+    if callable(get_open_orders):
+        raw_orders = await get_open_orders()
+        return [
+            summary
+            for order in raw_orders
+            if (summary := _normalize_generic_order_summary(order, venue)) is not None
+        ]
+
+    raise HTTPException(status_code=400, detail="Venue does not expose order inspection")
 
 
 @router.post("/venues/{venue}/withdraw", dependencies=[Depends(verify_token)])
@@ -307,40 +343,43 @@ async def get_venue_orders(
         raise HTTPException(status_code=404, detail="Venue not found")
 
     venue_adapter = runtime.venues[venue]
-    get_open_order_summaries = getattr(venue_adapter, "get_open_order_summaries", None)
-    if callable(get_open_order_summaries):
-        try:
-            orders = await get_open_order_summaries()
-            return VenueOrdersResponse(
-                venue=venue,
-                market=getattr(venue_adapter, "market", None),
-                count=len(orders),
-                orders=orders,
-            )
-        except Exception as exc:
-            logger.error("venue_order_summaries_failed", venue=venue, error=str(exc))
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    try:
+        orders = await _get_venue_order_summaries(venue, venue_adapter)
+        return VenueOrdersResponse(
+            venue=venue,
+            market=getattr(venue_adapter, "market", None),
+            count=len(orders),
+            orders=orders,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("venue_open_orders_failed", venue=venue, error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    get_open_orders = getattr(venue_adapter, "get_open_orders", None)
-    if callable(get_open_orders):
-        try:
-            raw_orders = await get_open_orders()
-            orders = [
-                summary
-                for order in raw_orders
-                if (summary := _normalize_generic_order_summary(order, venue)) is not None
-            ]
-            return VenueOrdersResponse(
-                venue=venue,
-                market=getattr(venue_adapter, "market", None),
-                count=len(orders),
-                orders=orders,
-            )
-        except Exception as exc:
-            logger.error("venue_open_orders_failed", venue=venue, error=str(exc))
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    raise HTTPException(status_code=400, detail="Venue does not expose order inspection")
+@router.get("/venues/{venue}/orders/public", response_model=PublicVenueOrdersResponse)
+async def get_public_venue_orders(
+    venue: str,
+    runtime: EngineRuntime = Depends(get_runtime),
+) -> PublicVenueOrdersResponse:
+    if venue not in runtime.venues:
+        raise HTTPException(status_code=404, detail="Venue not found")
+
+    venue_adapter = runtime.venues[venue]
+    try:
+        orders = await _get_venue_order_summaries(venue, venue_adapter)
+        return PublicVenueOrdersResponse(
+            venue=venue,
+            market=getattr(venue_adapter, "market", None),
+            count=len(orders),
+            orders=[_public_order_summary(order) for order in orders],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("venue_public_open_orders_failed", venue=venue, error=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/venues/{venue}/orders/debug", dependencies=[Depends(verify_token)])

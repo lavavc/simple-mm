@@ -34,6 +34,16 @@ export function useStatus() {
   return useQuery({ queryKey: ['status'], queryFn: api.getStatus });
 }
 
+export function useVenueOrders(venue: string, enabled = true) {
+  return useQuery({
+    queryKey: ['venueOrders', venue],
+    queryFn: () => api.getVenueOrders(venue),
+    enabled: enabled && Boolean(venue),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
 export function useHealth() {
   return useQuery({ queryKey: ['health'], queryFn: api.getHealth });
 }

@@ -46,6 +46,8 @@ export interface VenueStatus {
   position?: Position;
   price?: VenuePriceResponse;
   params?: Record<string, unknown>;
+  anchor_price_ngn?: string | number;
+  last_ladder_anchor_price_ngn?: string | number;
 }
 
 export interface SystemStatus {
@@ -53,6 +55,25 @@ export interface SystemStatus {
   uptime: number;
   last_price_update?: number;
   venues: VenueStatus[];
+}
+
+export interface VenueOrderSummary {
+  market?: string | null;
+  side: string;
+  status?: string | null;
+  price: string | number;
+  volume: string | number;
+  remaining_volume: string | number;
+  executed_volume: string | number;
+  notional: string | number;
+  created_at?: number | null;
+}
+
+export interface VenueOrdersResponse {
+  venue: string;
+  market?: string | null;
+  count: number;
+  orders: VenueOrderSummary[];
 }
 
 export interface GlobalPosition {

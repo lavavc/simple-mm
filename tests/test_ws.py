@@ -40,3 +40,28 @@ async def test_non_retained_events_not_replayed_on_accept():
 
     assert ws.accepted is True
     assert ws.sent_texts == []
+
+
+@pytest.mark.asyncio
+async def test_quidax_open_orders_retention_is_namespaced_by_venue():
+    manager = ConnectionManager()
+    manager.broadcast(
+        {
+            "type": "quidax_open_orders",
+            "data": {"venue": "quidax", "count": 1, "orders": []},
+        }
+    )
+    manager.broadcast(
+        {
+            "type": "quidax_open_orders",
+            "data": {"venue": "quidax-lp", "count": 2, "orders": []},
+        }
+    )
+
+    ws = FakeWebSocket()
+    await manager.accept(ws)
+
+    assert ws.accepted is True
+    assert len(ws.sent_texts) == 2
+    payloads = [json.loads(text) for text in ws.sent_texts]
+    assert {payload["data"]["venue"] for payload in payloads} == {"quidax", "quidax-lp"}

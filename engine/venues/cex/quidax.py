@@ -97,6 +97,7 @@ class QuidaxAdapter(VenueAdapter):
         )
         self._client: Optional[httpx.AsyncClient] = None
         self._last_balances: dict[str, Decimal] = {}
+        self._last_ladder_reference_price: Decimal | None = None
         self._last_ladder_requote_at: float = 0
         self.enabled = True
         self.paused = False
@@ -203,6 +204,62 @@ class QuidaxAdapter(VenueAdapter):
             self._api.fetch_order_by_id,
             live_order_ids=live_order_ids,
         )
+
+    def _build_public_open_orders_payload(
+        self,
+        orders: list[VenueOrderSummary],
+    ) -> dict[str, Any]:
+        return {
+            "venue": self.name,
+            "market": self.market,
+            "count": len(orders),
+            "orders": [order.model_dump(mode="json", exclude={"id"}) for order in orders],
+        }
+
+    async def _broadcast_open_orders_snapshot(
+        self,
+        orders: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if not self._broadcast:
+            return
+
+        try:
+            if orders is None:
+                summaries = await self.get_open_order_summaries()
+            else:
+                summaries = []
+                for order in orders:
+                    if (summary := normalize_order_summary(order, market=self.market)) is not None:
+                        summaries.append(summary)
+                summaries.sort(key=lambda order: order.created_at or 0, reverse=True)
+            self._broadcast(
+                {
+                    "type": "quidax_open_orders",
+                    "data": self._build_public_open_orders_payload(summaries),
+                }
+            )
+        except Exception as exc:
+            logger.warning("quidax_open_orders_broadcast_failed", venue=self.name, error=str(exc))
+
+    async def _persist_last_ladder_reference_price(self, reference_price: Decimal) -> None:
+        self._last_ladder_reference_price = reference_price
+        if self._order_state.system_state_store is None:
+            return
+
+        try:
+            await self._order_state.system_state_store.set_system_state(
+                f"{self.name}:last_ladder_anchor_price_ngn",
+                {
+                    "reference_price_ngn": str(reference_price),
+                    "updated_at_ms": int(time.time() * 1000),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "quidax_last_ladder_anchor_persist_failed",
+                venue=self.name,
+                error=str(exc),
+            )
 
     async def _track_open_order(
         self,
@@ -415,7 +472,7 @@ class QuidaxAdapter(VenueAdapter):
         summaries.sort(key=lambda order: order.created_at or 0, reverse=True)
         return summaries
 
-    async def cancel_all_orders(self) -> int:
+    async def cancel_all_orders(self, *, broadcast_snapshot: bool = True) -> int:
         """
         Cancel all open orders.
 
@@ -593,6 +650,8 @@ class QuidaxAdapter(VenueAdapter):
             pending=len(remaining_settling_ids),
             remaining=len(remaining_settling_ids),
         )
+        if broadcast_snapshot:
+            await self._broadcast_open_orders_snapshot()
         return cancelled
 
     async def place_order(
@@ -791,6 +850,7 @@ class QuidaxAdapter(VenueAdapter):
                 existing_orders=len(existing_orders),
                 threshold_bps=self.params.anchor_requote_threshold_bps,
             )
+            await self._broadcast_open_orders_snapshot(existing_orders)
             return
 
         if existing_orders:
@@ -806,15 +866,18 @@ class QuidaxAdapter(VenueAdapter):
                         cooldown_seconds=cooldown_seconds,
                         elapsed_seconds=elapsed,
                     )
+                    await self._broadcast_open_orders_snapshot(existing_orders)
                     return
-            await self.cancel_all_orders()
+            await self.cancel_all_orders(broadcast_snapshot=False)
             remaining_orders = await self.get_open_orders()
             if remaining_orders:
+                await self._broadcast_open_orders_snapshot(remaining_orders)
                 remaining_ids = [str(order.get("id", "unknown")) for order in remaining_orders[:10]]
                 raise RuntimeError(
                     "Refusing to place a new Quidax ladder while prior open orders remain: "
                     f"{len(remaining_orders)} still open ({', '.join(remaining_ids)})"
                 )
+            await self._broadcast_open_orders_snapshot(remaining_orders)
 
         orders_attempted = 0
         orders_placed = 0
@@ -853,7 +916,9 @@ class QuidaxAdapter(VenueAdapter):
             orders_placed=orders_placed,
         )
         if orders_placed > 0:
+            await self._persist_last_ladder_reference_price(reference_price)
             self._last_ladder_requote_at = time.time()
+            await self._broadcast_open_orders_snapshot()
             if existing_orders and requote_reason == "anchor_move":
                 await self._emit_anchor_requote_alert(
                     previous_anchor=previous_anchor,
@@ -880,3 +945,4 @@ class QuidaxAdapter(VenueAdapter):
                 price=order.get("price"),
                 volume=order.get("executed_volume"),
             )
+            await self._broadcast_open_orders_snapshot()
