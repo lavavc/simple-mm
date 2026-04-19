@@ -251,18 +251,18 @@ async def deposit_to_blockradar(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/venues/quidax/deposit-address/{currency}")
-async def get_quidax_deposit_address(currency: str) -> dict[str, Any]:
+@router.get("/venues/quidax/trade/address")
+async def get_quidax_trade_address() -> dict[str, Any]:
     if not settings.quidax_trade_address:
         raise HTTPException(status_code=503, detail="QUIDAX_TRADE_ADDRESS not configured")
+    return {"status": "success", "data": {"address": settings.quidax_trade_address}}
 
-    return {
-        "status": "success",
-        "data": {
-            "currency": currency.upper(),
-            "address": settings.quidax_trade_address,
-        },
-    }
+
+@router.get("/venues/quidax/lp/address")
+async def get_quidax_lp_address() -> dict[str, Any]:
+    if not settings.quidax_lp_address:
+        raise HTTPException(status_code=503, detail="QUIDAX_LP_ADDRESS not configured")
+    return {"status": "success", "data": {"address": settings.quidax_lp_address}}
 
 
 @router.post("/webhooks/quidax")
@@ -272,8 +272,8 @@ async def quidax_webhook(
 ) -> dict[str, str]:
     if "quidax" in runtime.venues:
         await cast(WebhookVenue, runtime.venues["quidax"]).handle_webhook(event)
-    if runtime.quidax_lp is not None:
-        await cast(WebhookVenue, runtime.quidax_lp).handle_webhook(event)
+    if "quidax-lp" in runtime.venues:
+        await cast(WebhookVenue, runtime.venues["quidax-lp"]).handle_webhook(event)
     return {"status": "ok"}
 
 

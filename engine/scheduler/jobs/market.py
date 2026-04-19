@@ -90,7 +90,10 @@ class MarketJobs:
 
         async with self._cex_sync_lock:
             quidax_mm = self.context.venues.get("quidax-lp")
-            if not quidax_mm or quidax_mm.paused:
+            if quidax_mm is None:
+                logger.warning("quidax_lp_venue_not_configured")
+                return
+            if quidax_mm.paused:
                 return
 
             try:

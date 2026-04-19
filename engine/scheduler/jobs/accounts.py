@@ -61,7 +61,7 @@ class AccountJobs:
                         ).model_dump()
                     )
             except Exception as exc:
-                logger.warning("quidax_exchange_balance_broadcast_failed", venue=venue_name, error=str(exc))
+                logger.warning("quidax_balance_broadcast_failed", venue=venue_name, error=str(exc))
 
         self.context.broadcast({"type": "account_balances", "data": payload})
 
@@ -103,8 +103,41 @@ class AccountJobs:
                     )
 
             await self.broadcast_account_balances(list(balances))
+            await self._check_quidax_cex_balances()
         except Exception as exc:
             logger.error("balance_check_failed", error=str(exc))
+
+    async def _check_quidax_cex_balances(self) -> None:
+        thresholds = {"cngn": settings.quidax_min_cngn, "usdt": settings.quidax_min_usdt}
+        venues_to_check = [("quidax", "quidax-trade")]
+        if settings.quidax_lp_is_separate:
+            venues_to_check.append(("quidax-lp", "quidax-lp"))
+        for venue_name, role_name in venues_to_check:
+            adapter = self.context.venues.get(venue_name)
+            if adapter is None:
+                continue
+            try:
+                position = await adapter.get_position()
+                if not position or not position.balances:
+                    continue
+                for token, minimum in thresholds.items():
+                    balance = Decimal(str(position.balances.get(token, "0")))
+                    if balance < minimum:
+                        symbol = token.upper()
+                        await self.context.alert_store.insert_alert(
+                            severity="warning",
+                            category="refill",
+                            message=f"Quidax {role_name} {symbol} balance below minimum",
+                            dedup=True,
+                        )
+                        self.context.broadcast(
+                            {
+                                "type": "refill_alert",
+                                "data": {"role": role_name, "token": symbol},
+                            }
+                        )
+            except Exception as exc:
+                logger.warning("quidax_cex_balance_check_failed", venue=venue_name, error=str(exc))
 
     def _lp_account_has_active_position(self, role: str) -> bool:
         """Return True if role is an LP account whose tokens are deployed in an active LP position."""

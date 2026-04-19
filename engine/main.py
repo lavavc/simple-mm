@@ -281,7 +281,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
         )
 
-    quidax_lp = venues.get("quidax-lp")
     scheduler = TradingScheduler(
         price_aggregator=price_aggregator,
         venues=venues,
@@ -293,7 +292,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         token_contracts=TOKEN_CONTRACTS,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
-        quidax_lp=quidax_lp,
         lp_managers=lp_managers,
         system_state_store=db.system_state,
         price_store=db.prices,
@@ -316,7 +314,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         normalizer=normalizer,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
-        quidax_lp=quidax_lp,
         lp_managers=lp_managers,
     )
     app.state.runtime = runtime

@@ -16,19 +16,19 @@ All execution uses dedicated HD-derived hot wallets. The BIP44 derivation tree i
 ```
 Master Seed
 │
-├── m/44'/60'/0'/1/0  → uni-base-lp      Base (8453)  cNGN, USDC
-├── m/44'/60'/0'/1/1  → uni-base-trade   Base (8453)  cNGN, USDC
-├── m/44'/60'/0'/2/0  → blockradar       Base (8453)  cNGN, USDT, USDC
-├── m/44'/60'/0'/3/0  → quidax-trade-fund BSC (56)    cNGN, USDT
-├── m/44'/60'/0'/3/1  → quidax-lp         BSC (56)    cNGN, USDT
-├── m/44'/60'/0'/4/0  → uni-bsc-lp        BSC (56)    cNGN, USDT
-└── m/44'/60'/0'/4/1  → uni-bsc-trade     BSC (56)    cNGN, USDT
+├── m/44'/60'/0'/1/0  → uni-base-lp    Base (8453)  cNGN, USDC
+├── m/44'/60'/0'/1/1  → uni-base-trade Base (8453)  cNGN, USDC
+├── m/44'/60'/0'/2/0  → blockradar     Base (8453)  cNGN, USDT, USDC
+├── m/44'/60'/0'/4/0  → uni-bsc-lp    BSC (56)     cNGN, USDT
+└── m/44'/60'/0'/4/1  → uni-bsc-trade BSC (56)     cNGN, USDT
 ```
 
 LP accounts hold liquidity positions and are not used for arb swaps. Trade accounts hold the stablecoin and cNGN that arb trades actually move. This separation means:
 - On-chain history for each account type is clean and attributable by role
 - LP positions are never accidentally swept during arb execution
 - Balances can be monitored independently; refill alerts fire per role
+
+Quidax CEX accounts (`quidax` and `quidax-lp`) are funded manually from the treasury multisig. The engine monitors CEX balances each balance-check cycle and fires a `refill_alert` when `cNGN < quidax_min_cngn` or `USDT < quidax_min_usdt`.
 
 ## Execution model: pre-funded inventory
 

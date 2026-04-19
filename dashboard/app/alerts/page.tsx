@@ -1,20 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { formatRelativeTime, formatTimestamp, getSeverityColor } from '@/lib/utils';
+import { Card, CardContent } from '@/components/ui/card';
+import { formatRelativeTime, formatTimestamp } from '@/lib/utils';
 import { useAlerts, useAcknowledgeAlert } from '@/lib/hooks/useQueries';
 import {
-  RefreshCw,
   Check,
   CheckCheck,
   AlertCircle,
   AlertTriangle,
   Info,
   Filter,
-  Activity,
   BellRing
 } from 'lucide-react';
 import type { Alert } from '@/types';

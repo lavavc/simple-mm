@@ -65,7 +65,6 @@ def _make_runtime() -> EngineRuntime:
         normalizer=None,
         portfolio_exposure_calculator=None,
         portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
-        quidax_lp=None,
         lp_managers={},
     )
 

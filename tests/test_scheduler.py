@@ -59,7 +59,6 @@ def _build_scheduler(
         account_manager=None,
         token_contracts={},
         portfolio_exposure_calculator=None,
-        quidax_lp=None,
         lp_managers=venues,
         system_state_store=SimpleNamespace(set_system_state=db.set_system_state),
         price_store=SimpleNamespace(

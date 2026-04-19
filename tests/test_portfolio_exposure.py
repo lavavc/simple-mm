@@ -1,6 +1,6 @@
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -101,6 +101,55 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
     blockradar_venue.get_position.assert_not_called()
     quidax_lp_venue.get_position.assert_not_called()
     lp_venue.get_portfolio_balances.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_exposure_includes_quidax_lp_when_separate():
+    """quidax-lp exchange balance is included only when quidax_lp_is_separate is True."""
+    quidax_venue = SimpleNamespace(
+        get_position=AsyncMock(
+            return_value=Position(
+                venue="quidax",
+                pair="CNGN/USDT",
+                timestamp=0,
+                balances={"cngn": Decimal("500"), "usdt": Decimal("20"), "usdc": Decimal("0")},
+            )
+        )
+    )
+    quidax_lp_venue = SimpleNamespace(
+        get_position=AsyncMock(
+            return_value=Position(
+                venue="quidax-lp",
+                pair="CNGN/USDT",
+                timestamp=0,
+                balances={"cngn": Decimal("300"), "usdt": Decimal("15"), "usdc": Decimal("0")},
+            )
+        )
+    )
+    blended_calculator = SimpleNamespace(
+        get_blended_price=AsyncMock(
+            return_value=SimpleNamespace(vwap=Decimal("0.001"), twap_5m=Decimal("0"), twap_1h=Decimal("0"))
+        )
+    )
+    calculator = PortfolioExposureCalculator(
+        venues={"quidax": quidax_venue, "quidax-lp": quidax_lp_venue},
+        account_manager=None,
+        token_contracts={},
+        blended_calculator=blended_calculator,
+        price_aggregator=None,
+        portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
+    )
+
+    with patch("engine.market.portfolio_exposure.settings") as mock_settings:
+        mock_settings.quidax_lp_is_separate = True
+        mock_settings.target_delta_ratio = 0.5
+        exposure = await calculator.calculate()
+
+    assert exposure.total_cngn == Decimal("800")
+    assert exposure.total_usdt == Decimal("35")
+    assert [s.source for s in exposure.sources] == ["quidax", "quidax-lp"]
+    quidax_lp_venue.get_position.assert_called_once()
+
 
 
 @pytest.mark.asyncio

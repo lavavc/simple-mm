@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     quidax_lp_api_key: str = Field(default="", description="Quidax LP account secret key (Bearer token)")
     quidax_user_id: str = Field(default="me", description="Quidax user or sub-account id for order APIs")
     quidax_lp_user_id: str = Field(default="me", description="Quidax LP user or sub-account id for order APIs")
-    quidax_trade_address: str = Field(default="", description="Quidax arb account on-chain deposit address")
-    quidax_lp_address: str = Field(default="", description="Quidax LP account on-chain deposit address")
+    quidax_trade_address: str = Field(default="", description="Quidax arb account deposit address")
+    quidax_lp_address: str = Field(default="", description="Quidax LP account deposit address")
     blockradar_api_key: str = Field(default="", description="Blockradar API key")
     blockradar_wallet_id: str = Field(default="", description="Blockradar wallet ID for swaps")
     blockradar_deposit_address: str = Field(default="", description="Blockradar on-chain deposit address")
@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     arbitrage_cross_chain_rebalance_bps: int = 10
     arbitrage_max_delta_ratio: float = 0.60
     arbitrage_min_account_stablecoin_usd: float = 10.0
+
+    # Quidax CEX balance alert thresholds
+    quidax_min_cngn: Decimal = Field(default=Decimal("10000"))
+    quidax_min_usdt: Decimal = Field(default=Decimal("10"))
 
     # LP auto-topup thresholds — idle wallet funds above these trigger increase_liquidity
     lp_topup_threshold_usdc: Decimal = Field(default=Decimal("100"))

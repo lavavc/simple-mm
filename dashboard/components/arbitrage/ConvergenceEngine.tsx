@@ -2,10 +2,8 @@
 
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useAccountBalances } from '@/lib/hooks/useQueries';
 import { QuidaxOrderBook } from '../orderbook/QuidaxOrderBook';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Zap, ArrowRight, ArrowRightLeft, AlertTriangle } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { OrderBookDepthChart } from '@/components/charts/OrderBookDepthChart';

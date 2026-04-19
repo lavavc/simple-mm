@@ -252,12 +252,6 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 def _default_orders_venue(runtime: EngineRuntime) -> tuple[str, Any | None]:
-    preferred = getattr(runtime, "quidax_lp", None)
-    if preferred is not None:
-        for venue_name, venue in runtime.venues.items():
-            if venue is preferred:
-                return venue_name, venue
-        return "quidax-lp", preferred
     if "quidax-lp" in runtime.venues:
         return "quidax-lp", runtime.venues["quidax-lp"]
     return "quidax", runtime.venues.get("quidax")

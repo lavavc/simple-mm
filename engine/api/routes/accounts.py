@@ -87,7 +87,7 @@ async def get_all_account_balances(
                     )
                 )
             except Exception as exc:
-                logger.warning("quidax_exchange_balance_fetch_failed", venue=venue_name, error=str(exc))
+                logger.warning("quidax_balance_fetch_failed", venue=venue_name, error=str(exc))
         return result
     except Exception as exc:
         logger.error("balance_fetch_failed", error=str(exc))

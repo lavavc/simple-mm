@@ -2,12 +2,9 @@
 
 import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { formatNumber, formatAddress } from '@/lib/utils';
 import { useAccountBalances } from '@/lib/hooks/useQueries';
 import {
-  RefreshCw,
   Copy,
   Check,
   AlertTriangle,
@@ -37,17 +34,14 @@ const roleInfo: Record<string, { name: string; description: string }> = {
     name: 'Uniswap BSC LP',
     description: 'Liquidity provision account for Uniswap V4 on BSC',
   },
+
+  'quidax-trade': {
+    name: 'Quidax Trade',
+    description: 'Quidax account we trade from',
+  },
   'quidax-lp': {
     name: 'Quidax LP',
-    description: 'Quidax LP on-chain funding account on BSC',
-  },
-  'quidax-trade-fund': {
-    name: 'Quidax Trade Fund',
-    description: 'On-chain account that funds the Quidax exchange account',
-  },
-  'quidax-exchange': {
-    name: 'Quidax Trade',
-    description: 'Live balance on the Quidax exchange (not HD-derived)',
+    description: 'Quidax account we LP from',
   },
   blockradar: {
     name: 'Blockradar',

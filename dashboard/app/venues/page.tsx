@@ -89,7 +89,7 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
 
   // Map venue -> wallet roles that belong to it
   const VENUE_ROLES: Record<string, string[]> = {
-    quidax: ['quidax-exchange', 'quidax-lp', 'quidax-trade-fund'],
+    quidax: ['quidax-trade', 'quidax-lp'],
     'uni-bsc': ['uni-bsc-trade', 'uni-bsc-lp'],
     'uni-base': ['uni-base-trade', 'uni-base-lp'],
   };
@@ -431,6 +431,15 @@ function VenueDetail({ venue, isSyncing }: { venue: VenueStatus; isSyncing: bool
                     </div>
                     <div className="text-sm font-mono text-purple-400 bg-purple-500/10 px-3 py-1 rounded-sm border border-purple-500/20">
                       {venue.params?.ewma_lambda != null ? Number(venue.params.ewma_lambda).toFixed(3) : '—'}
+                    </div>
+                  </div>
+                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                    <div>
+                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Downside Skew</div>
+                      <div className="text-[10px] font-mono text-white/50 mt-1">Fraction of the liquidity range allocated below the mid-price. Less than 50% means bullish NGN.</div>
+                    </div>
+                    <div className="text-sm font-mono text-orange-400 bg-orange-500/10 px-3 py-1 rounded-sm border border-orange-500/20">
+                      {venue.params?.downside_skew != null ? `${(Number(venue.params.downside_skew) * 100).toFixed(0)}%` : '—'}
                     </div>
                   </div>
                 </>

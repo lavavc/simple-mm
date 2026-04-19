@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from engine.db.repository import DatabaseRepository
 
@@ -33,5 +33,4 @@ class EngineRuntime:
     normalizer: "PriceNormalizer | None"
     portfolio_exposure_calculator: "PortfolioExposureCalculator | None"
     portfolio_source_registry: tuple["PortfolioSourceDescriptor", ...]
-    quidax_lp: Any | None
     lp_managers: dict[str, "V4PositionManager"]
