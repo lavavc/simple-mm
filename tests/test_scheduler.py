@@ -221,3 +221,35 @@ class TestCexSyncFallback:
 
         sched.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
         quidax.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+
+
+class TestCexBalanceChecks:
+    @pytest.mark.asyncio
+    async def test_quidax_lp_balance_check_runs_when_lp_venue_exists(self):
+        """LP CEX balances should be monitored based on venue presence."""
+        quidax = SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("20000"), "usdt": Decimal("20")}
+                )
+            )
+        )
+        quidax_lp = SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("0"), "usdt": Decimal("0")}
+                )
+            )
+        )
+        db = MockDB()
+        sched = _build_scheduler({"quidax": quidax, "quidax-lp": quidax_lp}, [], db)
+
+        await sched.account_jobs._check_quidax_cex_balances()
+
+        quidax_lp.get_position.assert_awaited_once()
+        assert db.insert_alert.await_count == 2
+        messages = [call.kwargs["message"] for call in db.insert_alert.await_args_list]
+        assert messages == [
+            "Quidax quidax-lp CNGN balance below minimum",
+            "Quidax quidax-lp USDT balance below minimum",
+        ]

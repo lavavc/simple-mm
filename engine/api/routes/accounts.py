@@ -43,11 +43,12 @@ async def list_accounts(account_manager: Any = Depends(require_account_manager))
 async def get_all_account_balances(
     runtime: EngineRuntime = Depends(get_runtime),
 ) -> list[AccountBalanceResponse]:
-    if runtime.account_manager is None:
-        raise HTTPException(status_code=503, detail="Account manager not configured")
-
     try:
-        balances = await runtime.account_manager.check_all_balances(runtime.token_contracts)
+        balances = (
+            await runtime.account_manager.check_all_balances(runtime.token_contracts)
+            if runtime.account_manager is not None
+            else []
+        )
         result = [
             AccountBalanceResponse(
                 role=balance.role,
@@ -63,7 +64,7 @@ async def get_all_account_balances(
         ]
 
         quidax_venues = [("quidax", "quidax-trade", settings.quidax_trade_address)]
-        if settings.quidax_lp_is_separate:
+        if "quidax-lp" in runtime.venues:
             quidax_venues.append(("quidax-lp", "quidax-lp", settings.quidax_lp_address))
         for venue_name, role_name, address in quidax_venues:
             adapter = runtime.venues.get(venue_name)
