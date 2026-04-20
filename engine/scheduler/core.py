@@ -203,7 +203,9 @@ class TradingScheduler:
             misfire_grace_time=10,
         )
 
-        if self.context.account_manager:
+        if self.context.account_manager or any(
+            name in self.context.venues for name in ("quidax", "quidax-lp")
+        ):
             self.scheduler.add_job(
                 self._check_balances,
                 IntervalTrigger(seconds=self.config.balance_check_interval),

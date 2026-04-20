@@ -67,6 +67,7 @@ class AccountJobs:
 
     async def check_balances(self) -> None:
         if not self.context.account_manager:
+            await self._check_quidax_cex_balances()
             return
 
         try:
@@ -148,4 +149,3 @@ class AccountJobs:
         if manager is None:
             return False
         return manager.get_active_lp_position_snapshot() is not None
-
