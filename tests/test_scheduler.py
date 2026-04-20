@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from engine.scheduler import TradingScheduler, SchedulerConfig
+from engine.types import CexParams
 from tests.fakes import FakeDexAdapter
 
 
@@ -202,3 +203,21 @@ class TestWsHealthGate:
         await sched._stream_dex_arb_curve()
 
         sched.context.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+
+
+class TestCexSyncFallback:
+    @pytest.mark.asyncio
+    async def test_sync_cex_orders_falls_back_to_main_quidax_when_lp_is_missing(self):
+        """The ladder should still sync when only the main Quidax venue exists."""
+        quidax = SimpleNamespace(
+            paused=False,
+            params=CexParams(anchor_source="quidax"),
+            sync_order_ladder=AsyncMock(),
+        )
+        sched = _build_scheduler({"quidax": quidax}, [], MockDB())
+        sched.market_jobs.get_reference_price_ngn = AsyncMock(return_value=Decimal("1600"))
+
+        await sched.market_jobs.sync_cex_orders()
+
+        sched.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
+        quidax.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))

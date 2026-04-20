@@ -9,6 +9,7 @@ The rest of the tests pin the invariants that, if broken, would silently place
 mis-sized orders, fail to requote when the market moves, or stack orders on top 
 of open ones.
 """
+import json
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ import pytest
 
 from engine.types import CexParams
 from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.cex.quidax_order_state import QuidaxTrackedOrderState
 from engine.venues.cex.quidax_orders import normalize_order_summary, order_market_matches
 
 
@@ -392,3 +394,48 @@ async def test_sync_order_ladder_does_not_stack_when_api_empty_but_tracked_order
 
     # Regardless of which guard fires, place_order must never be called.
     adapter.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_persists_cleared_missing_lookup_marker_when_order_reappears():
+    tracked_orders = [
+        {
+            "id": "tracked-1",
+            "market": "usdtcngn",
+            "side": "buy",
+            "status": "wait",
+            "price": "1345.56",
+            "volume": "1.48",
+            "remaining_volume": "1.48",
+            "_missing_lookup_seen_once": True,
+        }
+    ]
+    store = SimpleNamespace(
+        get_system_state=AsyncMock(return_value=json.dumps(tracked_orders)),
+        set_system_state=AsyncMock(),
+    )
+    state = QuidaxTrackedOrderState(
+        venue_name="quidax",
+        market="usdtcngn",
+        system_state_store=store,
+    )
+
+    removed_ids = await state.reconcile_from_rows(
+        [
+            {
+                "id": "tracked-1",
+                "market": {"id": "usdtcngn"},
+                "side": "buy",
+                "status": "wait",
+                "price": {"amount": "1345.56"},
+                "volume": {"amount": "1.48"},
+                "remaining_volume": {"amount": "1.48"},
+                "executed_volume": {"amount": "0"},
+            }
+        ]
+    )
+
+    assert removed_ids == set()
+    store.set_system_state.assert_awaited_once()
+    persisted_orders = store.set_system_state.await_args.args[1]
+    assert "_missing_lookup_seen_once" not in persisted_orders[0]
