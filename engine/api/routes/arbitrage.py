@@ -100,6 +100,8 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
 
     from types import SimpleNamespace
 
+    from engine.config import settings
+
     valuation_balances: list[Any] = list(balances)
     if quidax_venue:
         try:
@@ -117,22 +119,23 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
         except Exception as exc:
             logger.warning("valuation_quidax_position_failed", error=str(exc))
 
-    quidax_lp_venue = runtime.venues.get("quidax-lp")
-    if quidax_lp_venue:
-        try:
-            qx_lp_pos = await quidax_lp_venue.get_position()
-            if qx_lp_pos and qx_lp_pos.balances:
-                valuation_balances.append(
-                    SimpleNamespace(
-                        role="quidax-lp",
-                        token_balances={
-                            "cNGN": Decimal(str(qx_lp_pos.balances.get("cngn", 0))),
-                            "USDT": Decimal(str(qx_lp_pos.balances.get("usdt", 0))),
-                        },
+    if settings.quidax_lp_is_separate:
+        quidax_lp_venue = runtime.venues.get("quidax-lp")
+        if quidax_lp_venue:
+            try:
+                qx_lp_pos = await quidax_lp_venue.get_position()
+                if qx_lp_pos and qx_lp_pos.balances:
+                    valuation_balances.append(
+                        SimpleNamespace(
+                            role="quidax-lp",
+                            token_balances={
+                                "cNGN": Decimal(str(qx_lp_pos.balances.get("cngn", 0))),
+                                "USDT": Decimal(str(qx_lp_pos.balances.get("usdt", 0))),
+                            },
+                        )
                     )
-                )
-        except Exception as exc:
-            logger.warning("valuation_quidax_lp_position_failed", error=str(exc))
+            except Exception as exc:
+                logger.warning("valuation_quidax_lp_position_failed", error=str(exc))
 
     result: dict[str, Any] = {}
     for balance in valuation_balances:

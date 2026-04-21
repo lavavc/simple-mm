@@ -80,17 +80,16 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
 
     exposure = await calculator.calculate()
 
-    assert exposure.total_cngn == Decimal("2367")
-    assert exposure.total_usdt == Decimal("53")
+    assert exposure.total_cngn == Decimal("1590")
+    assert exposure.total_usdt == Decimal("20")
     assert exposure.total_usdc == Decimal("36")
-    assert exposure.total_usd_value == Decimal("90.6569")
+    assert exposure.total_usd_value == Decimal("57.1130")
     assert [source.source for source in exposure.sources] == [
         "uni-base-lp",
         "uni-base-trade",
         "blockradar",
         "uni-base",
         "quidax",
-        "quidax-lp",
     ]
     assert [source.kind for source in exposure.sources] == [
         "account",
@@ -98,16 +97,15 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
         "account",
         "lp_position",
         "exchange",
-        "exchange",
     ]
     blockradar_venue.get_position.assert_not_called()
-    quidax_lp_venue.get_position.assert_called_once()
+    quidax_lp_venue.get_position.assert_not_called()
     lp_venue.get_portfolio_balances.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_portfolio_exposure_includes_quidax_lp_when_venue_exists():
-    """quidax-lp exchange balance is included when the LP venue is configured."""
+async def test_portfolio_exposure_includes_quidax_lp_when_separate():
+    """quidax-lp exchange balance is included only when quidax_lp_is_separate is True."""
     quidax_venue = SimpleNamespace(
         get_position=AsyncMock(
             return_value=Position(
@@ -143,6 +141,7 @@ async def test_portfolio_exposure_includes_quidax_lp_when_venue_exists():
     )
 
     with patch("engine.market.portfolio_exposure.settings") as mock_settings:
+        mock_settings.quidax_lp_is_separate = True
         mock_settings.target_delta_ratio = 0.5
         exposure = await calculator.calculate()
 

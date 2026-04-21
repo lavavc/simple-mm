@@ -100,6 +100,9 @@ class PortfolioExposureCalculator:
                 continue
             seen_registered_venues.add(descriptor.venue)
 
+            if descriptor.venue == "quidax-lp" and not settings.quidax_lp_is_separate:
+                continue
+
             venue = self.venues.get(descriptor.venue)
             if venue is None:
                 continue

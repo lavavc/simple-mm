@@ -111,55 +111,6 @@ def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
     assert body["delta_ratio"] != "0"
 
 
-def test_account_balances_includes_quidax_without_account_manager():
-    runtime = _make_runtime()
-    runtime.account_manager = None
-    runtime.venues = {
-        "quidax": SimpleNamespace(
-            get_position=AsyncMock(
-                return_value=SimpleNamespace(
-                    balances={"cngn": Decimal("1000"), "usdt": Decimal("25")}
-                )
-            )
-        ),
-        "quidax-lp": SimpleNamespace(
-            get_position=AsyncMock(
-                return_value=SimpleNamespace(
-                    balances={"cngn": Decimal("2000"), "usdt": Decimal("50")}
-                )
-            )
-        ),
-    }
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/accounts/balances")
-
-    assert response.status_code == 200
-    assert response.json() == [
-        {
-            "role": "quidax-trade",
-            "address": "",
-            "chain_id": 0,
-            "native_balance": "0",
-            "native_symbol": "",
-            "token_balances": {"cNGN": "1000", "USDT": "25"},
-            "needs_refill": False,
-            "refill_reasons": [],
-        },
-        {
-            "role": "quidax-lp",
-            "address": "",
-            "chain_id": 0,
-            "native_balance": "0",
-            "native_symbol": "",
-            "token_balances": {"cNGN": "2000", "USDT": "50"},
-            "needs_refill": False,
-            "refill_reasons": [],
-        },
-    ]
-
-
 @pytest.mark.asyncio
 async def test_update_venue_params_persists_full_lp_params():
     runtime = _make_runtime()

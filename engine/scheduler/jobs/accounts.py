@@ -36,7 +36,7 @@ class AccountJobs:
         ]
 
         quidax_venues = [("quidax", "quidax-trade", settings.quidax_trade_address)]
-        if "quidax-lp" in self.context.venues:
+        if settings.quidax_lp_is_separate:
             quidax_venues.append(("quidax-lp", "quidax-lp", settings.quidax_lp_address))
         for venue_name, role_name, address in quidax_venues:
             adapter = self.context.venues.get(venue_name)
@@ -111,7 +111,7 @@ class AccountJobs:
     async def _check_quidax_cex_balances(self) -> None:
         thresholds = {"cngn": settings.quidax_min_cngn, "usdt": settings.quidax_min_usdt}
         venues_to_check = [("quidax", "quidax-trade")]
-        if "quidax-lp" in self.context.venues:
+        if settings.quidax_lp_is_separate:
             venues_to_check.append(("quidax-lp", "quidax-lp"))
         for venue_name, role_name in venues_to_check:
             adapter = self.context.venues.get(venue_name)
