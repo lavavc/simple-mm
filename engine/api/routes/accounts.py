@@ -43,24 +43,23 @@ async def list_accounts(account_manager: Any = Depends(require_account_manager))
 async def get_all_account_balances(
     runtime: EngineRuntime = Depends(get_runtime),
 ) -> list[AccountBalanceResponse]:
-    if runtime.account_manager is None:
-        raise HTTPException(status_code=503, detail="Account manager not configured")
-
     try:
-        balances = await runtime.account_manager.check_all_balances(runtime.token_contracts)
-        result = [
-            AccountBalanceResponse(
-                role=balance.role,
-                address=balance.address,
-                chain_id=balance.chain_id,
-                native_balance=balance.native_balance,
-                native_symbol=balance.native_symbol,
-                token_balances=balance.token_balances,
-                needs_refill=balance.needs_refill,
-                refill_reasons=balance.refill_reasons,
+        result: list[AccountBalanceResponse] = []
+        if runtime.account_manager is not None:
+            balances = await runtime.account_manager.check_all_balances(runtime.token_contracts)
+            result.extend(
+                AccountBalanceResponse(
+                    role=balance.role,
+                    address=balance.address,
+                    chain_id=balance.chain_id,
+                    native_balance=balance.native_balance,
+                    native_symbol=balance.native_symbol,
+                    token_balances=balance.token_balances,
+                    needs_refill=balance.needs_refill,
+                    refill_reasons=balance.refill_reasons,
+                )
+                for balance in balances
             )
-            for balance in balances
-        ]
 
         _QUIDAX_VENUE_ROLES = {
             "quidax": ("quidax-trade", settings.quidax_trade_address),
@@ -81,6 +80,8 @@ async def get_all_account_balances(
                 )
             except Exception as exc:
                 logger.warning("quidax_balance_fetch_failed", venue=venue_name, error=str(exc))
+        if not result and runtime.account_manager is None:
+            raise HTTPException(status_code=503, detail="No account balance sources configured")
         return result
     except Exception as exc:
         logger.error("balance_fetch_failed", error=str(exc))

@@ -157,6 +157,39 @@ def test_account_balances_include_separate_quidax_trade_and_lp_rows():
     ]
 
 
+def test_account_balances_include_quidax_when_account_manager_missing():
+    runtime = _make_runtime()
+    runtime.account_manager = None
+    runtime.venues = {
+        "quidax": SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("70000"), "usdt": Decimal("102")}
+                )
+            )
+        )
+    }
+    app = _make_app(runtime)
+
+    with (
+        patch("engine.api.routes.accounts.settings") as route_settings,
+        patch("engine.venues.cex.quidax_accounting.settings") as accounting_settings,
+        TestClient(app) as client,
+    ):
+        route_settings.quidax_trade_address = "0xtrade"
+        accounting_settings.quidax_min_cngn = Decimal("10000")
+        accounting_settings.quidax_min_usdt = Decimal("10")
+
+        response = client.get("/api/accounts/balances")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["role"] for row in body] == ["quidax-trade"]
+    assert body[0]["address"] == "0xtrade"
+    assert body[0]["token_balances"] == {"cNGN": "70000", "USDT": "102"}
+    assert body[0]["needs_refill"] is False
+
+
 @pytest.mark.asyncio
 async def test_update_venue_params_persists_full_lp_params():
     runtime = _make_runtime()
