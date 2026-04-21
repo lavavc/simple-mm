@@ -31,7 +31,7 @@ class QuidaxApiClient:
 
     async def get_wallet_balance(self, currency: str) -> Decimal:
         client = await self._client_getter()
-        response = await client.get(f"{self.base_url}/users/me/wallets/{currency}")
+        response = await client.get(f"{self.base_url}/users/{self.order_user_id}/wallets/{currency}")
         response.raise_for_status()
         return Decimal(str(response.json().get("data", {}).get("balance", "0")))
 

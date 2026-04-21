@@ -54,6 +54,7 @@ const ROLE_ORDER = [
   'uni-bsc-trade',
   'uni-base-lp',
   'uni-bsc-lp',
+  'quidax-trade',
   'quidax-lp',
   'quidax-trade-fund',
   'quidax-exchange',

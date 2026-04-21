@@ -11,6 +11,7 @@ from engine.types import AccountBalanceResponse
 from engine.config import settings
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import SchedulerState
+from engine.venues.cex.quidax_accounting import build_quidax_account_balance
 
 logger = structlog.get_logger()
 
@@ -35,10 +36,11 @@ class AccountJobs:
             for balance in balances
         ]
 
-        quidax_venues = [("quidax", "quidax-trade", settings.quidax_trade_address)]
-        if settings.quidax_lp_is_separate:
-            quidax_venues.append(("quidax-lp", "quidax-lp", settings.quidax_lp_address))
-        for venue_name, role_name, address in quidax_venues:
+        _QUIDAX_VENUE_ROLES = {
+            "quidax": ("quidax-trade", settings.quidax_trade_address),
+            "quidax-lp": ("quidax-lp", settings.quidax_lp_address),
+        }
+        for venue_name, (role_name, address) in _QUIDAX_VENUE_ROLES.items():
             adapter = self.context.venues.get(venue_name)
             if adapter is None:
                 continue
@@ -46,18 +48,10 @@ class AccountJobs:
                 position = await adapter.get_position()
                 if position and position.balances:
                     payload.append(
-                        AccountBalanceResponse(
+                        build_quidax_account_balance(
                             role=role_name,
                             address=address,
-                            chain_id=0,
-                            native_balance=Decimal("0"),
-                            native_symbol="",
-                            token_balances={
-                                "cNGN": position.balances.get("cngn", Decimal("0")),
-                                "USDT": position.balances.get("usdt", Decimal("0")),
-                            },
-                            needs_refill=False,
-                            refill_reasons=[],
+                            balances=position.balances,
                         ).model_dump()
                     )
             except Exception as exc:
@@ -110,10 +104,8 @@ class AccountJobs:
 
     async def _check_quidax_cex_balances(self) -> None:
         thresholds = {"cngn": settings.quidax_min_cngn, "usdt": settings.quidax_min_usdt}
-        venues_to_check = [("quidax", "quidax-trade")]
-        if settings.quidax_lp_is_separate:
-            venues_to_check.append(("quidax-lp", "quidax-lp"))
-        for venue_name, role_name in venues_to_check:
+        venues_to_check = {"quidax": "quidax-trade", "quidax-lp": "quidax-lp"}
+        for venue_name, role_name in venues_to_check.items():
             adapter = self.context.venues.get(venue_name)
             if adapter is None:
                 continue

@@ -59,7 +59,12 @@ Fund **`uni-bsc-lp`** and **`uni-bsc-trade`** on BSC:
 
 **Blockradar**: Transfer USDC or cNGN from an HD wallet account to the Blockradar master wallet via `POST /api/venues/blockradar/deposit` (requires `ENGINE_API_TOKEN`). Blockradar's price quote API requires non-zero liquidity — price will show as unavailable until funded.
 
-**Quidax**: The static deposit address is configured in `QUIDAX_DEPOSIT_ADDRESS`. Send cNGN or USDT on-chain from the `quidax-trade-fund` or `quidax-lp` HD wallet role or any external wallet. Quidax detects on-chain deposits asynchronously via webhook.
+**Quidax**: The deposit addresses are configured via `QUIDAX_TRADE_ADDRESS` and `QUIDAX_LP_ADDRESS`. The engine routes orders and balance checks using the Sub-account User IDs (`QUIDAX_USER_ID` and `QUIDAX_LP_USER_ID`). You can configure the engine for trading-only, MMing-only, or both:
+- **Trading only**: Set `QUIDAX_USER_ID`. Leave `QUIDAX_LP_USER_ID` empty.
+- **MM'ing only (LP)**: Set `QUIDAX_LP_USER_ID`. Leave `QUIDAX_USER_ID` empty.
+- **Both**: Set both IDs. They must have **distinct deposit addresses**, otherwise the engine will skip the LP venue to prevent double-counting.
+
+Quidax detects on-chain deposits asynchronously via webhook.
 
 ## Environment variables checklist
 
@@ -70,7 +75,11 @@ WALLET_MNEMONIC=             # 12 or 24 word BIP39 phrase
 BLOCKRADAR_API_KEY=          # from Blockradar dashboard
 BLOCKRADAR_WALLET_ID=        # master wallet ID
 BLOCKRADAR_DEPOSIT_ADDRESS=  # on-chain address to fund the master wallet (from Blockradar dashboard)
-QUIDAX_API_KEY=              # from Quidax arb account settings
+QUIDAX_API_KEY=              # Operator API key from Quidax Account Settings
+QUIDAX_USER_ID=              # (Optional) sub-account ID for trading. Leave empty to disable trade.
+QUIDAX_LP_USER_ID=           # (Optional) sub-account ID for MM'ing. Leave empty to disable MM.
+QUIDAX_TRADE_ADDRESS=        # trade deposit address
+QUIDAX_LP_ADDRESS=           # MM'ing deposit address
 ENGINE_API_TOKEN=            # any secret string, protects direct API access
 ALCHEMY_KEY=                 # recommended; otherwise public RPC nodes are used
 TELEGRAM_BOT_TOKEN=          # from @BotFather

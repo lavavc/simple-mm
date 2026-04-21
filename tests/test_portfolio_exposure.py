@@ -76,9 +76,10 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
         portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         lp_managers={"uni-base": lp_venue},
     )
-    calculator.venues["quidax-lp"] = quidax_lp_venue
 
-    exposure = await calculator.calculate()
+    with patch("engine.market.portfolio_exposure.settings") as mock_settings:
+        mock_settings.target_delta_ratio = 0.5
+        exposure = await calculator.calculate()
 
     assert exposure.total_cngn == Decimal("1590")
     assert exposure.total_usdt == Decimal("20")
@@ -105,7 +106,7 @@ async def test_portfolio_exposure_aggregates_registered_sources_only():
 
 @pytest.mark.asyncio
 async def test_portfolio_exposure_includes_quidax_lp_when_separate():
-    """quidax-lp exchange balance is included only when quidax_lp_is_separate is True."""
+    """quidax-lp exchange balance is included when added to runtime.venues."""
     quidax_venue = SimpleNamespace(
         get_position=AsyncMock(
             return_value=Position(
@@ -141,7 +142,6 @@ async def test_portfolio_exposure_includes_quidax_lp_when_separate():
     )
 
     with patch("engine.market.portfolio_exposure.settings") as mock_settings:
-        mock_settings.quidax_lp_is_separate = True
         mock_settings.target_delta_ratio = 0.5
         exposure = await calculator.calculate()
 

@@ -221,3 +221,31 @@ class TestCexSyncFallback:
 
         sched.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
         quidax.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+
+
+class TestQuidaxSeparation:
+    @pytest.mark.asyncio
+    async def test_cex_dex_valuation_uses_trade_quidax_not_lp(self):
+        trade_quidax = SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("0"), "usdt": Decimal("0")}
+                )
+            )
+        )
+        lp_quidax = SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("70000"), "usdt": Decimal("102")}
+                )
+            )
+        )
+        sched = _build_scheduler({"quidax": trade_quidax, "quidax-lp": lp_quidax}, [], MockDB())
+
+        balances = await sched.position_jobs.get_balances_for_valuation(trade_quidax)
+
+        assert len(balances) == 1
+        assert balances[0].role == "quidax-trade"
+        assert balances[0].token_balances == {"cNGN": Decimal("0"), "USDT": Decimal("0")}
+        trade_quidax.get_position.assert_awaited_once()
+        lp_quidax.get_position.assert_not_awaited()

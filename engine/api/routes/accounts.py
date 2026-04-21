@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +11,7 @@ from engine.api.deps import get_runtime, require_account_manager, verify_token
 from engine.types import AccountBalanceResponse, AccountInfo, AccountThresholds
 from engine.config import settings
 from engine.runtime import EngineRuntime
+from engine.venues.cex.quidax_accounting import build_quidax_account_balance
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -62,28 +62,21 @@ async def get_all_account_balances(
             for balance in balances
         ]
 
-        quidax_venues = [("quidax", "quidax-trade", settings.quidax_trade_address)]
-        if settings.quidax_lp_is_separate:
-            quidax_venues.append(("quidax-lp", "quidax-lp", settings.quidax_lp_address))
-        for venue_name, role_name, address in quidax_venues:
+        _QUIDAX_VENUE_ROLES = {
+            "quidax": ("quidax-trade", settings.quidax_trade_address),
+            "quidax-lp": ("quidax-lp", settings.quidax_lp_address),
+        }
+        for venue_name, (role_name, address) in _QUIDAX_VENUE_ROLES.items():
             adapter = runtime.venues.get(venue_name)
             if adapter is None:
                 continue
             try:
                 pos = await adapter.get_position()
                 result.append(
-                    AccountBalanceResponse(
+                    build_quidax_account_balance(
                         role=role_name,
                         address=address,
-                        chain_id=0,
-                        native_balance=Decimal("0"),
-                        native_symbol="",
-                        token_balances={
-                            "cNGN": pos.balances.get("cngn", Decimal("0")),
-                            "USDT": pos.balances.get("usdt", Decimal("0")),
-                        },
-                        needs_refill=False,
-                        refill_reasons=[],
+                        balances=pos.balances,
                     )
                 )
             except Exception as exc:

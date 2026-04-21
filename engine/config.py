@@ -63,10 +63,9 @@ class Settings(BaseSettings):
         return self
 
     # Venue API keys
-    quidax_api_key: str = Field(default="", description="Quidax arb account secret key (Bearer token)")
-    quidax_lp_api_key: str = Field(default="", description="Quidax LP account secret key (Bearer token)")
-    quidax_user_id: str = Field(default="me", description="Quidax user or sub-account id for order APIs")
-    quidax_lp_user_id: str = Field(default="me", description="Quidax LP user or sub-account id for order APIs")
+    quidax_api_key: str = Field(default="", description="Quidax API key (authenticates the operator)")
+    quidax_user_id: str = Field(default="me", description="Quidax trade/arb sub-account user id")
+    quidax_lp_user_id: str = Field(default="", description="Quidax LP account user id; leave empty to disable LP venue")
     quidax_trade_address: str = Field(default="", description="Quidax arb account deposit address")
     quidax_lp_address: str = Field(default="", description="Quidax LP account deposit address")
     blockradar_api_key: str = Field(default="", description="Blockradar API key")
@@ -160,10 +159,7 @@ class Settings(BaseSettings):
     uni_bsc_rebalance_threshold_percent: Decimal = Decimal("10.0")
     uni_bsc_max_slippage_percent: Decimal = Decimal("1.0")
 
-    @property
-    def quidax_lp_is_separate(self) -> bool:
-        """True when the LP account has a distinct on-chain deposit address from the trade account."""
-        return bool(self.quidax_lp_address and self.quidax_lp_address != self.quidax_trade_address)
+
 
     @property
     def uni_base_lp_params(self) -> DexParams:

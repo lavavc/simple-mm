@@ -41,12 +41,15 @@ class _FakeClient:
         self.payload = payload
         self.status_code = status_code
         self.last_json: dict | None = None
+        self.get_urls: list[str] = []
 
     async def post(self, *_args, **kwargs) -> _FakeResponse:
         self.last_json = kwargs.get("json")
         return _FakeResponse(self.payload, status_code=self.status_code)
 
     async def get(self, *_args, **kwargs) -> _FakeResponse:
+        if _args:
+            self.get_urls.append(str(_args[0]))
         return _FakeResponse(self.payload, status_code=self.status_code)
 
 
@@ -55,10 +58,12 @@ def _make_adapter(
     *,
     alert_store: object | None = None,
     broadcast: object | None = None,
+    order_user_id: str = "me",
 ) -> QuidaxAdapter:
     return QuidaxAdapter(
         api_key="test-key",
         params=params,
+        order_user_id=order_user_id,
         alert_store=alert_store or SimpleNamespace(insert_alert=AsyncMock()),
         system_state_store=None,
         broadcast=broadcast,
@@ -73,6 +78,21 @@ async def test_place_order_raises_on_quidax_error_payload():
 
     with pytest.raises(ValueError, match="bad market"):
         await adapter.place_order("sell", Decimal("1403"), Decimal("10"))
+
+
+@pytest.mark.asyncio
+async def test_get_position_uses_configured_quidax_user_id_for_wallet_balances():
+    client = _FakeClient({"data": {"balance": "12.5"}})
+    adapter = _make_adapter(order_user_id="lp-user")
+    adapter._get_client = AsyncMock(return_value=client)
+
+    position = await adapter.get_position()
+
+    assert position.balances == {"cngn": Decimal("12.5"), "usdt": Decimal("12.5")}
+    assert client.get_urls == [
+        "https://openapi.quidax.io/exchange-open-api/api/v1/users/lp-user/wallets/cngn",
+        "https://openapi.quidax.io/exchange-open-api/api/v1/users/lp-user/wallets/usdt",
+    ]
 
 
 @pytest.mark.asyncio
