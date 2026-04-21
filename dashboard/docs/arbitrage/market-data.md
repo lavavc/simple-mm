@@ -18,7 +18,7 @@ The result is the rate the largest cohort of reputable mid-market merchants agre
 
 **Quidax order book — REST polling**
 
-The Quidax CEX API is polled on a short interval (`price_update_interval`, default 10s) for the full order book depth on the cNGN/USDT pair. The raw bids and asks are stored in memory and passed directly into the signal layer. Market data hits the public depth endpoint; the two Quidax API keys (`QUIDAX_API_KEY`, `QUIDAX_LP_API_KEY`) are used only for trading.
+The Quidax CEX API is polled on a short interval (`price_update_interval`, default 10s) for the full order book depth on the cNGN/USDT pair. The raw bids and asks are stored in memory and passed directly into the signal layer. Market data hits the public depth endpoint; the configured Quidax API key is used only for authenticated trading and subaccount balance/order calls.
 
 **Uniswap V4 pools (Base + BSC) — WebSocket**
 

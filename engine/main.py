@@ -124,10 +124,10 @@ async def init_venues(
     # a different physical deposit address from the trade venue, preventing double-counting.
     _has_lp_user = bool(settings.quidax_lp_user_id)
     _has_unique_address = bool(
-        settings.quidax_lp_address and settings.quidax_trade_address and 
+        settings.quidax_lp_address and settings.quidax_trade_address and
         settings.quidax_lp_address.lower() != settings.quidax_trade_address.lower()
     )
-    
+
     if settings.quidax_api_key and _has_lp_user:
         if settings.quidax_user_id and not _has_unique_address:
             logger.warning("quidax_lp_venue_skipped", reason="Deposit address matches trade venue or is missing; skipping to prevent double-counting portfolio exposure.")

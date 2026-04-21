@@ -258,17 +258,11 @@ def _default_orders_venue(runtime: EngineRuntime) -> tuple[str, Any | None]:
 
 
 def _resolve_operator_venue(runtime: EngineRuntime, requested_name: str) -> tuple[str, Any | None]:
-    if requested_name == "quidax":
-        venue_name, venue = _default_orders_venue(runtime)
-        if venue is not None:
-            return venue_name, venue
     return requested_name, runtime.venues.get(requested_name)
 
 
 def _format_operator_venue_label(requested_name: str, effective_name: str) -> str:
-    if requested_name == effective_name:
-        return effective_name
-    return f"{requested_name} (effective venue: {effective_name})"
+    return effective_name
 
 
 async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
