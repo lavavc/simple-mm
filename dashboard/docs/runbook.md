@@ -5,15 +5,13 @@ order: 5
 
 ## Account Structure
 
-One BIP39 mnemonic derives seven accounts. Set `WALLET_MNEMONIC` in `.env`.
+One BIP39 mnemonic derives five on-chain accounts. Set `WALLET_MNEMONIC` in `.env`.
 
 | Role | Derivation path | Chain | Chain ID | Needs |
 |---|---|---|---|---|
 | `uni-base-lp` | m/44'/60'/0'/1/0 | Base | 8453 | ETH (gas), cNGN, USDC |
 | `uni-base-trade` | m/44'/60'/0'/1/1 | Base | 8453 | ETH (gas), cNGN, USDC |
 | `blockradar` | m/44'/60'/0'/2/0 | Base | 8453 | ETH (gas), cNGN, USDC — source for Blockradar deposits |
-| `quidax-trade-fund` | m/44'/60'/0'/3/0 | BSC | 56 | BNB (gas), cNGN, USDT — source for Quidax arb deposits |
-| `quidax-lp` | m/44'/60'/0'/3/1 | BSC | 56 | BNB (gas), cNGN, USDT — source for Quidax LP deposits |
 | `uni-bsc-lp` | m/44'/60'/0'/4/0 | BSC | 56 | BNB (gas), cNGN, USDT |
 | `uni-bsc-trade` | m/44'/60'/0'/4/1 | BSC | 56 | BNB (gas), cNGN, USDT |
 
@@ -29,9 +27,9 @@ Global portfolio totals treat account roles and venue positions differently:
 
 - on-chain inventory comes from the managed HD-wallet roles above
 - deployed LP inventory is added separately from the `uni-base` and `uni-bsc` LP NFTs
-- off-chain exchange inventory is added from `quidax` only
+- off-chain exchange inventory is added from `quidax` and, when separately configured, `quidax-lp`
 
-In practice that means `quidax-trade-fund`, `quidax-lp`, the trade accounts, the Blockradar account, and any rare residual balances left on the LP wallets are all on-chain inventory. `quidax-lp` is not a separate off-chain exchange source.
+In practice that means the DEX trade accounts, the Blockradar account, and any rare residual balances left on the DEX LP wallets are on-chain inventory. Quidax balances are off-chain exchange inventory and come from the configured Quidax user ids.
 
 ## What needs funding and when
 
