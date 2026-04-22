@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from engine.scheduler import TradingScheduler, SchedulerConfig
+from engine.types import CexParams
 from tests.fakes import FakeDexAdapter
 
 
@@ -59,7 +60,6 @@ def _build_scheduler(
         account_manager=None,
         token_contracts={},
         portfolio_exposure_calculator=None,
-        quidax_lp=None,
         lp_managers=venues,
         system_state_store=SimpleNamespace(set_system_state=db.set_system_state),
         price_store=SimpleNamespace(
@@ -203,3 +203,49 @@ class TestWsHealthGate:
         await sched._stream_dex_arb_curve()
 
         sched.context.arbitrage_engine.on_dex_dex_update.assert_awaited_once()
+
+
+class TestCexSyncFallback:
+    @pytest.mark.asyncio
+    async def test_sync_cex_orders_falls_back_to_main_quidax_when_lp_is_missing(self):
+        """The ladder should still sync when only the main Quidax venue exists."""
+        quidax = SimpleNamespace(
+            paused=False,
+            params=CexParams(anchor_source="quidax"),
+            sync_order_ladder=AsyncMock(),
+        )
+        sched = _build_scheduler({"quidax": quidax}, [], MockDB())
+        sched.market_jobs.get_reference_price_ngn = AsyncMock(return_value=Decimal("1600"))
+
+        await sched.market_jobs.sync_cex_orders()
+
+        sched.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
+        quidax.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+
+
+class TestQuidaxSeparation:
+    @pytest.mark.asyncio
+    async def test_cex_dex_valuation_uses_trade_quidax_not_lp(self):
+        trade_quidax = SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("0"), "usdt": Decimal("0")}
+                )
+            )
+        )
+        lp_quidax = SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("70000"), "usdt": Decimal("102")}
+                )
+            )
+        )
+        sched = _build_scheduler({"quidax": trade_quidax, "quidax-lp": lp_quidax}, [], MockDB())
+
+        balances = await sched.position_jobs.get_balances_for_valuation(trade_quidax)
+
+        assert len(balances) == 1
+        assert balances[0].role == "quidax-trade"
+        assert balances[0].token_balances == {"cNGN": Decimal("0"), "USDT": Decimal("0")}
+        trade_quidax.get_position.assert_awaited_once()
+        lp_quidax.get_position.assert_not_awaited()

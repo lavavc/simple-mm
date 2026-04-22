@@ -98,16 +98,16 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
     except Exception as exc:
         return {"error": str(exc), "venues": {}}
 
+    from types import SimpleNamespace
+
     valuation_balances: list[Any] = list(balances)
     if quidax_venue:
         try:
             qx_pos = await quidax_venue.get_position()
             if qx_pos and qx_pos.balances:
-                from types import SimpleNamespace
-
                 valuation_balances.append(
                     SimpleNamespace(
-                        role="quidax-exchange",
+                        role="quidax-trade",
                         token_balances={
                             "cNGN": Decimal(str(qx_pos.balances.get("cngn", 0))),
                             "USDT": Decimal(str(qx_pos.balances.get("usdt", 0))),
@@ -116,6 +116,23 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
                 )
         except Exception as exc:
             logger.warning("valuation_quidax_position_failed", error=str(exc))
+
+    quidax_lp_venue = runtime.venues.get("quidax-lp")
+    if quidax_lp_venue:
+            try:
+                qx_lp_pos = await quidax_lp_venue.get_position()
+                if qx_lp_pos and qx_lp_pos.balances:
+                    valuation_balances.append(
+                        SimpleNamespace(
+                            role="quidax-lp",
+                            token_balances={
+                                "cNGN": Decimal(str(qx_lp_pos.balances.get("cngn", 0))),
+                                "USDT": Decimal(str(qx_lp_pos.balances.get("usdt", 0))),
+                            },
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("valuation_quidax_lp_position_failed", error=str(exc))
 
     result: dict[str, Any] = {}
     for balance in valuation_balances:
@@ -127,7 +144,7 @@ async def get_liquidation_valuation(runtime: EngineRuntime = Depends(get_runtime
             if token.lower() == "cngn" and amount > 0:
                 value_usd = Decimal("0")
                 try:
-                    if role in ("quidax-exchange", "quidax-lp", "quidax-trade-fund") and quidax_asks:
+                    if role in ("quidax-trade", "quidax-lp") and quidax_asks:
                         value_usd = cex_holdings_value(quidax_asks, amount, QUIDAX_FEE)
                     elif role in ("uni-bsc-trade", "uni-bsc-lp") and bsc_sqrt and bsc_liq is not None and bsc_fee is not None:
                         value_usd = dex_holdings_value(amount, bsc_sqrt, bsc_liq, bsc_fee, 18, 6, cngn_is_token0=False)

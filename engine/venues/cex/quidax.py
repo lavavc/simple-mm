@@ -57,7 +57,6 @@ class QuidaxAdapter(VenueAdapter):
         order_api_base_url: str | None = None,
         order_user_id: str = "me",
         name: str = "quidax",
-        funding_role: str = "quidax-trade-fund",
         alert_store: AlertStoreProtocol | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         broadcast: Callable[[dict[str, Any]], Any] | None = None,
@@ -73,7 +72,6 @@ class QuidaxAdapter(VenueAdapter):
             order_api_base_url: Override private order API base URL (useful for testing)
             order_user_id: Quidax user identifier for private order endpoints (`me` or sub-account id)
             name: Adapter name (used in logs and venue registry)
-            funding_role: Account role for auto-funding ("quidax-trade-fund" | "quidax-lp")
         """
         self.name = name
         self.api_key = api_key
@@ -82,7 +80,6 @@ class QuidaxAdapter(VenueAdapter):
         self.base_url = (base_url or "https://openapi.quidax.io/exchange-open-api/api/v1/").rstrip("/")
         self.order_api_base_url = (order_api_base_url or "https://app.quidax.io/api/v1").rstrip("/")
         self.order_user_id = order_user_id or "me"
-        self._funding_role = funding_role
         self._api = QuidaxApiClient(
             market=self.market,
             base_url=self.base_url,

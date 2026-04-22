@@ -27,7 +27,7 @@ def reconcile_balances(engine: Any, balances: list[Any]) -> None:
         elif role == "uni-base-trade":
             venue_stables["uni-base"] = Decimal(str(tb.get("USDC", 0)))
             venue_cngn["uni-base"] = Decimal(str(tb.get("cNGN", 0)))
-        elif role == "quidax-exchange":
+        elif role == "quidax-trade":
             venue_stables["quidax"] = Decimal(str(tb.get("USDT", 0)))
             venue_cngn["quidax"] = Decimal(str(tb.get("cNGN", 0)))
     if venue_stables:

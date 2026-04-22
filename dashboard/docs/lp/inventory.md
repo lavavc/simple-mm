@@ -15,9 +15,9 @@ The engine now computes one canonical global portfolio snapshot from three addit
 
 Today that means:
 
-- on-chain inventory includes `uni-base-trade`, `uni-bsc-trade`, `quidax-trade-fund`, `quidax-lp`, `blockradar`, and any rare residual balances still sitting in `uni-base-lp` / `uni-bsc-lp`
+- on-chain inventory includes `uni-base-trade`, `uni-bsc-trade`, `blockradar`, and any rare residual balances still sitting in `uni-base-lp` / `uni-bsc-lp`
 - deployed LP inventory is added from `uni-base` and `uni-bsc`
-- off-chain exchange inventory is added from `quidax` only
+- off-chain exchange inventory is added from `quidax` and, when separately configured, `quidax-lp`
 
 This snapshot is exposed through both `/positions/global` and `/portfolio/exposure`, and the scheduler broadcasts it as `portfolio_delta` every 2 minutes by default.
 

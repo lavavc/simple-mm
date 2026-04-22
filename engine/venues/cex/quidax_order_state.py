@@ -244,6 +244,7 @@ class QuidaxTrackedOrderState:
         }
         removed_ids: set[str] = set()
         status_updates: dict[str, str] = {}
+        changed = False
 
         for order in self._tracked_open_orders:
             order_id = str(order.get("id", ""))
@@ -263,7 +264,6 @@ class QuidaxTrackedOrderState:
             if status and status != str(order.get("status") or "").lower():
                 status_updates[order_id] = status
 
-        changed = False
         if removed_ids:
             self._tracked_open_orders = [
                 order for order in self._tracked_open_orders if str(order.get("id", "")) not in removed_ids

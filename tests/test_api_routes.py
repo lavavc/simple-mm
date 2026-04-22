@@ -69,7 +69,6 @@ def _make_runtime() -> EngineRuntime:
         normalizer=None,
         portfolio_exposure_calculator=None,
         portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
-        quidax_lp=None,
         lp_managers={},
     )
 
@@ -114,6 +113,85 @@ def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
     body = response.json()
     assert body["total_usd_value"] == "50.7000"
     assert body["delta_ratio"] != "0"
+
+
+def test_account_balances_include_separate_quidax_trade_and_lp_rows():
+    runtime = _make_runtime()
+    runtime.account_manager = SimpleNamespace(check_all_balances=AsyncMock(return_value=[]))
+    runtime.venues = {
+        "quidax": SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("70000"), "usdt": Decimal("102")}
+                )
+            )
+        ),
+        "quidax-lp": SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("0"), "usdt": Decimal("0")}
+                )
+            )
+        ),
+    }
+    app = _make_app(runtime)
+
+    with (
+        patch("engine.api.routes.accounts.settings") as route_settings,
+        patch("engine.venues.cex.quidax_accounting.settings") as accounting_settings,
+        TestClient(app) as client,
+    ):
+        route_settings.quidax_trade_address = "0xtrade"
+        route_settings.quidax_lp_address = "0xlp"
+        accounting_settings.quidax_min_cngn = Decimal("10000")
+        accounting_settings.quidax_min_usdt = Decimal("10")
+
+        response = client.get("/api/accounts/balances")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["role"] for row in body] == ["quidax-trade", "quidax-lp"]
+    assert body[0]["address"] == "0xtrade"
+    assert body[0]["needs_refill"] is False
+    assert body[1]["address"] == "0xlp"
+    assert body[1]["needs_refill"] is True
+    assert body[1]["refill_reasons"] == [
+        "Low cNGN: 0 < 10000 min",
+        "Low USDT: 0 < 10 min",
+    ]
+
+
+def test_account_balances_include_quidax_when_account_manager_missing():
+    runtime = _make_runtime()
+    runtime.account_manager = None
+    runtime.venues = {
+        "quidax": SimpleNamespace(
+            get_position=AsyncMock(
+                return_value=SimpleNamespace(
+                    balances={"cngn": Decimal("70000"), "usdt": Decimal("102")}
+                )
+            )
+        )
+    }
+    app = _make_app(runtime)
+
+    with (
+        patch("engine.api.routes.accounts.settings") as route_settings,
+        patch("engine.venues.cex.quidax_accounting.settings") as accounting_settings,
+        TestClient(app) as client,
+    ):
+        route_settings.quidax_trade_address = "0xtrade"
+        accounting_settings.quidax_min_cngn = Decimal("10000")
+        accounting_settings.quidax_min_usdt = Decimal("10")
+
+        response = client.get("/api/accounts/balances")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["role"] for row in body] == ["quidax-trade"]
+    assert body[0]["address"] == "0xtrade"
+    assert body[0]["token_balances"] == {"cNGN": "70000", "USDT": "102"}
+    assert body[0]["needs_refill"] is False
 
 
 @pytest.mark.asyncio
@@ -194,6 +272,47 @@ async def test_resume_venue_triggers_sync_when_reference_price_available():
     venue.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
     venue.get_position.assert_not_awaited()
     runtime.scheduler.market_jobs.get_reference_price_ngn.assert_awaited_once_with(anchor_source="quidax")
+
+
+@pytest.mark.asyncio
+async def test_resume_trade_quidax_does_not_sync_ladder_when_lp_exists():
+    runtime = _make_runtime()
+    trade_venue = _DummyVenue()
+    trade_venue.params = CexParams(anchor_source="quidax")
+    trade_venue.sync_order_ladder = AsyncMock()
+    trade_venue.get_position = AsyncMock()
+    lp_venue = _DummyVenue()
+    lp_venue.sync_order_ladder = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1600"))
+    )
+    runtime.venues = {"quidax": trade_venue, "quidax-lp": lp_venue}
+
+    response = await venue_routes.resume_venue("quidax", runtime=runtime)
+
+    assert response == {"venue": "quidax", "paused": False, "sync_triggered": False}
+    trade_venue.sync_order_ladder.assert_not_awaited()
+    lp_venue.sync_order_ladder.assert_not_awaited()
+    trade_venue.get_position.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_quidax_lp_syncs_ladder_when_reference_price_available():
+    runtime = _make_runtime()
+    lp_venue = _DummyVenue()
+    lp_venue.params = CexParams(anchor_source="quidax")
+    lp_venue.sync_order_ladder = AsyncMock()
+    lp_venue.get_position = AsyncMock()
+    runtime.scheduler.market_jobs = SimpleNamespace(
+        get_reference_price_ngn=AsyncMock(return_value=Decimal("1600"))
+    )
+    runtime.venues = {"quidax-lp": lp_venue}
+
+    response = await venue_routes.resume_venue("quidax-lp", runtime=runtime)
+
+    assert response == {"venue": "quidax-lp", "paused": False, "sync_triggered": True}
+    lp_venue.sync_order_ladder.assert_awaited_once_with(Decimal("1600"))
+    lp_venue.get_position.assert_not_awaited()
 
 
 @pytest.mark.asyncio

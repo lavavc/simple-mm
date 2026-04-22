@@ -19,6 +19,7 @@ import pytest
 
 from engine.types import CexParams
 from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.cex.quidax_order_state import QuidaxTrackedOrderState
 from engine.venues.cex.quidax_orders import normalize_order_summary, order_market_matches
 
 
@@ -51,12 +52,15 @@ class _FakeClient:
         self.payload = payload
         self.status_code = status_code
         self.last_json: dict | None = None
+        self.get_urls: list[str] = []
 
     async def post(self, *_args, **kwargs) -> _FakeResponse:
         self.last_json = kwargs.get("json")
         return _FakeResponse(self.payload, status_code=self.status_code)
 
     async def get(self, *_args, **kwargs) -> _FakeResponse:
+        if _args:
+            self.get_urls.append(str(_args[0]))
         return _FakeResponse(self.payload, status_code=self.status_code)
 
 
@@ -66,10 +70,12 @@ def _make_adapter(
     system_state_store: _FakeSystemStateStore | None = None,
     alert_store: object | None = None,
     broadcast: object | None = None,
+    order_user_id: str = "me",
 ) -> QuidaxAdapter:
     return QuidaxAdapter(
         api_key="test-key",
         params=params,
+        order_user_id=order_user_id,
         alert_store=alert_store or SimpleNamespace(insert_alert=AsyncMock()),
         system_state_store=system_state_store,
         broadcast=broadcast,
@@ -84,6 +90,21 @@ async def test_place_order_raises_on_quidax_error_payload():
 
     with pytest.raises(ValueError, match="bad market"):
         await adapter.place_order("sell", Decimal("1403"), Decimal("10"))
+
+
+@pytest.mark.asyncio
+async def test_get_position_uses_configured_quidax_user_id_for_wallet_balances():
+    client = _FakeClient({"data": {"balance": "12.5"}})
+    adapter = _make_adapter(order_user_id="lp-user")
+    adapter._get_client = AsyncMock(return_value=client)
+
+    position = await adapter.get_position()
+
+    assert position.balances == {"cngn": Decimal("12.5"), "usdt": Decimal("12.5")}
+    assert client.get_urls == [
+        "https://openapi.quidax.io/exchange-open-api/api/v1/users/lp-user/wallets/cngn",
+        "https://openapi.quidax.io/exchange-open-api/api/v1/users/lp-user/wallets/usdt",
+    ]
 
 
 @pytest.mark.asyncio
@@ -600,3 +621,48 @@ async def test_sync_order_ladder_does_not_stack_when_api_empty_but_tracked_order
 
     # Regardless of which guard fires, place_order must never be called.
     adapter.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_persists_cleared_missing_lookup_marker_when_order_reappears():
+    tracked_orders = [
+        {
+            "id": "tracked-1",
+            "market": "usdtcngn",
+            "side": "buy",
+            "status": "wait",
+            "price": "1345.56",
+            "volume": "1.48",
+            "remaining_volume": "1.48",
+            "_missing_lookup_seen_once": True,
+        }
+    ]
+    store = SimpleNamespace(
+        get_system_state=AsyncMock(return_value=json.dumps(tracked_orders)),
+        set_system_state=AsyncMock(),
+    )
+    state = QuidaxTrackedOrderState(
+        venue_name="quidax",
+        market="usdtcngn",
+        system_state_store=store,
+    )
+
+    removed_ids = await state.reconcile_from_rows(
+        [
+            {
+                "id": "tracked-1",
+                "market": {"id": "usdtcngn"},
+                "side": "buy",
+                "status": "wait",
+                "price": {"amount": "1345.56"},
+                "volume": {"amount": "1.48"},
+                "remaining_volume": {"amount": "1.48"},
+                "executed_volume": {"amount": "0"},
+            }
+        ]
+    )
+
+    assert removed_ids == set()
+    store.set_system_state.assert_awaited_once()
+    persisted_orders = store.set_system_state.await_args.args[1]
+    assert "_missing_lookup_seen_once" not in persisted_orders[0]

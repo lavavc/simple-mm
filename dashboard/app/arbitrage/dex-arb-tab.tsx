@@ -5,10 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { formatNumber } from '@/lib/utils';
 import { ArrowRightLeft, Database, Zap, ArrowRight, AlertTriangle, Activity, TrendingUp, Circle } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
-import { useAccountBalances } from '@/lib/hooks/useQueries';
 import { ProfitCurveChart, type CurvePoint } from '@/components/charts/ProfitCurveChart';
 
 interface DexArbData {

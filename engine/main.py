@@ -108,12 +108,11 @@ async def init_venues(
         except ValueError as exc:
             logger.warning("uni_bsc_init_skipped", reason=str(exc))
 
-    if settings.quidax_api_key:
+    if settings.quidax_api_key and settings.quidax_user_id:
         venues["quidax"] = QuidaxAdapter(
             api_key=settings.quidax_api_key,
             params=CexParams(),
             name="quidax",
-            funding_role="quidax-trade-fund",
             order_user_id=settings.quidax_user_id,
             alert_store=alert_store,
             system_state_store=system_state_store,
@@ -121,18 +120,28 @@ async def init_venues(
         )
         logger.info("venue_initialized", venue="quidax")
 
-    if settings.quidax_lp_api_key:
-        venues["quidax-lp"] = QuidaxAdapter(
-            api_key=settings.quidax_lp_api_key,
-            params=CexParams(),
-            name="quidax-lp",
-            funding_role="quidax-lp",
-            order_user_id=settings.quidax_lp_user_id,
-            alert_store=alert_store,
-            system_state_store=system_state_store,
-            broadcast=broadcast,
-        )
-        logger.info("venue_initialized", venue="quidax-lp")
+    # Andy's strict separation invariant: we only boot the LP venue if it explicitly has
+    # a different physical deposit address from the trade venue, preventing double-counting.
+    _has_lp_user = bool(settings.quidax_lp_user_id)
+    _has_unique_address = bool(
+        settings.quidax_lp_address and settings.quidax_trade_address and
+        settings.quidax_lp_address.lower() != settings.quidax_trade_address.lower()
+    )
+
+    if settings.quidax_api_key and _has_lp_user:
+        if settings.quidax_user_id and not _has_unique_address:
+            logger.warning("quidax_lp_venue_skipped", reason="Deposit address matches trade venue or is missing; skipping to prevent double-counting portfolio exposure.")
+        else:
+            venues["quidax-lp"] = QuidaxAdapter(
+                api_key=settings.quidax_api_key,
+                params=CexParams(),
+                name="quidax-lp",
+                order_user_id=settings.quidax_lp_user_id,
+                alert_store=alert_store,
+                system_state_store=system_state_store,
+                broadcast=broadcast,
+            )
+            logger.info("venue_initialized", venue="quidax-lp")
 
     venues["blockradar"] = BlockradarAdapter(
         api_key=settings.blockradar_api_key,
@@ -283,7 +292,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             execute_dex_dex_enabled=settings.arb_execute_dex_dex_enabled,
         )
 
-    quidax_lp = venues.get("quidax-lp")
     scheduler = TradingScheduler(
         price_aggregator=price_aggregator,
         venues=venues,
@@ -295,7 +303,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         token_contracts=TOKEN_CONTRACTS,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
-        quidax_lp=quidax_lp,
         lp_managers=lp_managers,
         system_state_store=db.system_state,
         price_store=db.prices,
@@ -318,7 +325,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         normalizer=normalizer,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
-        quidax_lp=quidax_lp,
         lp_managers=lp_managers,
     )
     app.state.runtime = runtime

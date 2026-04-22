@@ -89,14 +89,11 @@ class MarketJobs:
             return
 
         async with self._cex_sync_lock:
-            # Prefer a dedicated Quidax LP venue when configured, otherwise use the
-            # main Quidax venue so the ladder can run on the shared account.
-            quidax_mm = (
-                self.context.quidax_lp
-                or self.context.venues.get("quidax-lp")
-                or self.context.venues.get("quidax")
-            )
-            if not quidax_mm or quidax_mm.paused:
+            quidax_mm = self.context.venues.get("quidax-lp") or self.context.venues.get("quidax")
+            if quidax_mm is None:
+                logger.warning("quidax_cex_venue_not_configured")
+                return
+            if quidax_mm.paused:
                 return
 
             try:

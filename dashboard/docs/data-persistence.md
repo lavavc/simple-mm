@@ -29,16 +29,6 @@ This split matters operationally too: most subsystems now depend on narrow store
 
 For LP specifically, the `actions` table is the canonical audit surface. Ratio-prep swaps, mints, removals, manual withdraws, and shutdown unwinds are stored there with structured metadata so the LP package does not need a second bespoke audit trail.
 
-## Fresh-schema approach
-
-We no longer maintain a historical migration chain. The schema is defined directly in `engine/db/migrations/schema.py` and bootstrapped into an empty or already-compatible SQLite file.
-
-That means:
-
-- additive or compatible changes are handled by schema bootstrap on startup
-- breaking schema changes are expected to be rolled out with an explicit DB reset/cutover, not by replaying old migrations in place
-- the live DB file remains durable between restarts, but not guaranteed to be forward-compatible across arbitrary schema rewrites
-
 ## Downtime
 
 [Historical Data] ----gap---- [New Data]
@@ -80,4 +70,3 @@ For full historical continuity:
 1. Consider a backup strategy for ./data/cngn.db
 2. Add a pruning job if you don't need data older than N days
 3. Monitor DB file size - SQLite handles hundreds of MB fine, but GB+ can slow queries
-4. Document explicit reset/cutover steps whenever a schema rewrite is planned

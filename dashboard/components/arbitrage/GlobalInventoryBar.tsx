@@ -118,7 +118,7 @@ export function GlobalInventoryBar() {
 
   const uniBscTrade = balances?.find((b) => b.role === 'uni-bsc-trade' || b.role === 'trade_uni_bsc');
   const uniBaseTrade = balances?.find((b) => b.role === 'uni-base-trade' || b.role === 'trade_uni_base');
-  const quidaxTrade = balances?.find((b) => b.role === 'quidax-exchange');
+  const quidaxTrade = balances?.find((b) => b.role === 'quidax-trade');
 
   const isArmed = !!(status?.enabled || status?.execute_cex_dex || status?.execute_dex_dex);
 

@@ -252,29 +252,17 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 def _default_orders_venue(runtime: EngineRuntime) -> tuple[str, Any | None]:
-    preferred = getattr(runtime, "quidax_lp", None)
-    if preferred is not None:
-        for venue_name, venue in runtime.venues.items():
-            if venue is preferred:
-                return venue_name, venue
-        return "quidax-lp", preferred
     if "quidax-lp" in runtime.venues:
         return "quidax-lp", runtime.venues["quidax-lp"]
     return "quidax", runtime.venues.get("quidax")
 
 
 def _resolve_operator_venue(runtime: EngineRuntime, requested_name: str) -> tuple[str, Any | None]:
-    if requested_name == "quidax":
-        venue_name, venue = _default_orders_venue(runtime)
-        if venue is not None:
-            return venue_name, venue
     return requested_name, runtime.venues.get(requested_name)
 
 
 def _format_operator_venue_label(requested_name: str, effective_name: str) -> str:
-    if requested_name == effective_name:
-        return effective_name
-    return f"{requested_name} (effective venue: {effective_name})"
+    return effective_name
 
 
 async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

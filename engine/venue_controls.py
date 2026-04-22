@@ -57,7 +57,8 @@ async def sync_venue_now(runtime: EngineRuntime, venue_name: str) -> SyncVenueOu
         ref_price = await _get_reference_price_ngn(runtime)
 
     sync_order_ladder = getattr(venue, "sync_order_ladder", None)
-    if callable(sync_order_ladder) and ref_price:
+    should_sync_ladder = venue_name != "quidax" or "quidax-lp" not in runtime.venues
+    if should_sync_ladder and callable(sync_order_ladder) and ref_price:
         await cast(SyncOrderLadderVenue, venue).sync_order_ladder(ref_price)
         return "sync_triggered"
 

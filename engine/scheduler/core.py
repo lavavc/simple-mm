@@ -58,7 +58,6 @@ class TradingScheduler:
         token_contracts: TokenContracts | None = None,
         portfolio_exposure_calculator: PortfolioExposureCalculator | None = None,
         portfolio_source_registry: tuple[PortfolioSourceDescriptor, ...] = DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
-        quidax_lp: Any | None = None,
         lp_managers: dict[str, Any] | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         price_store: PriceStoreProtocol | None = None,
@@ -105,7 +104,6 @@ class TradingScheduler:
             account_manager=account_manager,
             token_contracts=token_contracts or {},
             portfolio_exposure_calculator=portfolio_calculator,
-            quidax_lp=quidax_lp,
             lp_managers=_lp_managers,
             system_state_store=system_state_store,
             price_store=price_store,
@@ -205,7 +203,9 @@ class TradingScheduler:
             misfire_grace_time=10,
         )
 
-        if self.context.account_manager:
+        if self.context.account_manager or any(
+            name in self.context.venues for name in ("quidax", "quidax-lp")
+        ):
             self.scheduler.add_job(
                 self._check_balances,
                 IntervalTrigger(seconds=self.config.balance_check_interval),
@@ -214,30 +214,6 @@ class TradingScheduler:
                 next_run_time=datetime.now(tz.utc),
             )
             logger.info("balance_check_job_registered")
-
-            quidax_arb = self.context.venues.get("quidax")
-            if quidax_arb:
-                import functools
-
-                self.scheduler.add_job(
-                    functools.partial(self.account_jobs.auto_fund_quidax, quidax_arb, "quidax-trade-fund"),
-                    IntervalTrigger(seconds=self.config.balance_check_interval),
-                    id="auto_fund_quidax_arb",
-                    replace_existing=True,
-                )
-                logger.info("auto_fund_quidax_arb_job_registered")
-
-            quidax_lp = self.context.quidax_lp or self.context.venues.get("quidax-lp")
-            if quidax_lp:
-                import functools
-
-                self.scheduler.add_job(
-                    functools.partial(self.account_jobs.auto_fund_quidax, quidax_lp, "quidax-lp"),
-                    IntervalTrigger(seconds=self.config.balance_check_interval),
-                    id="auto_fund_quidax_lp",
-                    replace_existing=True,
-                )
-                logger.info("auto_fund_quidax_lp_job_registered")
 
         if self.context.portfolio_exposure_calculator:
             self.scheduler.add_job(

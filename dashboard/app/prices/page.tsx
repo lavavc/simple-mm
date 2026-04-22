@@ -14,7 +14,7 @@ import {
   normalizeSnapshotMid,
 } from '@/lib/utils';
 import { usePrices, useBlendedPrice, usePriceHistory } from '@/lib/hooks/useQueries';
-import { RefreshCw, TrendingUp, AlertCircle, Circle, Activity } from 'lucide-react';
+import { TrendingUp, AlertCircle, Circle, Activity } from 'lucide-react';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
 import {
   AreaChart,

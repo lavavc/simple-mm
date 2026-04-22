@@ -38,7 +38,6 @@ class SchedulerContext:
     account_manager: "AccountManager | None"
     token_contracts: TokenContracts
     portfolio_exposure_calculator: PortfolioExposureCalculator | None
-    quidax_lp: Any | None
     lp_managers: "dict[str, V4PositionManager]"
     system_state_store: SystemStateStoreProtocol
     price_store: PriceStoreProtocol
