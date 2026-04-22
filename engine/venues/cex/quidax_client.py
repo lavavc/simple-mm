@@ -57,9 +57,7 @@ class QuidaxApiClient:
     def order_collection_endpoints(self) -> list[str]:
         endpoints = [
             f"{self.order_api_base_url}/users/{self.order_user_id}/orders",
-            f"{self.order_api_base_url}/users/me/orders",
             f"{self.base_url}/users/{self.order_user_id}/orders",
-            f"{self.base_url}/users/me/orders",
         ]
         deduped: list[str] = []
         for endpoint in endpoints:
@@ -70,9 +68,7 @@ class QuidaxApiClient:
     def order_item_endpoints(self, order_id: str) -> list[str]:
         endpoints = [
             f"{self.order_api_base_url}/users/{self.order_user_id}/orders/{order_id}",
-            f"{self.order_api_base_url}/users/me/orders/{order_id}",
             f"{self.base_url}/users/{self.order_user_id}/orders/{order_id}",
-            f"{self.base_url}/users/me/orders/{order_id}",
         ]
         deduped: list[str] = []
         for endpoint in endpoints:

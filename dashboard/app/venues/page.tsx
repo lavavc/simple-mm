@@ -23,7 +23,13 @@ const venueInfo: Record<
     name: 'Quidax',
     chain: 'CEX',
     type: 'CEX',
-    description: 'Nigerian crypto exchange. Order ladder management for cNGN/USDT.',
+    description: 'Quidax trade account used for CEX execution and inventory.',
+  },
+  'quidax-lp': {
+    name: 'Quidax LP',
+    chain: 'CEX',
+    type: 'CEX',
+    description: 'Quidax market-making account. Order ladder management for cNGN/USDT.',
   },
   'uni-bsc': {
     name: 'Uniswap BSC',
@@ -111,10 +117,12 @@ function VenueDetail({
   venue,
   isSyncing,
   globalTradingEnabled,
+  hasQuidaxLp,
 }: {
   venue: VenueStatus;
   isSyncing: boolean;
   globalTradingEnabled: boolean;
+  hasQuidaxLp: boolean;
 }) {
   const info = venueInfo[venue.name] || {
     name: venue.name,
@@ -125,10 +133,14 @@ function VenueDetail({
   const isVenueActive = isVenueOperational(venue);
 
   const { data: valuationData } = usePortfolioValuation();
+  const isQuidaxTradeVenue = venue.name === 'quidax';
+  const isQuidaxLpVenue = venue.name === 'quidax-lp';
+  const isQuidaxMarketMaker = isQuidaxLpVenue || (isQuidaxTradeVenue && !hasQuidaxLp);
 
   // Map venue -> wallet roles that belong to it
   const VENUE_ROLES: Record<string, string[]> = {
-    quidax: ['quidax-trade', 'quidax-lp'],
+    quidax: ['quidax-trade'],
+    'quidax-lp': ['quidax-lp'],
     'uni-bsc': ['uni-bsc-trade', 'uni-bsc-lp'],
     'uni-base': ['uni-base-trade', 'uni-base-lp'],
   };
@@ -152,7 +164,7 @@ function VenueDetail({
     data: quidaxOrdersResponse,
     isLoading: quidaxOrdersLoading,
     error: quidaxOrdersError,
-  } = useVenueOrders(venue.name, venue.name === 'quidax');
+  } = useVenueOrders(venue.name, isQuidaxMarketMaker);
   const quidaxOrders = quidaxOrdersResponse?.orders ?? [];
   const quidaxSellOrders = quidaxOrders
     .filter((order) => order.side === 'sell')
@@ -187,7 +199,7 @@ function VenueDetail({
   const quidaxAnchorThresholdBps = Number(venue.params?.anchor_requote_threshold_bps) || 0;
   const quidaxAnchorDeltaBpsExceeded = quidaxAnchorDeltaBps != null && Math.abs(quidaxAnchorDeltaBps) > quidaxAnchorThresholdBps;
 
-  const quidaxParamRows: Array<{ key: string; label: string; description: string }> = venue.name === 'quidax'
+  const quidaxParamRows: Array<{ key: string; label: string; description: string }> = isQuidaxMarketMaker
     ? [
         {
           key: 'ladder_enabled',
@@ -290,7 +302,7 @@ function VenueDetail({
               </div>
               <ToggleBadge on={isVenueActive} />
             </div>
-            {venue.name === 'quidax' && (
+            {isQuidaxMarketMaker && (
               <div className="flex items-center justify-between gap-3 bg-black/40 border border-white/[0.02] rounded-sm p-2.5">
                 <div>
                   <div className="text-[10px] text-white/50 uppercase tracking-widest">Ladder Enabled</div>
@@ -471,7 +483,7 @@ function VenueDetail({
                 </div>
               </CardContent>
             </Card>
-          ) : venue.name === 'quidax' ? (
+          ) : isQuidaxMarketMaker ? (
             <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
               <CardHeader className="p-3 border-b border-white/[0.02]">
                 <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
@@ -582,79 +594,79 @@ function VenueDetail({
           <PoolMetricsChart venue={venue.name} />
         )}
 
-        {/* Bottom Row: Parameters (Detailed List) */}
-        <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
-          <CardHeader className="p-3 border-b border-white/[0.02]">
-            <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
-              <Settings className="h-4 w-4 text-white/60" /> PROTOCOL PARAMETERS & CONSTRAINTS
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="divide-y divide-white/[0.02]">
-              {['uni-base', 'uni-bsc'].includes(venue.name) && (
-                <>
+        {!isQuidaxMarketMaker && (
+          <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
+            <CardHeader className="p-3 border-b border-white/[0.02]">
+              <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
+                <Settings className="h-4 w-4 text-white/60" /> PROTOCOL PARAMETERS & CONSTRAINTS
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="divide-y divide-white/[0.02]">
+                {['uni-base', 'uni-bsc'].includes(venue.name) && (
+                  <>
+                    <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                      <div>
+                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Pricing Model SD Multiplier</div>
+                        <div className="text-[10px] font-mono text-white/50 mt-1">Width of liquidity curve in standard deviations</div>
+                      </div>
+                      <div className="text-sm font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-sm border border-emerald-500/20">
+                        {venue.params?.sd_multiplier != null ? `${Number(venue.params.sd_multiplier).toFixed(2)}x` : '—'}
+                      </div>
+                    </div>
+                    <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                      <div>
+                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Rebalance Threshold Delta</div>
+                        <div className="text-[10px] font-mono text-white/50 mt-1">Imbalance trigger required to automatically reposition liquidity</div>
+                      </div>
+                      <div className="text-sm font-mono text-yellow-400 bg-yellow-500/10 px-3 py-1 rounded-sm border border-yellow-500/20">
+                        {venue.params?.rebalance_threshold_percent != null ? `${Number(venue.params.rebalance_threshold_percent).toFixed(1)}%` : '—'}
+                      </div>
+                    </div>
+                    <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                      <div>
+                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Max Execution Slippage</div>
+                        <div className="text-[10px] font-mono text-white/50 mt-1">Hard cap on cross-pool slippage tolerance</div>
+                      </div>
+                      <div className="text-sm font-mono text-red-400 bg-red-500/10 px-3 py-1 rounded-sm border border-red-500/20">
+                        {venue.params?.max_slippage_percent != null ? `${Number(venue.params.max_slippage_percent).toFixed(1)}%` : '—'}
+                      </div>
+                    </div>
+                    <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                      <div>
+                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Exponentially Weighted Moving Average</div>
+                        <div className="text-[10px] font-mono text-white/50 mt-1">Decay factor for historical price weighting. High value → more weight to history; low value → more weight to recent movements.</div>
+                      </div>
+                      <div className="text-sm font-mono text-purple-400 bg-purple-500/10 px-3 py-1 rounded-sm border border-purple-500/20">
+                        {venue.params?.ewma_lambda != null ? Number(venue.params.ewma_lambda).toFixed(3) : '—'}
+                      </div>
+                    </div>
+                    <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
+                      <div>
+                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Downside Skew</div>
+                        <div className="text-[10px] font-mono text-white/50 mt-1">Fraction of the liquidity range allocated below the mid-price. Less than 50% means bullish NGN.</div>
+                      </div>
+                      <div className="text-sm font-mono text-orange-400 bg-orange-500/10 px-3 py-1 rounded-sm border border-orange-500/20">
+                        {venue.params?.downside_skew != null ? `${(Number(venue.params.downside_skew) * 100).toFixed(0)}%` : '—'}
+                      </div>
+                    </div>
+                  </>
+                )}
+                {venue.name === 'blockradar' && (
                   <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
                     <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Pricing Model SD Multiplier</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Width of liquidity curve in standard deviations</div>
+                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">System Operation Spread</div>
+                      <div className="text-[10px] font-mono text-white/50 mt-1">Base buffer for internal liquidity operations</div>
                     </div>
-                    <div className="text-sm font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-sm border border-emerald-500/20">
-                      {venue.params?.sd_multiplier != null ? `${Number(venue.params.sd_multiplier).toFixed(2)}x` : '—'}
-                    </div>
+                    <div className="text-sm font-mono text-purple-400 bg-purple-500/10 px-3 py-1 rounded-sm border border-purple-500/20">15 BPS</div>
                   </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Rebalance Threshold Delta</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Imbalance trigger required to automatically reposition liquidity</div>
-                    </div>
-                    <div className="text-sm font-mono text-yellow-400 bg-yellow-500/10 px-3 py-1 rounded-sm border border-yellow-500/20">
-                      {venue.params?.rebalance_threshold_percent != null ? `${Number(venue.params.rebalance_threshold_percent).toFixed(1)}%` : '—'}
-                    </div>
-                  </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Max Execution Slippage</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Hard cap on cross-pool slippage tolerance</div>
-                    </div>
-                    <div className="text-sm font-mono text-red-400 bg-red-500/10 px-3 py-1 rounded-sm border border-red-500/20">
-                      {venue.params?.max_slippage_percent != null ? `${Number(venue.params.max_slippage_percent).toFixed(1)}%` : '—'}
-                    </div>
-                  </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Exponentially Weighted Moving Average</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Decay factor for historical price weighting. High value → more weight to history; low value → more weight to recent movements.</div>
-                    </div>
-                    <div className="text-sm font-mono text-purple-400 bg-purple-500/10 px-3 py-1 rounded-sm border border-purple-500/20">
-                      {venue.params?.ewma_lambda != null ? Number(venue.params.ewma_lambda).toFixed(3) : '—'}
-                    </div>
-                  </div>
-                  <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                    <div>
-                      <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Downside Skew</div>
-                      <div className="text-[10px] font-mono text-white/50 mt-1">Fraction of the liquidity range allocated below the mid-price. Less than 50% means bullish NGN.</div>
-                    </div>
-                    <div className="text-sm font-mono text-orange-400 bg-orange-500/10 px-3 py-1 rounded-sm border border-orange-500/20">
-                      {venue.params?.downside_skew != null ? `${(Number(venue.params.downside_skew) * 100).toFixed(0)}%` : '—'}
-                    </div>
-                  </div>
-                </>
-              )}
-              {venue.name === 'blockradar' && (
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
-                <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
-                  <div>
-                    <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">System Operation Spread</div>
-                    <div className="text-[10px] font-mono text-white/50 mt-1">Base buffer for internal liquidity operations</div>
-                  </div>
-                  <div className="text-sm font-mono text-purple-400 bg-purple-500/10 px-3 py-1 rounded-sm border border-purple-500/20">15 BPS</div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {venue.name === 'quidax' && (
+        {isQuidaxMarketMaker && (
           <Card className="bg-[#12161C] border border-white/[0.05] rounded-sm shadow-none">
             <CardHeader className="p-3 border-b border-white/[0.02] flex flex-row items-center justify-between">
               <div className="text-[11px] text-white/50 uppercase tracking-widest font-bold flex items-center gap-2">
@@ -804,9 +816,13 @@ export default function VenuesPage() {
   const { data: status, isLoading } = useStatus();
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
 
+  const hasQuidaxLp = Boolean(status?.venues?.some((v) => v.name === 'quidax-lp'));
   const venues = [...(status?.venues || [])]
     .filter(v => v.name !== 'bybit' && v.name !== 'assetchain')
+    .filter(v => !(hasQuidaxLp && v.name === 'quidax'))
     .sort((a, b) => {
+      if (a.name === 'quidax-lp') return -1;
+      if (b.name === 'quidax-lp') return 1;
       if (a.name === 'quidax') return -1;
       if (b.name === 'quidax') return 1;
       return a.name.localeCompare(b.name);
@@ -882,6 +898,7 @@ export default function VenuesPage() {
           venue={displayedVenue}
           isSyncing={isSyncing}
           globalTradingEnabled={status?.trading_enabled ?? false}
+          hasQuidaxLp={hasQuidaxLp}
         />
         ) : isSyncing ? (
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 animate-in fade-in duration-500">
