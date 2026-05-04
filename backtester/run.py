@@ -168,9 +168,12 @@ def main() -> None:
         else [(args.pool, POOLS[args.pool])]
     )
 
+    POOL_CAPITAL = {"aerodrome": 500.0, "pancakeswap": 200.0}
+
     for pool_name, pool_config in pools_to_run:
         gas = 0.20 if pool_config.blockchain == "bnb" else 0.05
-        grid = generate_grid(gas_cost_usd=gas)
+        capital = POOL_CAPITAL.get(pool_name, 500.0)
+        grid = generate_grid(gas_cost_usd=gas, initial_capital_usd=capital)
         print(f"\n=== {pool_name} ({len(grid)} combos) ===", file=sys.stderr)
 
         events = load_events(args.csv, pool_address=pool_config.pool_address)

@@ -51,7 +51,7 @@ def calculate_tick_range(
     # Asymmetric: heavier downside
     lower_price = mean - sd_multiplier * 2 * downside_skew * std
     upper_price = mean + sd_multiplier * 2 * (1 - downside_skew) * std
-    lower_price = max(lower_price, 1e-12)
+    lower_price = max(lower_price, 0.0001)
 
     from decimal import Decimal
     tick_lower = price_to_tick(Decimal(str(lower_price)), token0_decimals, token1_decimals)

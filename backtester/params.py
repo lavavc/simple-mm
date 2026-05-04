@@ -26,7 +26,7 @@ PREEMPTIVE = [True, False]
 REBALANCE_THRESHOLDS = [1.0, 3.0, 5.0, 10.0, 15.0]
 
 
-def generate_grid(gas_cost_usd: float = 0.05) -> list[BacktestParams]:
+def generate_grid(gas_cost_usd: float = 0.05, initial_capital_usd: float = 5000.0) -> list[BacktestParams]:
     """11×4×6×2×5 = 2,640 parameter combinations."""
     combos = product(
         SD_MULTIPLIERS,
@@ -43,6 +43,7 @@ def generate_grid(gas_cost_usd: float = 0.05) -> list[BacktestParams]:
             preemptive_rebalance=pre,
             rebalance_threshold_pct=rt,
             gas_cost_usd=gas_cost_usd,
+            initial_capital_usd=initial_capital_usd,
         )
         for sd, lam, ds, pre, rt in combos
     ]
