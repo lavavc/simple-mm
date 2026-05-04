@@ -1,0 +1,678 @@
+"""Telegram bot for operational control of the trading engine."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import secrets
+import signal
+import time
+from typing import Any, cast
+
+import structlog
+from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+
+from engine.config import Settings
+from engine.runtime import EngineRuntime
+from engine.venue_controls import pause_venue_now as _pause_venue_now
+from engine.venue_controls import resume_venue_now as _resume_venue_now
+
+logger = structlog.get_logger()
+
+_app: Any | None = None
+_settings: Settings | None = None
+_runtime: EngineRuntime | None = None
+_recent_alerts: dict[str, float] = {}
+_pending_withdrawals: dict[str, tuple[str, str | None]] = {}
+
+
+def _require_runtime() -> EngineRuntime:
+    if _runtime is None:
+        raise RuntimeError("Telegram bot runtime is not configured")
+    return _runtime
+
+
+def _auth(update: Update) -> bool:
+    if not _settings or not _settings.telegram_chat_id or update.effective_chat is None:
+        return False
+    return str(update.effective_chat.id) == str(_settings.telegram_chat_id)
+
+
+def _get_message(update: Update) -> Message | None:
+    return update.effective_message
+
+
+def _get_callback_query(update: Update) -> CallbackQuery | None:
+    return update.callback_query
+
+
+def _require_reply_message(message: object) -> Message | None:
+    return message if isinstance(message, Message) else None
+
+
+def _confirm_kb(action: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes", callback_data=f"confirm:{action}"),
+        InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
+    ]])
+
+
+async def _pause_all_trading_now(
+    runtime: EngineRuntime,
+) -> tuple[dict[str, int | None], dict[str, str]]:
+    await runtime.scheduler.pause()
+
+    cancelled: dict[str, int | None] = {}
+    errors: dict[str, str] = {}
+    for venue_name, venue in runtime.venues.items():
+        cancel_all_orders = getattr(venue, "cancel_all_orders", None)
+        if not callable(cancel_all_orders):
+            continue
+        try:
+            cancelled[venue_name] = await _pause_venue_now(runtime, venue_name, set_paused=False)
+        except Exception as exc:
+            errors[venue_name] = str(exc)
+    return cancelled, errors
+
+
+# --- Read-only commands ---
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    runtime = _require_runtime()
+    trading_state = await runtime.db.system_state.get_system_state("trading_enabled")
+    trading = trading_state != "false"
+
+    cb = False
+    arb_status = None
+    if runtime.arbitrage_engine:
+        arb_status = await runtime.arbitrage_engine.get_status()
+        cb = arb_status.circuit_breaker_active
+
+    if not trading:
+        text = (
+            f"Engine: ⏸ Paused\n"
+            f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
+        )
+    else:
+        if arb_status is None:
+            arb_line = "❌ Not configured"
+        elif not arb_status.enabled:
+            arb_line = "⏸ Paused"
+        else:
+            arb_line = (
+                f"cex-dex {'✅' if arb_status.execute_cex_dex else '⏸'}"
+                f"  dex-dex {'✅' if arb_status.execute_dex_dex else '⏸'}"
+            )
+
+        lp_venue_names: list[str] = []
+        for key in ("quidax-lp", "quidax"):
+            if key in runtime.venues:
+                lp_venue_names.append(key)
+                break
+        lp_venue_names += list(runtime.lp_managers)
+        lp_parts = [
+            f"{name} {'⏸' if (v := runtime.venues.get(name)) and v.paused else '✅'}"
+            for name in lp_venue_names
+        ]
+
+        text = (
+            f"Engine: ✅ Running\n"
+            f"Arb: {arb_line}\n"
+            f"LP: {'  '.join(lp_parts)}\n"
+            f"Circuit breaker: {'🚨 Active' if cb else '✅ Clear'}"
+        )
+    await message.reply_text(text, parse_mode="Markdown")
+
+
+async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    runtime = _require_runtime()
+    if not runtime.venues:
+        await message.reply_text("No venues configured.")
+        return
+    lines = ["*Positions*"]
+    for name, venue in runtime.venues.items():
+        try:
+            lp_manager = runtime.lp_managers.get(name)
+            if lp_manager is not None:
+                pos = await lp_manager.get_position_as_schema()
+            else:
+                pos = await venue.get_position()
+            lines.append(f"\n*{name}*")
+            for token, amt in pos.balances.items():
+                lines.append(f"  {token}: {amt:.4f}")
+            if pos.lp_position:
+                label = (
+                    f"token_id: {pos.lp_position.token_id}"
+                    if pos.lp_position.token_id is not None
+                    else "token_id: unavailable"
+                )
+                lines.append(f"  {label}")
+                lines.append(f"  snapshot_status: {pos.lp_position.snapshot_status}")
+                if pos.lp_position.snapshot_message:
+                    lines.append(f"  snapshot_message: {pos.lp_position.snapshot_message}")
+                if pos.lp_position.range_min is not None and pos.lp_position.range_max is not None:
+                    lines.append(
+                        "  range: "
+                        f"{pos.lp_position.range_min:.6f} -> {pos.lp_position.range_max:.6f}"
+                    )
+                else:
+                    lines.append("  range: unavailable")
+                if pos.lp_position.in_range is None:
+                    lines.append("  in_range: unknown")
+                else:
+                    lines.append(f"  in_range: {'yes' if pos.lp_position.in_range else 'no'}")
+                if pos.position_value_usd is not None:
+                    lines.append(f"  value_usd: {pos.position_value_usd:.4f}")
+                if pos.lp_position.our_share_pct is not None:
+                    lines.append(f"  our_share_pct: {pos.lp_position.our_share_pct:.4f}")
+        except Exception as e:
+            lines.append(f"\n*{name}*: error ({e})")
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    runtime = _require_runtime()
+    if not runtime.account_manager:
+        await message.reply_text("Account manager not configured.")
+        return
+    try:
+        balances = await runtime.account_manager.check_all_balances(runtime.token_contracts)
+        lines = ["*Account Balances*"]
+        for b in balances:
+            lines.append(f"\n*{b.role}*")
+            for token, amt in (b.token_balances or {}).items():
+                lines.append(f"  {token}: {amt}")
+        await message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await message.reply_text(f"Error: {e}")
+
+
+async def cmd_arb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    runtime = _require_runtime()
+    if not runtime.arbitrage_engine:
+        await message.reply_text("Arbitrage engine not configured.")
+        return
+    try:
+        s = await runtime.arbitrage_engine.get_status()
+        text = (
+            f"*Arbitrage Status*\n"
+            f"Enabled: {'✅' if s.enabled else '❌'}\n"
+            f"Consecutive failures: {s.consecutive_failures}\n"
+            f"Circuit breaker: {'🚨 Active' if s.circuit_breaker_active else '✅ Clear'}\n"
+            "Opportunities (24h): "
+            f"{s.opportunities_detected_24h} detected / "
+            f"{s.opportunities_executed_24h} executed\n"
+            f"Profit (24h): ${s.total_profit_24h_usd:.2f}"
+        )
+        await message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await message.reply_text(f"Error: {e}")
+
+
+async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    alerts = await _require_runtime().db.alerts.get_alerts(5)
+    if not alerts:
+        await message.reply_text("No recent alerts.")
+        return
+    lines = ["*Last 5 Alerts*"]
+    for a in alerts:
+        lines.append(f"\n[{a.severity}] {a.message}")
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+def _default_orders_venue(runtime: EngineRuntime) -> tuple[str, Any | None]:
+    if "quidax-lp" in runtime.venues:
+        return "quidax-lp", runtime.venues["quidax-lp"]
+    return "quidax", runtime.venues.get("quidax")
+
+
+def _resolve_operator_venue(runtime: EngineRuntime, requested_name: str) -> tuple[str, Any | None]:
+    return requested_name, runtime.venues.get(requested_name)
+
+
+def _format_operator_venue_label(requested_name: str, effective_name: str) -> str:
+    return effective_name
+
+
+async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    message = _get_message(update)
+    if message is None:
+        return
+
+    runtime = _require_runtime()
+    args = getattr(context, "args", None) or []
+    if args:
+        venue_name = args[0]
+        venue = runtime.venues.get(venue_name)
+    else:
+        venue_name, venue = _default_orders_venue(runtime)
+    if venue is None:
+        await message.reply_text(f"Venue not found: {venue_name}")
+        return
+
+    get_open_order_summaries = getattr(venue, "get_open_order_summaries", None)
+    if not callable(get_open_order_summaries):
+        await message.reply_text(f"{venue_name} does not expose open orders.")
+        return
+
+    try:
+        orders = await get_open_order_summaries()
+    except Exception as exc:
+        await message.reply_text(f"Error: {exc}")
+        return
+
+    if not orders:
+        await message.reply_text(f"No open orders on {venue_name}.")
+        return
+
+    visible_orders = orders[:20]
+    lines = [f"*Open Orders · {venue_name}*", f"count: {len(orders)}"]
+    for order in visible_orders:
+        market = order.market or "-"
+        status = order.status or "unknown"
+        lines.append(
+            "\n"
+            f"`{order.side.upper()}` `{status}` `{market}` "
+            f"{order.remaining_volume:.4f} @ {order.price:.4f} "
+            f"(filled {order.executed_volume:.4f}) "
+            f"`{order.id}`"
+        )
+    if len(orders) > len(visible_orders):
+        lines.append(f"\nshowing first {len(visible_orders)} of {len(orders)} orders")
+
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# --- Destructive commands (require inline keyboard confirm) ---
+
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    message = _get_message(update)
+    if message is None:
+        return
+    runtime = _require_runtime()
+    args = getattr(context, "args", None) or []
+    if args:
+        requested_name = args[0]
+        venue_name, venue = _resolve_operator_venue(runtime, requested_name)
+        if venue is None:
+            await message.reply_text(f"Venue not found: {requested_name}")
+            return
+        label = _format_operator_venue_label(requested_name, venue_name)
+        await message.reply_text(
+            f"⚠️ Pause *{label}* and cancel open orders. Confirm?",
+            reply_markup=_confirm_kb(f"pause_venue:{venue_name}"),
+            parse_mode="Markdown",
+        )
+        return
+    await message.reply_text(
+        "⚠️ Pause all trading globally and cancel open CEX orders. Confirm?",
+        reply_markup=_confirm_kb("pause"),
+    )
+
+
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    message = _get_message(update)
+    if message is None:
+        return
+    runtime = _require_runtime()
+    args = getattr(context, "args", None) or []
+    if args:
+        requested_name = args[0]
+        venue_name, venue = _resolve_operator_venue(runtime, requested_name)
+        if venue is None:
+            await message.reply_text(f"Venue not found: {requested_name}")
+            return
+        label = _format_operator_venue_label(requested_name, venue_name)
+        await message.reply_text(
+            f"⚠️ Resume *{label}*. Confirm?",
+            reply_markup=_confirm_kb(f"resume_venue:{venue_name}"),
+            parse_mode="Markdown",
+        )
+        return
+    await message.reply_text(
+        "⚠️ Resume all trading. Confirm?",
+        reply_markup=_confirm_kb("resume"),
+    )
+
+
+async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    message = _get_message(update)
+    if message is None:
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
+        return
+    venue, to_address = args[0], args[1]
+    if venue not in ("uni-base", "uni-bsc"):
+        await message.reply_text("Usage: /withdraw <uni-base|uni-bsc> <to_address>")
+        return
+    token = secrets.token_hex(4)
+    _pending_withdrawals[token] = (venue, to_address)
+    await message.reply_text(
+        f"⚠️ Withdraw LP positions: *{venue}* → `{to_address}`. Confirm?",
+        reply_markup=_confirm_kb(f"wd:{token}"),
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔥 Unwind + Stop", callback_data="confirm:shutdown:unwind"),
+        InlineKeyboardButton("🛑 Stop Only", callback_data="confirm:shutdown:stop"),
+        InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
+    ]])
+    await message.reply_text("⚠️ Shutdown engine. Choose action:", reply_markup=keyboard)
+
+
+async def cmd_reset_breaker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    del context
+    message = _get_message(update)
+    if message is None:
+        return
+    await message.reply_text(
+        "⚠️ Reset circuit breaker and re-enable arb. Confirm?",
+        reply_markup=_confirm_kb("reset_breaker"),
+    )
+
+
+async def cmd_recover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    message = _get_message(update)
+    if message is None:
+        return
+    if not context.args:
+        await message.reply_text("Usage: /recover <opp_id>")
+        return
+    opp_id = context.args[0]
+    await message.reply_text(
+        f"⚠️ Recover half-open arb `{opp_id}`.\n"
+        f"Will retry sell if sell-side has cNGN, otherwise reverse the buy to recover capital.",
+        reply_markup=_confirm_kb(f"recover:{opp_id}"),
+        parse_mode="Markdown",
+    )
+
+
+# --- Callback handler ---
+
+async def _do_withdraw(
+    venue: str,
+    to_address: str | None = None,
+    *,
+    action_type: str = "manual_withdraw",
+    triggered_by: str = "telegram:withdraw",
+) -> str:
+    runtime = _require_runtime()
+    if venue == "all":
+        targets = dict(runtime.lp_managers)
+    elif venue in runtime.lp_managers:
+        targets = {venue: runtime.lp_managers[venue]}
+    else:
+        return f"❌ Venue {venue} not found or not a DEX."
+    results = []
+    for name, lp_manager in targets.items():
+        venue_results = await runtime.scheduler.lp_rebalancer.withdraw_positions(
+            lp_manager,
+            recipient=to_address,
+            action_type=action_type,
+            triggered_by=triggered_by,
+        )
+        for item in venue_results:
+            results.append(f"{name}#{item['token_id']}: {item['status']}")
+    return ("✅ Withdrawn:\n" + "\n".join(results)) if results else f"ℹ️ No positions on {venue}."
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    query = _get_callback_query(update)
+    if query is None:
+        return
+    if (
+        not _settings
+        or query.message is None
+        or str(query.message.chat.id) != str(_settings.telegram_chat_id)
+    ):
+        await query.answer()
+        return
+    runtime = _require_runtime()
+    await query.answer()
+    data = query.data or ""
+    reply_message = _require_reply_message(query.message)
+
+    if data == "cancel":
+        await query.edit_message_text("❌ Cancelled.")
+    elif data == "confirm:pause":
+        cancelled, errors = await _pause_all_trading_now(runtime)
+        parts = ["⏸ Trading paused."]
+        if cancelled:
+            details = ", ".join(
+                f"{venue}={count if count is not None else 0}"
+                for venue, count in cancelled.items()
+            )
+            parts.append(f"Cancelled open orders: {details}.")
+        if errors:
+            details = ", ".join(f"{venue}: {error}" for venue, error in errors.items())
+            parts.append(f"Cancel errors: {details}.")
+        await query.edit_message_text(" ".join(parts))
+    elif data == "confirm:resume":
+        await runtime.scheduler.resume()
+        await query.edit_message_text("▶️ Trading resumed.")
+    elif data.startswith("confirm:pause_venue:"):
+        venue_name = data.split(":", 2)[2]
+        try:
+            cancelled_orders = await _pause_venue_now(runtime, venue_name, set_paused=True)
+            await query.edit_message_text(
+                f"⏸ {venue_name} paused. "
+                f"Cancelled open orders: {cancelled_orders if cancelled_orders is not None else 0}."
+            )
+        except ValueError as exc:
+            await query.edit_message_text(f"❌ {exc}")
+        except Exception as exc:
+            await query.edit_message_text(f"❌ Failed to pause {venue_name}: {exc}")
+    elif data.startswith("confirm:resume_venue:"):
+        venue_name = data.split(":", 2)[2]
+        try:
+            sync_outcome, sync_error = await _resume_venue_now(runtime, venue_name)
+        except ValueError as exc:
+            await query.edit_message_text(f"❌ {exc}")
+            return
+
+        if sync_error == "trading_paused":
+            await query.edit_message_text(
+                f"▶️ {venue_name} resumed, but global trading is still paused so sync was skipped."
+            )
+        elif sync_error is not None:
+            await query.edit_message_text(
+                f"▶️ {venue_name} resumed, but sync failed: {sync_error}"
+            )
+        elif sync_outcome == "sync_triggered":
+            await query.edit_message_text(f"▶️ {venue_name} resumed. Sync triggered.")
+        else:
+            await query.edit_message_text(f"▶️ {venue_name} resumed.")
+    elif data.startswith("confirm:wd:"):
+        token = data.split(":", 2)[2]
+        pending = _pending_withdrawals.pop(token, None)
+        if pending is None:
+            await query.edit_message_text("❌ Withdraw request expired or not found.")
+            return
+        venue, to_address = pending
+        await query.edit_message_text(f"⏳ Withdrawing {venue}...")
+        msg = await _do_withdraw(venue, to_address)
+        if reply_message is not None:
+            await reply_message.reply_text(msg)
+    elif data == "confirm:shutdown:unwind":
+        await query.edit_message_text("⏳ Unwinding positions and stopping...")
+        await runtime.scheduler.pause()
+        msg = await _do_withdraw(
+            "all",
+            action_type="shutdown_unwind",
+            triggered_by="telegram:shutdown_unwind",
+        )
+        if reply_message is not None:
+            await reply_message.reply_text(f"{msg}\n🛑 Shutting down.")
+        asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    elif data == "confirm:shutdown:stop":
+        await query.edit_message_text("🛑 Engine shutting down.")
+        asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    elif data == "confirm:reset_breaker":
+        if runtime.arbitrage_engine:
+            cast(Any, runtime.arbitrage_engine).reset_circuit_breaker()
+            await query.edit_message_text("✅ Circuit breaker reset.")
+        else:
+            await query.edit_message_text("❌ Arbitrage engine not configured.")
+    elif data.startswith("confirm:recover:"):
+        opp_id = data.split(":", 2)[2]
+        if not runtime.arbitrage_engine:
+            await query.edit_message_text("❌ Arbitrage engine not configured.")
+            return
+        await query.edit_message_text(f"⏳ Recovering {opp_id}...")
+        try:
+            try:
+                result = await runtime.arbitrage_engine.recover_dex_half_open(opp_id)
+                method = "sell retried" if result["method"] == "retry_sell" else "buy reversed"
+                profit = result["profit_usd"]
+                sign = "+" if profit >= 0 else ""
+                if reply_message is not None:
+                    await reply_message.reply_text(
+                        "✅ Recovered DEX-DEX "
+                        f"({method}): tx {result['sell_tx_hash']}, "
+                        f"P&L {sign}${profit:.2f}"
+                    )
+            except ValueError as e:
+                if "Unknown DEX arbitrage opportunity" not in str(e):
+                    raise
+                result = await runtime.arbitrage_engine.recover_cex_half_open(opp_id)
+                profit = result["profit_usd"]
+                sign = "+" if profit >= 0 else ""
+                method = result["method"].replace("_", " ")
+                if reply_message is not None:
+                    await reply_message.reply_text(
+                        f"✅ Recovered CEX-DEX ({method}): P&L {sign}${profit:.2f}"
+                    )
+        except Exception as e:
+            if reply_message is not None:
+                await reply_message.reply_text(f"❌ Recovery failed: {e}")
+
+
+# --- Alert forwarding ---
+
+async def forward_alert(event: dict[str, Any]) -> None:
+    if not _app or not _settings or not _settings.telegram_chat_id:
+        return
+    severity = event.get("severity", "")
+    if severity not in ("critical", "warning"):
+        return
+    now = time.monotonic()
+    for key, expires_at in list(_recent_alerts.items()):
+        if expires_at <= now:
+            _recent_alerts.pop(key, None)
+    cooldown_s = float(event.get("cooldown_s", 60))
+    dedupe_key = str(event.get("dedupe_key") or f"{severity}:{event.get('message', '')}")
+    if cooldown_s > 0:
+        last_expires_at = _recent_alerts.get(dedupe_key)
+        if last_expires_at and last_expires_at > now:
+            logger.info(
+                "telegram_alert_suppressed_duplicate",
+                dedupe_key=dedupe_key,
+                severity=severity,
+            )
+            return
+        _recent_alerts[dedupe_key] = now + cooldown_s
+    icon = "🚨" if severity == "critical" else "⚠️"
+    try:
+        await _app.bot.send_message(
+            _settings.telegram_chat_id,
+            f"{icon} {event.get('message', '')}",
+        )
+    except Exception as e:
+        _recent_alerts.pop(dedupe_key, None)
+        logger.warning("telegram_alert_failed", error=str(e))
+
+
+# --- Lifecycle ---
+
+async def start(s: Settings, runtime: EngineRuntime) -> None:
+    global _app, _settings, _runtime
+    _settings = s
+    _runtime = runtime
+
+    _app = Application.builder().token(cast(str, s.telegram_bot_token)).build()
+    _app.add_handler(CommandHandler("status", cmd_status))
+    _app.add_handler(CommandHandler("positions", cmd_positions))
+    _app.add_handler(CommandHandler("balances", cmd_balances))
+    _app.add_handler(CommandHandler("arb", cmd_arb))
+    _app.add_handler(CommandHandler("alerts", cmd_alerts))
+    _app.add_handler(CommandHandler("orders", cmd_orders))
+    _app.add_handler(CommandHandler("pause", cmd_pause))
+    _app.add_handler(CommandHandler("resume", cmd_resume))
+    _app.add_handler(CommandHandler("withdraw", cmd_withdraw))
+    _app.add_handler(CommandHandler("shutdown", cmd_shutdown))
+    _app.add_handler(CommandHandler("reset_breaker", cmd_reset_breaker))
+    _app.add_handler(CommandHandler("recover", cmd_recover))
+    _app.add_handler(CallbackQueryHandler(handle_callback))
+
+    await _app.initialize()
+    await _app.start()
+    if _app.updater is not None:
+        await _app.updater.start_polling(drop_pending_updates=True)
+    logger.warning("telegram_bot_started")
+
+
+async def stop() -> None:
+    global _app, _runtime
+    if _app:
+        if _app.updater is not None:
+            await _app.updater.stop()
+        await _app.stop()
+        await _app.shutdown()
+        _app = None
+        logger.info("telegram_bot_stopped")
+    _runtime = None

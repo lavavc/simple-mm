@@ -1,18 +1,48 @@
 """Blockradar wallet system adapter for B2C swap rates and quotes."""
 
+import asyncio
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional, cast
 
 import httpx
 import structlog
 
-from engine.api.schemas import Position, PriceQuote, WalletParams
+from engine.types import Position, PriceQuote
 from engine.venues.base import VenueAdapter
 
 logger = structlog.get_logger()
+
+
+# =============================================================================
+# Route definitions for multi-rate fetching
+# =============================================================================
+
+@dataclass
+class BlockradarRoute:
+    key: str        # e.g. "cngn_usdc"
+    currency: str   # API query param
+    assets: str     # API query param
+    outer_key: str  # first key in response data dict
+    inner_key: str  # second key in response data dict
+    invert: bool    # True → cNGN/USD = 1 / raw_rate
+
+
+_ROUTES: list[BlockradarRoute] = [
+    BlockradarRoute("cngn_usdc", "cNGN", "USDC", "USDC", "CNGN", False),
+    BlockradarRoute("cngn_usdt", "cNGN", "USDT", "USDT", "CNGN", False),
+    BlockradarRoute("usdt_cngn", "USDT", "cNGN", "CNGN", "USDT", True),
+    BlockradarRoute("usdc_cngn", "USDC", "cNGN", "CNGN", "USDC", True),
+]
+
+_MIN_AMOUNTS: dict[str, str] = {
+    "cngn_usdc": "100",
+    "cngn_usdt": "100",
+    "usdt_cngn": "1",
+    "usdc_cngn": "1",
+}
 
 
 # =============================================================================
@@ -21,9 +51,8 @@ logger = structlog.get_logger()
 
 class BlockradarAsset(str, Enum):
     """Blockradar asset identifiers."""
-    USDC = "3a18a31a-86ad-44a0-9b9c-cdb69d535c64"
-    USDT = "065ff109-9d31-4c7d-bd0e-13314d2ed5f6"
-    CNGN = ""  # TODO: Get cNGN asset ID from Blockradar
+    USDC = "fef8958b-0aba-4b8b-96f5-36c46a3a5e59"
+    CNGN = "984e7fcc-67a9-4102-9e94-78207dc520f7"
 
 
 class SwapOrderType(str, Enum):
@@ -49,7 +78,7 @@ class SwapQuote:
     order_type: str
     fee: Decimal
     expires_at: Optional[int] = None
-    raw_response: Optional[dict] = None
+    raw_response: Optional[dict[str, Any]] = None
 
     @property
     def spread_bps(self) -> int:
@@ -73,27 +102,16 @@ class BlockradarAdapter(VenueAdapter):
 
     name = "blockradar"
 
-    def __init__(
-        self,
-        api_key: str,
-        wallet_id: str = "",
-        params: WalletParams | None = None,
-    ):
-        """
-        Initialize Blockradar adapter.
-
-        Args:
-            api_key: Blockradar API key
-            wallet_id: Blockradar wallet ID for swap operations
-            params: Rate setting parameters
-        """
+    def __init__(self, api_key: str, wallet_id: str = ""):
         self.api_key = api_key
         self.wallet_id = wallet_id
-        self.params = params or WalletParams()
         self.base_url = "https://api.blockradar.co/v1"
         self._client: Optional[httpx.AsyncClient] = None
         self.enabled = True
         self.paused = False
+        self._current_rates_usd: dict[str, Decimal] = {}  # per-route, normalised to cNGN/USD
+        self._current_rates_raw: dict[str, Decimal] = {}  # per-route, as returned by API
+        self._rate_ids: dict[str, str] = {}  # route.key → Blockradar rate ID
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with auth headers."""
@@ -107,7 +125,7 @@ class BlockradarAdapter(VenueAdapter):
             )
         return self._client
 
-    async def close(self):
+    async def close(self) -> None:
         """Close HTTP client."""
         if self._client:
             await self._client.aclose()
@@ -118,37 +136,92 @@ class BlockradarAdapter(VenueAdapter):
     # -------------------------------------------------------------------------
 
     async def get_position(self) -> Position:
-        """
-        Get current position on Blockradar.
-
-        Note: Blockradar is a rate-setting service, not a custody venue,
-        so balances are typically managed separately.
-        """
-        # Blockradar doesn't hold funds - return empty position
+        """Return empty position with per-route rate cache included."""
         return Position(
             venue=self.name,
-            pair="CNGN/USDT",
+            pair="cNGN/*",
             timestamp=int(time.time() * 1000),
-            balances={
-                "cngn": Decimal("0"),
-                "usdt": Decimal("0"),
-                "usdc": Decimal("0"),
-            },
+            balances={"cngn": Decimal("0"), "usdc": Decimal("0")},
+            rates=dict(self._current_rates_raw) or None,
         )
 
+    async def get_assets(self) -> list[dict[str, Any]]:
+        """Get assets available in the master wallet."""
+        client = await self._get_client()
+        response = await client.get(f"{self.base_url}/assets")
+        response.raise_for_status()
+        data = response.json()
+        return cast(list[dict[str, Any]], data.get("data", []))
+
     async def get_current_price(self) -> Optional[PriceQuote]:
-        """Get current swap rate."""
-        try:
-            rate = await self.get_rate("CNGN/USDT")
-            return PriceQuote(
-                source="blockradar",
-                timestamp=int(time.time() * 1000),
-                bid=rate["buy"],
-                ask=rate["sell"],
-                mid=(rate["buy"] + rate["sell"]) / 2,
-            )
-        except Exception:
+        """Fetch all 4 rate routes in parallel and return blended mid."""
+        client = await self._get_client()
+
+        async def _fetch(route: BlockradarRoute) -> Optional[Decimal]:
+            try:
+                resp = await client.get(
+                    f"{self.base_url}/assets/rates",
+                    params={"currency": route.currency, "assets": route.assets},
+                )
+                resp.raise_for_status()
+                raw = Decimal(resp.json()["data"][route.outer_key][route.inner_key])
+                self._current_rates_raw[route.key] = raw
+                usd = (Decimal("1") / raw) if route.invert else raw
+                self._current_rates_usd[route.key] = usd
+                return usd
+            except Exception as e:
+                logger.warning("blockradar_rate_fetch_failed", route=route.key, error=str(e))
+                return None
+
+        results = await asyncio.gather(*[_fetch(r) for r in _ROUTES])
+        valid = [r for r in results if r is not None]
+        if not valid:
             return None
+        mid: Decimal = sum(valid) / Decimal(len(valid))
+        return PriceQuote(
+            source="blockradar",
+            timestamp=int(time.time() * 1000),
+            bid=mid, ask=mid, mid=mid,
+        )
+
+    async def set_rate(self, route: BlockradarRoute, rate_raw: Decimal) -> bool:
+        """Create or update the exchange rate for a route on Blockradar."""
+        if not self.api_key:
+            return False
+        client = await self._get_client()
+        rate_str = str(rate_raw.quantize(Decimal("0.000001")))
+        try:
+            rate_id = self._rate_ids.get(route.key)
+            if rate_id:
+                resp = await client.patch(
+                    f"{self.base_url}/rates/{rate_id}",
+                    json={"rate": rate_str},
+                )
+            else:
+                resp = await client.post(
+                    f"{self.base_url}/rates",
+                    json={
+                        "fromAsset": route.currency,
+                        "toAsset": route.assets,
+                        "rate": rate_str,
+                        "minAmount": _MIN_AMOUNTS[route.key],
+                    },
+                )
+                resp.raise_for_status()
+                body = resp.json()
+                data = body.get("data", body)
+                new_id = data.get("id")
+                if new_id:
+                    self._rate_ids[route.key] = str(new_id)
+                    logger.info("blockradar_rate_created", route=route.key, id=new_id, rate=rate_str)
+                return True
+
+            resp.raise_for_status()
+            logger.info("blockradar_rate_updated", route=route.key, rate=rate_str)
+            return True
+        except Exception as e:
+            logger.error("blockradar_set_rate_failed", route=route.key, error=str(e))
+            return False
 
     # -------------------------------------------------------------------------
     # Swap Quotes
@@ -209,23 +282,26 @@ class BlockradarAdapter(VenueAdapter):
         )
 
         response = await client.post(url, json=payload)
-        response.raise_for_status()
 
-        data = response.json()
+        if response.status_code != 200:
+            body = response.text
+            # 400 "No swap quotes available" means wallet has no liquidity — not an error
+            if response.status_code == 400 and "No swap quotes available" in body:
+                logger.debug("blockradar_no_liquidity", body=body)
+            else:
+                logger.error("blockradar_quote_error", status=response.status_code, body=body)
+            response.raise_for_status()
 
-        logger.info(
-            "blockradar_quote_received",
-            from_asset=from_asset_id,
-            to_asset=to_asset_id,
-            amount=str(amount),
-            response_keys=list(data.keys()) if isinstance(data, dict) else None,
-        )
+        raw = response.json()
+        logger.info("blockradar_quote_raw_response", raw=raw)
 
-        # Parse response - structure may vary, adapt as needed
-        # Expected fields: toAmount, rate, fee, etc.
-        to_amount = Decimal(str(data.get("toAmount", data.get("to_amount", "0"))))
+        # Unwrap {"data": {...}} envelope if present
+        data = raw.get("data", raw) if isinstance(raw, dict) else raw
+
+        # API response fields: amount, rate, networkFee, slippage, etc.
+        to_amount = Decimal(str(data.get("amount", "0")))
         rate = Decimal(str(data.get("rate", "0")))
-        fee = Decimal(str(data.get("fee", data.get("fees", "0"))))
+        fee = Decimal(str(data.get("networkFee", "0")))
 
         # Calculate rate if not provided
         if rate == 0 and to_amount > 0 and amount > 0:
@@ -258,8 +334,6 @@ class BlockradarAdapter(VenueAdapter):
         Returns:
             SwapQuote
         """
-        if not BlockradarAsset.CNGN.value:
-            raise ValueError("cNGN asset ID not configured")
         return await self.get_swap_quote(
             from_asset=BlockradarAsset.USDC,
             to_asset=BlockradarAsset.CNGN,
@@ -270,7 +344,7 @@ class BlockradarAdapter(VenueAdapter):
     async def get_cngn_to_usdc_quote(
         self,
         amount: Decimal,
-        order_type: SwapOrderType = SwapOrderType.RECOMMENDED,
+        order_type: SwapOrderType = SwapOrderType.NO_SLIPPAGE,
     ) -> SwapQuote:
         """
         Get quote for swapping cNGN to USDC.
@@ -282,162 +356,9 @@ class BlockradarAdapter(VenueAdapter):
         Returns:
             SwapQuote
         """
-        if not BlockradarAsset.CNGN.value:
-            raise ValueError("cNGN asset ID not configured")
         return await self.get_swap_quote(
             from_asset=BlockradarAsset.CNGN,
             to_asset=BlockradarAsset.USDC,
             amount=amount,
             order_type=order_type,
-        )
-
-    async def get_usdt_to_cngn_quote(
-        self,
-        amount: Decimal,
-        order_type: SwapOrderType = SwapOrderType.RECOMMENDED,
-    ) -> SwapQuote:
-        """
-        Get quote for swapping USDT to cNGN.
-
-        Args:
-            amount: Amount of USDT to swap
-            order_type: Quote optimization preference
-
-        Returns:
-            SwapQuote
-        """
-        if not BlockradarAsset.CNGN.value:
-            raise ValueError("cNGN asset ID not configured")
-        return await self.get_swap_quote(
-            from_asset=BlockradarAsset.USDT,
-            to_asset=BlockradarAsset.CNGN,
-            amount=amount,
-            order_type=order_type,
-        )
-
-    async def get_cngn_to_usdt_quote(
-        self,
-        amount: Decimal,
-        order_type: SwapOrderType = SwapOrderType.RECOMMENDED,
-    ) -> SwapQuote:
-        """
-        Get quote for swapping cNGN to USDT.
-
-        Args:
-            amount: Amount of cNGN to swap
-            order_type: Quote optimization preference
-
-        Returns:
-            SwapQuote
-        """
-        if not BlockradarAsset.CNGN.value:
-            raise ValueError("cNGN asset ID not configured")
-        return await self.get_swap_quote(
-            from_asset=BlockradarAsset.CNGN,
-            to_asset=BlockradarAsset.USDT,
-            amount=amount,
-            order_type=order_type,
-        )
-
-    # -------------------------------------------------------------------------
-    # Rate Management (existing functionality)
-    # -------------------------------------------------------------------------
-
-    async def get_rate(self, pair: str) -> dict:
-        """
-        Get current swap rate for a pair.
-
-        Args:
-            pair: Trading pair (e.g., "CNGN/USDT")
-
-        Returns:
-            Dict with "buy" and "sell" rates
-        """
-        client = await self._get_client()
-
-        response = await client.get(
-            f"{self.base_url}/swap/rates",
-            params={"pair": pair},
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        return {
-            "buy": Decimal(str(data.get("buy_rate", "0"))),
-            "sell": Decimal(str(data.get("sell_rate", "0"))),
-        }
-
-    async def set_rate(
-        self,
-        pair: str,
-        buy_rate: Decimal,
-        sell_rate: Decimal,
-    ) -> bool:
-        """
-        Set swap rate for a pair.
-
-        Args:
-            pair: Trading pair (e.g., "CNGN/USDT")
-            buy_rate: Rate at which users can buy CNGN
-            sell_rate: Rate at which users can sell CNGN
-
-        Returns:
-            True if successful
-        """
-        if self.paused:
-            logger.info("blockradar_paused_skipping_rate_update")
-            return False
-
-        client = await self._get_client()
-
-        try:
-            response = await client.post(
-                f"{self.base_url}/swap/rates",
-                json={
-                    "pair": pair,
-                    "buy_rate": str(buy_rate),
-                    "sell_rate": str(sell_rate),
-                },
-            )
-
-            success = response.status_code == 200
-
-            logger.info(
-                "rate_updated",
-                pair=pair,
-                buy=float(buy_rate),
-                sell=float(sell_rate),
-                success=success,
-            )
-
-            return success
-
-        except Exception as e:
-            logger.error("set_rate_failed", pair=pair, error=str(e))
-            return False
-
-    async def sync_rates(self, reference_price: Decimal) -> None:
-        """
-        Sync Blockradar rates based on reference price and spread.
-
-        Args:
-            reference_price: Mid-market USDT/NGN price
-        """
-        if self.paused:
-            logger.info("blockradar_paused_skipping_sync")
-            return
-
-        spread_decimal = Decimal(str(self.params.spread_bps)) / Decimal("10000")
-
-        buy_rate = reference_price * (1 - spread_decimal)
-        sell_rate = reference_price * (1 + spread_decimal)
-
-        # Set rates for both USDT and USDC pairs
-        await self.set_rate("CNGN/USDT", buy_rate, sell_rate)
-        await self.set_rate("CNGN/USDC", buy_rate, sell_rate)
-
-        logger.info(
-            "rates_synced",
-            reference=float(reference_price),
-            spread_bps=self.params.spread_bps,
         )

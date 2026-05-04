@@ -1,49 +1,83 @@
-"""Pydantic models for API request/response validation."""
+"""HTTP-specific response and wrapper types for the API layer.
 
-from pydantic import BaseModel
-from typing import Optional, Literal
+Domain types used outside engine/api/ live in engine/types.py.
+schemas.py may import from engine.types for field type annotations but must not
+add those symbols to its public interface (__all__).
+"""
+
 from decimal import Decimal
+from typing import Any, Literal, Optional
 
+from pydantic import BaseModel, Field
 
-class PriceQuote(BaseModel):
-    """Price quote from aggregated sources."""
+from engine.types import LPPosition, OrderBookLevel, Position, PriceQuote, VenueOrderSummary
 
-    source: str
-    timestamp: int
-    bid: Decimal
-    ask: Decimal
-    mid: Decimal
-
-
-class LPPosition(BaseModel):
-    """DEX liquidity position details."""
-
-    token_id: str
-    liquidity: str  # BigInt as string
-    range_min: Decimal
-    range_max: Decimal
-    in_range: bool
-
-
-class Position(BaseModel):
-    """Venue position state."""
-
-    venue: str
-    pair: str
-    timestamp: int
-    balances: dict[str, Decimal]
-    lp_position: Optional[LPPosition] = None
-    open_orders: Optional[dict] = None
+__all__ = [
+    "VenuePriceResponse",
+    "OrderBookDepthResponse",
+    "VenueOrdersResponse",
+    "PublicVenueOrderSummary",
+    "PublicVenueOrdersResponse",
+    "VenueStatus",
+    "SystemStatus",
+    "GlobalPosition",
+    "PortfolioExposureSource",
+    "PortfolioExposure",
+    "NormalizedPriceResponse",
+    "BlendedPriceResponse",
+]
 
 
 class VenuePriceResponse(BaseModel):
-    """Price from a specific venue."""
+    """Price from a specific venue, shaped for the API."""
 
     venue: str
     pair: str
     quote: Optional[PriceQuote] = None
     error: Optional[str] = None
     age_seconds: float = 0
+
+
+class OrderBookDepthResponse(BaseModel):
+    """Level 2 order book depth shaped for the API."""
+
+    venue: str
+    pair: str
+    timestamp: int
+    bids: list[OrderBookLevel]
+    asks: list[OrderBookLevel]
+
+
+class VenueOrdersResponse(BaseModel):
+    """Normalized open-order snapshot for a venue."""
+
+    venue: str
+    market: Optional[str] = None
+    count: int
+    orders: list[VenueOrderSummary]
+
+
+class PublicVenueOrderSummary(BaseModel):
+    """Sanitized open-order row for frontend surfaces."""
+
+    market: Optional[str] = None
+    side: str
+    status: Optional[str] = None
+    price: Decimal
+    volume: Decimal
+    remaining_volume: Decimal
+    executed_volume: Decimal
+    notional: Decimal
+    created_at: Optional[int] = None
+
+
+class PublicVenueOrdersResponse(BaseModel):
+    """Sanitized open-order snapshot for a venue."""
+
+    venue: str
+    market: Optional[str] = None
+    count: int
+    orders: list[PublicVenueOrderSummary]
 
 
 class VenueStatus(BaseModel):
@@ -54,7 +88,10 @@ class VenueStatus(BaseModel):
     paused: bool
     last_action: Optional[int] = None
     position: Optional[Position] = None
-    price: Optional[VenuePriceResponse] = None  # Current price at this venue
+    price: Optional[VenuePriceResponse] = None
+    params: Optional[dict[str, Any]] = None  # Live venue parameters (DexParams, CexParams, etc.)
+    anchor_price_ngn: Optional[Decimal] = None
+    last_ladder_anchor_price_ngn: Optional[Decimal] = None
 
 
 class SystemStatus(BaseModel):
@@ -64,48 +101,6 @@ class SystemStatus(BaseModel):
     uptime: int
     last_price_update: Optional[int] = None
     venues: list[VenueStatus]
-
-
-class DexParams(BaseModel):
-    """Parameters for DEX position management."""
-
-    # Range calculation
-    sd_multiplier: Decimal = Decimal("1.5")
-    min_tick_width: int = 100
-    max_tick_width: int = 1000
-    lookback_points: Optional[int] = None
-    rebalance_threshold_percent: Decimal = Decimal("5.0")
-    max_slippage_percent: Decimal = Decimal("1.0")
-
-    # Capital allocation - prevents "all-in LP"
-    # Conservative defaults to maintain delta flexibility
-    max_utilization_percent: Decimal = Decimal("60.0")  # Max % of balance to deploy (down from 80%)
-    min_reserve_token0: Decimal = Decimal("10000")  # Keep 10k cNGN for rebalancing
-    min_reserve_token1: Decimal = Decimal("50")  # Keep $50 stables for gas/rebalancing
-    max_position_usd: Optional[Decimal] = Decimal("1000")  # Start with $1k cap, scale up over time
-
-
-class CexParams(BaseModel):
-    """Parameters for CEX order ladder."""
-
-    ladder_levels: int = 10
-    ladder_increment: Decimal = Decimal("0.000001")  # Price increment per level (in quote currency)
-    liquidity_per_level_percent: Decimal = Decimal("5.0")
-
-
-class WalletParams(BaseModel):
-    """Parameters for wallet system rate setting."""
-
-    spread_bps: int = 15
-
-
-class TxResult(BaseModel):
-    """Transaction result."""
-
-    hash: str
-    status: Literal["pending", "confirmed", "failed"]
-    gas_used: Optional[int] = None
-    error: Optional[str] = None
 
 
 class GlobalPosition(BaseModel):
@@ -119,18 +114,19 @@ class GlobalPosition(BaseModel):
     target_delta: Decimal
 
 
-class Alert(BaseModel):
-    """System alert."""
+class PortfolioExposureSource(BaseModel):
+    """One contributing balance source in the global portfolio view."""
 
-    id: int
-    timestamp: int
-    severity: Literal["info", "warning", "critical"]
-    category: str
-    message: str
-    acknowledged: bool = False
+    source: str
+    kind: Literal["account", "lp_position", "exchange"]
+    balances: dict[str, Decimal]
+    usd_value: Decimal
 
 
-# === Price Aggregation Schemas ===
+class PortfolioExposure(GlobalPosition):
+    """Expanded global portfolio position with per-source breakdown."""
+
+    sources: list[PortfolioExposureSource] = Field(default_factory=list)
 
 
 class NormalizedPriceResponse(BaseModel):
@@ -153,126 +149,6 @@ class BlendedPriceResponse(BaseModel):
     venue_prices: dict[str, Decimal]  # Per-venue normalized cNGN/USD
     timestamp: int
     num_sources: int
+    total_venues: int = 0
     confidence: float  # 0-1 based on source agreement
-
-
-# === Arbitrage Schemas ===
-
-
-class ArbitrageParams(BaseModel):
-    """Parameters for arbitrage detection and execution."""
-
-    # Detection thresholds
-    min_spread_bps: int = 150  # 1.5% minimum gross spread to consider
-    min_net_profit_bps: int = 50  # 0.5% minimum profit after fees
-
-    # Fee estimates (in basis points)
-    dex_swap_fee_bps: int = 30  # DEX swap fee (e.g., 0.3% for typical pools)
-    dex_slippage_bps: int = 20  # Expected slippage on DEX
-    cex_taker_fee_bps: int = 25  # CEX taker fee
-
-    # Position limits
-    max_single_trade_usd: Decimal = Decimal("1000")  # Max per opportunity
-    max_daily_volume_usd: Decimal = Decimal("10000")  # Daily volume cap
-    max_inventory_imbalance_usd: Decimal = Decimal("5000")  # Max one-sided exposure
-
-    # Timing
-    scan_interval_seconds: int = 30
-
-    # Circuit breakers
-    max_consecutive_failures: int = 3  # Stop after N failures in a row
-    max_daily_loss_usd: Decimal = Decimal("500")  # Stop if daily loss exceeds
-
-
-class ArbitrageOpportunity(BaseModel):
-    """Detected arbitrage opportunity."""
-
-    id: str
-    timestamp: int
-    buy_venue: str
-    sell_venue: str
-    buy_price: Decimal  # Price in cNGN/USD
-    sell_price: Decimal  # Price in cNGN/USD
-    gross_spread_bps: int
-    net_spread_bps: int  # After estimated fees
-    recommended_size_usd: Decimal
-    expected_profit_usd: Decimal
-    status: Literal["detected", "executing", "completed", "abandoned", "expired"]
-    actual_profit_usd: Optional[Decimal] = None
-    reason: Optional[str] = None  # Why it was abandoned/expired
-
-
-class ArbitrageTrade(BaseModel):
-    """Individual trade leg of an arbitrage opportunity."""
-
-    id: int
-    opportunity_id: str
-    venue: str
-    side: Literal["buy", "sell"]
-    amount: Decimal  # In cNGN
-    price: Optional[Decimal] = None  # Actual execution price
-    tx_hash: Optional[str] = None
-    status: Literal["pending", "submitted", "confirmed", "failed"]
-    timestamp: int
-    error: Optional[str] = None
-
-
-class ArbitrageStatus(BaseModel):
-    """Current status of the arbitrage engine."""
-
-    enabled: bool
-    detection_only: bool  # True = no execution, just logging
-    last_scan_timestamp: Optional[int] = None
-    opportunities_detected_24h: int
-    opportunities_executed_24h: int
-    total_profit_24h_usd: Decimal
-    daily_volume_usd: Decimal
-    inventory_imbalance_usd: Decimal
-    circuit_breaker_active: bool
-    consecutive_failures: int
-    params: ArbitrageParams
-
-
-# === Account Schemas ===
-
-
-class AccountInfo(BaseModel):
-    """Basic account information."""
-
-    role: str
-    address: str
-    derivation_path: str
-    chain_id: int
-    tokens: list[str]
-
-
-class AccountBalanceResponse(BaseModel):
-    """Account balance with refill status."""
-
-    role: str
-    address: str
-    chain_id: int
-    native_balance: Decimal
-    native_symbol: str
-    token_balances: dict[str, Decimal]
-    needs_refill: bool
-    refill_reasons: list[str]
-
-
-class AccountThresholds(BaseModel):
-    """Refill thresholds for an account."""
-
-    min_balance_eth: Optional[Decimal] = None
-    min_balance_tokens: Optional[dict[str, Decimal]] = None
-
-
-class RefillAlert(BaseModel):
-    """Alert for account needing refill from treasury."""
-
-    id: int
-    timestamp: int
-    role: str
-    address: str
-    chain_id: int
-    reasons: list[str]
-    acknowledged: bool = False
+    dex_volume_24h_usd: dict[str, Optional[Decimal]] = Field(default_factory=dict)

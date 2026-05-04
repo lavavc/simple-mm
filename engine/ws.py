@@ -9,6 +9,18 @@ from fastapi import WebSocket, WebSocketDisconnect
 import structlog
 
 logger = structlog.get_logger()
+RETAINED_EVENT_TYPES = {
+    "dex_arb_curve",
+    "quidax_dex_arb_curve",
+    "quidax_dex_optimal_arb",
+    "quidax_orderbook_depth",
+    "quidax_open_orders",
+    "venue_prices",
+    "positions",
+    "portfolio_delta",
+    "account_balances",
+    "system",
+}
 
 
 class _DecimalEncoder(json.JSONEncoder):
@@ -26,6 +38,7 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._connections: set[WebSocket] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._retained_events: dict[str, str] = {}
 
     @property
     def client_count(self) -> int:
@@ -36,22 +49,41 @@ class ConnectionManager:
         self._connections.add(ws)
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
+        await self._send_retained(ws)
         logger.info("ws_client_connected", clients=self.client_count)
 
     def disconnect(self, ws: WebSocket) -> None:
         self._connections.discard(ws)
         logger.info("ws_client_disconnected", clients=self.client_count)
 
-    def broadcast(self, event: dict) -> None:
+    def _retained_event_key(self, event: dict[str, Any]) -> str | None:
+        event_type = event.get("type")
+        if event_type == "quidax_open_orders":
+            data = event.get("data")
+            if isinstance(data, dict):
+                venue = str(data.get("venue") or "").strip()
+                if venue:
+                    return f"{event_type}:{venue}"
+            return str(event_type)
+
+        if event_type not in RETAINED_EVENT_TYPES:
+            return None
+
+        return str(event_type)
+
+    def broadcast(self, event: dict[str, Any]) -> None:
         """Broadcast an event dict to all connected clients.
 
         Safe to call from both sync and async contexts — the scheduler
         calls this synchronously from APScheduler job threads.
         """
+        payload = json.dumps(event, cls=_DecimalEncoder)
+        retained_key = self._retained_event_key(event)
+        if retained_key is not None:
+            self._retained_events[retained_key] = payload
+
         if not self._connections:
             return
-
-        payload = json.dumps(event, cls=_DecimalEncoder)
 
         # If we're already in the event loop, schedule coroutines directly.
         # Otherwise fire-and-forget from a different thread.
@@ -76,6 +108,10 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self._connections.discard(ws)
+
+    async def _send_retained(self, ws: WebSocket) -> None:
+        for payload in self._retained_events.values():
+            await ws.send_text(payload)
 
     async def handle(self, ws: WebSocket) -> None:
         """Full lifecycle handler for a WebSocket connection."""

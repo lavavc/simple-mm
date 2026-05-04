@@ -1,5 +1,23 @@
-"""Database module."""
+"""Database package exports."""
 
-from .database import Database, get_db
+__all__ = [
+    "DatabaseRepository",
+    "SQLiteConnectionManager",
+    "open_repository",
+]
 
-__all__ = ["Database", "get_db"]
+
+def __getattr__(name: str) -> object:
+    if name == "SQLiteConnectionManager":
+        from .connection import SQLiteConnectionManager
+
+        return SQLiteConnectionManager
+    if name in {"DatabaseRepository", "open_repository"}:
+        from .repository import DatabaseRepository, open_repository
+
+        exports = {
+            "DatabaseRepository": DatabaseRepository,
+            "open_repository": open_repository,
+        }
+        return exports[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

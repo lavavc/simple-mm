@@ -42,18 +42,14 @@ export function GlobalPositionCard({ position }: GlobalPositionCardProps) {
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-xs mt-3">
+          <div className="grid grid-cols-2 gap-2 text-xs mt-3">
             <div>
               <span className="text-muted-foreground block">cNGN</span>
               <span>{formatNumber(position.total_cngn, 0)}</span>
             </div>
             <div>
-              <span className="text-muted-foreground block">USDT</span>
-              <span>{formatNumber(position.total_usdt, 2)}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground block">USDC</span>
-              <span>{formatNumber(position.total_usdc, 2)}</span>
+              <span className="text-muted-foreground block">USD</span>
+              <span>{formatNumber(Number(position.total_usdc) + Number(position.total_usdt), 2)}</span>
             </div>
           </div>
         </div>

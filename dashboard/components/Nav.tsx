@@ -12,6 +12,7 @@ import {
   ArrowRightLeft,
   Wallet,
   Bell,
+  BookOpen,
 } from 'lucide-react';
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
   { href: '/arbitrage', label: 'Arbitrage', icon: ArrowRightLeft },
   { href: '/accounts', label: 'Accounts', icon: Wallet },
   { href: '/alerts', label: 'Alerts', icon: Bell },
+  { href: '/docs', label: 'Docs', icon: BookOpen },
 ];
 
 interface NavProps {
@@ -31,25 +33,25 @@ export function Nav({ unacknowledgedAlerts = 0 }: NavProps) {
   const pathname = usePathname();
 
   return (
-    <nav className="border-b bg-card">
+    <nav className="border-b border-white/[0.05] bg-[#0B0E14] text-slate-300">
       <div className="container mx-auto px-4">
         <div className="flex h-14 items-center justify-between">
           <div className="flex items-center gap-6">
-            <Link href="/" className="font-bold text-lg">
+            <Link href="/" className="font-bold text-lg text-white">
               CNGN Engine
             </Link>
             <div className="hidden md:flex items-center gap-1">
               {navItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = pathname === item.href;
+                const isActive = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
                 return (
                   <Link key={item.href} href={item.href}>
                     <Button
-                      variant={isActive ? 'secondary' : 'ghost'}
+                      variant="ghost"
                       size="sm"
                       className={cn(
-                        'gap-2',
-                        isActive && 'bg-secondary'
+                        'gap-2 hover:bg-white/5 hover:text-white',
+                        isActive ? 'text-white bg-white/5 font-semibold' : 'text-slate-400'
                       )}
                     >
                       <Icon className="h-4 w-4" />

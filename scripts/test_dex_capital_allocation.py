@@ -7,7 +7,7 @@ affect the amounts deployed to LP.
 """
 
 from decimal import Decimal
-from engine.api.schemas import DexParams
+from engine.config import DexParams
 
 
 def simulate_capital_allocation(
@@ -19,7 +19,7 @@ def simulate_capital_allocation(
     token1_decimals: int = 6,
 ) -> dict:
     """
-    Simulate the capital allocation logic from BaseDexAdapter.calculate_mint_amounts()
+    Simulate the capital allocation logic from V4LPAdapter.calculate_mint_amounts()
 
     Returns dict with calculation breakdown.
     """

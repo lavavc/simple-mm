@@ -3,8 +3,9 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { addNotification } from '@/lib/notifications';
+import { LAST_EVENT_PACKET_QUERY_KEY } from './useQueries';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
@@ -19,9 +20,12 @@ const EVENT_TO_KEYS: Record<string, string[][]> = {
   alert: [['alerts']],
   refill_alert: [['alerts']],
   system: [['status'], ['health']],
-  account_balances: [['accountBalances']],
+  account_balances: [],
+  arb_history_updated: [['arbHistory']],
   arbitrage_opportunity: [['opportunities'], ['arbitrageStatus']],
   arbitrage_completed: [['opportunities'], ['arbitrageStatus']],
+  quidax_orderbook_depth: [['quidaxDepth']],
+  quidax_open_orders: [['status']],
   action: [], // logged only — no cache to invalidate
 };
 
@@ -41,7 +45,8 @@ export function useEventStream() {
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
 
-    const ws = new WebSocket(WS_URL);
+    const wsUrl = WS_URL || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -51,11 +56,37 @@ export function useEventStream() {
     ws.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        qc.setQueryData(LAST_EVENT_PACKET_QUERY_KEY, Date.now());
+        console.log('[SOCKET EVENT]', event.type, event.data);
         const keys = EVENT_TO_KEYS[event.type];
         if (keys) {
           for (const key of keys) {
             qc.invalidateQueries({ queryKey: key });
           }
+        }
+
+        if (event.type === 'dex_arb_curve' && event.data) {
+          qc.setQueryData(['dex_arb_curve'], event.data);
+        }
+
+        if (event.type === 'quidax_dex_arb_curve' && event.data) {
+          qc.setQueryData(['quidax_dex_arb_curve'], event.data);
+        }
+
+        if (event.type === 'quidax_dex_optimal_arb' && event.data) {
+          qc.setQueryData(['quidax_dex_optimal_arb'], event.data);
+        }
+
+        if (event.type === 'quidax_orderbook_depth' && event.data) {
+          qc.setQueryData(['quidaxDepth'], event.data);
+        }
+
+        if (event.type === 'quidax_open_orders' && event.data) {
+          qc.setQueryData(['venueOrders', event.data.venue ?? 'quidax'], event.data);
+        }
+
+        if (event.type === 'account_balances' && event.data) {
+          qc.setQueryData(['accountBalances'], event.data);
         }
 
         if (event.type === 'arbitrage_opportunity' && event.data) {
@@ -64,6 +95,16 @@ export function useEventStream() {
             type: 'arbitrage',
             title: `${d.buy_venue} → ${d.sell_venue}`,
             message: `Spread: ${d.net_spread_bps} bps | Est. profit: $${Number(d.expected_profit_usd).toFixed(2)}`,
+            data: d,
+          });
+        }
+
+        if (event.type === 'dex_arb_opportunity' && event.data) {
+          const d = event.data;
+          addNotification({
+            type: 'arbitrage',
+            title: `DEX: ${d.direction.replace(/_/g, ' ')}`,
+            message: `Size: $${d.optimal_size_usd} | Est. Profit: $${d.expected_profit_usd.toFixed(2)}`,
             data: d,
           });
         }

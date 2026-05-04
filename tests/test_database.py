@@ -1,247 +1,226 @@
-"""Tests for async SQLite database operations."""
+"""Non-obvious DB persistence invariants.
 
-import pytest
+Basic CRUD (insert/get/update) is not tested here — that is aiosqlite's job.
+These tests pin behaviour that would silently break the dashboard or recovery
+flows if the underlying queries changed.
+"""
+
 import time
 from decimal import Decimal
 
-from engine.db.database import Database
-from engine.api.schemas import PriceQuote, Position, Alert
+import pytest
 
-
-# =============================================================================
-# Fixtures
-# =============================================================================
+from engine.db.connection import SQLiteConnectionManager
+from engine.db.repository import DatabaseRepository
+from engine.types import (
+    ArbitrageHistoryEvent,
+    ArbitrageHistoryWalletSnapshot,
+    ArbitrageOpportunity,
+    DexArbOpportunity,
+    PriceQuote,
+)
 
 
 @pytest.fixture
 async def db(tmp_path):
-    """Create an in-memory database for testing."""
-    db_path = str(tmp_path / "test.db")
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
+    repo = DatabaseRepository(SQLiteConnectionManager(str(tmp_path / "test.db")))
+    await repo.connect()
+    yield repo
+    await repo.close()
 
 
-@pytest.fixture
-def sample_quote():
-    return PriceQuote(
-        source="quidax",
-        timestamp=int(time.time() * 1000),
-        bid=Decimal("0.000696"),
-        ask=Decimal("0.000698"),
-        mid=Decimal("0.000697"),
+def _make_history_event(
+    opp_id: str,
+    event_type: str = "routed",
+    status: str = "routed",
+    pipeline: str = "cex_dex",
+    timestamp: int = 1_000_000,
+    reason: str | None = None,
+    actual_profit_usd: Decimal | None = None,
+    executed_size_usd: Decimal | None = None,
+    buy_tx_hash: str | None = None,
+    sell_tx_hash: str | None = None,
+) -> ArbitrageHistoryEvent:
+    return ArbitrageHistoryEvent(
+        opportunity_id=opp_id,
+        pipeline=pipeline,
+        event_type=event_type,
+        timestamp=timestamp,
+        direction="QUIDAX_TO_UNI_BSC",
+        buy_venue="quidax",
+        sell_venue="uni-bsc",
+        status=status,
+        optimal_size_usd=Decimal("500"),
+        routed_size_usd=Decimal("400"),
+        executed_size_usd=executed_size_usd,
+        expected_profit_usd=Decimal("5"),
+        actual_profit_usd=actual_profit_usd,
+        net_profit_usd=Decimal("4"),
+        net_spread_bps=80,
+        reason=reason,
+        buy_tx_hash=buy_tx_hash,
+        sell_tx_hash=sell_tx_hash,
     )
 
 
-@pytest.fixture
-def sample_position():
-    return Position(
-        venue="aerodrome",
-        pair="cNGN/USDC",
-        timestamp=int(time.time() * 1000),
-        balances={"cngn": Decimal("10000"), "usdc": Decimal("50")},
-    )
-
-
 # =============================================================================
-# Connection
+# Price source filtering
 # =============================================================================
 
 
-class TestConnection:
-    """Test database connection lifecycle."""
-
+class TestPriceSourceFiltering:
     @pytest.mark.asyncio
-    async def test_connect_creates_tables(self, db):
-        """Tables should be created on connect."""
-        cursor = await db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
-        tables = {row["name"] for row in await cursor.fetchall()}
+    async def test_get_recent_prices_for_source_returns_only_requested_source(self, db):
+        """Source filter must exclude other venues — LP tick range calculation depends on it.
 
-        assert "system_state" in tables
-        assert "price_snapshots" in tables
-        assert "positions" in tables
-        assert "actions" in tables
-        assert "venue_config" in tables
-        assert "alerts" in tables
-
-    @pytest.mark.asyncio
-    async def test_connect_idempotent(self, tmp_path):
-        """Calling connect twice should not error."""
-        db = Database(str(tmp_path / "test2.db"))
-        await db.connect()
-        await db.connect()  # Should not raise
-        await db.close()
-
-
-# =============================================================================
-# System state
-# =============================================================================
-
-
-class TestSystemState:
-    """Test key-value system state store."""
-
-    @pytest.mark.asyncio
-    async def test_set_and_get_state(self, db):
-        await db.set_system_state("trading_enabled", "true")
-        val = await db.get_system_state("trading_enabled")
-        assert val == "true"
-
-    @pytest.mark.asyncio
-    async def test_get_missing_state_returns_none(self, db):
-        val = await db.get_system_state("nonexistent")
-        assert val is None
-
-    @pytest.mark.asyncio
-    async def test_update_state(self, db):
-        await db.set_system_state("key", "v1")
-        await db.set_system_state("key", "v2")
-        val = await db.get_system_state("key")
-        assert val == "v2"
-
-
-# =============================================================================
-# Price snapshots
-# =============================================================================
-
-
-class TestPriceSnapshots:
-    """Test price snapshot CRUD."""
-
-    @pytest.mark.asyncio
-    async def test_insert_and_retrieve(self, db, sample_quote):
-        await db.insert_price_snapshot(sample_quote)
-        history = await db.get_price_history(limit=10)
-
-        assert len(history) == 1
-        assert history[0]["source"] == "quidax"
-        assert abs(history[0]["mid"] - 0.000697) < 0.0001
-
-    @pytest.mark.asyncio
-    async def test_insert_multiple_sources(self, db):
-        for source, mid in [("quidax", "0.000697"), ("bybit_p2p", "1437")]:
-            q = PriceQuote(
-                source=source,
-                timestamp=int(time.time() * 1000),
-                bid=Decimal(mid), ask=Decimal(mid), mid=Decimal(mid),
+        If filtering is broken, uni-bsc prices would contaminate the uni-base
+        price history used for tick range computation.
+        """
+        now = int(time.time() * 1000)
+        for source, mid in [
+            ("uni-base_pool", "0.000601"),
+            ("quidax", "0.000700"),
+            ("uni-base_pool", "0.000602"),
+            ("uni-bsc_pool", "0.000603"),
+            ("uni-base_pool", "0.000604"),
+        ]:
+            await db.prices.insert_price_snapshot(
+                PriceQuote(source=source, timestamp=now, bid=Decimal(mid), ask=Decimal(mid), mid=Decimal(mid))
             )
-            await db.insert_price_snapshot(q)
+            now += 1
 
-        history = await db.get_price_history(limit=10)
-        assert len(history) == 2
+        prices = await db.prices.get_recent_prices_for_source("uni-base_pool", limit=10)
+        assert prices == [Decimal("0.000601"), Decimal("0.000602"), Decimal("0.000604")]
 
+
+# =============================================================================
+# Daily stats aggregation
+# =============================================================================
+
+
+class TestArbitrageStats:
     @pytest.mark.asyncio
-    async def test_get_recent_prices(self, db):
-        """get_recent_prices returns mid values in chronological order."""
-        for i in range(5):
-            q = PriceQuote(
-                source="quidax",
-                timestamp=1000 + i,
-                bid=Decimal("0.000690") + Decimal(str(i)) * Decimal("0.000001"),
-                ask=Decimal("0.000690") + Decimal(str(i)) * Decimal("0.000001"),
-                mid=Decimal("0.000690") + Decimal(str(i)) * Decimal("0.000001"),
+    async def test_daily_stats_aggregate_profit_across_both_pipelines(self, db):
+        """get_arbitrage_stats drives the dashboard's daily P&L view.
+
+        Both CEX-DEX and DEX-DEX pipelines write to arb_attempts with different
+        pipeline values. A detected-but-not-executed opportunity must count toward
+        total_detected but must not inflate executed count or profit.
+        """
+        cex_opp = ArbitrageOpportunity(
+            id="cex-1", timestamp=int(time.time() * 1000),
+            buy_venue="quidax", sell_venue="uni-base",
+            direction="QUIDAX_TO_UNI_BASE",
+            buy_price=Decimal("0.000605"), sell_price=Decimal("0.000615"),
+            gross_spread_bps=17, net_spread_bps=7,
+            recommended_size_usd=Decimal("500"), expected_profit_usd=Decimal("1.50"),
+            status="completed", actual_profit_usd=Decimal("1.50"),
+        )
+        await db.arbitrage.insert_arbitrage_opportunity(cex_opp)
+
+        dex_opp = DexArbOpportunity(
+            id="dex-1", timestamp=int(time.time() * 1000),
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            optimal_size_usd=Decimal("500"), expected_profit_usd=Decimal("1.20"),
+            cngn_transferred=Decimal("800000"), expected_usd_out=Decimal("501.20"),
+            status="detected", net_spread_bps=24,
+        )
+        await db.arbitrage.insert_dex_arbitrage_opportunity(dex_opp)
+        await db.arbitrage.update_dex_arbitrage_execution_state("dex-1", status="completed", actual_profit_usd=2.00)
+
+        stale = DexArbOpportunity(
+            id="dex-2", timestamp=int(time.time() * 1000),
+            direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+            optimal_size_usd=Decimal("500"), expected_profit_usd=Decimal("1.20"),
+            cngn_transferred=Decimal("800000"), expected_usd_out=Decimal("501.20"),
+            status="detected", net_spread_bps=24,
+        )
+        await db.arbitrage.insert_dex_arbitrage_opportunity(stale)
+
+        stats = await db.arbitrage.get_arbitrage_stats(0)
+        assert stats["opportunities_detected"] == 3
+        assert stats["opportunities_executed"] == 2
+        assert stats["total_profit_usd"] == Decimal("3.50")
+
+
+# =============================================================================
+# Arbitrage history time-boundary behaviour
+# =============================================================================
+
+
+class TestArbitrageHistoryBoundaries:
+    @pytest.mark.asyncio
+    async def test_from_ts_includes_routed_event_before_window(self, db):
+        """When from_ts is set, the 'routed' event timestamped before from_ts must still
+        be returned so the item can be built correctly.
+
+        Without this, the dashboard would show completed trades missing their
+        entry timestamp and initial sizing.
+        """
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", event_type="routed", status="routed", timestamp=100)
+        )
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event(
+                "opp-1", event_type="executed", status="completed",
+                timestamp=300, actual_profit_usd=Decimal("3"), executed_size_usd=Decimal("400"),
             )
-            await db.insert_price_snapshot(q)
+        )
 
-        prices = await db.get_recent_prices(limit=5)
-        assert len(prices) == 5
-        # Should be in chronological order (ascending)
-        for i in range(len(prices) - 1):
-            assert prices[i] <= prices[i + 1]
+        items = await db.history.get_arbitrage_history(from_ts=200)
+        assert len(items) == 1
+        assert items[0].routed_at == 100
+        assert items[0].optimal_size_usd == Decimal("500")
+        assert items[0].actual_profit_usd == Decimal("3")
 
     @pytest.mark.asyncio
-    async def test_price_history_with_time_filter(self, db):
-        """Should filter by timestamp range."""
-        now_ms = int(time.time() * 1000)
-        for offset in [0, 10000, 20000]:
-            q = PriceQuote(
-                source="quidax",
-                timestamp=now_ms - offset,
-                bid=Decimal("0.000697"), ask=Decimal("0.000697"), mid=Decimal("0.000697"),
+    async def test_to_ts_does_not_leak_later_terminal_events(self, db):
+        """Grouped results must not pull in events beyond the requested upper bound.
+
+        A late failure event (e.g. execution_error at t=400) must not overwrite
+        the completed status when the query is bounded to t=250.
+        """
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", event_type="routed", status="routed", timestamp=100)
+        )
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event(
+                "opp-1", event_type="executed", status="completed",
+                timestamp=200, actual_profit_usd=Decimal("3"), executed_size_usd=Decimal("400"),
             )
-            await db.insert_price_snapshot(q)
+        )
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event("opp-1", event_type="failed", status="execution_error", timestamp=400)
+        )
 
-        # Only last 15 seconds
-        history = await db.get_price_history(from_ts=now_ms - 15000, limit=10)
-        assert len(history) == 2  # 0ms and 10000ms ago
+        items = await db.history.get_arbitrage_history(to_ts=250)
+        assert len(items) == 1
+        assert items[0].latest_status == "completed"
+        assert items[0].actual_profit_usd == Decimal("3")
+        assert items[0].reason is None
 
     @pytest.mark.asyncio
-    async def test_snapshots_in_window(self, db):
-        """get_price_snapshots_in_window filters by time and source."""
-        now_ms = int(time.time() * 1000)
-        for source in ["quidax", "bybit_p2p"]:
-            q = PriceQuote(
-                source=source, timestamp=now_ms,
-                bid=Decimal("0.0007"), ask=Decimal("0.0007"), mid=Decimal("0.0007"),
+    async def test_pipeline_and_to_ts_filter_correctly_combined(self, db):
+        """pipeline filter on the detail query must not drop lifecycle events for matched opps."""
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event("cex-1", pipeline="cex_dex", event_type="routed", status="routed", timestamp=100)
+        )
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event(
+                "cex-1", pipeline="cex_dex", event_type="executed", status="completed",
+                timestamp=200, actual_profit_usd=Decimal("2"), executed_size_usd=Decimal("400"),
             )
-            await db.insert_price_snapshot(q)
-
-        snaps = await db.get_price_snapshots_in_window(
-            from_ts=now_ms - 1000, to_ts=now_ms + 1000, source="quidax",
         )
-        assert len(snaps) == 1
-        assert snaps[0]["source"] == "quidax"
-
-
-# =============================================================================
-# Alerts
-# =============================================================================
-
-
-class TestAlerts:
-    """Test alert CRUD."""
-
-    @pytest.mark.asyncio
-    async def test_insert_and_retrieve_alert(self, db):
-        alert_id = await db.insert_alert(
-            severity="warning",
-            category="refill",
-            message="Low ETH balance on aerodrome-lp",
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event("cex-1", pipeline="cex_dex", event_type="failed", status="execution_error", timestamp=500)
         )
-        assert alert_id > 0
-
-        alerts = await db.get_alerts(limit=10)
-        assert len(alerts) == 1
-        assert alerts[0].severity == "warning"
-        assert alerts[0].message == "Low ETH balance on aerodrome-lp"
-
-    @pytest.mark.asyncio
-    async def test_acknowledge_alert(self, db):
-        alert_id = await db.insert_alert(
-            severity="critical",
-            category="test",
-            message="Test alert",
+        # Different pipeline — must not appear
+        await db.history.upsert_arbitrage_history_event(
+            _make_history_event("dex-1", pipeline="dex_dex", event_type="routed", status="routed")
         )
 
-        await db.acknowledge_alert(alert_id)
-        alerts = await db.get_alerts(limit=10)
-        assert alerts[0].acknowledged is True
-
-
-# =============================================================================
-# Actions
-# =============================================================================
-
-
-class TestActions:
-    """Test action logging."""
-
-    @pytest.mark.asyncio
-    async def test_insert_action(self, db):
-        await db.insert_action(
-            venue="quidax",
-            action_type="order_placed",
-            triggered_by="scheduler",
-            status="completed",
-            direction="buy",
-            price=0.000697,
-        )
-
-        actions = await db.get_actions(limit=10)
-        assert len(actions) == 1
-        assert actions[0]["venue"] == "quidax"
-        assert actions[0]["action_type"] == "order_placed"
-        assert actions[0]["status"] == "completed"
+        items = await db.history.get_arbitrage_history(pipeline="cex_dex", to_ts=300)
+        assert len(items) == 1
+        assert items[0].opportunity_id == "cex-1"
+        assert items[0].latest_status == "completed"
+        assert items[0].actual_profit_usd == Decimal("2")

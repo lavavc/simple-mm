@@ -19,34 +19,32 @@ const severityIcons = {
 };
 
 export function AlertsList({ alerts, onAcknowledge }: AlertsListProps) {
-  const unacknowledgedCount = alerts.filter((a) => !a.acknowledged).length;
+  const visible = alerts.filter((a) => !a.acknowledged);
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div className="flex items-center gap-2">
           <CardTitle className="text-sm font-medium">Alerts</CardTitle>
-          {unacknowledgedCount > 0 && (
-            <Badge variant="destructive">{unacknowledgedCount}</Badge>
+          {visible.length > 0 && (
+            <Badge variant="destructive">{visible.length}</Badge>
           )}
         </div>
         <Bell className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
-        {alerts.length === 0 ? (
+        {visible.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">
             No alerts
           </p>
         ) : (
           <div className="space-y-2 max-h-64 overflow-y-auto">
-            {alerts.map((alert) => {
+            {visible.map((alert) => {
               const Icon = severityIcons[alert.severity];
               return (
                 <div
                   key={alert.id}
-                  className={`flex items-start gap-2 p-2 rounded text-sm ${
-                    alert.acknowledged ? 'opacity-60' : ''
-                  } ${getSeverityColor(alert.severity)}`}
+                  className={`flex items-start gap-2 p-2 rounded text-sm ${getSeverityColor(alert.severity)}`}
                 >
                   <Icon className="h-4 w-4 mt-0.5 shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -60,7 +58,7 @@ export function AlertsList({ alerts, onAcknowledge }: AlertsListProps) {
                     </div>
                     <p className="mt-1 break-words">{alert.message}</p>
                   </div>
-                  {!alert.acknowledged && onAcknowledge && (
+                  {onAcknowledge && (
                     <Button
                       variant="ghost"
                       size="icon"

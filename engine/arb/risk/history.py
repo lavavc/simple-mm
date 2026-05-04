@@ -1,0 +1,278 @@
+"""Lifecycle history helpers for routed arbitrage attempts."""
+
+from __future__ import annotations
+
+import time
+from decimal import Decimal
+from typing import Any, Callable, Literal, Optional
+
+import structlog
+
+from engine.types import (
+    ArbitrageHistoryEvent,
+    ArbitrageHistoryWalletSnapshot,
+    coerce_decimal,
+)
+from engine.arb.routing.route_registry import Pipeline, ROUTES_BY_DIRECTION
+from engine.arb.routing.router import SelectedRoute
+from engine.db.backend import HistoryStoreProtocol
+
+EventType = Literal["routed", "executed", "failed"]
+
+
+_STABLE_SYMBOLS = {
+    "quidax": "USDT",
+    "uni-base": "USDC",
+    "uni-bsc": "USDT",
+}
+
+logger = structlog.get_logger()
+
+
+
+class ArbitrageHistoryRecorder:
+    """Builds and stores append-only lifecycle events for executed routes."""
+
+    def __init__(
+        self,
+        inventory: Any,
+        broadcast: Callable[[dict[str, Any]], Any],
+        history_store: HistoryStoreProtocol,
+    ):
+        self.inventory = inventory
+        self.broadcast = broadcast
+        self.history_store = history_store
+
+    def _stable_symbol_for_venue(self, venue_name: str) -> Optional[str]:
+        return _STABLE_SYMBOLS.get(venue_name)
+
+    def _wallet_snapshot(self, venue_name: str) -> ArbitrageHistoryWalletSnapshot:
+        return ArbitrageHistoryWalletSnapshot(
+            stable_symbol=self._stable_symbol_for_venue(venue_name),
+            stable_balance=self.inventory.state.per_account_stable.get(venue_name),
+            cngn_balance=self.inventory.state.per_account_cngn.get(venue_name),
+        )
+
+    def _base_event(
+        self,
+        opp_id: str,
+        route: SelectedRoute,
+        *,
+        event_type: EventType,
+        status: str,
+        reason: Optional[str] = None,
+        actual_profit_usd: Optional[Decimal] = None,
+        executed_size_usd: Optional[Decimal] = None,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+    ) -> ArbitrageHistoryEvent:
+        optimal = route.candidate.signal.get("optimal_arb", {})
+        route_def = ROUTES_BY_DIRECTION.get(route.candidate.direction)
+        if route_def is None:
+            raise ValueError(f"Unknown route direction: {route.candidate.direction}")
+        return ArbitrageHistoryEvent(
+            opportunity_id=opp_id,
+            pipeline=route_def.pipeline,
+            event_type=event_type,
+            timestamp=int(time.time() * 1000),
+            direction=route.candidate.direction,
+            buy_venue=route.candidate.buy_venue,
+            sell_venue=route.candidate.sell_venue,
+            status=status,
+            optimal_size_usd=route.candidate.optimal_size_usd,
+            routed_size_usd=route.adjusted_size_usd,
+            executed_size_usd=executed_size_usd,
+            expected_profit_usd=route.expected_profit_usd,
+            actual_profit_usd=actual_profit_usd,
+            net_profit_usd=route.net_profit_usd,
+            net_spread_bps=optimal.get("net_spread_bps"),
+            reason=reason,
+            buy_wallet=self._wallet_snapshot(route.candidate.buy_venue) if event_type == "routed" else None,
+            sell_wallet=self._wallet_snapshot(route.candidate.sell_venue) if event_type == "routed" else None,
+            buy_tx_hash=buy_tx_hash,
+            sell_tx_hash=sell_tx_hash,
+        )
+
+    async def _store(self, event: ArbitrageHistoryEvent) -> None:
+        try:
+            await self.history_store.upsert_arbitrage_history_event(event)
+            self.broadcast({"type": "arb_history_updated", "data": {"opportunity_id": event.opportunity_id}})
+        except Exception as exc:
+            logger.warning(
+                "arb_history_record_failed",
+                opportunity_id=event.opportunity_id,
+                event_type=event.event_type,
+                error=str(exc),
+            )
+
+    async def record_routed(self, opp_id: str, route: SelectedRoute) -> None:
+        await self._store(self._base_event(opp_id, route, event_type="routed", status="routed"))
+
+    async def record_failed(
+        self,
+        opp_id: str,
+        route: SelectedRoute,
+        *,
+        status: str,
+        reason: Optional[str] = None,
+        executed_size_usd: Optional[Decimal] = None,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+    ) -> None:
+        await self._store(
+            self._base_event(
+                opp_id,
+                route,
+                event_type="failed",
+                status=status,
+                reason=reason,
+                executed_size_usd=executed_size_usd,
+                buy_tx_hash=buy_tx_hash,
+                sell_tx_hash=sell_tx_hash,
+            )
+        )
+
+    async def record_executed(
+        self,
+        opp_id: str,
+        route: SelectedRoute,
+        *,
+        actual_profit_usd: Any,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+    ) -> None:
+        await self._store(
+            self._base_event(
+                opp_id,
+                route,
+                event_type="executed",
+                status="completed",
+                actual_profit_usd=coerce_decimal(actual_profit_usd),
+                executed_size_usd=route.adjusted_size_usd,
+                buy_tx_hash=buy_tx_hash,
+                sell_tx_hash=sell_tx_hash,
+            )
+        )
+
+    async def _record_raw(
+        self,
+        *,
+        opp_id: str,
+        event_type: EventType,
+        pipeline: Pipeline,
+        direction: str,
+        buy_venue: str,
+        sell_venue: str,
+        status: str,
+        optimal_size_usd: Any = None,
+        routed_size_usd: Any = None,
+        executed_size_usd: Any = None,
+        expected_profit_usd: Any = None,
+        actual_profit_usd: Any = None,
+        net_profit_usd: Any = None,
+        net_spread_bps: Optional[int] = None,
+        reason: Optional[str] = None,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+    ) -> None:
+        await self._store(
+            ArbitrageHistoryEvent(
+                opportunity_id=opp_id,
+                pipeline=pipeline,
+                event_type=event_type,
+                timestamp=int(time.time() * 1000),
+                direction=direction,
+                buy_venue=buy_venue,
+                sell_venue=sell_venue,
+                status=status,
+                optimal_size_usd=coerce_decimal(optimal_size_usd),
+                routed_size_usd=coerce_decimal(routed_size_usd),
+                executed_size_usd=coerce_decimal(executed_size_usd),
+                expected_profit_usd=coerce_decimal(expected_profit_usd),
+                actual_profit_usd=coerce_decimal(actual_profit_usd),
+                net_profit_usd=coerce_decimal(net_profit_usd),
+                net_spread_bps=net_spread_bps,
+                reason=reason,
+                buy_tx_hash=buy_tx_hash,
+                sell_tx_hash=sell_tx_hash,
+            )
+        )
+
+    async def record_executed_raw(
+        self,
+        *,
+        opp_id: str,
+        pipeline: Pipeline,
+        direction: str,
+        buy_venue: str,
+        sell_venue: str,
+        optimal_size_usd: Any = None,
+        routed_size_usd: Any = None,
+        executed_size_usd: Any = None,
+        expected_profit_usd: Any = None,
+        actual_profit_usd: Any = None,
+        net_profit_usd: Any = None,
+        net_spread_bps: Optional[int] = None,
+        reason: Optional[str] = None,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+    ) -> None:
+        await self._record_raw(
+            opp_id=opp_id,
+            event_type="executed",
+            pipeline=pipeline,
+            direction=direction,
+            buy_venue=buy_venue,
+            sell_venue=sell_venue,
+            status="completed",
+            optimal_size_usd=optimal_size_usd,
+            routed_size_usd=routed_size_usd,
+            executed_size_usd=executed_size_usd,
+            expected_profit_usd=expected_profit_usd,
+            actual_profit_usd=actual_profit_usd,
+            net_profit_usd=net_profit_usd,
+            net_spread_bps=net_spread_bps,
+            reason=reason,
+            buy_tx_hash=buy_tx_hash,
+            sell_tx_hash=sell_tx_hash,
+        )
+
+    async def record_failed_raw(
+        self,
+        *,
+        opp_id: str,
+        pipeline: Pipeline,
+        direction: str,
+        buy_venue: str,
+        sell_venue: str,
+        status: str,
+        optimal_size_usd: Any = None,
+        routed_size_usd: Any = None,
+        executed_size_usd: Any = None,
+        expected_profit_usd: Any = None,
+        actual_profit_usd: Any = None,
+        net_profit_usd: Any = None,
+        net_spread_bps: Optional[int] = None,
+        reason: Optional[str] = None,
+        buy_tx_hash: Optional[str] = None,
+        sell_tx_hash: Optional[str] = None,
+    ) -> None:
+        await self._record_raw(
+            opp_id=opp_id,
+            event_type="failed",
+            pipeline=pipeline,
+            direction=direction,
+            buy_venue=buy_venue,
+            sell_venue=sell_venue,
+            status=status,
+            optimal_size_usd=optimal_size_usd,
+            routed_size_usd=routed_size_usd,
+            executed_size_usd=executed_size_usd,
+            expected_profit_usd=expected_profit_usd,
+            actual_profit_usd=actual_profit_usd,
+            net_profit_usd=net_profit_usd,
+            net_spread_bps=net_spread_bps,
+            reason=reason,
+            buy_tx_hash=buy_tx_hash,
+            sell_tx_hash=sell_tx_hash,
+        )

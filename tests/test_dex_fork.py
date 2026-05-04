@@ -1,359 +1,422 @@
 """
-Fork tests for DEX adapters using Anvil.
+Uniswap V4 fork tests against real on-chain state.
 
-These tests run against forked mainnet state to verify real contract interactions.
-Requires Foundry/Anvil to be installed.
+Section A: Read tests (Anvil fork of Base / BSC mainnet)
+Section B: Position lifecycle (Anvil with funded test wallet)
+Section C: Rebalance flow (end-to-end)
+Section D: Arb detection with skewed pool prices
+Section E: LP lifecycle on Base fork (fund → mint → verify)
 
-Run with: pytest tests/test_dex_fork.py -v
+Requires: anvil CLI (Foundry). Run with:
+    pytest tests/test_dex_fork.py -v
 """
 
 import pytest
 from decimal import Decimal
-from web3 import Web3
-
-from engine.api.schemas import DexParams
-from engine.venues.dex.base import PoolConfig, BaseDexAdapter, ERC20_ABI
-from engine.venues.dex.aerodrome import AerodromeAdapter
-
-
-# Skip all tests in this module if Anvil is not available
-pytestmark = pytest.mark.skipif(
-    not pytest.importorskip("subprocess").run(
-        ["which", "anvil"], capture_output=True
-    ).returncode == 0,
-    reason="Anvil not installed"
-)
 
 
 # =============================================================================
-# FIXTURES
+# Section A — Read tests (pool state via StateView)
 # =============================================================================
 
 
-@pytest.fixture
-def aerodrome_adapter(anvil_base, test_private_key) -> AerodromeAdapter:
-    """Create Aerodrome adapter connected to Anvil fork."""
-    return AerodromeAdapter(
-        lp_private_key=test_private_key,
-        trade_private_key=test_private_key,
-        rpc_url=anvil_base,
-        params=DexParams(
-            max_utilization_percent=Decimal("80"),
-            min_reserve_token0=Decimal("1000"),  # Keep 1000 cNGN
-            min_reserve_token1=Decimal("1"),      # Keep 1 USDC
-        ),
-    )
+class TestV4PoolStateReadsBase:
+    """Read pool state from a live Base mainnet fork."""
+
+    @pytest.mark.asyncio
+    async def test_update_seeds_pool_cache(self, anvil_base):
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+        config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        ok = await update_single_v4_pool_state(config)
+        assert ok is True
+
+        state = _POOL_CACHE.get(config.pool_address)
+        assert state is not None
+        assert state["sqrt_p"] > 0
+        assert state["liquidity"] > 0
+
+    @pytest.mark.asyncio
+    async def test_cached_price_in_expected_range(self, anvil_base):
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE, Q96
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+        config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        await update_single_v4_pool_state(config)
+
+        state = _POOL_CACHE[config.pool_address]
+        sqrt_p = state["sqrt_p"]
+        price = (sqrt_p / Q96) ** 2  # cNGN/USDC, 6/6 dec
+        # cNGN trades around 0.000606 USDC — expect broad range
+        assert Decimal("0.00001") < price < Decimal("0.01")
+
+    @pytest.mark.asyncio
+    async def test_pool_liquidity_positive(self, anvil_base):
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+        config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        await update_single_v4_pool_state(config)
+        state = _POOL_CACHE[config.pool_address]
+        assert state["liquidity"] > 0
+
+    @pytest.mark.asyncio
+    async def test_fee_in_expected_range(self, anvil_base):
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+        config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        await update_single_v4_pool_state(config)
+        state = _POOL_CACHE[config.pool_address]
+        fee = state["fee"]
+        assert fee is not None
+        assert Decimal("0") < fee < Decimal("0.1")  # 0–10% fee is reasonable
 
 
-@pytest.fixture
-def web3_base(anvil_base) -> Web3:
-    """Web3 instance connected to Base fork."""
-    return Web3(Web3.HTTPProvider(anvil_base))
+class TestV4PoolStateReadsBSC:
+    """Read pool state from a live BSC mainnet fork."""
 
+    @pytest.mark.asyncio
+    async def test_update_seeds_pool_cache(self, anvil_bsc):
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
-# =============================================================================
-# READ TESTS - Pool State
-# =============================================================================
+        config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
+        ok = await update_single_v4_pool_state(config)
+        assert ok is True
 
+        state = _POOL_CACHE.get(config.pool_address)
+        assert state is not None
+        assert state["sqrt_p"] > 0
 
-class TestPoolStateReads:
-    """Test reading pool state from forked mainnet."""
+    @pytest.mark.asyncio
+    async def test_bsc_price_in_range(self, anvil_bsc):
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE, Q96
+        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
-    def test_get_current_state(self, aerodrome_adapter):
-        """Test reading current pool state (slot0)."""
-        state = aerodrome_adapter.get_current_state()
-
-        assert "sqrt_price_x96" in state
-        assert "tick" in state
-        assert "price" in state
-
-        # sqrtPriceX96 should be a large integer
-        assert state["sqrt_price_x96"] > 0
-
-        # Tick should be in reasonable range for cNGN/USDC
-        # (very negative due to price being << 1)
-        assert state["tick"] < 0
-
-        # Price should be a Decimal
-        assert isinstance(state["price"], Decimal)
-
-    def test_get_pool_liquidity(self, aerodrome_adapter):
-        """Test reading pool liquidity."""
-        # Access pool contract directly
-        try:
-            liquidity = aerodrome_adapter.pool_contract.functions.liquidity().call()
-            assert liquidity >= 0
-        except Exception as e:
-            # Some pools may not have this method exposed the same way
-            pytest.skip(f"Could not read liquidity: {e}")
-
-    def test_get_tick_spacing(self, aerodrome_adapter):
-        """Test reading tick spacing from config."""
-        assert aerodrome_adapter.config.tick_spacing == 100
-
-
-class TestPositionReads:
-    """Test reading position data from forked mainnet."""
-
-    def test_get_owned_positions_empty(self, aerodrome_adapter):
-        """Test getting owned positions (should be empty for test wallet)."""
-        # Test wallet (Anvil default) shouldn't own any positions
-        positions = aerodrome_adapter.get_owned_positions()
-
-        # Should return a list (possibly empty)
-        assert isinstance(positions, list)
-
-    def test_get_position_state_invalid(self, aerodrome_adapter):
-        """Test getting position state for invalid token ID."""
-        # Token ID that doesn't exist
-        state = aerodrome_adapter.get_position_state(999999999)
-
-        # Should return None for invalid position
-        assert state is None
-
-
-class TestBalanceReads:
-    """Test reading token balances."""
-
-    def test_read_token_balances(self, aerodrome_adapter, test_wallet_address):
-        """Test reading token balances for test wallet."""
-        # Test wallet should have 0 balance (hasn't received tokens)
-        balance0 = aerodrome_adapter.token0.functions.balanceOf(
-            test_wallet_address
-        ).call()
-        balance1 = aerodrome_adapter.token1.functions.balanceOf(
-            test_wallet_address
-        ).call()
-
-        assert balance0 >= 0
-        assert balance1 >= 0
-
-    def test_get_position_method(self, aerodrome_adapter):
-        """Test the get_position() method."""
-        import asyncio
-
-        position = asyncio.get_event_loop().run_until_complete(
-            aerodrome_adapter.get_position()
-        )
-
-        assert position.venue == "aerodrome"
-        assert position.pair == "cNGN/USDC"
-        assert "cngn" in position.balances
-        assert "usdc" in position.balances
+        config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
+        await update_single_v4_pool_state(config)
+        state = _POOL_CACHE[config.pool_address]
+        sqrt_p = state["sqrt_p"]
+        # BSC pool: USDT(18) / cNGN(6) → price_usd = 1/((sqrt/Q96)^2 * 10^12)
+        raw = (sqrt_p / Q96) ** 2
+        if raw > 0:
+            price_usd = Decimal(1) / (raw * Decimal(10 ** 12))
+            assert Decimal("0.00001") < price_usd < Decimal("0.01")
 
 
 # =============================================================================
-# PRICE MATH TESTS - Against Real Pool
+# Section B — Position lifecycle (funded Anvil test wallet)
 # =============================================================================
 
 
-class TestPriceMathWithRealPool:
-    """Test price math against real pool state."""
+@pytest.fixture(scope="session")
+def funded_lp_wallet(anvil_base, test_wallet_address):
+    """Fund the LP and trade accounts on Anvil with ETH + cNGN + USDC.
 
-    def test_sqrt_price_conversion(self, aerodrome_adapter):
-        """Test sqrtPriceX96 to price conversion against real pool."""
-        state = aerodrome_adapter.get_current_state()
-
-        # Convert back and forth
-        price = state["price"]
-
-        # Price should be positive and small (cNGN << USDC in value)
-        assert price > 0
-
-    def test_tick_to_price_conversion(self, aerodrome_adapter):
-        """Test tick to price conversion."""
-        state = aerodrome_adapter.get_current_state()
-
-        # Convert tick to price
-        price_from_tick = aerodrome_adapter._tick_to_price(state["tick"])
-
-        # Should be close to the sqrtPrice-derived price
-        # (may not be exact due to rounding)
-        ratio = float(price_from_tick) / float(state["price"])
-        assert 0.99 < ratio < 1.01  # Within 1%
-
-    def test_tick_range_calculation(self, aerodrome_adapter, sample_prices):
-        """Test tick range calculation."""
-        tick_lower, tick_upper = aerodrome_adapter.calculate_tick_range(sample_prices)
-
-        # Tick lower should be less than upper
-        assert tick_lower < tick_upper
-
-        # Should be aligned to tick spacing
-        # Note: Python modulo with negatives needs special handling
-        tick_spacing = aerodrome_adapter.config.tick_spacing
-        assert tick_lower == (tick_lower // tick_spacing) * tick_spacing
-        assert tick_upper == (tick_upper // tick_spacing) * tick_spacing
-
-
-# =============================================================================
-# WRITE TESTS - Requires Impersonation
-# =============================================================================
-
-
-class TestWriteOperationsWithImpersonation:
+    Uses anvil_setBalance for ETH and HEVM cheat deal() for ERC20 tokens.
     """
-    Test write operations by impersonating a funded wallet.
+    from web3 import Web3
+    from engine.config import settings
 
-    These tests manipulate Anvil state to simulate having tokens.
+    w3 = Web3(Web3.HTTPProvider(anvil_base))
+
+    # Fund with ETH
+    eth_amount = hex(10 * 10 ** 18)
+    w3.provider.make_request("anvil_setBalance", [test_wallet_address, eth_amount])
+
+    # Fund with ERC20 via HEVM cheat code
+    hevm = "0x7109709ECfa91a80626fF3989D68f67F5b1DD12D"
+    deal_abi = [{
+        "inputs": [
+            {"name": "token", "type": "address"},
+            {"name": "to", "type": "address"},
+            {"name": "give", "type": "uint256"},
+        ],
+        "name": "deal",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    }]
+    try:
+        cheat = w3.eth.contract(address=hevm, abi=deal_abi)
+        cheat.functions.deal(
+            settings.cngn_base_address, test_wallet_address, 10_000_000 * 10 ** 6
+        ).transact({"from": test_wallet_address})
+        cheat.functions.deal(
+            settings.usdc_base_address, test_wallet_address, 10_000 * 10 ** 6
+        ).transact({"from": test_wallet_address})
+    except Exception:
+        pass  # HEVM may not be available on all forks
+
+    return w3
+
+
+class TestV4PositionLifecycle:
+    """Position mint / remove lifecycle on a funded Anvil fork."""
+
+    def test_eth_balance_funded(self, funded_lp_wallet, test_wallet_address):
+        balance = funded_lp_wallet.eth.get_balance(test_wallet_address)
+        assert balance >= 9 * 10 ** 18  # Anvil seeds 10 ETH; allow for gas spent
+
+    @pytest.mark.asyncio
+    async def test_pool_state_readable_after_fund(self, funded_lp_wallet, anvil_base):
+        """Basic sanity: pool state still readable after funding the wallet."""
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+
+        config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        ok = await update_single_v4_pool_state(config)
+        assert ok is True
+
+
+# =============================================================================
+# Section C — Rebalance flow (end-to-end)
+# =============================================================================
+
+
+class TestRebalanceFlow:
+    """End-to-end rebalance flow on Anvil.
+
+    Full implementation requires price manipulation via impersonated whale swaps.
+    These tests serve as structural anchors; expand with real swap manipulation.
     """
 
-    @pytest.fixture
-    def funded_adapter(self, anvil_base, web3_base, aerodrome_adapter):
-        """
-        Create an adapter with a funded wallet by impersonating a whale.
+    @pytest.mark.asyncio
+    async def test_pool_state_available_for_rebalance_check(self, anvil_base):
+        """Precondition: pool state is readable so scheduler can evaluate rebalance."""
+        import dataclasses
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
-        This uses Anvil's impersonation feature to act as a wallet
-        that already has cNGN and USDC.
-        """
-        # Find a cNGN holder to impersonate
-        # For now, we'll use the contract deployer or a known holder
-        # This would need to be updated based on actual on-chain data
-        pytest.skip("Impersonation test - requires known funded wallet address")
-
-    def test_approve_tokens(self, aerodrome_adapter, web3_base):
-        """Test token approval (doesn't require balance)."""
-        import asyncio
-
-        # Approval should work even without balance
-        # We're just testing the transaction building
-        try:
-            # This will fail on send but we can test the building
-            asyncio.get_event_loop().run_until_complete(
-                aerodrome_adapter._approve_if_needed(
-                    aerodrome_adapter.config.token0_address,
-                    aerodrome_adapter.config.nft_manager_address,
-                    1000000,
-                )
-            )
-        except Exception as e:
-            # Expected to fail due to no gas, but shouldn't error on building
-            if "insufficient funds" not in str(e).lower():
-                raise
-
-    def test_mint_position_simulation(self, aerodrome_adapter, sample_prices):
-        """
-        Test mint position transaction building.
-
-        Note: This tests transaction construction, not actual execution.
-        """
-        import asyncio
-
-        # Calculate tick range
-        tick_lower, tick_upper = aerodrome_adapter.calculate_tick_range(sample_prices)
-
-        # Calculate amounts (will be 0 for unfunded wallet)
-        amount0, amount1 = aerodrome_adapter.calculate_mint_amounts()
-
-        # Amounts should be 0 for unfunded wallet
-        assert amount0 == 0 or amount1 == 0  # At least one should be 0
+        config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        ok = await update_single_v4_pool_state(config)
+        assert ok is True
+        assert config.pool_address in _POOL_CACHE
 
 
 # =============================================================================
-# CAPITAL ALLOCATION TESTS - With Mock Balances
+# Section C — Full LP lifecycle on Base Anvil fork
 # =============================================================================
 
 
-class TestCapitalAllocationWithFork:
-    """Test capital allocation logic with forked state."""
+class TestLPLifecycleFork:
+    """Full LP lifecycle (fund → seed prices → mint → verify position) on a Base fork.
 
-    def test_calculate_mint_amounts_unfunded(self, aerodrome_adapter):
-        """Test calculate_mint_amounts with unfunded wallet."""
-        amount0, amount1 = aerodrome_adapter.calculate_mint_amounts()
+    Uses helpers from tests/fork_helpers.py: wallet funding via anvil_setBalance,
+    donor finding via Transfer log scan, impersonated ERC20 transfer, and
+    price seeding from the fork's live spot price.
 
-        # Unfunded wallet should return 0
-        # (can't deploy what you don't have)
-        assert amount0 == 0
-        assert amount1 == 0
-
-    def test_get_deployable_balances_unfunded(self, aerodrome_adapter):
-        """Test get_deployable_balances with unfunded wallet."""
-        balances = aerodrome_adapter.get_deployable_balances()
-
-        assert "token0" in balances
-        assert "token1" in balances
-        assert balances["token0"] == Decimal("0")
-        assert balances["token1"] == Decimal("0")
-
-
-# =============================================================================
-# INTEGRATION TESTS - Full Flow
-# =============================================================================
-
-
-class TestFullFlowSimulation:
-    """
-    Test full mint/remove flow simulation.
-
-    These tests verify the logic flow without actually executing transactions.
+    Requires: anvil CLI with a Base mainnet fork (anvil_base fixture).
     """
 
-    def test_rebalance_decision_logic(self, aerodrome_adapter, sample_prices):
-        """Test the decision logic for rebalancing."""
-        # Get current state
-        state = aerodrome_adapter.get_current_state()
-        current_tick = state["tick"]
+    @pytest.mark.asyncio
+    async def test_create_position_on_fork(self, anvil_base, tmp_path):
+        """Fund LP wallet from a USDC whale, seed prices, mint → assert in-range position."""
+        import tempfile
+        from web3 import Web3
+        from engine.accounts import AccountManager, AccountRole
+        from engine.config import settings
+        from engine.db.repository import open_repository
+        from engine.lp.rebalancer import LPRebalancer
+        from engine.lp.uniswap_v4 import V4PositionManager
+        from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter
+        from tests.fork_helpers import fund_native_balance, impersonated_account, find_token_donor, transfer_erc20_from_unlocked, seed_prices
 
-        # Calculate new range
-        tick_lower, tick_upper = aerodrome_adapter.calculate_tick_range(sample_prices)
-
-        # Check if current tick would be in the new range
-        in_range = tick_lower <= current_tick <= tick_upper
-
-        # This tests the logic, not the actual rebalancing
-        assert isinstance(in_range, bool)
-
-    def test_position_state_parsing(self, aerodrome_adapter):
-        """Test that position state parsing works correctly."""
-        # Even with no position, the method should handle gracefully
-        owned = aerodrome_adapter.get_owned_positions()
-
-        for token_id in owned:
-            state = aerodrome_adapter.get_position_state(token_id)
-            if state:
-                assert state.token_id == token_id
-                assert state.liquidity >= 0
-                assert state.tick_lower < state.tick_upper
-
-
-# =============================================================================
-# ERROR HANDLING TESTS
-# =============================================================================
-
-
-class TestErrorHandling:
-    """Test error handling in fork environment."""
-
-    def test_invalid_rpc_url(self):
-        """Test handling of invalid RPC URL."""
-        with pytest.raises(Exception):
-            adapter = AerodromeAdapter(
-                lp_private_key="0x" + "00" * 32,
-                rpc_url="http://invalid:9999",
-                params=DexParams(),
-            )
-            adapter.get_current_state()
-
-    def test_invalid_contract_address(self, anvil_base, test_private_key):
-        """Test handling of invalid contract address."""
-        # Create adapter with invalid pool address
-        from engine.venues.dex.base import PoolConfig
-
-        invalid_config = PoolConfig(
-            chain_id=8453,
-            chain_name="base",
+        account_manager = AccountManager(use_test_accounts=True)
+        lp_key = account_manager.get_private_key(AccountRole.UNI_BASE_LP)
+        trade_key = account_manager.get_private_key(AccountRole.UNI_BASE_TRADE)
+        adapter = UniswapBaseV4Adapter(
+            lp_private_key=lp_key,
+            trade_private_key=trade_key,
             rpc_url=anvil_base,
-            pool_address="0x0000000000000000000000000000000000000000",
-            nft_manager_address="0x827922686190790b37229fd06084350E74485b72",
-            router_address="0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5",
-            token0_address="0x46C85152bFe9f96829aA94755D9f915F9B10EF5F",
-            token1_address="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            token0_symbol="cNGN",
-            token1_symbol="USDC",
-            token0_decimals=6,
-            token1_decimals=6,
-            tick_spacing=100,
+            params=settings.uni_base_lp_params,
         )
 
-        # This should fail when trying to read from invalid address
-        # The exact error depends on the RPC behavior
+        if not adapter.w3.is_connected():
+            pytest.skip("Anvil fork not reachable")
+
+        lp_address = adapter.lp_account.address
+
+        # Fund ETH for gas
+        fund_native_balance(adapter.w3, lp_address, Decimal("1"))
+
+        # Fund USDC from a whale donor
+        target_usdc = Decimal("200")
+        target_raw = int(target_usdc * Decimal(10 ** adapter.config.token1_decimals))
+        _SINK = "0x000000000000000000000000000000000000dEaD"
+        _ANVIL_SENDER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+
+        donor = find_token_donor(
+            adapter.w3,
+            adapter.token1,
+            min_balance_raw=target_raw,
+            exclude={lp_address, adapter.trade_account.address, _ANVIL_SENDER, _SINK},
+        )
+        with impersonated_account(adapter.w3, donor):
+            transfer_erc20_from_unlocked(
+                adapter.w3,
+                adapter.token1,
+                sender=donor,
+                recipient=lp_address,
+                amount_raw=target_raw,
+            )
+
+        actual_usdc = adapter.token1.functions.balanceOf(lp_address).call()
+        assert actual_usdc == target_raw, f"LP wallet USDC mismatch: {actual_usdc} != {target_raw}"
+
+        # Build LP manager and seed prices from live fork spot
+        pm_contract = adapter.w3.eth.contract(
+            address=Web3.to_checksum_address(adapter.config.position_manager),
+            abi=V4PositionManager.POSITION_MANAGER_ABI,
+        )
+        lp_manager = V4PositionManager(
+            config=adapter.config,
+            state_view=adapter.state_view,
+            position_manager_contract=pm_contract,
+            params=settings.uni_base_lp_params,
+            venue_name="uni-base",
+            tx_context=adapter,
+        )
+
+        assert lp_manager.get_owned_positions() == [], "Fork must start with no LP positions"
+
+        db_path = str(tmp_path / "fork_lp.db")
+        repo = await open_repository(db_path)
+        try:
+            quote = await adapter.get_current_price()
+            assert quote is not None, "Could not fetch live spot price from fork"
+            await seed_prices(repo, quote, count=20, source="uni-base_pool")
+
+            rebalancer = LPRebalancer(
+                broadcast=lambda _e: None,
+                price_store=repo.prices,
+                venue_config_store=repo.venue_config,
+                action_store=repo.actions,
+                auto_management_enabled=lambda: True,
+            )
+
+            created = await rebalancer.create_position(lp_manager, triggered_by="test:fork_lp")
+
+            assert created is True, "create_position must return True on the fork"
+            token_ids = lp_manager.get_owned_positions()
+            assert len(token_ids) == 1, f"Expected exactly one LP NFT, got {token_ids}"
+
+            position_state = lp_manager.get_position_state(token_ids[0])
+            assert position_state is not None
+            assert position_state.in_range is True, (
+                "Newly minted position must be in-range at the current spot price"
+            )
+            assert position_state.liquidity > 0
+
+        finally:
+            await repo.close()
+
+
+# =============================================================================
+# Section D — Arb detection on skewed pool prices (Base + BSC forks)
+# =============================================================================
+
+
+class TestArbDetectionFork:
+    """Arb detection using real fork pool state with an artificially skewed price.
+
+    The pool cache is seeded from both live forks (real liquidity, fee, tick),
+    then BSC sqrtPriceX96 is inflated 2× to guarantee a detectable price gap.
+    This tests the full chain: pool state → price calc → arb detection → routing
+    using real on-chain geometry, not synthetic values.
+    """
+
+    @pytest.mark.asyncio
+    async def test_arb_detected_when_bsc_price_is_skewed(self, anvil_base, anvil_bsc):
+        """Real fork state + 2× BSC sqrtP → find_optimal_dex_arb() must return a route."""
+        import dataclasses
+        import math
+        import time as _time
+        from engine.arb.detection.dex_dex import find_optimal_dex_arb
+        from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
+        from engine.arb.routing.router import RouteCandidate, select_route
+        from engine.arb.risk.inventory import InventoryTracker as InventoryManager
+        from engine.market import gas_oracle as _go
+        from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+        from engine.types import ArbitrageParams
+
+        base_config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
+        bsc_config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
+
+        ok_base = await update_single_v4_pool_state(base_config)
+        ok_bsc = await update_single_v4_pool_state(bsc_config)
+        if not ok_base or not ok_bsc:
+            pytest.skip("Could not seed pool cache from fork — RPC unavailable")
+
+        # Seed gas oracle so arb detection doesn't block on missing gas prices
+        _go._state["gas_usd_base"] = Decimal("0.003")
+        _go._state["gas_usd_bsc"] = Decimal("0.005")
+        _go._state["last_updated_monotonic"] = _time.monotonic()
+
+        # Verify we got real state
+        base_state = _POOL_CACHE.get(base_config.pool_address)
+        bsc_state = _POOL_CACHE.get(bsc_config.pool_address)
+        assert base_state is not None and base_state["sqrt_p"] > 0
+        assert bsc_state is not None and bsc_state["sqrt_p"] > 0
+
+        # Skew BSC sqrtPriceX96 by 2×: this makes BSC cNGN price 4× relative to Base,
+        # guaranteeing a large, detectable arbitrage gap regardless of current market prices.
+        # Save the original value before mutating — bsc_state is a reference to the cache dict.
+        original_bsc_sqrt_p = bsc_state["sqrt_p"]
+        _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = original_bsc_sqrt_p * 2
+
+        try:
+            result = find_optimal_dex_arb()
+            assert result is not None, (
+                "find_optimal_dex_arb() must detect an opportunity when BSC price is 4× Base"
+            )
+            assert "optimal_arb" in result
+            arb = result["optimal_arb"]
+            assert arb["direction"] in ("UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE")
+            assert arb["expected_profit_usd"] > 0
+            assert arb["cngn_transferred"] > 0
+
+            # Verify route selection agrees with detection direction
+            params = ArbitrageParams(
+                max_daily_volume_usd=Decimal("50000"),
+                max_daily_loss_usd=Decimal("500"),
+                max_inventory_imbalance_usd=Decimal("10000"),
+                max_consecutive_failures=3,
+                max_single_trade_usd=Decimal("1000"),
+            )
+            inventory = InventoryManager(params)
+            inventory.reconcile_cngn({"uni-base": Decimal("50000"), "uni-bsc": Decimal("50000")})
+            inventory.reconcile_stables({"uni-base": Decimal("1000"), "uni-bsc": Decimal("1000")})
+
+            direction = arb["direction"]
+            route_def = ROUTES_BY_DIRECTION[direction]
+            candidate = RouteCandidate(
+                direction=direction,
+                buy_venue=route_def.buy_leg.venue,
+                sell_venue=route_def.sell_leg.venue,
+                optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
+                expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
+                gas_usd=Decimal(str(arb.get("gas_usd", "0.005"))),
+                signal=result,
+            )
+            selected = select_route([candidate], inventory)
+            assert selected is not None, (
+                "select_route() must select a route when arb is detected and inventory is available"
+            )
+            assert selected.candidate.direction == direction
+
+        finally:
+            # Restore original BSC sqrtP so other tests are not affected
+            _POOL_CACHE[bsc_config.pool_address]["sqrt_p"] = original_bsc_sqrt_p
+

@@ -1,81 +1,107 @@
-"""Tests for arbitrage executor (Phase 1: detection-only stubs)."""
+"""Tests for ArbitrageExecutor leg methods (execute_dex_buy/sell, execute_cex_buy/sell)."""
 
 import pytest
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
-from engine.api.schemas import ArbitrageOpportunity
-from engine.core.arbitrage.executor import ArbitrageExecutor
-
-
-@pytest.fixture
-def opportunity():
-    return ArbitrageOpportunity(
-        id="test-opp-1",
-        timestamp=1700000000000,
-        buy_venue="aerodrome",
-        sell_venue="quidax",
-        buy_price=Decimal("0.000690"),
-        sell_price=Decimal("0.000750"),
-        gross_spread_bps=870,
-        net_spread_bps=800,
-        recommended_size_usd=Decimal("500"),
-        expected_profit_usd=Decimal("40"),
-        status="detected",
-    )
+from engine.types import TxResult, PriceQuote
+from engine.arb.execution.executor import ArbitrageExecutor
+from tests.fakes import FakeCexAdapter, FakeDexAdapter
 
 
-class TestExecutorDetectionMode:
-    """Test executor in detection-only mode (Phase 1)."""
+def _make_dex_venue(price=Decimal("0.000610"), swap_ok=True):
+    venue = FakeDexAdapter()
+    venue.stable_address = "0xusdc"
+    venue.cngn_address = "0xcngn"
+    venue.stable_decimals = 6
+    venue.cngn_decimals = 6
+
+    async def _get_price():
+        return PriceQuote(source="test", timestamp=0, bid=price, ask=price, mid=price)
+
+    async def _swap(token_in, amount_in, min_out):
+        if swap_ok:
+            return TxResult(hash="0xabc", status="confirmed", output_raw=amount_in)
+        return TxResult(hash="", status="failed", error="swap failed")
+
+    venue.get_current_price = _get_price
+    venue.swap = _swap
+    return venue
+
+
+class TestExecuteDexBuy:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        venue = _make_dex_venue()
+        executor = ArbitrageExecutor(venues={"uni-base": venue})
+        trade = await executor.execute_dex_buy("uni-base", Decimal("500"), "opp-1")
+        assert trade is not None
+        assert trade.status == "confirmed"
+        assert trade.side == "buy"
 
     @pytest.mark.asyncio
-    async def test_skips_when_disabled(self, opportunity):
-        executor = ArbitrageExecutor(
-            venues={},
-            execution_enabled=False,
-        )
-        success, profit, error = await executor.execute(opportunity)
-
-        assert success is False
-        assert profit is None
-        assert "detection-only" in error.lower()
+    async def test_swap_failure(self):
+        venue = _make_dex_venue(swap_ok=False)
+        executor = ArbitrageExecutor(venues={"uni-base": venue})
+        trade = await executor.execute_dex_buy("uni-base", Decimal("500"), "opp-1")
+        assert trade.status == "failed"
 
     @pytest.mark.asyncio
-    async def test_not_implemented_when_enabled(self, opportunity):
-        """Even when enabled, execution is not yet implemented."""
-        executor = ArbitrageExecutor(
-            venues={"aerodrome": MagicMock(), "quidax": MagicMock()},
-            execution_enabled=True,
-        )
-        success, profit, error = await executor.execute(opportunity)
-
-        assert success is False
-        assert "not yet implemented" in error.lower()
+    async def test_no_price_quote(self):
+        venue = _make_dex_venue()
+        venue.get_current_price = AsyncMock(return_value=None)
+        executor = ArbitrageExecutor(venues={"uni-base": venue})
+        trade = await executor.execute_dex_buy("uni-base", Decimal("500"), "opp-1")
+        assert trade.status == "failed"
+        assert "price" in (trade.error or "").lower()
 
 
-class TestExecutorPhase2Stubs:
-    """Test that Phase 2+ methods raise NotImplementedError."""
+class TestExecuteDexSell:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        venue = _make_dex_venue()
+        executor = ArbitrageExecutor(venues={"uni-base": venue})
+        trade = await executor.execute_dex_sell("uni-base", Decimal("800000"), Decimal("490"), "opp-1")
+        assert trade.status == "confirmed"
+        assert trade.side == "sell"
 
     @pytest.mark.asyncio
-    async def test_dex_buy_not_implemented(self):
-        executor = ArbitrageExecutor(venues={}, execution_enabled=True)
-        with pytest.raises(NotImplementedError, match="Phase 2"):
-            await executor.execute_dex_buy("aerodrome", Decimal("100"), 50)
+    async def test_swap_failure(self):
+        venue = _make_dex_venue(swap_ok=False)
+        executor = ArbitrageExecutor(venues={"uni-base": venue})
+        trade = await executor.execute_dex_sell("uni-base", Decimal("800000"), Decimal("490"), "opp-1")
+        assert trade.status == "failed"
+
+
+class TestExecuteCexBuy:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        cex = FakeCexAdapter(buy_success=True)
+        executor = ArbitrageExecutor(venues={"quidax": cex})
+        trade = await executor.execute_cex_buy("quidax", Decimal("500"), Decimal("0.000606"), "opp-1")
+        assert trade.status == "submitted"
+        assert trade.side == "buy"
 
     @pytest.mark.asyncio
-    async def test_dex_sell_not_implemented(self):
-        executor = ArbitrageExecutor(venues={}, execution_enabled=True)
-        with pytest.raises(NotImplementedError, match="Phase 2"):
-            await executor.execute_dex_sell("aerodrome", Decimal("1000"), Decimal("0.69"))
+    async def test_failure(self):
+        cex = FakeCexAdapter(buy_success=False)
+        executor = ArbitrageExecutor(venues={"quidax": cex})
+        trade = await executor.execute_cex_buy("quidax", Decimal("500"), Decimal("0.000606"), "opp-1")
+        assert trade.status == "failed"
+
+
+class TestExecuteCexSell:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        cex = FakeCexAdapter(sell_success=True)
+        executor = ArbitrageExecutor(venues={"quidax": cex})
+        trade = await executor.execute_cex_sell("quidax", Decimal("800000"), Decimal("0.000610"), "opp-1")
+        assert trade.status == "submitted"
+        assert trade.side == "sell"
 
     @pytest.mark.asyncio
-    async def test_cex_buy_not_implemented(self):
-        executor = ArbitrageExecutor(venues={}, execution_enabled=True)
-        with pytest.raises(NotImplementedError, match="Phase 3"):
-            await executor.execute_cex_buy("quidax", Decimal("100"), Decimal("0.0007"))
-
-    @pytest.mark.asyncio
-    async def test_cex_sell_not_implemented(self):
-        executor = ArbitrageExecutor(venues={}, execution_enabled=True)
-        with pytest.raises(NotImplementedError, match="Phase 3"):
-            await executor.execute_cex_sell("quidax", Decimal("1000"), Decimal("0.0007"))
+    async def test_failure(self):
+        cex = FakeCexAdapter(sell_success=False)
+        executor = ArbitrageExecutor(venues={"quidax": cex})
+        trade = await executor.execute_cex_sell("quidax", Decimal("800000"), Decimal("0.000610"), "opp-1")
+        assert trade.status == "failed"

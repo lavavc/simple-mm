@@ -17,8 +17,8 @@ export function VenueCard({ venue }: VenueCardProps) {
   const priceError = venue.price?.error;
 
   const normalized = venue.price ? normalizeToNgnUsd(venue.price) : null;
-  // Don't show spread for DEX venues (AMM pools don't have order book spreads)
-  const spread = normalized && !isDex(venue.name) ? spreadBps(normalized) : null;
+  // Don't show spread for DEX venues (AMM pools don't have order book spreads) or blockradar (rate-setter)
+  const spread = normalized && !isDex(venue.name) && venue.name !== 'blockradar' ? spreadBps(normalized) : null;
 
   return (
     <Card className="hover:border-primary/50 transition-colors">
@@ -79,10 +79,22 @@ export function VenueCard({ venue }: VenueCardProps) {
           <div className="text-sm text-muted-foreground mb-3">No price data</div>
         )}
 
+        {venue.name === 'blockradar' && venue.position?.rates && (
+          <div className="mt-3 space-y-1">
+            <h4 className="text-xs font-medium text-muted-foreground">Live Rates</h4>
+            {Object.entries(venue.position.rates).map(([key, rate]) => (
+              <div key={key} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{key.replace('_', '/')}</span>
+                <span className="font-mono">{formatNumber(rate, rate >= 1 ? 2 : 6)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {venue.position && (
           <div className="pt-2 border-t">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              {Object.entries(venue.position.balances).map(([token, amount]) => (
+              {Object.entries(venue.position.balances).filter(([, amount]) => Number(amount) > 0).map(([token, amount]) => (
                 <div key={token} className="flex justify-between">
                   <span className="text-muted-foreground uppercase">{token}</span>
                   <span>{formatNumber(amount as number, token === 'cngn' ? 0 : 2)}</span>
@@ -91,12 +103,53 @@ export function VenueCard({ venue }: VenueCardProps) {
             </div>
             {venue.position.lp_position && (
               <div className="mt-2">
-                <Badge
-                  variant={venue.position.lp_position.in_range ? 'success' : 'warning'}
-                  className="text-xs"
-                >
-                  LP {venue.position.lp_position.in_range ? 'In Range' : 'Out of Range'}
-                </Badge>
+                {(() => {
+                  const lp = venue.position!.lp_position!;
+                  const variant =
+                    lp.snapshot_status === 'degraded'
+                      ? 'destructive'
+                      : lp.in_range
+                        ? 'success'
+                        : 'warning';
+                  const label =
+                    lp.snapshot_status === 'degraded'
+                      ? 'LP Degraded Snapshot'
+                      : lp.in_range
+                        ? 'LP In Range'
+                        : 'LP Out of Range';
+                  return (
+                    <Badge variant={variant} className="text-xs">
+                      {label}
+                    </Badge>
+                  );
+                })()}
+                {venue.position.lp_position.snapshot_message && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {venue.position.lp_position.snapshot_message}
+                  </p>
+                )}
+              </div>
+            )}
+            {(venue.position.volume_24h_usd != null || venue.position.position_value_usd != null) && (
+              <div className="mt-2 text-xs space-y-0.5">
+                {venue.position.volume_24h_usd != null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">24h Volume</span>
+                    <span>${Math.round(venue.position.volume_24h_usd).toLocaleString()}</span>
+                  </div>
+                )}
+                {venue.position.position_value_usd != null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Position Value</span>
+                    <span>${Math.round(venue.position.position_value_usd).toLocaleString()}</span>
+                  </div>
+                )}
+                {venue.position.lp_position?.our_share_pct != null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Our Share</span>
+                    <span>{Number(venue.position.lp_position.our_share_pct).toFixed(2)}%</span>
+                  </div>
+                )}
               </div>
             )}
           </div>

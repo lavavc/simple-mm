@@ -25,7 +25,7 @@ export function ArbitrageCard({ status, opportunities }: ArbitrageCardProps) {
           <Badge variant={status.enabled ? 'success' : 'secondary'}>
             {status.enabled ? 'Enabled' : 'Disabled'}
           </Badge>
-          <Badge variant="info">Detection Only</Badge>
+          {status.detection_only && <Badge variant="info">Detection Only</Badge>}
           {status.circuit_breaker_active && (
             <Badge variant="destructive" className="flex items-center gap-1">
               <AlertTriangle className="h-3 w-3" />
