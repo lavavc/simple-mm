@@ -6,7 +6,7 @@ from decimal import Decimal
 import structlog
 
 from engine.config import DexParams
-from engine.venues.dex.shared import price_to_tick, _Q96
+from engine.venues.dex.shared import price_to_tick
 
 logger = structlog.get_logger()
 
@@ -28,7 +28,9 @@ def compute_ewma_stats(prices: list[Decimal], params: DexParams) -> tuple[float,
     for i in range(1, len(float_prices)):
         x = float_prices[i]
         prev = float_prices[i - 1]
-        r = math.log(x / prev) if prev > 0 else 0.0
+        if prev <= 0 or x <= 0:
+            raise ValueError(f"Non-positive price in log-return computation: prev={prev}, x={x}")
+        r = math.log(x / prev)
         mean = lam * mean + (1 - lam) * x
         var = lam * var + (1 - lam) * r * r
     std_dev = max(math.sqrt(var), 3e-4)  # floor: ~3 bps minimum, prevents range collapse in quiet markets
@@ -65,19 +67,19 @@ def calculate_tick_range(
 
     multiplier = float(params.sd_multiplier)
     skew = float(params.downside_skew)
+    range_width = std_dev * multiplier * 2
     if recovery_price is not None and std_dev > 0:
         if invert_price:
             if recovery_price <= 0:
                 raise ValueError("Cannot invert non-positive recovery price")
             recovery_price = 1.0 / recovery_price
         # deviation: log-ratio of recovery_price to current mean, normalized by σ
-        deviation = math.log(recovery_price / mean) / (std_dev * multiplier) if mean > 0 else 0.0
+        deviation = 2.0 * math.log(recovery_price / mean) / range_width if mean > 0 else 0.0
         skew = max(0.2, min(0.8, skew + deviation * 0.15))
         params.downside_skew = Decimal(str(round(skew, 4)))
 
-    half_width = std_dev * multiplier
-    lower_price = max(mean * math.exp(-half_width * skew * 2), 0.0001)
-    upper_price = mean * math.exp(half_width * (1 - skew) * 2)
+    lower_price = max(mean * math.exp(-range_width * skew), 0.0001)
+    upper_price = mean * math.exp(range_width * (1 - skew))
 
     tick_lower = price_to_tick(Decimal(str(lower_price)), token0_decimals, token1_decimals)
     tick_upper = price_to_tick(Decimal(str(upper_price)), token0_decimals, token1_decimals)

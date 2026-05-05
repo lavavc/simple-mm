@@ -6,7 +6,6 @@ invert_price path. All tests are pure-math — no mocks, no DB, no Web3.
 
 from __future__ import annotations
 
-import math
 from decimal import Decimal
 
 import pytest
@@ -107,12 +106,13 @@ class TestCalculateTickRange:
         assert tick_upper % tick_spacing == 0, f"tick_upper {tick_upper} not aligned to spacing {tick_spacing}"
 
     def test_invert_price_mirrors_direct_range(self):
-        """With invert_price=True the inverted series should produce the same tick range
-        as the direct series fed directly (up to tick-spacing rounding).
+        """With invert_price=True the tick range should be within one tick-spacing of the
+        direct range. Exact equality is not expected (EWMA(1/x) ≠ 1/EWMA(x)), but the
+        divergence is bounded by the tick-spacing quantization.
 
         The log-return variance is direction-agnostic; only the mean is inverted.
         After inverting the mean, lower/upper boundaries in log-price space are symmetric,
-        so the same tick range is recovered.
+        so the tick range is recovered up to tick-spacing rounding.
         """
         direct_prices = [Decimal("1400"), Decimal("1420"), Decimal("1410")]
         inverted_prices = [Decimal(1) / p for p in direct_prices]
@@ -139,12 +139,12 @@ class TestCalculateTickRange:
             venue_name="inverted",
         )
 
-        # Allow one tick-spacing of slop from EWMA(1/x) ≠ 1/EWMA(x) mean rounding
-        assert tick_lower_d == tick_lower_i, (
-            f"tick_lower mismatch: direct={tick_lower_d}, inverted={tick_lower_i}"
+        tick_spacing = 24
+        assert abs(tick_lower_d - tick_lower_i) <= tick_spacing, (
+            f"tick_lower diverges by more than one spacing: direct={tick_lower_d}, inverted={tick_lower_i}"
         )
-        assert tick_upper_d == tick_upper_i, (
-            f"tick_upper mismatch: direct={tick_upper_d}, inverted={tick_upper_i}"
+        assert abs(tick_upper_d - tick_upper_i) <= tick_spacing, (
+            f"tick_upper diverges by more than one spacing: direct={tick_upper_d}, inverted={tick_upper_i}"
         )
 
     def test_invert_price_raises_on_non_positive_mean(self):
