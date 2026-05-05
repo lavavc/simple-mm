@@ -1,24 +1,38 @@
 """EWMA calculator and tick range computation."""
 
+import math
+from decimal import Decimal
+
 from engine.math.v3 import price_to_tick, align_tick, constrain_tick_width
+
+# 3 bps minimum std floor — matches production engine/lp/strategy.py
+_STD_FLOOR = 3e-4
 
 
 class EWMACalculator:
-    """Online exponentially-weighted mean and variance."""
+    """Online exponentially-weighted mean and variance of log-returns.
+
+    Variance is computed on log-returns (not raw price deviations) to match
+    the production engine in engine/lp/strategy.py. This makes σ scale-invariant
+    and consistent with tick-space geometry.
+    """
 
     def __init__(self, lam: float) -> None:
         self.lam = lam
         self._mean: float = 0.0
-        self._var: float = 0.0
+        self._var: float = 0.0      # variance of log-returns
         self._n: int = 0
+        self._prev: float | None = None   # previous price for log-return computation
 
     def update(self, x: float) -> None:
         if self._n == 0:
             self._mean = x
             self._var = 0.0
         else:
-            self._var = self.lam * self._var + (1 - self.lam) * (x - self._mean) ** 2
+            r = math.log(x / self._prev) if self._prev and self._prev > 0 else 0.0
+            self._var = self.lam * self._var + (1 - self.lam) * r * r
             self._mean = self.lam * self._mean + (1 - self.lam) * x
+        self._prev = x
         self._n += 1
 
     @property
@@ -27,7 +41,7 @@ class EWMACalculator:
 
     @property
     def std(self) -> float:
-        return self._var ** 0.5
+        return max(self._var ** 0.5, _STD_FLOOR)
 
     @property
     def ready(self) -> bool:
@@ -43,17 +57,23 @@ def calculate_tick_range(
     tick_spacing: int,
     min_tick_width: int,
     max_tick_width: int,
+    center_price: float | None = None,
 ) -> tuple[int, int]:
-    """Compute asymmetric tick range from EWMA state."""
-    mean = ewma.mean
+    """Compute asymmetric tick range from EWMA state.
+
+    Uses log-space bounds (consistent with tick geometry) to match the production
+    engine in engine/lp/strategy.py. The optional center_price parameter overrides
+    ewma.mean as the range center — used by the fair price validation grid to inject
+    inventory-skewed center prices without altering the EWMA state.
+    """
+    mean = center_price if center_price is not None else ewma.mean
     std = ewma.std
+    range_width = std * sd_multiplier * 2
 
-    # Asymmetric: heavier downside
-    lower_price = mean - sd_multiplier * 2 * downside_skew * std
-    upper_price = mean + sd_multiplier * 2 * (1 - downside_skew) * std
-    lower_price = max(lower_price, 0.0001)
+    # Log-space asymmetric bounds: consistent with how ticks are defined (log-price)
+    lower_price = max(mean * math.exp(-range_width * downside_skew), 0.0001)
+    upper_price = mean * math.exp(range_width * (1 - downside_skew))
 
-    from decimal import Decimal
     tick_lower = price_to_tick(Decimal(str(lower_price)), token0_decimals, token1_decimals)
     tick_upper = price_to_tick(Decimal(str(upper_price)), token0_decimals, token1_decimals)
 

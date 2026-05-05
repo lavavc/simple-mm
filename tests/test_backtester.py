@@ -137,6 +137,68 @@ class TestEWMA:
             e.update(x)
         assert e.std > 0
 
+    def test_flat_series_returns_std_floor(self):
+        """Flat price series → log-return variance = 0 → std floored at 3 bps."""
+        e = EWMACalculator(0.99)
+        for _ in range(50):
+            e.update(0.000606)
+        assert e.std == pytest.approx(3e-4, rel=1e-9)
+
+    def test_volatile_series_exceeds_floor(self):
+        """Series with real moves → std > 3 bps floor."""
+        e = EWMACalculator(0.99)
+        import random
+        random.seed(42)
+        price = 0.000606
+        for _ in range(50):
+            price *= 1 + random.gauss(0, 0.02)  # 2% per-step moves
+            e.update(price)
+        assert e.std > 3e-4
+
+    def test_std_scale_invariant(self):
+        """1% moves at price 1.0 and at price 0.001 should give the same log-return std."""
+        moves = [1.01, 0.99, 1.02, 0.98, 1.015, 0.985]
+
+        e_high = EWMACalculator(0.99)
+        price = 1.0
+        for m in moves:
+            price *= m
+            e_high.update(price)
+
+        e_low = EWMACalculator(0.99)
+        price = 0.001
+        for m in moves:
+            price *= m
+            e_low.update(price)
+
+        assert abs(e_high.std - e_low.std) / e_high.std < 0.001
+
+    def test_calculate_tick_range_center_price_override(self):
+        """center_price parameter overrides ewma.mean as range center."""
+        e = EWMACalculator(0.99)
+        for _ in range(20):
+            e.update(0.000606)
+
+        # Range with default center (ewma.mean ≈ 0.000606)
+        t_lo_default, t_hi_default = calculate_tick_range(
+            e, sd_multiplier=2.0, downside_skew=0.5,
+            token0_decimals=6, token1_decimals=6,
+            tick_spacing=10, min_tick_width=100, max_tick_width=10000,
+        )
+
+        # Range with override center at a 10% higher price
+        override = e.mean * 1.10
+        t_lo_override, t_hi_override = calculate_tick_range(
+            e, sd_multiplier=2.0, downside_skew=0.5,
+            token0_decimals=6, token1_decimals=6,
+            tick_spacing=10, min_tick_width=100, max_tick_width=10000,
+            center_price=override,
+        )
+
+        # Override center → both ticks shift up
+        assert t_lo_override > t_lo_default
+        assert t_hi_override > t_hi_default
+
 
 # ─── Pool state ──────────────────────────────────────────────────────────
 
