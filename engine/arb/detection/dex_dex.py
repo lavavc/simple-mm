@@ -2,7 +2,7 @@
 
 import time
 from decimal import Decimal
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import structlog
 
@@ -13,9 +13,13 @@ from engine.market.pool_state import (
     Q96,
 )
 
+if TYPE_CHECKING:
+    from engine.market.fair_price import MarketFairPrice
+
 logger = structlog.get_logger()
 
 _ABSOLUTE_MAX_USD = Decimal("15000")
+_MIN_CONFIDENCE_FOR_DETECTION = 0.2
 _REVERSE_SEARCH_TOL_USD = Decimal("0.01")
 
 from engine.market import gas_oracle as _gas_oracle  # noqa: E402
@@ -190,12 +194,21 @@ def estimate_max_dex_buy_usd_for_cngn(direction: str, wallet_cngn: Decimal) -> d
     return _build_dex_dex_trade_result(direction, low, cngn, usd_out)
 
 
-def find_optimal_dex_arb() -> dict[str, Any] | None:
+def find_optimal_dex_arb(
+    market_fair_price: "MarketFairPrice | None" = None,
+) -> dict[str, Any] | None:
     """
     Fast path: ternary search across both DEX-DEX directions.
     Returns the optimal arb signal dict, or None if pool state is unavailable.
     Callers should schedule seed_pool_states() on None return.
     """
+    if market_fair_price is not None and market_fair_price.confidence < _MIN_CONFIDENCE_FOR_DETECTION:
+        logger.warning(
+            "skipping_dex_dex_detection_low_confidence",
+            confidence=market_fair_price.confidence,
+            threshold=_MIN_CONFIDENCE_FOR_DETECTION,
+        )
+        return None
     gas_base = _gas_oracle.gas_usd_base()
     gas_bsc = _gas_oracle.gas_usd_bsc()
     if gas_base is None or gas_bsc is None:

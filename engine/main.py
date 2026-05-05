@@ -21,6 +21,7 @@ from engine.types import ArbitrageParams, CexParams
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
 from engine.db.repository import open_repository
+from engine.market.fair_price import MarketFairPriceCalculator
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
@@ -274,6 +275,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     logger.info("portfolio_exposure_calculator_initialized")
 
+    market_fair_price_calculator = MarketFairPriceCalculator()
+    logger.info("market_fair_price_calculator_initialized")
+
     arbitrage_engine: ArbitrageEngine | None = None
     if settings.arb_detection_enabled:
         arbitrage_engine = ArbitrageEngine(
@@ -304,6 +308,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         portfolio_exposure_calculator=portfolio_exposure_calculator,
         portfolio_source_registry=portfolio_source_registry,
         lp_managers=lp_managers,
+        market_fair_price_calculator=market_fair_price_calculator,
         system_state_store=db.system_state,
         price_store=db.prices,
         position_store=db.positions,

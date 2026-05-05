@@ -11,11 +11,14 @@ Both functions accept a cex_fee parameter so any CEX venue can be plugged in.
 """
 import time
 from decimal import Decimal
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import structlog
 
 from engine.types import OrderBookDepth
+
+if TYPE_CHECKING:
+    from engine.market.fair_price import MarketFairPrice
 from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0, Q96
 
 logger = structlog.get_logger()
@@ -38,6 +41,7 @@ _SPREAD_CHECK_SIZE = Decimal("5")
 _SPREAD_CHECK_MIN_PROFIT = Decimal("0")
 _ABSOLUTE_MAX_USD = Decimal("5000")
 _REVERSE_SEARCH_TOL_USD = Decimal("0.01")
+_MIN_CONFIDENCE_FOR_DETECTION = 0.2
 
 
 def walk_orderbook_asks(
@@ -265,11 +269,19 @@ def _ternary_search(
 def find_optimal_arb(
     quidax_depth: OrderBookDepth,
     cex_fee: Decimal = QUIDAX_FEE,
+    market_fair_price: "MarketFairPrice | None" = None,
 ) -> dict[str, Any] | None:
     """
     Fast path: find the optimal CEX-DEX trade across all four directions.
     No curve generation. Returns optimal_arb, all_arbs, and prices.
     """
+    if market_fair_price is not None and market_fair_price.confidence < _MIN_CONFIDENCE_FOR_DETECTION:
+        logger.warning(
+            "skipping_cex_dex_detection_low_confidence",
+            confidence=market_fair_price.confidence,
+            threshold=_MIN_CONFIDENCE_FOR_DETECTION,
+        )
+        return None
     if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids:
         return None
 

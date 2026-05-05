@@ -170,7 +170,7 @@ class TestArbExecutingFlag:
             "prices": {"uni-base": "0.00061", "uni-bsc": "0.00061"},
         }
 
-        monkeypatch.setattr(_dex_dex_module, "find_optimal_dex_arb", lambda: profitable_signal)
+        monkeypatch.setattr(_dex_dex_module, "find_optimal_dex_arb", lambda market_fair_price=None: profitable_signal)
         monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: {"cngn_transferred": 160000.0})
 
         tasks_created: list = []

@@ -1,10 +1,11 @@
 """Arbitrage engine: orchestrates CEX-DEX and DEX-DEX detection signals into execution."""
 
 import asyncio
+import functools
 import time
 import uuid
 from decimal import Decimal
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import structlog
 
@@ -28,6 +29,9 @@ from engine.arb.wallet_state import (
 )
 from engine.db.backend import ArbitrageStoreProtocol, HistoryStoreProtocol, PriceStoreProtocol
 from engine.venues.base import VenueAdapter
+
+if TYPE_CHECKING:
+    from engine.market.fair_price import MarketFairPrice
 
 logger = structlog.get_logger()
 
@@ -76,6 +80,7 @@ class ArbitrageEngine:
         self._cex_curve_task: Optional[asyncio.Task[Any]] = None
         self._dex_curve_task: Optional[asyncio.Task[Any]] = None
         self._pool_seed_task: Optional[asyncio.Task[Any]] = None
+        self._market_fair_price: "MarketFairPrice | None" = None
 
     @property
     def enabled(self) -> bool:
@@ -113,7 +118,10 @@ class ArbitrageEngine:
 
         self._reconcile_balances(balances)
         loop = asyncio.get_running_loop()
-        signal = await loop.run_in_executor(None, find_optimal_arb, depth)
+        signal = await loop.run_in_executor(
+            None,
+            functools.partial(find_optimal_arb, depth, market_fair_price=self._market_fair_price),
+        )
         val = await loop.run_in_executor(None, portfolio_value, depth, balances) if balances else {}
 
         if signal is None:
@@ -193,7 +201,10 @@ class ArbitrageEngine:
             await self._seed_account_inventory()
 
         loop = asyncio.get_running_loop()
-        fast = await loop.run_in_executor(None, find_optimal_dex_arb)
+        fast = await loop.run_in_executor(
+            None,
+            functools.partial(find_optimal_dex_arb, market_fair_price=self._market_fair_price),
+        )
         if fast is None:
             asyncio.create_task(seed_dex_pool_states())
             return
@@ -328,6 +339,9 @@ class ArbitrageEngine:
         self.params = params
         self.inventory.params = params
         logger.info("arbitrage_params_updated")
+
+    def set_market_fair_price(self, mfp: "MarketFairPrice") -> None:
+        self._market_fair_price = mfp
 
     def reset_circuit_breaker(self) -> None:
         self.inventory.reset_circuit_breaker()

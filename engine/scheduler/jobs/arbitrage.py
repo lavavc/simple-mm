@@ -33,6 +33,27 @@ class ArbitrageJobs:
         self._broadcast_account_balances = broadcast_account_balances
         self.ws_listener: Any | None = None
 
+    def _refresh_market_fair_price(self) -> None:
+        """Compute and push a fresh MarketFairPrice into the arb engine if possible."""
+        if (
+            self.context.market_fair_price_calculator is None
+            or self.context.arbitrage_engine is None
+        ):
+            return
+        cached_prices = self.context.price_aggregator.get_all_prices()
+        if not cached_prices:
+            return
+        if self.context.blended_calculator is None:
+            return
+        normalized = self.context.blended_calculator.normalizer.normalize(cached_prices)
+        if not normalized:
+            return
+        try:
+            mfp = self.context.market_fair_price_calculator.compute(normalized, cached_prices)
+            self.context.arbitrage_engine.set_market_fair_price(mfp)
+        except ValueError:
+            pass  # no valid venues — skip, keep old cached value
+
     def build_wallet_ws_subscriptions(self) -> dict[str, list[WalletActivitySubscription]]:
         subscriptions: dict[str, list[WalletActivitySubscription]] = {}
         for venue_name in ("uni-base", "uni-bsc"):
@@ -79,6 +100,7 @@ class ArbitrageJobs:
             if gas_oracle.gas_usd_base() is None or gas_oracle.gas_usd_bsc() is None:
                 logger.warning("dex_arb_bootstrap_waiting_for_gas")
                 return
+            self._refresh_market_fair_price()
             await self.context.arbitrage_engine.on_dex_dex_update()
             self.state.dex_bootstrap_pending = False
         except Exception as exc:
@@ -94,6 +116,7 @@ class ArbitrageJobs:
             active_connections = self.ws_listener.active_connections if self.ws_listener else set()
             ws_healthy = {"base", "bsc"}.issubset(active_connections)
             if self.context.arbitrage_engine and not ws_healthy:
+                self._refresh_market_fair_price()
                 await self.context.arbitrage_engine.on_dex_dex_update()
         except Exception as exc:
             logger.error("dex_arb_curve_stream_failed", error=str(exc), exc_info=True)
@@ -129,6 +152,7 @@ class ArbitrageJobs:
             )
 
             if self.context.arbitrage_engine:
+                self._refresh_market_fair_price()
                 balances = await self._get_balances_for_valuation(cast(DepthVenue, quidax))
                 await self.context.arbitrage_engine.on_cex_dex_depth(depth, balances)
         except Exception as exc:
