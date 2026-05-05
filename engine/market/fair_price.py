@@ -16,7 +16,7 @@ import structlog
 
 from engine.market.price_aggregation import NormalizedPrice, FAIR_VALUE_EXCLUDED
 from engine.market.venue_prices import VenuePrice
-from engine.market.pool_state import get_cached_pool_state
+from engine.market.pool_state import get_cached_pool_state, get_swap_flow_imbalance
 
 logger = structlog.get_logger()
 
@@ -278,5 +278,96 @@ class StrategyPriceCalculator:
             executable_price=market_price.price,
             skew_bps=Decimal(str(round(skew_bps, 4))),
             net_cngn=net_cngn,
+            timestamp=int(time.time() * 1000),
+        )
+
+
+# =============================================================================
+# ExecutableFairPrice + ExecutablePriceCalculator (Tier 2)
+# =============================================================================
+
+
+@dataclass
+class ExecutableFairPrice:
+    price: Decimal
+    market_price: Decimal           # passthrough: MarketFairPrice.price
+    imbalance_signal: Decimal       # combined ∈ [-1, 1]
+    imbalance_cex: Decimal | None   # None if no LOB data
+    imbalance_dex: dict[str, Decimal]  # per DEX pool
+    timestamp: int
+
+
+class ExecutablePriceCalculator:
+    """Stoikov microprice: market_price + (spread/2) × imbalance.
+
+    Imbalance = w_cex × imbalance_cex + (1 − w_cex) × mean(imbalance_dex_v).
+    When cex_imbalance is None, uses only DEX imbalance (w_cex=0).
+    Maximum price shift is bounded by spread/2 ≈ 5–15 bps.
+    """
+
+    def __init__(
+        self,
+        w_cex: float = 0.6,
+        pool_addresses: dict[str, str] | None = None,
+    ):
+        self._w_cex = w_cex
+        if pool_addresses is not None:
+            self._pool_addresses = pool_addresses
+        else:
+            from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+            from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+            self._pool_addresses = {
+                "uni-base": UNISWAP_BASE_POOL_READ_CONFIG.pool_address,
+                "uni-bsc": UNISWAP_BSC_POOL_READ_CONFIG.pool_address,
+            }
+
+    def compute(
+        self,
+        market_price: MarketFairPrice,
+        normalized_prices: dict[str, NormalizedPrice],
+        cex_imbalance: float | None = None,
+    ) -> ExecutableFairPrice:
+        # 1. Per-DEX imbalance
+        imbalance_dex: dict[str, float] = {}
+        for venue, pool_addr in self._pool_addresses.items():
+            imb = get_swap_flow_imbalance(pool_addr)
+            if imb is not None:
+                imbalance_dex[venue] = imb
+
+        # 2. Combined imbalance (clamped to [-1, 1])
+        dex_values = list(imbalance_dex.values())
+        if cex_imbalance is not None and dex_values:
+            mean_dex = sum(dex_values) / len(dex_values)
+            combined = self._w_cex * cex_imbalance + (1 - self._w_cex) * mean_dex
+        elif cex_imbalance is not None:
+            combined = cex_imbalance
+        elif dex_values:
+            combined = sum(dex_values) / len(dex_values)
+        else:
+            combined = 0.0
+        combined = max(-1.0, min(1.0, combined))
+
+        # 3. Spread estimate (mean half-spread across contributing CEX venues)
+        spreads = []
+        for venue, np in normalized_prices.items():
+            mid = float(np.raw_quote.mid)
+            bid = float(np.raw_quote.bid)
+            ask = float(np.raw_quote.ask)
+            if mid > 0 and ask > bid:
+                spreads.append((ask - bid) / mid)
+        mean_spread = sum(spreads) / len(spreads) if spreads else 0.001  # 10 bps fallback
+        half_spread = mean_spread / 2
+
+        # 4. Executable price
+        executable = float(market_price.price) + half_spread * float(market_price.price) * combined
+        executable = max(executable, 0.0)
+
+        # 5. Return
+        return ExecutableFairPrice(
+            price=Decimal(str(round(executable, 10))),
+            market_price=market_price.price,
+            imbalance_signal=Decimal(str(round(combined, 6))),
+            imbalance_cex=Decimal(str(round(cex_imbalance, 6))) if cex_imbalance is not None else None,
+            imbalance_dex={v: Decimal(str(round(imb, 6))) for v, imb in imbalance_dex.items()},
             timestamp=int(time.time() * 1000),
         )

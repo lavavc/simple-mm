@@ -5,6 +5,7 @@ Supports V3-compatible pools (AssetChain) and V4 pools (Uniswap Base/BSC).
 
 import asyncio
 import time
+from collections import deque
 from decimal import Decimal, getcontext
 from typing import Any
 
@@ -75,6 +76,10 @@ STATE_VIEW_ABI = [
 # Cache to prevent making duplicate RPC calls for liquidity if the tick hasn't changed.
 # Structure: { pool_address: {"tick": int, "liquidity": Decimal, "sqrt_p": Decimal, "timestamp": float} }
 _POOL_CACHE: dict[str, dict[str, Any]] = {}
+
+_SWAP_FLOW_RING: dict[str, deque[tuple[float, float]]] = {}
+# pool_address → deque of (signed_usd_volume, timestamp_s) — max 20 entries
+_SWAP_FLOW_RING_MAXLEN = 20
 
 def get_cached_pool_state(pool_address: str) -> tuple[Decimal | None, Decimal | None, float | None, Decimal | None]:
     """Retrieve the latest known state from memory without network calls."""
@@ -185,6 +190,15 @@ def update_pool_state_from_event(pool_id: str, sqrt_p: int, liquidity: int, tick
     }
 
 
+def _cngn_direction_from_swap(pool_config: V4PoolReadConfig, amount0: int, amount1: int) -> int:
+    """Return +1 if cNGN was bought (outflow from pool), -1 if sold (inflow), 0 if indeterminate."""
+    if pool_config.token0_symbol == "cNGN":
+        return 1 if amount0 < 0 else -1
+    if pool_config.token1_symbol == "cNGN":
+        return 1 if amount1 < 0 else -1
+    return 0
+
+
 def handle_v4_swap_log(pool_config: V4PoolReadConfig, log: dict[str, Any]) -> None:
     """Parse a V4 Swap event log, update pool cache and record volume — zero RPC calls."""
     try:
@@ -201,6 +215,8 @@ def handle_v4_swap_log(pool_config: V4PoolReadConfig, log: dict[str, Any]) -> No
         # [96:128] liquidity (uint128)
         # [128:160] tick (int24, signed)
         # [160:192] fee (uint24)
+        amount0 = int.from_bytes(data_bytes[0:32], "big", signed=True)
+        amount1 = int.from_bytes(data_bytes[32:64], "big", signed=True)
         sqrt_p = int.from_bytes(data_bytes[64:96], "big")
         liquidity = int.from_bytes(data_bytes[96:128], "big")
         tick = int.from_bytes(data_bytes[128:160], "big", signed=True)
@@ -208,11 +224,37 @@ def handle_v4_swap_log(pool_config: V4PoolReadConfig, log: dict[str, Any]) -> No
 
         update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
 
-        from engine.market.dex_volume import event_id_from_log, record_live_v4_swap_volume
+        from engine.market.dex_volume import event_id_from_log, record_live_v4_swap_volume, stable_volume_usd_from_v4_swap
         record_live_v4_swap_volume(pool_config, data_bytes, event_id=event_id_from_log(log))
+
+        direction = _cngn_direction_from_swap(pool_config, amount0, amount1)
+        if direction != 0:
+            usd_vol = float(stable_volume_usd_from_v4_swap(data_bytes, pool_config))
+            ring = _SWAP_FLOW_RING.setdefault(
+                pool_config.pool_address,
+                deque(maxlen=_SWAP_FLOW_RING_MAXLEN),
+            )
+            ring.append((direction * usd_vol, time.time()))
+
         logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
     except Exception as e:
         logger.error("v4_swap_event_parse_failed", error=str(e))
+
+
+def get_swap_flow_imbalance(pool_address: str) -> float | None:
+    """Return signed flow imbalance ∈ [-1, 1] from the last N swaps.
+
+    Positive = net buy pressure on cNGN. Returns None if no swaps recorded.
+    """
+    ring = _SWAP_FLOW_RING.get(pool_address)
+    if not ring:
+        return None
+    buy_vol = sum(v for v, _ in ring if v > 0)
+    sell_vol = sum(-v for v, _ in ring if v < 0)
+    total = buy_vol + sell_vol
+    if total <= 0:
+        return None
+    return (buy_vol - sell_vol) / total
 
 
 async def seed_pool_states() -> None:
