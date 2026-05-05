@@ -82,7 +82,8 @@ USDT_NGN_VENUES = frozenset({"bybit"})
 # Venues excluded from VWAP/TWAP fair-value calculations.
 # blockradar: rate-setter, not a price taker.
 # assetchain: watch-only, negligible volume — included in price display but not fair-value math.
-FAIR_VALUE_EXCLUDED = frozenset({"blockradar", "assetchain"})
+# bybit: P2P survey data, not an actionable quote — reference display only.
+FAIR_VALUE_EXCLUDED = frozenset({"blockradar", "assetchain", "bybit"})
 
 
 class PriceNormalizer:
