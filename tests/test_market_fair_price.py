@@ -9,6 +9,7 @@ from engine.types import PriceQuote
 from engine.market.price_aggregation import NormalizedPrice
 from engine.market.venue_prices import VenuePrice
 from engine.market.fair_price import (
+    MarketFairPrice,
     MarketFairPriceCalculator,
     StrategyFairPrice,
     StrategyPriceCalculator,
@@ -238,8 +239,7 @@ class TestMarketFairPriceCalculator:
 # =============================================================================
 
 
-def _make_market_price(price: Decimal) -> "MarketFairPrice":
-    from engine.market.fair_price import MarketFairPrice
+def _make_market_price(price: Decimal) -> MarketFairPrice:
     return MarketFairPrice(
         price=price,
         weights={"quidax": Decimal("1.0")},

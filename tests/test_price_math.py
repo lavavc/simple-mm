@@ -160,7 +160,8 @@ class TestComputeEwmaStats:
         prices = [Decimal("0.000606")] * 50
         mean, std = compute_ewma_stats(prices, params)
         assert abs(mean - 0.000606) < 1e-8
-        assert std == 0.0 or std < 1e-10
+        # No log-returns → variance is 0 → floored to 3 bps = 3e-4
+        assert std == pytest.approx(3e-4, rel=1e-9)
 
     def test_volatile_prices_higher_std_dev(self, volatile_prices):
         from engine.lp.strategy import compute_ewma_stats
@@ -237,7 +238,8 @@ class TestCalculateTickRangeRecoverySkew:
         t_low_base, t_up_base = self._tick_range(prices, params, recovery_price=None)
 
         params2 = self._make_params(downside_skew="0.4")
-        recovery_low = mean - 2 * std
+        # std is log-return std; use log-space offset to keep recovery_price positive
+        recovery_low = mean * math.exp(-2 * std)
         t_low_low, t_up_low = self._tick_range(prices, params2, recovery_price=recovery_low)
 
         # Less downside protection → upper bound should move UP (more room above)
@@ -249,9 +251,9 @@ class TestCalculateTickRangeRecoverySkew:
         prices = self._prices(mean=0.000606, std=0.000001)  # tiny std_dev
         mean, std = self._ewma(prices, params)
 
-        # Extreme prices far outside any realistic range
-        very_high = mean + 1000 * max(std, 1e-10)
-        very_low = mean - 1000 * max(std, 1e-10)
+        # Extreme prices far outside any realistic range (log-space offsets keep prices positive)
+        very_high = mean * math.exp(50 * max(std, 1e-10))
+        very_low = mean * math.exp(-50 * max(std, 1e-10))
 
         # Should not raise, and ticks should be finite
         t_low_hi, t_up_hi = self._tick_range(prices, self._make_params(), recovery_price=very_high)

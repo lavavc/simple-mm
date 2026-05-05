@@ -310,11 +310,12 @@ class TestVWAP:
 
         blended = await calc.get_blended_price(force_refresh=True)
 
+        # bybit is in FAIR_VALUE_EXCLUDED — its volume must not enter the VWAP.
+        # uni-bsc volume is None → skipped. Only quidax + uni-base contribute.
         expected = (
-            (Decimal("1") / Decimal("1436")) * Decimal("1000000")
-            + Decimal("0.000697") * Decimal("50000")
+            Decimal("0.000697") * Decimal("50000")
             + Decimal("0.000696") * Decimal("200000")
-        ) / Decimal("1250000")
+        ) / Decimal("250000")
 
         assert abs(blended.vwap - expected) < Decimal("0.0000001")
         assert blended.dex_volume_24h_usd["uni-base"] == Decimal("200000")
