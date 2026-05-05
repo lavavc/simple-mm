@@ -217,3 +217,66 @@ class MarketFairPriceCalculator:
             confidence=confidence,
             timestamp=int(time.time() * 1000),
         )
+
+
+# =============================================================================
+# StrategyFairPrice + StrategyPriceCalculator (Tier 3)
+# =============================================================================
+
+
+@dataclass
+class StrategyFairPrice:
+    price: Decimal          # inventory-adjusted cNGN/USD center for LP range
+    executable_price: Decimal   # passthrough: the market_price.price used as input
+    skew_bps: Decimal       # signed, tanh-capped; negative = long cNGN (want to sell)
+    net_cngn: Decimal       # total cNGN held across all venues at computation time
+    timestamp: int          # ms since epoch
+
+
+class StrategyPriceCalculator:
+    """Avellaneda-Stoikov reservation price (simplified, tanh-bounded).
+
+    Applies an inventory skew to the executable (Tier 1) price:
+        normalized_imbalance = (net_cngn - target_cngn) / max_scale
+        raw_skew_bps = -beta_bps × normalized_imbalance
+        skew_bps = max_skew_bps × tanh(raw_skew_bps / max_skew_bps)
+        strategy_price = executable_price × (1 + skew_bps / 10_000)
+    """
+
+    def __init__(
+        self,
+        target_cngn: Decimal = Decimal("0"),
+        max_scale: Decimal = Decimal("1000000"),
+        beta_bps: float = 10.0,
+        max_skew_bps: float = 20.0,
+        variance_tracker: VarianceTracker | None = None,
+    ):
+        if max_scale <= 0:
+            raise ValueError("max_scale must be positive")
+        self._target_cngn = Decimal(str(target_cngn))
+        self._max_scale = Decimal(str(max_scale))
+        self._beta_bps = beta_bps
+        self._max_skew_bps = max_skew_bps
+        self._variance_tracker = variance_tracker if variance_tracker is not None else VarianceTracker()
+
+    @property
+    def variance_tracker(self) -> VarianceTracker:
+        return self._variance_tracker
+
+    def compute(self, market_price: MarketFairPrice, net_cngn: Decimal) -> StrategyFairPrice:
+        """Compute inventory-skewed strategy price from a MarketFairPrice and current cNGN holdings."""
+        self._variance_tracker.update(float(market_price.price))
+
+        normalized_imbalance = float(net_cngn - self._target_cngn) / float(self._max_scale)
+        raw_skew_bps = -self._beta_bps * normalized_imbalance
+        skew_bps = self._max_skew_bps * math.tanh(raw_skew_bps / self._max_skew_bps)
+
+        strategy_price = market_price.price * (Decimal("1") + Decimal(str(skew_bps)) / Decimal("10000"))
+
+        return StrategyFairPrice(
+            price=strategy_price,
+            executable_price=market_price.price,
+            skew_bps=Decimal(str(round(skew_bps, 4))),
+            net_cngn=net_cngn,
+            timestamp=int(time.time() * 1000),
+        )

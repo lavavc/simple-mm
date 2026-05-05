@@ -10,6 +10,8 @@ from engine.market.price_aggregation import NormalizedPrice
 from engine.market.venue_prices import VenuePrice
 from engine.market.fair_price import (
     MarketFairPriceCalculator,
+    StrategyFairPrice,
+    StrategyPriceCalculator,
     VarianceTracker,
 )
 
@@ -229,3 +231,79 @@ class TestMarketFairPriceCalculator:
         weight_low = float(result.weights["quidax"])
         weight_high = float(result.weights["uni-base"])
         assert weight_high > weight_low
+
+
+# =============================================================================
+# TestStrategyPriceCalculator
+# =============================================================================
+
+
+def _make_market_price(price: Decimal) -> "MarketFairPrice":
+    from engine.market.fair_price import MarketFairPrice
+    return MarketFairPrice(
+        price=price,
+        weights={"quidax": Decimal("1.0")},
+        confidence=0.7,
+        timestamp=int(time.time() * 1000),
+    )
+
+
+class TestStrategyPriceCalculator:
+    def test_flat_inventory_zero_skew(self):
+        """net_cngn == target_cngn → skew_bps == 0, strategy_price == market price."""
+        calc = StrategyPriceCalculator(target_cngn=Decimal("500000"))
+        mp = _make_market_price(Decimal("0.000700"))
+        result = calc.compute(mp, net_cngn=Decimal("500000"))
+
+        assert float(result.skew_bps) == pytest.approx(0.0, abs=1e-9)
+        assert float(result.price) == pytest.approx(float(mp.price), rel=1e-9)
+        assert result.executable_price == mp.price
+
+    def test_long_cngn_negative_skew(self):
+        """net_cngn > target_cngn → negative skew (long cNGN, want to sell → lower price)."""
+        calc = StrategyPriceCalculator(target_cngn=Decimal("0"), beta_bps=10.0)
+        mp = _make_market_price(Decimal("0.000700"))
+        result = calc.compute(mp, net_cngn=Decimal("500000"))
+
+        assert float(result.skew_bps) < 0.0
+        assert float(result.price) < float(mp.price)
+
+    def test_short_cngn_positive_skew(self):
+        """net_cngn < target_cngn → positive skew (short cNGN, want to buy → higher price)."""
+        calc = StrategyPriceCalculator(target_cngn=Decimal("1000000"), beta_bps=10.0)
+        mp = _make_market_price(Decimal("0.000700"))
+        result = calc.compute(mp, net_cngn=Decimal("500000"))
+
+        assert float(result.skew_bps) > 0.0
+        assert float(result.price) > float(mp.price)
+
+    def test_extreme_inventory_capped_by_tanh(self):
+        """net_cngn 100× larger than max_scale → |skew_bps| stays below max_skew_bps."""
+        max_skew_bps = 20.0
+        calc = StrategyPriceCalculator(
+            target_cngn=Decimal("0"),
+            max_scale=Decimal("1000000"),
+            beta_bps=10.0,
+            max_skew_bps=max_skew_bps,
+        )
+        mp = _make_market_price(Decimal("0.000700"))
+        # 100× max_scale to drive tanh saturation
+        result = calc.compute(mp, net_cngn=Decimal("100000000"))
+
+        assert abs(float(result.skew_bps)) < max_skew_bps * 1.001
+
+    def test_variance_tracker_updated(self):
+        """After 20 compute() calls with varying prices, variance_tracker.sigma_sq exceeds floor."""
+        floor_bps = 3.0
+        floor = (floor_bps / 10_000) ** 2
+        calc = StrategyPriceCalculator(variance_tracker=VarianceTracker(floor_bps=floor_bps))
+
+        base_price = Decimal("0.000700")
+        for i in range(20):
+            # 5 bps alternating moves — small enough to pass jump filter
+            factor = Decimal("1.0005") if i % 2 == 0 else Decimal("0.9995")
+            base_price = base_price * factor
+            mp = _make_market_price(base_price)
+            calc.compute(mp, net_cngn=Decimal("0"))
+
+        assert calc.variance_tracker.sigma_sq > floor
