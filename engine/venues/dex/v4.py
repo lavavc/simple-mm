@@ -10,7 +10,7 @@ import structlog
 from eth_abi import encode  # type: ignore[attr-defined]
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
-from web3.middleware import geth_poa_middleware  # type: ignore[attr-defined]
+from web3.middleware import geth_poa_middleware # type: ignore[attr-defined]
 from web3.types import BlockData, Nonce, TxParams, TxReceipt, Wei
 
 from engine.types import Position, PriceQuote, TxResult

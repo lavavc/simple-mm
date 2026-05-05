@@ -1,10 +1,19 @@
 """Unit tests for backtester modules."""
 
 import math
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from backtester.data import BurnEvent, MintEvent, SwapEvent, V4Event, load_events, load_v4_events
+from backtester.run import (
+    WindowSpec,
+    WindowResult,
+    aggregate_window_results,
+    evaluate_rolling_windows,
+    generate_windows,
+)
 from engine.math.v3 import (
     tick_to_price,
     price_to_tick,
@@ -17,6 +26,7 @@ from engine.math.v3 import (
 from backtester.strategy import EWMACalculator, calculate_tick_range
 from backtester.pool_state import PoolState
 from backtester.params import generate_grid, BacktestParams
+from backtester.simulator import PANCAKESWAP_POOL, UNISWAP_BASE_POOL, simulate_pool
 from backtester import metrics
 
 
@@ -41,7 +51,7 @@ class TestTickMath:
         assert align_tick(-15, 10, "down") == -20
 
     def test_align_tick_up(self):
-        assert align_tick(100, 10, "up") == 110
+        assert align_tick(100, 10, "up") == 100
         assert align_tick(101, 10, "up") == 110
 
     def test_constrain_tick_width_min(self):
@@ -229,3 +239,130 @@ class TestMetrics:
         # Same loss with less drawdown scores better (less negative)
         val2 = metrics.composite_objective(-0.2, 0.1)
         assert val2 > val
+
+
+class TestV4Loader:
+    def test_v4_loader_sorts_and_preserves_fields(self, tmp_path):
+        csv_path = tmp_path / "v4.csv"
+        csv_path.write_text(
+            "\n".join(
+                [
+                    "block_time,chain,pool_id,event_type,tx_hash,log_index,block_number,sqrt_price_x96,tick,active_liquidity,fee_rate,amount0,amount1,amount_usd,cngn_usd_price,token0_symbol,token1_symbol",
+                    "2026-01-01T00:00:01+00:00,base,pool,swap,0x2,4,11,1,20,2000,0.0015,1,2,3,0.0007,cNGN,USDC",
+                    "2026-01-01T00:00:01+00:00,base,pool,swap,0x1,1,10,1,10,1000,0.0015,1,2,3,0.0006,cNGN,USDC",
+                ]
+            )
+        )
+        events = load_v4_events(str(csv_path), pool_id="pool")
+        assert [event.tx_hash for event in events] == ["0x1", "0x2"]
+        assert events[0].active_liquidity == 1000
+        assert events[1].fee_rate == pytest.approx(0.0015)
+
+    def test_legacy_loader_infers_cngn_price(self, tmp_path):
+        csv_path = tmp_path / "legacy.csv"
+        csv_path.write_text(
+            "\n".join(
+                [
+                    "block_time,blockchain,pool_address,event_type,amount_usd,token_bought_symbol,token_bought_amount,token_sold_symbol,token_sold_amount,tick_lower,tick_upper,liquidity_delta,mint_burn_amount0,mint_burn_amount1",
+                    "2026-01-01T00:00:00+00:00,base,pool,swap,10,USDC,1,cNGN,1500,,,,,",
+                ]
+            )
+        )
+        events = load_events(str(csv_path), pool_address="pool")
+        assert len(events) == 1
+        assert events[0].cngn_usd_price == pytest.approx(1 / 1500)
+
+
+class TestRollingWindows:
+    def _make_v4_event(self, day: int, minute: int, event_type: str = "swap", price: float = 0.0007, tick: int = 0):
+        timestamp = datetime(2026, 1, 1, tzinfo=None).astimezone()
+        block_time = timestamp + timedelta(days=day, minutes=minute)
+        return V4Event(
+            block_time=block_time,
+            chain="base",
+            pool_id="pool",
+            event_type=event_type,
+            tx_hash=f"0x{day:02d}{minute:02d}{event_type}",
+            log_index=minute,
+            block_number=day * 100 + minute,
+            sqrt_price_x96=2**96,
+            tick=tick,
+            active_liquidity=1_000_000,
+            fee_rate=0.0015,
+            amount0=1.0,
+            amount1=1.0,
+            amount_usd=100.0,
+            cngn_usd_price=price,
+            token0_symbol="cNGN",
+            token1_symbol="USDC",
+        )
+
+    def test_window_generation_30_7_7(self):
+        base = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        events = [
+            V4Event(base + timedelta(days=i), "base", "pool", "swap", f"0x{i}", 0, i, 1, 0, 1, 0.0015, 1, 1, 1, 0.0007, "cNGN", "USDC")
+            for i in range(60)
+        ]
+        windows = generate_windows(events, WindowSpec())
+        assert windows[0].train_start == base
+        assert windows[0].val_start == base + timedelta(days=30)
+        assert windows[1].train_start == base + timedelta(days=7)
+
+    def test_skip_behavior_when_thresholds_fail(self):
+        base = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        events = [
+            V4Event(base + timedelta(days=i), "base", "pool", "swap", f"0x{i}", 0, i, 1, 0, 1, 0.0015, 1, 1, 1, 0.0007, "cNGN", "USDC")
+            for i in range(40)
+        ]
+        results = evaluate_rolling_windows(
+            events,
+            UNISWAP_BASE_POOL,
+            [BacktestParams()],
+            WindowSpec(min_train_swaps=500, min_train_liquidity_events=1, min_val_swaps=100),
+            top_n=1,
+            max_windows=1,
+        )
+        assert len(results) == 1
+        assert results[0].skipped_reason == "train_swaps_below_min"
+
+    def test_aggregate_selection_prefers_better_score_then_tiebreakers(self):
+        p1 = BacktestParams(sd_multiplier=1.0)
+        p2 = BacktestParams(sd_multiplier=2.0)
+        rows = [
+            WindowResult(0, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, p1, {"composite": 1.0}, {"composite": 0.6, "net_return": 0.1, "max_drawdown": 0.1, "divergent_loss": -0.01, "time_in_range": 0.5, "rebalance_count": 1}, 1, 1),
+            WindowResult(1, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, p1, {"composite": 1.0}, {"composite": 0.7, "net_return": 0.11, "max_drawdown": 0.12, "divergent_loss": -0.02, "time_in_range": 0.5, "rebalance_count": 1}, 1, 2),
+            WindowResult(0, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, p2, {"composite": 0.9}, {"composite": 0.5, "net_return": 0.09, "max_drawdown": 0.1, "divergent_loss": -0.03, "time_in_range": 0.4, "rebalance_count": 2}, 2, 2),
+            WindowResult(1, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, p2, {"composite": 0.9}, {"composite": 0.4, "net_return": 0.08, "max_drawdown": 0.09, "divergent_loss": -0.02, "time_in_range": 0.4, "rebalance_count": 2}, 2, 1),
+        ]
+        aggregates = aggregate_window_results(rows)
+        assert aggregates[0]["sd_multiplier"] == 1.0
+
+
+class TestSimulationCompatibility:
+    def test_v4_pool_fee_assumptions(self):
+        assert UNISWAP_BASE_POOL.fee_rate == pytest.approx(0.0015)
+        assert PANCAKESWAP_POOL.fee_rate == pytest.approx(0.0001)
+
+    def test_divergent_loss_zero_for_cash_only(self):
+        event = V4Event(
+            block_time=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+            chain="base",
+            pool_id="pool",
+            event_type="swap",
+            tx_hash="0x1",
+            log_index=0,
+            block_number=1,
+            sqrt_price_x96=2**96,
+            tick=0,
+            active_liquidity=1_000_000,
+            fee_rate=0.0015,
+            amount0=1.0,
+            amount1=1.0,
+            amount_usd=100.0,
+            cngn_usd_price=0.0007,
+            token0_symbol="cNGN",
+            token1_symbol="USDC",
+        )
+        sim = simulate_pool([event], BacktestParams(gas_cost_usd=1000.0), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        assert sim.final_value == pytest.approx(500.0)
+        assert sim.divergent_loss == pytest.approx(0.0)

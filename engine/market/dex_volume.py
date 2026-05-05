@@ -13,9 +13,9 @@ from collections.abc import Mapping
 
 import structlog
 from eth_typing import HexStr
-from web3.types import LogReceipt
 from web3 import AsyncWeb3
 from web3.middleware import async_geth_poa_middleware  # type: ignore[attr-defined]
+from web3.types import LogReceipt
 
 from engine.config import settings
 from engine.types import V4PoolReadConfig
