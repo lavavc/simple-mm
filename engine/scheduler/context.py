@@ -13,7 +13,7 @@ from engine.db.backend import (
     SystemStateStoreProtocol,
     VenueConfigStoreProtocol,
 )
-from engine.market.fair_price import MarketFairPriceCalculator
+from engine.market.fair_price import MarketFairPriceCalculator, StrategyPriceCalculator
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.price_aggregation import BlendedPriceCalculator
 from engine.market.venue_prices import VenuePriceAggregator
@@ -47,3 +47,4 @@ class SchedulerContext:
     venue_config_store: VenueConfigStoreProtocol
     action_store: ActionStoreProtocol
     market_fair_price_calculator: MarketFairPriceCalculator | None = field(default=None)
+    strategy_price_calculator: StrategyPriceCalculator | None = field(default=None)

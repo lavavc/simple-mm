@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from engine.market.fair_price import StrategyFairPrice
 
 import structlog
 
@@ -64,15 +67,23 @@ class LPRebalancer:
             return None
         return float(raw_amount) / float(10 ** decimals)
 
-    async def check_and_rebalance(self, venue: LPVenueProtocol) -> None:
+    async def check_and_rebalance(
+        self,
+        venue: LPVenueProtocol,
+        strategy_fair_price: "StrategyFairPrice | None" = None,
+    ) -> None:
         """Check position state; rebalance if out of range past threshold."""
         async with self._get_venue_lock(venue.name):
             if not self._auto_actions_allowed():
                 logger.info("lp_auto_management_skipped", venue=venue.name, reason="disabled")
                 return
-            await self._check_and_rebalance_locked(venue)
+            await self._check_and_rebalance_locked(venue, strategy_fair_price=strategy_fair_price)
 
-    async def _check_and_rebalance_locked(self, venue: LPVenueProtocol) -> None:
+    async def _check_and_rebalance_locked(
+        self,
+        venue: LPVenueProtocol,
+        strategy_fair_price: "StrategyFairPrice | None" = None,
+    ) -> None:
         """Check position state; rebalance if out of range past threshold."""
         token_ids = venue.get_owned_positions()
         if len(token_ids) > 1:
@@ -107,7 +118,7 @@ class LPRebalancer:
                 threshold1 = int(settings.lp_topup_threshold_cngn * 10 ** venue.config.token1_decimals)
             if amount0 >= threshold0 or amount1 >= threshold1:
                 logger.info("no_position_funds_available_minting", venue=venue.name)
-                await self._create_position_locked(venue, triggered_by="auto:initial_mint")
+                await self._create_position_locked(venue, triggered_by="auto:initial_mint", strategy_fair_price=strategy_fair_price)
             else:
                 logger.debug(
                     "no_dex_position_insufficient_funds",
@@ -159,6 +170,7 @@ class LPRebalancer:
                     position.token_id,
                     position,
                     triggered_by="auto:range_exit_rebalance",
+                    strategy_fair_price=strategy_fair_price,
                 )
         else:
             amount0, amount1 = venue.calculate_mint_amounts()
@@ -190,6 +202,7 @@ class LPRebalancer:
         venue: LPVenueProtocol,
         recovery_price: float | None = None,
         triggered_by: str = "auto:initial_mint",
+        strategy_fair_price: "StrategyFairPrice | None" = None,
     ) -> bool:
         """Fetch price history, compute tick range, balance funds, mint."""
         async with self._get_venue_lock(venue.name):
@@ -197,6 +210,7 @@ class LPRebalancer:
                 venue,
                 recovery_price=recovery_price,
                 triggered_by=triggered_by,
+                strategy_fair_price=strategy_fair_price,
             )
 
     async def _record_ratio_swap(
@@ -244,6 +258,7 @@ class LPRebalancer:
         venue: LPVenueProtocol,
         recovery_price: float | None = None,
         triggered_by: str = "auto:initial_mint",
+        strategy_fair_price: "StrategyFairPrice | None" = None,
     ) -> bool:
         """Fetch venue-local price history, compute tick range, balance funds, mint."""
         try:
@@ -268,6 +283,7 @@ class LPRebalancer:
                 venue.config.token0_decimals, venue.config.token1_decimals,
                 invert_price=venue.config.invert_price,
                 recovery_price=recovery_price, venue_name=venue.name,
+                strategy_fair_price=strategy_fair_price,
             )
             if recovery_price is not None:
                 await self._venue_config_store.update_venue_config(
@@ -418,6 +434,7 @@ class LPRebalancer:
         token_id: int,
         position: Any,
         triggered_by: str = "auto:range_exit_rebalance",
+        strategy_fair_price: "StrategyFairPrice | None" = None,
     ) -> bool:
         """Remove existing position and recreate with recovery_price."""
         async with self._get_venue_lock(venue.name):
@@ -426,6 +443,7 @@ class LPRebalancer:
                 token_id,
                 position,
                 triggered_by=triggered_by,
+                strategy_fair_price=strategy_fair_price,
             )
 
     async def _rebalance_locked(
@@ -434,6 +452,7 @@ class LPRebalancer:
         token_id: int,
         position: Any,
         triggered_by: str,
+        strategy_fair_price: "StrategyFairPrice | None" = None,
     ) -> bool:
         """Remove existing position and recreate with recovery_price."""
         try:
@@ -471,6 +490,7 @@ class LPRebalancer:
                 venue,
                 recovery_price=recovery_price,
                 triggered_by=triggered_by,
+                strategy_fair_price=strategy_fair_price,
             )
 
         except Exception as e:

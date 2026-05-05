@@ -19,7 +19,7 @@ from engine.db.backend import (
     VenueConfigStoreProtocol,
 )
 from engine.lp.rebalancer import LPRebalancer
-from engine.market.fair_price import MarketFairPriceCalculator
+from engine.market.fair_price import MarketFairPriceCalculator, StrategyPriceCalculator
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.portfolio_registry import (
     DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
@@ -61,6 +61,7 @@ class TradingScheduler:
         portfolio_source_registry: tuple[PortfolioSourceDescriptor, ...] = DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         lp_managers: dict[str, Any] | None = None,
         market_fair_price_calculator: MarketFairPriceCalculator | None = None,
+        strategy_price_calculator: StrategyPriceCalculator | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         price_store: PriceStoreProtocol | None = None,
         position_store: PositionStoreProtocol | None = None,
@@ -114,6 +115,7 @@ class TradingScheduler:
             venue_config_store=venue_config_store,
             action_store=action_store,
             market_fair_price_calculator=market_fair_price_calculator,
+            strategy_price_calculator=strategy_price_calculator,
         )
         self.lp_rebalancer = LPRebalancer(
             broadcast=broadcast,

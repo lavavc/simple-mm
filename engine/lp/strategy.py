@@ -1,12 +1,18 @@
 """Pure LP strategy math — no web3 imports, no adapter state."""
 
+from __future__ import annotations
+
 import math
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import structlog
 
 from engine.config import DexParams
 from engine.venues.dex.shared import price_to_tick
+
+if TYPE_CHECKING:
+    from engine.market.fair_price import StrategyFairPrice
 
 logger = structlog.get_logger()
 
@@ -46,6 +52,7 @@ def calculate_tick_range(
     invert_price: bool = False,
     recovery_price: float | None = None,
     venue_name: str = "",
+    strategy_fair_price: "StrategyFairPrice | None" = None,
 ) -> tuple[int, int]:
     """Calculate optimal tick range using EWMA SD-based strategy.
 
@@ -64,6 +71,18 @@ def calculate_tick_range(
         if mean <= 0:
             raise ValueError("Cannot invert non-positive mean price")
         mean = 1.0 / mean  # invert the mean; std_dev is unchanged (log-return variance is direction-agnostic)
+
+    # Override range center with StrategyFairPrice when available.
+    # StrategyFairPrice.price is always in cNGN/USD space (same as mean after any inversion).
+    if strategy_fair_price is not None:
+        sfp_price = float(strategy_fair_price.price)
+        if sfp_price > 0:
+            mean = sfp_price
+            logger.info(
+                "range_center_overridden_by_strategy_fair_price",
+                venue=venue_name,
+                strategy_price=sfp_price,
+            )
 
     multiplier = float(params.sd_multiplier)
     skew = float(params.downside_skew)
