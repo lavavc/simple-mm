@@ -1,6 +1,5 @@
 """Tests for MarketFairPrice (Tier 1) and VarianceTracker."""
 
-import math
 import time
 from decimal import Decimal
 
@@ -10,7 +9,6 @@ from engine.types import PriceQuote
 from engine.market.price_aggregation import NormalizedPrice
 from engine.market.venue_prices import VenuePrice
 from engine.market.fair_price import (
-    MarketFairPrice,
     MarketFairPriceCalculator,
     VarianceTracker,
 )
@@ -56,7 +54,7 @@ def _make_venue_price(
     volume_24h_usd: Decimal | None = None,
     cngn_usd: Decimal | None = None,
 ) -> VenuePrice:
-    mid = cngn_usd or Decimal("0.000700")
+    mid = cngn_usd if cngn_usd is not None else Decimal("0.000700")
     quote = PriceQuote(
         source=venue,
         timestamp=int(time.time() * 1000),
@@ -206,7 +204,11 @@ class TestMarketFairPriceCalculator:
         assert float(result.weights["quidax"]) == pytest.approx(1.0, rel=1e-6)
 
     def test_higher_volume_venue_gets_higher_weight(self):
-        """Two venues, identical recency/spread, 10× volume diff → higher weight for larger vol."""
+        """Two venues with identical recency and spread; 10× volume drives higher combined weight.
+
+        Both _volume_weight and _liquidity_weight (CEX proxy path) read from np.volume_24h_usd,
+        so a 10× volume difference produces a >10× combined factor difference.
+        """
         calc = _calc_no_pool()
 
         low_vol = Decimal("10000")

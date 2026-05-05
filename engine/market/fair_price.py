@@ -108,7 +108,6 @@ class MarketFairPriceCalculator:
         self,
         venue: str,
         np: NormalizedPrice,
-        vp: VenuePrice,
     ) -> float:
         """1 / max(spread_bps, 1.0). For DEX point prices, use fee as proxy."""
         quote = np.raw_quote
@@ -160,12 +159,7 @@ class MarketFairPriceCalculator:
         venue_prices: dict[str, VenuePrice],
     ) -> MarketFairPrice:
         """Compute MarketFairPrice from already-fetched, already-normalized venue prices."""
-        # Non-excluded venues that were attempted
-        total_venues = sum(
-            1 for v in normalized_prices if v not in FAIR_VALUE_EXCLUDED
-        )
-        # Also count venues that are in venue_prices but not in normalized_prices
-        # (they failed normalization and count as missing for confidence)
+        # All non-excluded venues attempted (including those that failed normalization)
         all_attempted = {v for v in venue_prices if v not in FAIR_VALUE_EXCLUDED}
         total_venues = len(all_attempted)
 
@@ -182,7 +176,7 @@ class MarketFairPriceCalculator:
 
             age = vp.age_seconds
             recency = self._recency_weight(age)
-            spread_q = self._spread_quality(venue, np, vp)
+            spread_q = self._spread_quality(venue, np)
             vol_w = self._volume_weight(np)
             liq_w = self._liquidity_weight(venue, np)
 
@@ -191,7 +185,7 @@ class MarketFairPriceCalculator:
             contributing_venues.append(venue)
 
         total_raw = sum(raw_weights.values())
-        if total_raw == 0.0:
+        if total_raw <= 0.0:
             raise ValueError("No valid venues for MarketFairPrice computation")
 
         # Normalize weights to sum to 1
@@ -200,10 +194,9 @@ class MarketFairPriceCalculator:
         }
 
         # Weighted blended price
-        blended = sum(
-            (norm_weights[v] * normalized_prices[v].cngn_usd for v in contributing_venues),
-            Decimal("0"),
-        )
+        blended = Decimal("0")
+        for v in contributing_venues:
+            blended += norm_weights[v] * normalized_prices[v].cngn_usd
 
         # Confidence: same formula as BlendedPriceCalculator._compute_confidence
         missing = total_venues - len(contributing_venues)
