@@ -305,8 +305,11 @@ class BaseDexAdapter(VenueAdapter, ABC):
                 lp_position = LPPosition(
                     token_id=str(pos_state.token_id),
                     liquidity=str(pos_state.liquidity),
+                    tick_lower=pos_state.tick_lower,
+                    tick_upper=pos_state.tick_upper,
                     range_min=pos_state.price_lower,
                     range_max=pos_state.price_upper,
+                    current_price=pos_state.current_price,
                     in_range=pos_state.in_range,
                 )
 

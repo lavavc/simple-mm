@@ -66,8 +66,12 @@ class LPPosition(BaseModel):
 
     token_id: Optional[str] = None
     liquidity: Optional[str] = None  # BigInt as string
+    tick_lower: Optional[int] = None
+    tick_upper: Optional[int] = None
     range_min: Optional[Decimal] = None
     range_max: Optional[Decimal] = None
+    current_price: Optional[Decimal] = None
+    price_position_fraction: Optional[Decimal] = None  # 0=start of range, 1=end of range
     in_range: Optional[bool] = None
     our_share_pct: Optional[Decimal] = None  # our_liquidity / pool_liquidity * 100
     snapshot_status: Literal["live", "degraded"] = "live"

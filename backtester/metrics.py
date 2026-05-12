@@ -106,6 +106,66 @@ def rebalance_cost_ratio(sim: SimResult) -> float:
     return sim.total_rebalance_cost / sim.total_fees
 
 
+def fee_to_cost_ratio(sim: SimResult) -> float:
+    if sim.total_rebalance_cost == 0.0:
+        return float("inf") if sim.total_fees > 0 else 0.0
+    return sim.total_fees / sim.total_rebalance_cost
+
+
+def transaction_cost_ratio(sim: SimResult) -> float:
+    if sim.total_fees == 0.0:
+        return float("inf") if sim.total_transaction_cost > 0 else 0.0
+    return sim.total_transaction_cost / sim.total_fees
+
+
+def fee_to_transaction_cost_ratio(sim: SimResult) -> float:
+    if sim.total_transaction_cost == 0.0:
+        return float("inf") if sim.total_fees > 0 else 0.0
+    return sim.total_fees / sim.total_transaction_cost
+
+
+def harvest_win_rate(sim: SimResult) -> float:
+    harvests = [episode for episode in sim.episodes if episode.exit_reason == "harvest_upward"]
+    if not harvests:
+        return 0.0
+    return sum(1 for episode in harvests if episode.net_pnl > 0) / len(harvests)
+
+
+def average_profitable_traversal(sim: SimResult) -> float:
+    traversals = [
+        episode.range_traversal_fraction
+        for episode in sim.episodes
+        if episode.net_pnl > 0 and episode.exit_reason != "end_of_data"
+    ]
+    if not traversals:
+        return 0.0
+    return sum(traversals) / len(traversals)
+
+
+def median_episode_duration_seconds(sim: SimResult) -> float:
+    durations = sorted(episode.duration_seconds for episode in sim.episodes)
+    if not durations:
+        return 0.0
+    mid = len(durations) // 2
+    if len(durations) % 2:
+        return durations[mid]
+    return (durations[mid - 1] + durations[mid]) / 2
+
+
+def churn_rate_per_day(sim: SimResult) -> float:
+    if sim.start_time is None or sim.end_time is None:
+        return 0.0
+    elapsed_days = max((sim.end_time - sim.start_time).total_seconds() / 86400, 1 / 86400)
+    return sim.rebalance_count / elapsed_days
+
+
+def average_active_liquidity_share(sim: SimResult) -> float:
+    shares = [episode.active_liquidity_share for episode in sim.episodes if episode.active_liquidity_share >= 0]
+    if not shares:
+        return 0.0
+    return sum(shares) / len(shares)
+
+
 def composite_objective(net_return: float, max_dd: float) -> float:
     """Risk-adjusted net return: net_return - max_drawdown.
 

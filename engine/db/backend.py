@@ -40,6 +40,13 @@ class PriceHistoryStoreProtocol(Protocol):
 @runtime_checkable
 class PositionStoreProtocol(Protocol):
     async def insert_position(self, position: Position) -> None: ...
+    async def get_position_snapshots(
+        self,
+        venue: str,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -50,6 +57,13 @@ class ActionStoreProtocol(Protocol):
         venue: str | None = None,
         action_type: str | None = None,
         limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+    async def get_actions_in_window(
+        self,
+        venue: str,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        limit: int = 5000,
     ) -> list[dict[str, Any]]: ...
 
 

@@ -122,6 +122,7 @@ class TradingScheduler:
             price_store=price_store,
             venue_config_store=venue_config_store,
             action_store=action_store,
+            position_store=position_store,
             auto_management_enabled=lambda: self.state.trading_enabled,
         )
         self.position_jobs = PositionJobs(self.context, self.state)

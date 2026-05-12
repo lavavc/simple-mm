@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -11,7 +12,9 @@ if TYPE_CHECKING:
 import structlog
 
 from engine.config import settings
-from engine.db.backend import ActionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
+from engine.db.backend import ActionStoreProtocol, PositionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
+from engine.lp.policy import LPPolicyAction, LPPolicyContext, decide_lp_policy
+from engine.lp.research import LPResearchReport, analyze_lp_strategy
 from engine.lp import strategy
 from engine.lp.types import LPBalanceSwapResult
 from engine.lp.uniswap_v4 import LPVenueProtocol
@@ -28,12 +31,14 @@ class LPRebalancer:
         price_store: PriceStoreProtocol,
         venue_config_store: VenueConfigStoreProtocol,
         action_store: ActionStoreProtocol,
+        position_store: PositionStoreProtocol | None = None,
         auto_management_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.broadcast = broadcast
         self._price_store = price_store
         self._venue_config_store = venue_config_store
         self._action_store = action_store
+        self._position_store = position_store
         self._auto_management_enabled = auto_management_enabled or (lambda: True)
         self._venue_locks: dict[str, asyncio.Lock] = {}
         self._active_multi_position_incidents: dict[str, str] = {}
@@ -66,6 +71,38 @@ class LPRebalancer:
         if raw_amount is None:
             return None
         return float(raw_amount) / float(10 ** decimals)
+
+    async def _build_research_report(self, venue_name: str) -> LPResearchReport | None:
+        if self._position_store is None:
+            return None
+        now_ms = int(time.time() * 1000)
+        from_ts = now_ms - (30 * 24 * 60 * 60 * 1000)
+        action_rows = await self._action_store.get_actions_in_window(venue_name, from_ts=from_ts)
+        snapshot_rows = await self._position_store.get_position_snapshots(venue_name, from_ts=from_ts)
+        if not snapshot_rows:
+            return None
+        return analyze_lp_strategy(venue_name, action_rows, snapshot_rows)
+
+    async def _policy_decision(
+        self,
+        venue: LPVenueProtocol,
+        position: Any,
+        strategy_fair_price: "StrategyFairPrice | None" = None,
+    ) -> tuple[LPPolicyAction, str] | None:
+        report = await self._build_research_report(venue.name)
+        context = LPPolicyContext(
+            has_position=True,
+            open_episode=report.open_episode if report is not None else None,
+            summary=report.summary if report is not None else None,
+            current_price=position.current_price,
+            range_min=position.price_lower,
+            range_max=position.price_upper,
+            strategy_fair_price=(strategy_fair_price.price if strategy_fair_price is not None else None),
+        )
+        decision = decide_lp_policy(context)
+        if decision.action == LPPolicyAction.HOLD:
+            return None
+        return decision.action, decision.reason
 
     async def check_and_rebalance(
         self,
@@ -173,6 +210,29 @@ class LPRebalancer:
                     strategy_fair_price=strategy_fair_price,
                 )
         else:
+            decision = await self._policy_decision(
+                venue,
+                position,
+                strategy_fair_price=strategy_fair_price,
+            )
+            if decision is not None:
+                action, reason = decision
+                if action in {LPPolicyAction.HARVEST, LPPolicyAction.RESET, LPPolicyAction.DEFEND}:
+                    logger.info(
+                        "lp_policy_triggered_recenter",
+                        venue=venue.name,
+                        token_id=position.token_id,
+                        action=action.value,
+                        reason=reason,
+                    )
+                    await self._rebalance_locked(
+                        venue,
+                        position.token_id,
+                        position,
+                        triggered_by=f"auto:policy_{action.value}",
+                        strategy_fair_price=strategy_fair_price,
+                    )
+                    return
             amount0, amount1 = venue.calculate_mint_amounts()
             # Thresholds are expressed as human amounts; apply to the correct token by symbol.
             is_token0_cngn = "NGN" in venue.config.token0_symbol.upper()

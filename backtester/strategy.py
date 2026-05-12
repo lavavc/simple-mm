@@ -84,3 +84,69 @@ def calculate_tick_range(
         tick_lower, tick_upper, min_tick_width, max_tick_width, tick_spacing
     )
     return tick_lower, tick_upper
+
+
+def calculate_fixed_pct_tick_range(
+    center_price: float,
+    width_pct: float,
+    token0_decimals: int,
+    token1_decimals: int,
+    tick_spacing: int,
+    min_tick_width: int,
+    max_tick_width: int,
+    lower_width_pct: float | None = None,
+    upper_width_pct: float | None = None,
+) -> tuple[int, int]:
+    """Compute a tick range from normalized percent width around a native price.
+
+    ``width_pct`` is interpreted as the full range width. If explicit
+    lower/upper widths are not provided, the range is symmetric around
+    ``center_price``.
+    """
+    if center_price <= 0:
+        raise ValueError("center_price must be positive")
+    if width_pct <= 0 and (lower_width_pct is None or upper_width_pct is None):
+        raise ValueError("width_pct must be positive")
+
+    lower_pct = lower_width_pct if lower_width_pct is not None else width_pct / 2
+    upper_pct = upper_width_pct if upper_width_pct is not None else width_pct / 2
+    if lower_pct < 0 or upper_pct < 0:
+        raise ValueError("range widths must be non-negative")
+    if lower_pct == 0 and upper_pct == 0:
+        raise ValueError("range width cannot be zero")
+
+    lower_price = max(center_price * (1 - lower_pct), 1e-18)
+    upper_price = center_price * (1 + upper_pct)
+    tick_lower = price_to_tick(Decimal(str(lower_price)), token0_decimals, token1_decimals)
+    tick_upper = price_to_tick(Decimal(str(upper_price)), token0_decimals, token1_decimals)
+
+    tick_lower = align_tick(tick_lower, tick_spacing, "down")
+    tick_upper = align_tick(tick_upper, tick_spacing, "up")
+    tick_lower, tick_upper = constrain_tick_width(
+        tick_lower, tick_upper, min_tick_width, max_tick_width, tick_spacing
+    )
+    return tick_lower, tick_upper
+
+
+def calculate_fixed_tick_range(
+    center_tick: int,
+    tick_width: int,
+    tick_spacing: int,
+    min_tick_width: int,
+    max_tick_width: int,
+    downside_skew: float = 0.5,
+) -> tuple[int, int]:
+    """Compute an aligned tick range with a fixed total tick width."""
+    if tick_width <= 0:
+        raise ValueError("tick_width must be positive")
+    if not 0 <= downside_skew <= 1:
+        raise ValueError("downside_skew must be between 0 and 1")
+
+    lower_width = int(round(tick_width * downside_skew))
+    upper_width = tick_width - lower_width
+    tick_lower = align_tick(center_tick - lower_width, tick_spacing, "down")
+    tick_upper = align_tick(center_tick + upper_width, tick_spacing, "up")
+    tick_lower, tick_upper = constrain_tick_width(
+        tick_lower, tick_upper, min_tick_width, max_tick_width, tick_spacing
+    )
+    return tick_lower, tick_upper

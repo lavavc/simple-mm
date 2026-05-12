@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -20,11 +20,15 @@ try:
 except ImportError:  # web3.py v6
     from web3.middleware import geth_poa_middleware as POA_MIDDLEWARE
 from engine.config import settings
+from backtester.clmm_math import cngn_price_from_sqrt_price_x96
 
 _V4_LP_INCREASE_LIQUIDITY = 0
 _V4_LP_DECREASE_LIQUIDITY = 1
 _V4_LP_MINT_POSITION = 2
 _V4_LP_BURN_POSITION = 3
+_V4_LP_TAKE_PAIR = 17
+V4_INITIALIZE_TOPIC = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"
+V4_MODIFY_LIQUIDITY_TOPIC = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec"
 V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
 _Q96 = 2**96
 
@@ -180,6 +184,26 @@ class ExportRow:
     cngn_usd_price: float
     token0_symbol: str
     token1_symbol: str
+    event_source: str = ""
+    sender: str | None = None
+    recipient: str | None = None
+    currency0: str | None = None
+    currency1: str | None = None
+    hooks: str | None = None
+    tick_spacing: int | None = None
+    tick_lower: int | None = None
+    tick_upper: int | None = None
+    liquidity_delta: int | None = None
+    salt: str | None = None
+    amount0_raw: str | None = None
+    amount1_raw: str | None = None
+
+
+@dataclass(frozen=True)
+class ResumeMetadata:
+    row_count: int
+    max_block: int | None
+    initialize_found: bool
 
 
 POOL_CONFIGS = {
@@ -199,7 +223,7 @@ POOL_CONFIGS = {
         token1_decimals=6,
         fee_rate=1500 / 1_000_000,
         invert_price=False,
-        default_start_block=40_255_567,
+        default_start_block=42_926_879,
         chunk_size=5_000,
     ),
     "uni-bsc": ExportPoolConfig(
@@ -218,7 +242,7 @@ POOL_CONFIGS = {
         token1_decimals=6,
         fee_rate=1200 / 1_000_000,
         invert_price=True,
-        default_start_block=73_736_863,
+        default_start_block=84_655_203,
         chunk_size=5_000,
     ),
 }
@@ -248,6 +272,25 @@ def _fetch_logs_with_debug(w3: Web3, params: dict[str, Any], context: str) -> li
                 body = "<unavailable>"
         _log(f"{context}: HTTPError {exc}. params={params}. body={body}")
         raise
+
+
+def _candidate_modify_liquidity_tx_hashes(
+    w3: Web3,
+    config: ExportPoolConfig,
+    from_block: int,
+    to_block: int,
+) -> list[str]:
+    logs = _fetch_logs_with_debug(
+        w3,
+        {
+            "address": Web3.to_checksum_address(config.position_manager),
+            "fromBlock": from_block,
+            "toBlock": to_block,
+        },
+        context=f"[{config.name}] position manager logs {from_block:,}->{to_block:,}",
+    )
+    tx_hashes = {coerce_hex_str(log["transactionHash"]) for log in logs if log.get("transactionHash")}
+    return sorted(tx_hashes)
 
 
 def _rpc_block_tag(block_number: int | str) -> str:
@@ -280,11 +323,21 @@ def _int_from_rpc(value: Any) -> int:
         if value.startswith(("0x", "0X")):
             return int(value, 16)
         return int(value)
+    if isinstance(value, (bytes, bytearray)):
+        return int.from_bytes(value, "big")
     return int(value)
 
 
 def _int128_from_word(word: bytes) -> int:
     return int.from_bytes(word, "big", signed=True)
+
+
+def _word_int(data_bytes: bytes, index: int, *, signed: bool = False) -> int:
+    return int.from_bytes(data_bytes[index * 32:(index + 1) * 32], "big", signed=signed)
+
+
+def _word_hex(data_bytes: bytes, index: int) -> str:
+    return "0x" + data_bytes[index * 32:(index + 1) * 32].hex()
 
 
 def _datetime_from_block_ts(timestamp: int) -> str:
@@ -306,6 +359,15 @@ def derive_cngn_price(amount0_raw: int, amount1_raw: int, config: ExportPoolConf
     return stable_amount / cngn_amount
 
 
+def _cngn_price_from_pool_state(sqrt_price_x96: int, config: ExportPoolConfig) -> float:
+    return cngn_price_from_sqrt_price_x96(
+        sqrt_price_x96,
+        config.token0_decimals,
+        config.token1_decimals,
+        config.invert_price,
+    )
+
+
 def decode_swap_row(log: dict[str, Any], block_timestamp: int, config: ExportPoolConfig) -> ExportRow:
     data_hex = coerce_hex_str(log["data"])
     data_bytes = bytes.fromhex(data_hex[2:])
@@ -315,7 +377,7 @@ def decode_swap_row(log: dict[str, Any], block_timestamp: int, config: ExportPoo
     active_liquidity = int.from_bytes(data_bytes[96:128], "big")
     tick = int.from_bytes(data_bytes[128:160], "big", signed=True)
     fee_word = int.from_bytes(data_bytes[160:192], "big")
-    cngn_price = derive_cngn_price(amount0_raw, amount1_raw, config)
+    cngn_price = _cngn_price_from_pool_state(sqrt_price_x96, config)
     amount0 = Decimal(amount0_raw) / Decimal(10 ** config.token0_decimals)
     amount1 = Decimal(amount1_raw) / Decimal(10 ** config.token1_decimals)
     stable_amount, _ = _stable_and_cngn_amounts(amount0, amount1, config)
@@ -334,9 +396,96 @@ def decode_swap_row(log: dict[str, Any], block_timestamp: int, config: ExportPoo
         amount0=float(amount0),
         amount1=float(amount1),
         amount_usd=float(stable_amount),
-        cngn_usd_price=float(cngn_price),
+        cngn_usd_price=cngn_price,
         token0_symbol=config.token0_symbol,
         token1_symbol=config.token1_symbol,
+        event_source="pool_manager_swap",
+        sender=_address_from_topic(log["topics"][2]) if len(log.get("topics", [])) > 2 else None,
+        amount0_raw=str(amount0_raw),
+        amount1_raw=str(amount1_raw),
+    )
+
+
+def decode_initialize_row(log: dict[str, Any], block_timestamp: int, config: ExportPoolConfig) -> ExportRow:
+    data_hex = coerce_hex_str(log["data"])
+    data_bytes = bytes.fromhex(data_hex[2:])
+    fee = _word_int(data_bytes, 0)
+    tick_spacing = _word_int(data_bytes, 1, signed=True)
+    hooks = Web3.to_checksum_address("0x" + _word_hex(data_bytes, 2)[-40:])
+    sqrt_price_x96 = _word_int(data_bytes, 3)
+    tick = _word_int(data_bytes, 4, signed=True)
+    cngn_price = _cngn_price_from_pool_state(sqrt_price_x96, config)
+    topics = log.get("topics", [])
+    return ExportRow(
+        block_time=_datetime_from_block_ts(block_timestamp),
+        chain=config.chain,
+        pool_id=config.pool_id,
+        event_type="initialize",
+        tx_hash=coerce_hex_str(log["transactionHash"]),
+        log_index=int(log["logIndex"]),
+        block_number=int(log["blockNumber"]),
+        sqrt_price_x96=sqrt_price_x96,
+        tick=tick,
+        active_liquidity=0,
+        fee_rate=fee / 1_000_000,
+        amount0=0.0,
+        amount1=0.0,
+        amount_usd=0.0,
+        cngn_usd_price=cngn_price,
+        token0_symbol=config.token0_symbol,
+        token1_symbol=config.token1_symbol,
+        event_source="pool_manager_initialize",
+        currency0=_address_from_topic(topics[2]) if len(topics) > 2 else None,
+        currency1=_address_from_topic(topics[3]) if len(topics) > 3 else None,
+        hooks=hooks,
+        tick_spacing=tick_spacing,
+    )
+
+
+def decode_modify_liquidity_row(
+    log: dict[str, Any],
+    block_timestamp: int,
+    pool_state: tuple[int, int, int, float],
+    config: ExportPoolConfig,
+) -> ExportRow:
+    data_hex = coerce_hex_str(log["data"])
+    data_bytes = bytes.fromhex(data_hex[2:])
+    tick_lower = _word_int(data_bytes, 0, signed=True)
+    tick_upper = _word_int(data_bytes, 1, signed=True)
+    liquidity_delta = _word_int(data_bytes, 2, signed=True)
+    salt = _word_hex(data_bytes, 3)
+    sqrt_price_x96, tick, active_liquidity, cngn_usd_price = pool_state
+    if liquidity_delta > 0:
+        event_type = "mint"
+    elif liquidity_delta < 0:
+        event_type = "burn"
+    else:
+        event_type = "collect"
+    topics = log.get("topics", [])
+    return ExportRow(
+        block_time=_datetime_from_block_ts(block_timestamp),
+        chain=config.chain,
+        pool_id=config.pool_id,
+        event_type=event_type,
+        tx_hash=coerce_hex_str(log["transactionHash"]),
+        log_index=int(log["logIndex"]),
+        block_number=int(log["blockNumber"]),
+        sqrt_price_x96=sqrt_price_x96,
+        tick=tick,
+        active_liquidity=active_liquidity,
+        fee_rate=config.fee_rate,
+        amount0=0.0,
+        amount1=0.0,
+        amount_usd=0.0,
+        cngn_usd_price=cngn_usd_price,
+        token0_symbol=config.token0_symbol,
+        token1_symbol=config.token1_symbol,
+        event_source="pool_manager_modify_liquidity",
+        sender=_address_from_topic(topics[2]) if len(topics) > 2 else None,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        liquidity_delta=liquidity_delta,
+        salt=salt,
     )
 
 
@@ -376,6 +525,46 @@ def _decode_burn_param(raw: bytes) -> int:
     return int(token_id)
 
 
+def _decode_take_pair_param(raw: bytes) -> tuple[str, str, str]:
+    currency0, currency1, recipient = decode(["address", "address", "address"], raw)
+    return str(currency0), str(currency1), Web3.to_checksum_address(str(recipient))
+
+
+def _address_from_topic(topic: Any) -> str:
+    topic_hex = coerce_hex_str(topic)
+    return Web3.to_checksum_address("0x" + topic_hex[-40:])
+
+
+def _extract_take_pair_amounts(
+    receipt: dict[str, Any],
+    recipient: str,
+    config: ExportPoolConfig,
+) -> tuple[Decimal, Decimal]:
+    amount0_raw = 0
+    amount1_raw = 0
+    token0 = Web3.to_checksum_address(config.token0_address)
+    token1 = Web3.to_checksum_address(config.token1_address)
+    recipient = Web3.to_checksum_address(recipient)
+
+    for log in receipt["logs"]:
+        if len(log["topics"]) < 3:
+            continue
+        if coerce_hex_str(log["topics"][0]).lower() != _TRANSFER_EVENT_TOPIC:
+            continue
+        if _address_from_topic(log["topics"][2]) != recipient:
+            continue
+        token_addr = Web3.to_checksum_address(log["address"])
+        amount_raw = _int_from_rpc(log["data"])
+        if token_addr == token0:
+            amount0_raw += amount_raw
+        elif token_addr == token1:
+            amount1_raw += amount_raw
+
+    amount0 = Decimal(amount0_raw) / Decimal(10 ** config.token0_decimals)
+    amount1 = Decimal(amount1_raw) / Decimal(10 ** config.token1_decimals)
+    return amount0, amount1
+
+
 def _amounts_from_liquidity(
     liquidity: int,
     tick_lower: int,
@@ -399,16 +588,14 @@ def _amounts_from_liquidity(
     return amount0, amount1
 
 
-def _state_at_block(state_view: Any, config: ExportPoolConfig, block_number: int) -> tuple[int, int, float]:
+def _state_at_block(state_view: Any, config: ExportPoolConfig, block_number: int) -> tuple[int, int, int, float]:
     pool_id_bytes = bytes.fromhex(config.pool_id[2:])
     slot0 = state_view.functions.getSlot0(pool_id_bytes).call(block_identifier=block_number)
     sqrt_price_x96 = int(slot0[0])
     tick = int(slot0[1])
     liquidity = int(state_view.functions.getLiquidity(pool_id_bytes).call(block_identifier=block_number))
-    cngn_price = sqrt_price_x96_to_decimal(sqrt_price_x96, config.token0_decimals, config.token1_decimals)
-    if config.invert_price:
-        cngn_price = Decimal(1) / cngn_price if cngn_price > 0 else Decimal(0)
-    return sqrt_price_x96, tick, liquidity, float(cngn_price)
+    cngn_price = _cngn_price_from_pool_state(sqrt_price_x96, config)
+    return sqrt_price_x96, tick, liquidity, cngn_price
 
 
 def _find_minted_token_id(receipt: dict[str, Any], position_manager: str) -> int | None:
@@ -420,6 +607,105 @@ def _find_minted_token_id(receipt: dict[str, Any], position_manager: str) -> int
             continue
         return int(coerce_hex_str(topics[3]), 16)
     return None
+
+
+def _token_id_targets_pool(
+    token_id: int,
+    token_state: dict[int, PositionTokenState],
+    position_manager: Any,
+    config: ExportPoolConfig,
+) -> bool:
+    position = token_state.get(token_id)
+    if position is not None:
+        return position.pool_id == config.pool_id
+    return _position_state_from_chain(token_id, position_manager, config) is not None
+
+
+def _signed_int24(value: int) -> int:
+    value &= (1 << 24) - 1
+    if value >= 1 << 23:
+        value -= 1 << 24
+    return value
+
+
+def _int_from_position_info(info: Any) -> int:
+    if isinstance(info, int):
+        return info
+    if isinstance(info, (bytes, bytearray)):
+        return int.from_bytes(info, "big")
+    return int(coerce_hex_str(info), 16)
+
+
+def _decode_position_info(info: Any) -> tuple[str, int, int]:
+    """Decode v4 periphery PositionInfo.
+
+    PositionInfo packs:
+    200 bits poolId | 24 bits tickUpper | 24 bits tickLower | 8 bits hasSubscriber.
+    """
+    value = _int_from_position_info(info)
+    tick_lower = _signed_int24(value >> 8)
+    tick_upper = _signed_int24(value >> 32)
+    pool_prefix = value >> 56
+    return f"0x{pool_prefix:050x}", tick_lower, tick_upper
+
+
+def _pool_id_prefix_matches(pool_prefix: str, config: ExportPoolConfig) -> bool:
+    expected = int(config.pool_id, 16) >> 56
+    return int(pool_prefix, 16) == expected
+
+
+def _read_existing_export_metadata(output_path: str) -> ResumeMetadata:
+    row_count = 0
+    max_block: int | None = None
+    initialize_found = False
+    try:
+        handle = open(output_path, newline="")
+    except FileNotFoundError:
+        return ResumeMetadata(row_count=0, max_block=None, initialize_found=False)
+
+    with handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            row_count += 1
+            if row.get("event_type") == "initialize":
+                initialize_found = True
+            block_number = row.get("block_number")
+            if block_number in (None, ""):
+                continue
+            try:
+                block_int = int(block_number)
+            except ValueError:
+                continue
+            max_block = block_int if max_block is None else max(max_block, block_int)
+    return ResumeMetadata(row_count=row_count, max_block=max_block, initialize_found=initialize_found)
+
+
+def _position_state_from_chain(
+    token_id: int,
+    position_manager: Any,
+    config: ExportPoolConfig,
+    block_number: int | None = None,
+) -> PositionTokenState | None:
+    call_kwargs = {"block_identifier": block_number} if block_number is not None and block_number >= 0 else {}
+    try:
+        pool_key, info = position_manager.functions.getPoolAndPositionInfo(token_id).call(**call_kwargs)
+    except Exception:
+        return None
+    if not _pool_key_matches(pool_key, config):
+        return None
+    pool_prefix, tick_lower, tick_upper = _decode_position_info(info)
+    if not _pool_id_prefix_matches(pool_prefix, config):
+        return None
+    try:
+        liquidity = int(position_manager.functions.getPositionLiquidity(token_id).call(**call_kwargs))
+    except Exception:
+        liquidity = 0
+    return PositionTokenState(
+        pool_id=config.pool_id,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        liquidity=liquidity,
+    )
 
 
 def find_initialize_block(w3: Web3, config: ExportPoolConfig) -> int:
@@ -449,6 +735,7 @@ def build_liquidity_rows_for_tx(
     receipt: dict[str, Any],
     block_timestamp: int,
     state_view: Any,
+    position_manager: Any,
     config: ExportPoolConfig,
     token_state: dict[int, PositionTokenState],
 ) -> list[ExportRow]:
@@ -456,9 +743,12 @@ def build_liquidity_rows_for_tx(
     actions, params = decode_modify_liquidities_payload(tx["input"])
     if not actions:
         return rows
+    block_number = _int_from_rpc(tx["blockNumber"])
+    resolve_block = max(block_number - 1, 0)
     sqrt_price_x96, tick, active_liquidity, cngn_usd_price = _state_at_block(
-        state_view, config, _int_from_rpc(tx["blockNumber"])
+        state_view, config, block_number
     )
+    tx_targets_pool = False
 
     for action, raw in zip(actions, params):
         action_code = action if isinstance(action, int) else action
@@ -468,6 +758,7 @@ def build_liquidity_rows_for_tx(
             pool_key, tick_lower, tick_upper, liquidity_delta, amount0_max, amount1_max = _decode_mint_param(raw)
             if not _pool_key_matches(pool_key, config):
                 continue
+            tx_targets_pool = True
             token_id = _find_minted_token_id(receipt, config.position_manager)
             if token_id is not None:
                 token_state[token_id] = PositionTokenState(
@@ -476,65 +767,17 @@ def build_liquidity_rows_for_tx(
                     tick_upper=tick_upper,
                     liquidity=liquidity_delta,
                 )
-            amount0 = Decimal(amount0_max) / Decimal(10 ** config.token0_decimals)
-            amount1 = Decimal(amount1_max) / Decimal(10 ** config.token1_decimals)
-            stable_amount, _ = _stable_and_cngn_amounts(amount0, amount1, config)
-            rows.append(
-                ExportRow(
-                    block_time=_datetime_from_block_ts(block_timestamp),
-                    chain=config.chain,
-                    pool_id=config.pool_id,
-                    event_type="mint",
-                    tx_hash=coerce_hex_str(tx["hash"]),
-                    log_index=int(receipt["logs"][-1]["logIndex"]) if receipt["logs"] else 0,
-                    block_number=_int_from_rpc(tx["blockNumber"]),
-                    sqrt_price_x96=sqrt_price_x96,
-                    tick=tick,
-                    active_liquidity=active_liquidity,
-                    fee_rate=config.fee_rate,
-                    amount0=float(amount0),
-                    amount1=float(amount1),
-                    amount_usd=float(stable_amount),
-                    cngn_usd_price=cngn_usd_price,
-                    token0_symbol=config.token0_symbol,
-                    token1_symbol=config.token1_symbol,
-                )
-            )
         elif action_code in {_V4_LP_INCREASE_LIQUIDITY, _V4_LP_DECREASE_LIQUIDITY}:
             token_id, liquidity_delta = _decode_increase_or_decrease_param(raw)
             position = token_state.get(token_id)
+            if position is None:
+                position = _position_state_from_chain(token_id, position_manager, config, resolve_block)
+                if position is not None:
+                    token_state[token_id] = position
             if position is None or position.pool_id != config.pool_id:
                 continue
-            amount0, amount1 = _amounts_from_liquidity(
-                liquidity_delta,
-                position.tick_lower,
-                position.tick_upper,
-                sqrt_price_x96,
-                config,
-            )
-            stable_amount, _ = _stable_and_cngn_amounts(amount0, amount1, config)
+            tx_targets_pool = True
             event_type = "mint" if action_code == _V4_LP_INCREASE_LIQUIDITY else "burn"
-            rows.append(
-                ExportRow(
-                    block_time=_datetime_from_block_ts(block_timestamp),
-                    chain=config.chain,
-                    pool_id=config.pool_id,
-                    event_type=event_type,
-                    tx_hash=coerce_hex_str(tx["hash"]),
-                    log_index=int(receipt["logs"][-1]["logIndex"]) if receipt["logs"] else 0,
-                    block_number=_int_from_rpc(tx["blockNumber"]),
-                    sqrt_price_x96=sqrt_price_x96,
-                    tick=tick,
-                    active_liquidity=active_liquidity,
-                    fee_rate=config.fee_rate,
-                    amount0=float(amount0),
-                    amount1=float(amount1),
-                    amount_usd=float(stable_amount),
-                    cngn_usd_price=cngn_usd_price,
-                    token0_symbol=config.token0_symbol,
-                    token1_symbol=config.token1_symbol,
-                )
-            )
             new_liquidity = position.liquidity + liquidity_delta if event_type == "mint" else max(position.liquidity - liquidity_delta, 0)
             token_state[token_id] = PositionTokenState(
                 pool_id=position.pool_id,
@@ -544,7 +787,43 @@ def build_liquidity_rows_for_tx(
             )
         elif action_code == _V4_LP_BURN_POSITION:
             token_id = _decode_burn_param(raw)
+            position = token_state.get(token_id)
+            if position is None:
+                position = _position_state_from_chain(token_id, position_manager, config, resolve_block)
+                if position is not None:
+                    token_state[token_id] = position
+            if position is not None and position.pool_id == config.pool_id:
+                tx_targets_pool = True
             token_state.pop(token_id, None)
+        elif action_code == _V4_LP_TAKE_PAIR:
+            if not tx_targets_pool:
+                continue
+            _currency0, _currency1, recipient = _decode_take_pair_param(raw)
+            amount0, amount1 = _extract_take_pair_amounts(receipt, recipient, config)
+            stable_amount, _ = _stable_and_cngn_amounts(amount0, amount1, config)
+            rows.append(
+                ExportRow(
+                    block_time=_datetime_from_block_ts(block_timestamp),
+                    chain=config.chain,
+                    pool_id=config.pool_id,
+                    event_type="collect",
+                    tx_hash=coerce_hex_str(tx["hash"]),
+                    log_index=int(receipt["logs"][-1]["logIndex"]) if receipt["logs"] else 0,
+                    block_number=block_number,
+                    sqrt_price_x96=sqrt_price_x96,
+                    tick=tick,
+                    active_liquidity=active_liquidity,
+                    fee_rate=config.fee_rate,
+                    amount0=float(amount0),
+                    amount1=float(amount1),
+                    amount_usd=float(stable_amount),
+                    cngn_usd_price=cngn_usd_price,
+                    token0_symbol=config.token0_symbol,
+                    token1_symbol=config.token1_symbol,
+                    event_source="position_manager_take_pair",
+                    recipient=recipient,
+                )
+            )
     return rows
 
 
@@ -554,6 +833,7 @@ def export_pool_history(
     start_block: int | None,
     end_block: int | None = None,
     rpc_url: str | None = None,
+    resume: bool = False,
 ) -> int:
     if rpc_url is not None:
         config = ExportPoolConfig(**{**config.__dict__, "rpc_url": rpc_url})
@@ -562,102 +842,183 @@ def export_pool_history(
     state_view = w3.eth.contract(address=Web3.to_checksum_address(config.state_view), abi=STATE_VIEW_ABI)
     position_manager = w3.eth.contract(address=Web3.to_checksum_address(config.position_manager), abi=POSITION_MANAGER_ABI)
     latest_block = int(w3.eth.block_number)
-    if start_block is None:
-        start_block = config.default_start_block
+    resume_metadata = _read_existing_export_metadata(output_path) if resume else ResumeMetadata(0, None, False)
+    requested_start_block = config.default_start_block if start_block is None else start_block
+    if resume and resume_metadata.max_block is not None:
+        start_block = max(requested_start_block, resume_metadata.max_block + 1)
+    else:
+        start_block = requested_start_block
     end_block = latest_block if end_block is None else end_block
+    if resume:
+        _log(
+            f"[{config.name}] resume enabled: existing_rows={resume_metadata.row_count:,}, "
+            f"existing_max_block={resume_metadata.max_block}, start={start_block:,}"
+        )
     _log(
         f"[{config.name}] export start: blocks {start_block:,} -> {end_block:,}, "
         f"initial chunk={config.chunk_size:,}, rpc={config.rpc_url}"
     )
     block_timestamps: dict[int, int] = {}
+    pool_state_cache: dict[int, tuple[int, int, int, float]] = {}
     token_state: dict[int, PositionTokenState] = {}
-    rows: list[ExportRow] = []
+    total_rows = resume_metadata.row_count
 
     chunk_start = start_block
     current_chunk_size = config.chunk_size
     chunk_index = 0
-    while chunk_start <= end_block:
-        chunk_end = min(chunk_start + current_chunk_size - 1, end_block)
-        chunk_index += 1
-        _log(
-            f"[{config.name}] chunk {chunk_index}: scanning swap logs for "
-            f"{chunk_start:,} -> {chunk_end:,} (size={current_chunk_size:,})"
-        )
-        try:
-            swap_logs = _fetch_logs_with_debug(w3,
+    receipt_workers = 16
+    modify_selector = coerce_hex_str(position_manager.functions.modifyLiquidities(b"", 0).selector)
+    initialize_found = resume_metadata.initialize_found or start_block > config.default_start_block
+    if start_block > end_block:
+        _log(f"[{config.name}] export complete: output is already current through requested end block")
+        return total_rows
+    write_header = not resume or resume_metadata.row_count == 0
+    output_mode = "a" if resume and resume_metadata.row_count > 0 else "w"
+    with open(output_path, output_mode, newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(ExportRow.__dataclass_fields__.keys()))
+        if write_header:
+            writer.writeheader()
+        handle.flush()
+
+        while chunk_start <= end_block:
+            chunk_rows: list[ExportRow] = []
+            chunk_end = min(chunk_start + current_chunk_size - 1, end_block)
+            chunk_index += 1
+            if not initialize_found:
+                _log(
+                    f"[{config.name}] chunk {chunk_index}: scanning initialize logs for "
+                    f"{chunk_start:,} -> {chunk_end:,}"
+                )
+                initialize_logs = _fetch_logs_with_debug(
+                    w3,
+                    {
+                        "address": Web3.to_checksum_address(config.pool_manager),
+                        "topics": [as_hexstr(V4_INITIALIZE_TOPIC), as_hexstr(config.pool_id)],
+                        "fromBlock": chunk_start,
+                        "toBlock": chunk_end,
+                    },
+                    context=f"[{config.name}] initialize logs {chunk_start:,}->{chunk_end:,}",
+                )
+                for log in initialize_logs:
+                    block_number = int(log["blockNumber"])
+                    if block_number not in block_timestamps:
+                        raw_block = _raw_get_block(w3, block_number, False)
+                        block_timestamps[block_number] = _block_timestamp_from_raw(raw_block)
+                    chunk_rows.append(decode_initialize_row(log, block_timestamps[block_number], config))
+                initialize_found = bool(initialize_logs)
+
+            _log(
+                f"[{config.name}] chunk {chunk_index}: scanning swap logs for "
+                f"{chunk_start:,} -> {chunk_end:,} (size={current_chunk_size:,})"
+            )
+            try:
+                swap_logs = _fetch_logs_with_debug(w3,
+                    {
+                        "address": Web3.to_checksum_address(config.pool_manager),
+                        "topics": [as_hexstr(V4_SWAP_TOPIC), as_hexstr(config.pool_id)],
+                        "fromBlock": chunk_start,
+                        "toBlock": chunk_end,
+                    },
+                    context=f"[{config.name}] swap logs {chunk_start:,}->{chunk_end:,}",
+                )
+            except Exception as exc:
+                if "413" in str(exc) and current_chunk_size > 100:
+                    _log(
+                        f"[{config.name}] chunk {chunk_index}: RPC 413 for {chunk_start:,}->{chunk_end:,}; "
+                        f"reducing chunk size from {current_chunk_size:,} to {max(current_chunk_size // 2, 100):,}"
+                    )
+                    current_chunk_size = max(current_chunk_size // 2, 100)
+                    chunk_index -= 1
+                    continue
+                raise
+            _log(f"[{config.name}] chunk {chunk_index}: fetched {len(swap_logs):,} swap logs")
+            for log in swap_logs:
+                block_number = int(log["blockNumber"])
+                if block_number not in block_timestamps:
+                    raw_block = _raw_get_block(w3, block_number, False)
+                    block_timestamps[block_number] = _block_timestamp_from_raw(raw_block)
+                chunk_rows.append(decode_swap_row(log, block_timestamps[block_number], config))
+
+            _log(
+                f"[{config.name}] chunk {chunk_index}: scanning modify liquidity logs for "
+                f"{chunk_start:,} -> {chunk_end:,}"
+            )
+            modify_logs = _fetch_logs_with_debug(
+                w3,
                 {
                     "address": Web3.to_checksum_address(config.pool_manager),
-                    "topics": [as_hexstr(V4_SWAP_TOPIC), as_hexstr(config.pool_id)],
+                    "topics": [as_hexstr(V4_MODIFY_LIQUIDITY_TOPIC), as_hexstr(config.pool_id)],
                     "fromBlock": chunk_start,
                     "toBlock": chunk_end,
                 },
-                context=f"[{config.name}] swap logs {chunk_start:,}->{chunk_end:,}",
+                context=f"[{config.name}] modify liquidity logs {chunk_start:,}->{chunk_end:,}",
             )
-        except Exception as exc:
-            if "413" in str(exc) and current_chunk_size > 100:
-                _log(
-                    f"[{config.name}] chunk {chunk_index}: RPC 413 for {chunk_start:,}->{chunk_end:,}; "
-                    f"reducing chunk size from {current_chunk_size:,} to {max(current_chunk_size // 2, 100):,}"
-                )
-                current_chunk_size = max(current_chunk_size // 2, 100)
-                continue
-            raise
-        _log(f"[{config.name}] chunk {chunk_index}: fetched {len(swap_logs):,} swap logs")
-        for log in swap_logs:
-            block_number = int(log["blockNumber"])
-            if block_number not in block_timestamps:
-                raw_block = _raw_get_block(w3, block_number, False)
-                block_timestamps[block_number] = _block_timestamp_from_raw(raw_block)
-            rows.append(decode_swap_row(log, block_timestamps[block_number], config))
-
-        _log(
-            f"[{config.name}] chunk {chunk_index}: scanning full blocks for modifyLiquidities "
-            f"{chunk_start:,} -> {chunk_end:,}"
-        )
-        tx_matches = 0
-        for block_number in range(chunk_start, chunk_end + 1):
-            if (block_number - chunk_start) % 500 == 0:
-                _log(
-                    f"[{config.name}] chunk {chunk_index}: block {block_number:,}/{chunk_end:,}, "
-                    f"rows={len(rows):,}, tracked_positions={len(token_state):,}"
-                )
-            block = _raw_get_block(w3, block_number, True)
-            block_timestamps[block_number] = _block_timestamp_from_raw(block)
-            for tx in block["transactions"]:
-                if not tx.get("to"):
-                    continue
-                if Web3.to_checksum_address(tx["to"]) != position_manager.address:
-                    continue
-                if not coerce_hex_str(tx["input"]).startswith(coerce_hex_str(position_manager.functions.modifyLiquidities(b"", 0).selector)):
-                    continue
-                tx_matches += 1
-                receipt = w3.eth.get_transaction_receipt(tx["hash"])
-                rows.extend(
-                    build_liquidity_rows_for_tx(
-                        tx,
-                        receipt,
+            _log(f"[{config.name}] chunk {chunk_index}: fetched {len(modify_logs):,} modify liquidity logs")
+            for log in modify_logs:
+                block_number = int(log["blockNumber"])
+                if block_number not in block_timestamps:
+                    raw_block = _raw_get_block(w3, block_number, False)
+                    block_timestamps[block_number] = _block_timestamp_from_raw(raw_block)
+                if block_number not in pool_state_cache:
+                    pool_state_cache[block_number] = _state_at_block(state_view, config, block_number)
+                chunk_rows.append(
+                    decode_modify_liquidity_row(
+                        log,
                         block_timestamps[block_number],
-                        state_view,
+                        pool_state_cache[block_number],
                         config,
-                        token_state,
                     )
                 )
-        elapsed = time.time() - started_at
-        _log(
-            f"[{config.name}] chunk {chunk_index}: done. modifyLiquidities txs={tx_matches:,}, "
-            f"total_rows={len(rows):,}, elapsed={elapsed:.1f}s"
-        )
-        chunk_start = chunk_end + 1
 
-    rows.sort(key=lambda row: (row.block_time, row.block_number, row.log_index))
-    _log(f"[{config.name}] writing {len(rows):,} rows to {output_path}")
-    with open(output_path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(ExportRow.__dataclass_fields__.keys()))
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row.__dict__)
+            _log(
+                f"[{config.name}] chunk {chunk_index}: scanning position manager logs for modifyLiquidities "
+                f"{chunk_start:,} -> {chunk_end:,}"
+            )
+            candidate_tx_hashes = _candidate_modify_liquidity_tx_hashes(w3, config, chunk_start, chunk_end)
+            _log(
+                f"[{config.name}] chunk {chunk_index}: found {len(candidate_tx_hashes):,} candidate tx hashes, "
+                f"rows={total_rows + len(chunk_rows):,}, tracked_positions={len(token_state):,}"
+            )
+            tx_matches = 0
+            with ThreadPoolExecutor(max_workers=receipt_workers) as pool:
+                txs = list(pool.map(lambda tx_hash: w3.eth.get_transaction(tx_hash), candidate_tx_hashes))
+                matched_txs = [
+                    tx for tx in txs
+                    if tx.get("input")
+                    and coerce_hex_str(tx["input"]).startswith(modify_selector)
+                ]
+                tx_matches = len(matched_txs)
+                receipts = list(pool.map(lambda tx: w3.eth.get_transaction_receipt(tx["hash"]), matched_txs))
+                for tx, receipt in zip(matched_txs, receipts):
+                    block_number = _int_from_rpc(tx["blockNumber"])
+                    if block_number not in block_timestamps:
+                        raw_block = _raw_get_block(w3, block_number, False)
+                        block_timestamps[block_number] = _block_timestamp_from_raw(raw_block)
+                    chunk_rows.extend(
+                        build_liquidity_rows_for_tx(
+                            tx,
+                            receipt,
+                            block_timestamps[block_number],
+                            state_view,
+                            position_manager,
+                            config,
+                            token_state,
+                        )
+                    )
+
+            chunk_rows.sort(key=lambda row: (row.block_time, row.block_number, row.log_index))
+            for row in chunk_rows:
+                writer.writerow(row.__dict__)
+            handle.flush()
+            total_rows += len(chunk_rows)
+            elapsed = time.time() - started_at
+            _log(
+                f"[{config.name}] chunk {chunk_index}: flushed {len(chunk_rows):,} rows. "
+                f"modifyLiquidities txs={tx_matches:,}, total_rows={total_rows:,}, elapsed={elapsed:.1f}s"
+            )
+            chunk_start = chunk_end + 1
     _log(f"[{config.name}] export complete in {time.time() - started_at:.1f}s")
-    return len(rows)
+    return total_rows
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -667,6 +1028,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-block", type=int)
     parser.add_argument("--end-block", type=int)
     parser.add_argument("--rpc-url")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Append to an existing CSV and start after the highest exported block.",
+    )
     return parser
 
 
@@ -678,5 +1044,6 @@ def main() -> None:
         start_block=args.start_block,
         end_block=args.end_block,
         rpc_url=args.rpc_url,
+        resume=args.resume,
     )
     print(f"wrote {count} rows to {args.output}")

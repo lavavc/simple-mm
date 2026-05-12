@@ -1,17 +1,20 @@
 """Unit tests for backtester modules."""
 
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from backtester.data import BurnEvent, MintEvent, SwapEvent, V4Event, load_events, load_v4_events
+from backtester.clmm_math import tick_to_sqrt_price_x96
 from backtester.run import (
     WindowSpec,
     WindowResult,
     aggregate_window_results,
     evaluate_rolling_windows,
+    generate_swap_count_windows,
     generate_windows,
 )
 from engine.math.v3 import (
@@ -23,10 +26,17 @@ from engine.math.v3 import (
     constrain_tick_width,
     compute_swap_step,
 )
-from backtester.strategy import EWMACalculator, calculate_tick_range
+from backtester.strategy import EWMACalculator, calculate_fixed_pct_tick_range, calculate_tick_range
 from backtester.pool_state import PoolState
-from backtester.params import generate_grid, BacktestParams
-from backtester.simulator import PANCAKESWAP_POOL, UNISWAP_BASE_POOL, simulate_pool
+from backtester.params import BacktestParams, TransactionCostModel, generate_grid
+from backtester.simulator import (
+    PANCAKESWAP_POOL,
+    UNISWAP_BASE_POOL,
+    VirtualPosition,
+    _exact_clmm_output_costs,
+    _event_fee_wallet,
+    simulate_pool,
+)
 from backtester import metrics
 
 
@@ -107,6 +117,38 @@ class TestSwapStep:
         spot = sqrt_p ** 2
         # Execution price should be close to but slightly above spot (price impact)
         assert exec_price >= spot
+
+    def test_exact_output_price_impact_uses_same_range_clmm_math(self):
+        fee_usd, impact_usd = _exact_clmm_output_costs(
+            output_notional_usd=10.0,
+            active_liquidity=1_000_000_000_000,
+            fee_rate=0.0,
+            current_tick=0,
+            current_sqrt_price_x96=2**96,
+            current_price=1.0,
+            direction="stable_to_cngn",
+            pool_config=UNISWAP_BASE_POOL,
+        )
+        output_raw = 10 * 10**6
+        sqrt_next = 1 / (1 - output_raw / 1_000_000_000_000)
+        expected_effective_input_usd = (1_000_000_000_000 * (sqrt_next - 1)) / 10**6
+
+        assert fee_usd == pytest.approx(0.0)
+        assert impact_usd == pytest.approx(expected_effective_input_usd - 10.0)
+
+    def test_exact_output_returns_none_when_swap_crosses_spacing_boundary(self):
+        costs = _exact_clmm_output_costs(
+            output_notional_usd=10_000.0,
+            active_liquidity=1_000_000_000,
+            fee_rate=0.0,
+            current_tick=0,
+            current_sqrt_price_x96=2**96,
+            current_price=1.0,
+            direction="stable_to_cngn",
+            pool_config=UNISWAP_BASE_POOL,
+        )
+
+        assert costs is None
 
 
 # ─── EWMA ────────────────────────────────────────────────────────────────
@@ -198,6 +240,46 @@ class TestEWMA:
         # Override center → both ticks shift up
         assert t_lo_override > t_lo_default
         assert t_hi_override > t_hi_default
+
+    def test_fixed_percent_width_to_tick_range(self):
+        tick_lower, tick_upper = calculate_fixed_pct_tick_range(
+            center_price=1.0,
+            width_pct=0.01,
+            token0_decimals=6,
+            token1_decimals=6,
+            tick_spacing=10,
+            min_tick_width=50,
+            max_tick_width=1000,
+        )
+
+        assert tick_lower < 0 < tick_upper
+        assert 90 <= tick_upper - tick_lower <= 120
+        assert tick_lower % 10 == 0
+        assert tick_upper % 10 == 0
+
+    def test_lp_holdings_match_uniswap_v3_liquidity_math(self):
+        liquidity = 12_345.0
+        lower = -100
+        upper = 100
+        spa = tick_to_sqrt_price(lower)
+        spb = tick_to_sqrt_price(upper)
+
+        below = VirtualPosition(lower, upper, liquidity, 1.0, 0.0, datetime.now(), lower - 10, 0, 0.0)
+        amount0, amount1 = below.amounts_at_tick(lower - 10)
+        assert amount0 == pytest.approx(liquidity * (spb - spa) / (spa * spb))
+        assert amount1 == pytest.approx(0.0)
+
+        above = VirtualPosition(lower, upper, liquidity, 1.0, 0.0, datetime.now(), upper + 10, 0, 0.0)
+        amount0, amount1 = above.amounts_at_tick(upper + 10)
+        assert amount0 == pytest.approx(0.0)
+        assert amount1 == pytest.approx(liquidity * (spb - spa))
+
+        current = 0
+        sp = tick_to_sqrt_price(current)
+        in_range = VirtualPosition(lower, upper, liquidity, 1.0, 0.0, datetime.now(), current, 0, 0.0)
+        amount0, amount1 = in_range.amounts_at_tick(current)
+        assert amount0 == pytest.approx(liquidity * (spb - sp) / (sp * spb))
+        assert amount1 == pytest.approx(liquidity * (sp - spa))
 
 
 # ─── Pool state ──────────────────────────────────────────────────────────
@@ -310,8 +392,8 @@ class TestV4Loader:
             "\n".join(
                 [
                     "block_time,chain,pool_id,event_type,tx_hash,log_index,block_number,sqrt_price_x96,tick,active_liquidity,fee_rate,amount0,amount1,amount_usd,cngn_usd_price,token0_symbol,token1_symbol",
-                    "2026-01-01T00:00:01+00:00,base,pool,swap,0x2,4,11,1,20,2000,0.0015,1,2,3,0.0007,cNGN,USDC",
-                    "2026-01-01T00:00:01+00:00,base,pool,swap,0x1,1,10,1,10,1000,0.0015,1,2,3,0.0006,cNGN,USDC",
+                    f"2026-01-01T00:00:01+00:00,base,pool,swap,0x2,4,11,{2**96},20,2000,0.0015,1,2,3,0.0007,cNGN,USDC",
+                    f"2026-01-01T00:00:01+00:00,base,pool,swap,0x1,1,10,{2**96},10,1000,0.0015,1,2,3,0.0006,cNGN,USDC",
                 ]
             )
         )
@@ -319,6 +401,7 @@ class TestV4Loader:
         assert [event.tx_hash for event in events] == ["0x1", "0x2"]
         assert events[0].active_liquidity == 1000
         assert events[1].fee_rate == pytest.approx(0.0015)
+        assert events[0].cngn_usd_price == pytest.approx(1.0)
 
     def test_legacy_loader_infers_cngn_price(self, tmp_path):
         csv_path = tmp_path / "legacy.csv"
@@ -347,7 +430,7 @@ class TestRollingWindows:
             tx_hash=f"0x{day:02d}{minute:02d}{event_type}",
             log_index=minute,
             block_number=day * 100 + minute,
-            sqrt_price_x96=2**96,
+            sqrt_price_x96=tick_to_sqrt_price_x96(0),
             tick=tick,
             active_liquidity=1_000_000,
             fee_rate=0.0015,
@@ -369,6 +452,22 @@ class TestRollingWindows:
         assert windows[0].train_start == base
         assert windows[0].val_start == base + timedelta(days=30)
         assert windows[1].train_start == base + timedelta(days=7)
+
+    def test_swap_count_window_generation(self):
+        base = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        events = [
+            V4Event(base + timedelta(minutes=i), "base", "pool", "swap", f"0x{i}", 0, i, 1, 0, 1, 0.0015, 1, 1, 1, 0.0007, "cNGN", "USDC")
+            for i in range(12)
+        ]
+        spec = WindowSpec(mode="swap_count", train_swaps=5, val_swaps=3, stride_swaps=2, min_train_swaps=5, min_train_liquidity_events=0, min_val_swaps=3)
+        windows = generate_swap_count_windows(events, spec)
+
+        assert len(windows) == 3
+        assert windows[0].train_start_index == 0
+        assert windows[0].train_end_index == 5
+        assert windows[0].val_start_index == 5
+        assert windows[0].val_end_index == 8
+        assert windows[1].train_start_index == 2
 
     def test_skip_behavior_when_thresholds_fail(self):
         base = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
@@ -414,7 +513,7 @@ class TestSimulationCompatibility:
             tx_hash="0x1",
             log_index=0,
             block_number=1,
-            sqrt_price_x96=2**96,
+            sqrt_price_x96=tick_to_sqrt_price_x96(0),
             tick=0,
             active_liquidity=1_000_000,
             fee_rate=0.0015,
@@ -428,3 +527,251 @@ class TestSimulationCompatibility:
         sim = simulate_pool([event], BacktestParams(gas_cost_usd=1000.0), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
         assert sim.final_value == pytest.approx(500.0)
         assert sim.divergent_loss == pytest.approx(0.0)
+
+
+class TestPaperStyleSimulation:
+    def _event(self, minute: int, tick: int, amount_usd: float = 10_000.0) -> V4Event:
+        price = float(tick_to_price(tick, 6, 6))
+        return V4Event(
+            block_time=datetime.fromisoformat("2026-01-01T00:00:00+00:00") + timedelta(minutes=minute),
+            chain="base",
+            pool_id="pool",
+            event_type="swap",
+            tx_hash=f"0x{minute}",
+            log_index=minute,
+            block_number=minute,
+            sqrt_price_x96=tick_to_sqrt_price_x96(tick),
+            tick=tick,
+            active_liquidity=1_000_000_000,
+            fee_rate=0.0015,
+            amount0=1.0,
+            amount1=1.0,
+            amount_usd=amount_usd,
+            cngn_usd_price=price,
+            token0_symbol="cNGN",
+            token1_symbol="USDC",
+        )
+
+    def _params(self, **overrides) -> BacktestParams:
+        values = {
+            "strategy_mode": "paper",
+            "range_mode": "fixed_tick_width",
+            "center_mode": "spot",
+            "fixed_tick_width": 1000,
+            "harvest_upward_range_fraction": 0.10,
+            "profit_take_return": 0.0,
+            "require_profit_after_cost": False,
+            "out_of_range_overshoot_fraction": 0.0,
+            "min_tick_width": 100,
+            "max_tick_width": 1000,
+            "initial_capital_usd": 500.0,
+            "gas_cost_usd": 0.0,
+        }
+        values.update(overrides)
+        return BacktestParams(**values)
+
+    def test_upward_in_range_harvest_records_episode_accounting(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
+        sim = simulate_pool(events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 1
+        first = sim.episodes[0]
+        assert first.exit_reason == "harvest_upward"
+        assert first.range_traversal_fraction == pytest.approx(120 / 1020)
+        assert first.fees_earned > 0
+        assert first.net_pnl == pytest.approx(
+            first.exit_value - first.exit_transaction_cost - first.entry_value - first.entry_transaction_cost
+        )
+        assert first.total_transaction_cost == pytest.approx(first.entry_transaction_cost + first.exit_transaction_cost)
+        assert sim.total_transaction_cost == pytest.approx(sum(episode.total_transaction_cost for episode in sim.episodes))
+        assert first.inventory_pnl == pytest.approx(first.exit_value - first.fees_earned - first.entry_value)
+
+    def test_transaction_cost_price_impact_uses_active_liquidity(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
+        base_params = {
+            "transaction_costs": TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0),
+            "require_profit_after_cost": False,
+        }
+        deep_liquidity = simulate_pool(
+            events,
+            self._params(**base_params),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+        )
+        shallow_events = [
+            replace(event, active_liquidity=1_000_000)
+            for event in [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
+        ]
+        shallow_liquidity = simulate_pool(
+            shallow_events,
+            self._params(**base_params),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+        )
+
+        assert shallow_liquidity.total_price_impact_cost > deep_liquidity.total_price_impact_cost
+
+    def test_recenter_entry_routes_only_inventory_delta_by_default(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 120), self._event(3, 120)]
+        true_route = simulate_pool(
+            events,
+            self._params(
+                transaction_costs=TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0),
+                require_profit_after_cost=False,
+            ),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+        )
+        cash_unwind = simulate_pool(
+            events,
+            self._params(
+                transaction_costs=TransactionCostModel(
+                    mint_gas_usd=0.0,
+                    remove_gas_usd=0.0,
+                    unwind_to_cash_on_exit=True,
+                ),
+                require_profit_after_cost=False,
+            ),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+        )
+
+        assert len(true_route.episodes) == 2
+        assert len(cash_unwind.episodes) == 2
+        assert true_route.episodes[1].swap_notional_usd < cash_unwind.episodes[1].swap_notional_usd
+        assert true_route.total_transaction_cost < cash_unwind.total_transaction_cost
+
+    def test_v4_swap_fees_accrue_in_input_token(self):
+        stable_input = replace(
+            self._event(0, 0),
+            amount0=-1000.0,
+            amount1=1.0,
+            amount_usd=1.0,
+            cngn_usd_price=0.001,
+        )
+        stable_fee = _event_fee_wallet(
+            stable_input,
+            stable_input.fee_rate,
+            liquidity_share=0.10,
+            current_price=0.001,
+            pool_config=UNISWAP_BASE_POOL,
+        )
+        assert stable_fee.stable_usd == pytest.approx(0.00015)
+        assert stable_fee.cngn_amount == pytest.approx(0.0)
+
+        cngn_input = replace(
+            self._event(1, 0),
+            amount0=1000.0,
+            amount1=-1.0,
+            amount_usd=1.0,
+            cngn_usd_price=0.001,
+        )
+        cngn_fee = _event_fee_wallet(
+            cngn_input,
+            cngn_input.fee_rate,
+            liquidity_share=0.10,
+            current_price=0.001,
+            pool_config=UNISWAP_BASE_POOL,
+        )
+        assert cngn_fee.stable_usd == pytest.approx(0.0)
+        assert cngn_fee.cngn_amount == pytest.approx(0.15)
+
+    def test_profit_after_cost_gates_harvest(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
+        params = self._params(require_profit_after_cost=True, gas_cost_usd=300.0)
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 0
+        assert all(episode.exit_reason != "harvest_upward" for episode in sim.episodes)
+
+    def test_stop_loss_exits_in_range_position(self):
+        events = [self._event(0, 0, amount_usd=0), self._event(1, 0, amount_usd=0), self._event(2, -100, amount_usd=0)]
+        params = self._params(harvest_upward_range_fraction=None, stop_loss_return=0.0)
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 1
+        assert sim.episodes[0].exit_reason == "stop_loss"
+
+    def test_min_exit_swap_volume_filters_dust_stop_loss(self):
+        events = [
+            self._event(0, 0, amount_usd=0),
+            self._event(1, 0, amount_usd=0),
+            self._event(2, -100, amount_usd=0.01),
+            self._event(3, -100, amount_usd=0.01),
+        ]
+        params = self._params(
+            harvest_upward_range_fraction=None,
+            stop_loss_return=0.0,
+            min_exit_swap_volume_usd=1.0,
+        )
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 0
+        assert sim.episodes[0].exit_reason == "end_of_data"
+
+    def test_qualified_pool_twap_exit_price_ignores_dust_stop_loss_mark(self):
+        events = [
+            self._event(0, 0, amount_usd=100.0),
+            self._event(1, 0, amount_usd=100.0),
+            self._event(2, -200, amount_usd=0.01),
+        ]
+        params = self._params(
+            harvest_upward_range_fraction=None,
+            stop_loss_return=-0.005,
+            exit_price_mode="qualified_pool_twap",
+            exit_price_min_swap_volume_usd=1.0,
+            exit_price_twap_lookback_minutes=60.0,
+        )
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 0
+        assert sim.episodes[0].exit_reason == "end_of_data"
+
+    def test_fair_price_exit_mark_can_override_dust_pool_price(self):
+        fair_marked = replace(self._event(2, -200, amount_usd=0.01), fair_price_usd=float(tick_to_price(0, 6, 6)))
+        events = [
+            self._event(0, 0, amount_usd=100.0),
+            self._event(1, 0, amount_usd=100.0),
+            fair_marked,
+        ]
+        params = self._params(
+            harvest_upward_range_fraction=None,
+            stop_loss_return=-0.005,
+            exit_price_mode="fair_price",
+        )
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 0
+        assert sim.episodes[0].exit_reason == "end_of_data"
+
+    def test_exit_confirmation_requires_multiple_defensive_signals(self):
+        events = [
+            self._event(0, 0),
+            self._event(1, 0),
+            self._event(2, -100),
+            self._event(3, -100),
+        ]
+        params = self._params(
+            harvest_upward_range_fraction=None,
+            stop_loss_return=0.0,
+            exit_confirmation_swaps=2,
+        )
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 1
+        assert sim.episodes[0].exit_reason == "stop_loss"
+        assert sim.episodes[0].exit_time == events[3].block_time
+
+    def test_out_of_range_exit_respects_cooldown(self):
+        events = [
+            self._event(0, 0),
+            self._event(1, 0),
+            self._event(2, 600),
+            self._event(3, 0),
+        ]
+        params = self._params(harvest_upward_range_fraction=None, cooldown_minutes=10.0)
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 1
+        assert len(sim.episodes) == 1
+        assert sim.episodes[0].exit_reason == "out_of_range"

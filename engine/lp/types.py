@@ -36,8 +36,12 @@ class LPPositionSnapshot:
     token1_amount: Decimal | None
     token0_symbol: str
     token1_symbol: str
+    tick_lower: int | None
+    tick_upper: int | None
     range_min: Decimal | None
     range_max: Decimal | None
+    current_price: Decimal | None
+    price_position_fraction: Decimal | None
     in_range: bool | None
     position_value_usd: Decimal | None
     our_share_pct: Decimal | None

@@ -651,6 +651,13 @@ class V4PositionManager:
                 else Decimal(0)
             )
 
+        price_position_fraction: Decimal | None = None
+        if pos_state.price_upper > pos_state.price_lower:
+            price_position_fraction = (
+                (pos_state.current_price - pos_state.price_lower)
+                / (pos_state.price_upper - pos_state.price_lower)
+            )
+
         return LPPositionSnapshot(
             token_id=pos_state.token_id,
             liquidity=pos_state.liquidity,
@@ -658,8 +665,12 @@ class V4PositionManager:
             token1_amount=amount1,
             token0_symbol=self.config.token0_symbol,
             token1_symbol=self.config.token1_symbol,
+            tick_lower=pos_state.tick_lower,
+            tick_upper=pos_state.tick_upper,
             range_min=pos_state.price_lower,
             range_max=pos_state.price_upper,
+            current_price=pos_state.current_price,
+            price_position_fraction=price_position_fraction,
             in_range=pos_state.in_range,
             position_value_usd=position_value_usd,
             our_share_pct=our_share_pct,
@@ -679,8 +690,12 @@ class V4PositionManager:
             token1_amount=None,
             token0_symbol=self.config.token0_symbol,
             token1_symbol=self.config.token1_symbol,
+            tick_lower=metadata.tick_lower if metadata is not None else None,
+            tick_upper=metadata.tick_upper if metadata is not None else None,
             range_min=metadata.range_min if metadata is not None else None,
             range_max=metadata.range_max if metadata is not None else None,
+            current_price=None,
+            price_position_fraction=None,
             in_range=None,
             position_value_usd=None,
             our_share_pct=None,
@@ -754,8 +769,12 @@ class V4PositionManager:
             lp_position = LPPosition(
                 token_id=str(snapshot.token_id) if snapshot.token_id is not None else None,
                 liquidity=str(snapshot.liquidity) if snapshot.liquidity is not None else None,
+                tick_lower=snapshot.tick_lower,
+                tick_upper=snapshot.tick_upper,
                 range_min=snapshot.range_min,
                 range_max=snapshot.range_max,
+                current_price=snapshot.current_price,
+                price_position_fraction=snapshot.price_position_fraction,
                 in_range=snapshot.in_range,
                 our_share_pct=snapshot.our_share_pct,
                 snapshot_status=snapshot.snapshot_status,

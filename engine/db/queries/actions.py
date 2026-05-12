@@ -114,3 +114,44 @@ async def get_actions(
         }
         for row in rows
     ]
+
+
+async def get_actions_in_window(
+    conn: aiosqlite.Connection,
+    venue: str,
+    from_ts: int | None = None,
+    to_ts: int | None = None,
+    limit: int = 5000,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM actions WHERE venue = ?"
+    params: list[Any] = [venue]
+    if from_ts is not None:
+        query += " AND timestamp_ms >= ?"
+        params.append(from_ts)
+    if to_ts is not None:
+        query += " AND timestamp_ms <= ?"
+        params.append(to_ts)
+    query += " ORDER BY timestamp_ms ASC LIMIT ?"
+    params.append(limit)
+    cursor = await conn.execute(query, params)
+    rows = await cursor.fetchall()
+    return [
+        {
+            "id": row["id"],
+            "timestamp": row["timestamp_ms"],
+            "venue": row["venue"],
+            "action_type": row["action_type"],
+            "direction": row["direction"],
+            "amount_in": row["amount_in"],
+            "token_in": row["token_in"],
+            "amount_out": row["amount_out"],
+            "token_out": row["token_out"],
+            "price": row["price"],
+            "tx_hash": row["tx_hash"],
+            "status": row["status"],
+            "error": row["error"],
+            "triggered_by": row["triggered_by"],
+            "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else None,
+        }
+        for row in rows
+    ]

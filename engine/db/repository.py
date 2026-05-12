@@ -61,6 +61,15 @@ class PositionStore(_Store):
     async def insert_position(self, position: Position) -> None:
         await positions.insert_position(self._conn, position)
 
+    async def get_position_snapshots(
+        self,
+        venue: str,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        return await positions.get_position_snapshots(self._conn, venue, from_ts, to_ts, limit)
+
 
 class ActionStore(_Store):
     async def insert_action(self, **kwargs: Any) -> int | None:
@@ -73,6 +82,15 @@ class ActionStore(_Store):
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         return await actions.get_actions(self._conn, venue, action_type, limit)
+
+    async def get_actions_in_window(
+        self,
+        venue: str,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        return await actions.get_actions_in_window(self._conn, venue, from_ts, to_ts, limit)
 
 
 class VenueConfigStore(_Store):

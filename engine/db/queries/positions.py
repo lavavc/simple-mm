@@ -35,3 +35,42 @@ async def insert_position(conn: aiosqlite.Connection, position: Position) -> Non
         ),
     )
     await conn.commit()
+
+
+async def get_position_snapshots(
+    conn: aiosqlite.Connection,
+    venue: str,
+    from_ts: int | None = None,
+    to_ts: int | None = None,
+    limit: int = 5000,
+) -> list[dict]:
+    query = """
+        SELECT venue, pair, timestamp_ms, balances_json, lp_position_json,
+               position_value_usd, volume_24h_usd, rates_json
+        FROM position_snapshots
+        WHERE venue = ?
+    """
+    params: list[object] = [venue]
+    if from_ts is not None:
+        query += " AND timestamp_ms >= ?"
+        params.append(from_ts)
+    if to_ts is not None:
+        query += " AND timestamp_ms <= ?"
+        params.append(to_ts)
+    query += " ORDER BY timestamp_ms ASC LIMIT ?"
+    params.append(limit)
+    cursor = await conn.execute(query, params)
+    rows = await cursor.fetchall()
+    return [
+        {
+            "venue": row["venue"],
+            "pair": row["pair"],
+            "timestamp": row["timestamp_ms"],
+            "balances": json.loads(row["balances_json"]) if row["balances_json"] else {},
+            "lp_position": json.loads(row["lp_position_json"]) if row["lp_position_json"] else None,
+            "position_value_usd": row["position_value_usd"],
+            "volume_24h_usd": row["volume_24h_usd"],
+            "rates": json.loads(row["rates_json"]) if row["rates_json"] else None,
+        }
+        for row in rows
+    ]

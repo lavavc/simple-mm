@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Union
 
+from backtester.clmm_math import cngn_price_from_sqrt_price_x96
+
 
 def _parse_time(raw: str) -> datetime:
     return datetime.fromisoformat(raw)
@@ -71,6 +73,10 @@ class V4Event:
     cngn_usd_price: float
     token0_symbol: str
     token1_symbol: str
+    tick_lower: int | None = None
+    tick_upper: int | None = None
+    liquidity_delta: int | None = None
+    fair_price_usd: float | None = None
 
 
 Event = Union[LegacyEvent, V4Event]
@@ -91,6 +97,32 @@ def _infer_legacy_cngn_price(row: dict[str, str]) -> float:
     if bought_sym == "cNGN":
         return sold_amt / bought_amt if bought_amt else 0.0
     return 0.0
+
+
+def _token_decimals(symbol: str, chain: str) -> int:
+    normalized = symbol.strip().upper()
+    if normalized == "CNGN":
+        return 6
+    if normalized == "USDC":
+        return 6
+    if normalized == "USDT":
+        return 18 if chain.strip().lower() in {"bsc", "bnb"} else 6
+    raise ValueError(f"Cannot infer decimals for token symbol {symbol!r} on chain {chain!r}")
+
+
+def _infer_v4_cngn_price_from_state(row: dict[str, str], sqrt_price_x96: int) -> float:
+    chain = row["chain"].strip()
+    token0_symbol = row["token0_symbol"].strip()
+    token1_symbol = row["token1_symbol"].strip()
+    token0_decimals = _token_decimals(token0_symbol, chain)
+    token1_decimals = _token_decimals(token1_symbol, chain)
+    invert_price = token1_symbol.upper() == "CNGN"
+    return cngn_price_from_sqrt_price_x96(
+        sqrt_price_x96,
+        token0_decimals,
+        token1_decimals,
+        invert_price,
+    )
 
 
 def load_events(csv_path: str, pool_address: str | None = None) -> list[LegacyEvent]:
@@ -154,6 +186,9 @@ def load_v4_events(csv_path: str, pool_id: str | None = None) -> list[V4Event]:
             if event_type not in {"swap", "mint", "burn"}:
                 continue
 
+            sqrt_price_x96 = int(row["sqrt_price_x96"])
+            token0_symbol = row["token0_symbol"].strip()
+            token1_symbol = row["token1_symbol"].strip()
             events.append(
                 V4Event(
                     block_time=_parse_time(row["block_time"]),
@@ -163,16 +198,20 @@ def load_v4_events(csv_path: str, pool_id: str | None = None) -> list[V4Event]:
                     tx_hash=row["tx_hash"].strip(),
                     log_index=int(row["log_index"]),
                     block_number=int(row["block_number"]),
-                    sqrt_price_x96=int(row["sqrt_price_x96"]),
+                    sqrt_price_x96=sqrt_price_x96,
                     tick=int(row["tick"]),
                     active_liquidity=int(row["active_liquidity"]),
                     fee_rate=_as_float(row, "fee_rate"),
                     amount0=_as_float(row, "amount0"),
                     amount1=_as_float(row, "amount1"),
                     amount_usd=_as_float(row, "amount_usd"),
-                    cngn_usd_price=_as_float(row, "cngn_usd_price"),
-                    token0_symbol=row["token0_symbol"].strip(),
-                    token1_symbol=row["token1_symbol"].strip(),
+                    cngn_usd_price=_infer_v4_cngn_price_from_state(row, sqrt_price_x96),
+                    token0_symbol=token0_symbol,
+                    token1_symbol=token1_symbol,
+                    tick_lower=int(row["tick_lower"]) if row.get("tick_lower") else None,
+                    tick_upper=int(row["tick_upper"]) if row.get("tick_upper") else None,
+                    liquidity_delta=int(row["liquidity_delta"]) if row.get("liquidity_delta") else None,
+                    fair_price_usd=_as_float(row, "fair_price_usd") if row.get("fair_price_usd") else None,
                 )
             )
 

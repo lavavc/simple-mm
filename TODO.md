@@ -1,15 +1,5 @@
-- Walk-forward validation; rolling window or expanding window (former for when process is nonstationary, latter for when prior data is more important
-)
-- Add volume feature
-    - For CEX, DEX, or both?
-    - 
+- For Dashboard:
+    - Track LP position value for every change in sqrt price -> historical LP value time series for base and bsc positions
+    - Global (c)NGN delta/inventory imbalance on mainpage
 
-- Delta-hedging is proportional to the fee tier; higher fee -> larger delta bands for rebalancing -> less rebalancing
-    - https://panoptic.xyz/research/panoptic-block-scholes-research-gamma-scalping
-    
-- Need volume-aggregated pricing between 6 different exchanges/pools for cNGN
-- Remove Bybit from VWAP calculation for Qidax
-    - Add an anchor price which is a combination of liquidity, 24 hour volume, and inventory imbalance
-    - Ask Andy for access to https://app.merrymerkle.africa/arbitrage/
-- Add parameter for waiting to rebalance
-
+- Change validation score to net return or ROI or ln(fees/transaction costs) + ROI
