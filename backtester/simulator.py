@@ -943,7 +943,7 @@ def _expected_fee_apr_passes(
     elapsed_seconds = (event.block_time - previous_swap_time).total_seconds()
     if elapsed_seconds <= 0:
         return False
-    expected_fee = event.amount_usd * _event_pool_fee_rate(event, pool_config) * (liquidity / active_liquidity)
+    expected_fee = event.amount_usd * _event_pool_fee_rate(event, pool_config) * (liquidity / (active_liquidity + liquidity))
     elapsed_years = elapsed_seconds / (365 * 86400)
     expected_apr = (expected_fee / deployed_capital) / elapsed_years if elapsed_years > 0 else 0.0
     return expected_apr >= min_apr
@@ -1472,7 +1472,11 @@ def simulate_pool(
                 result.in_range_swaps += 1
                 position.in_range_swaps += 1
                 if active_liquidity > 0:
-                    liquidity_share = position.liquidity_L / active_liquidity
+                    # Recorded active_liquidity is the real pool's depth; our
+                    # virtual position competes against it, so it joins the
+                    # denominator. Without this, fee share is overstated
+                    # exactly where positions are large relative to the pool.
+                    liquidity_share = position.liquidity_L / (active_liquidity + position.liquidity_L)
                     fee_wallet = _event_fee_wallet(
                         event,
                         _event_pool_fee_rate(event, pool_config),

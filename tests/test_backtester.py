@@ -815,6 +815,19 @@ class TestPaperStyleSimulation:
         assert sim.total_transaction_cost == pytest.approx(sum(episode.total_transaction_cost for episode in sim.episodes))
         assert first.inventory_pnl == pytest.approx(first.exit_value - first.fees_earned - first.entry_value)
 
+    def test_fee_share_includes_own_liquidity_in_denominator(self):
+        cost_kwargs = {"transaction_costs": TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0)}
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
+        # Our $500 position dwarfs the fixture's recorded pool depth (1e9);
+        # its fee share approaches but must never exceed 100% of each swap's
+        # total fee. Against a deep pool (1e15) the share collapses.
+        shallow = simulate_pool(events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        deep_events = [replace(event, active_liquidity=10**15) for event in events]
+        deep = simulate_pool(deep_events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        per_event_fee_ceiling = 1.0 * 0.0015  # max(amount0, amount1) * fee_rate
+        assert 0 < deep.total_fees < shallow.total_fees
+        assert shallow.total_fees < per_event_fee_ceiling * len(events)
+
     def test_transaction_cost_price_impact_uses_active_liquidity(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
         base_params = {
