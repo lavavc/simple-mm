@@ -201,11 +201,65 @@ return degrading; PBO does not increase.
 
 ---
 
+## H12 — Capital response curve (pre-registered, awaiting extended data)
+
+**Hypothesis.** Per-pool net value of the active position is concave in
+deployed capital with an interior optimum well below the $5,000 cap on
+uni-base, and below the $100 floor on uni-bsc at current volume.
+
+**Mechanism.** Fee income saturates as share C/(C+D) of the recorded depth D;
+gas is fixed per rebalance (favors size); entry/exit price impact is convex
+in size; the idle remainder earns the 4.25% sGHO hurdle.
+
+**Expected signature.** Paired per-window marginal APR declines monotonically
+with capital and crosses zero (hurdle-adjusted) at the optimum; the two
+pools' marginal curves approximately collapse when plotted against realized
+diluted share; analytic C* = sqrt(pot_rate·D/hurdle) − D from per-window pot/D
+estimates agrees with the simulated argmax within the jackknife range.
+
+**Variant set.** FixedDeployment ∈ {100, 250, 500, 1000, 2000, 3500, 5000}
+against a fixed $5,000 bankroll, idle_apr=0.0425, for the four frozen
+robust winner configs only (no grid search, no selection → no PBO needed).
+Diluted share > 30% is excluded from inference as replay fiction.
+
+**Controls.** $5,000 fully in sGHO (excess ≡ 0 by construction); identical
+windows/events across capital levels (paired differences); drop-one-window
+jackknife on marginal means.
+
+**Success criteria.** A per-pool C* with a jackknife-stable sign pattern in
+the marginal curve. Model-vs-sim agreement is a separate finding either way.
+
+**Tooling (committed).** `backtester/sizing.py` (SizingPolicy protocol with
+causal EntryContext; DeployFullWallet preserves status quo, test-pinned),
+bankroll/deployment split + report-only `idle_hurdle_credit` in the
+simulator, `scripts/h12_capital_sweep.py` (capacity-curve artifact),
+`scripts/h12_capacity_analysis.py` (paired marginals, share collapse,
+analytic C*).
+
+**Plumbing check (NOT inference — pre-extension data).** A smoke run on the
+2026-05 snapshot produced sane shapes: Base curves roll over at $500–$1,000
+(marginal APR turns negative past ~10–15% share); BSC loses most windows to
+the 30% share ceiling above $1,000; analytic C* (~$8–15k) far exceeds the
+simulated argmax — the fee-only model ignores impact and adverse inventory
+moves, so expect the structural model to need a cost term. Real numbers come
+from the extended dataset.
+
+---
+
 ## Open items / next hypotheses
 
 - **Re-run all four walk-forwards on the extended dataset** (through
   2026-06-09) with the fee-share fix, calibrated gas, top_n=100, and
   `--matrix-output`; compute PBO; check whether the four robust winners hold.
+- **Run H12 on the extended dataset** (after the re-run confirms or revises
+  the frozen winner set in `scripts/h12_capital_sweep.py`).
+- **H13 (sketch) — dynamic sizing.** Apply the H12-validated structural rule
+  to rolling pot/D estimates; ≤2 free parameters; must beat the best
+  *constant* policy selected in-sample, out-of-sample.
+- **H14 (sketch) — cross-pool shared bankroll.** One allocator over both
+  pools' capacity curves vs independent per-pool sizing. Later: same
+  capacity-curve artifact emitted from arb/CEX history → LP-vs-arb
+  marginal-dollar comparison per venue (respect venue-local inventory).
 - **H1 — BSC wide-passive subgrid.** Now that gas is calibrated, the wide-passive baseline can be compared to the narrow-rebalancing winner that emerged from top_n=100.
 - **H11 — Swap-clock estimation.** Filed above.
 - **H_new — Tighten on BSC EWMA / Base EWMA robust winners' neighborhoods.** Search around `(sd=2.0, λ=0.975, skew=0.6, thresh=15%)` BSC EWMA and `(sd=2.5, λ=0.95, skew=0.5, preemptive, thresh=5%)` Base EWMA.

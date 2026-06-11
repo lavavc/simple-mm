@@ -20,6 +20,7 @@ from backtester.run import (
     resolve_gas_costs,
 )
 from backtester.pbo import compute_pbo, contiguous_partitions
+from backtester.sizing import DeployFullWallet, EntryContext, FixedDeployment
 from engine.math.v3 import (
     tick_to_price,
     price_to_tick,
@@ -814,6 +815,51 @@ class TestPaperStyleSimulation:
         assert first.total_transaction_cost == pytest.approx(first.entry_transaction_cost + first.exit_transaction_cost)
         assert sim.total_transaction_cost == pytest.approx(sum(episode.total_transaction_cost for episode in sim.episodes))
         assert first.inventory_pnl == pytest.approx(first.exit_value - first.fees_earned - first.entry_value)
+
+    def test_deploy_full_wallet_is_the_status_quo(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
+        legacy = simulate_pool(events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        explicit = simulate_pool(
+            events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0,
+            sizing_policy=DeployFullWallet(),
+        )
+        oversized = simulate_pool(
+            events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0,
+            sizing_policy=FixedDeployment(capital_usd=10_000.0),
+        )
+        for sim in (explicit, oversized):
+            assert sim.final_value == pytest.approx(legacy.final_value)
+            assert sim.total_fees == pytest.approx(legacy.total_fees)
+            assert len(sim.episodes) == len(legacy.episodes)
+
+    def test_fixed_deployment_keeps_remainder_idle(self):
+        cost_kwargs = {"transaction_costs": TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0)}
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
+        full = simulate_pool(events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        partial = simulate_pool(
+            events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0,
+            sizing_policy=FixedDeployment(capital_usd=250.0),
+        )
+        assert partial.episodes[0].entry_value == pytest.approx(250.0, rel=0.05)
+        # Smaller position -> smaller fee share, but the idle half is preserved:
+        # flat price and zero gas, so the bankroll is conserved up to fees
+        # earned minus entry swap costs (pool fee + impact on the routed leg).
+        assert 0 < partial.total_fees < full.total_fees
+        assert partial.final_value == pytest.approx(
+            500.0 + partial.total_fees - partial.total_transaction_cost, rel=1e-6
+        )
+
+    def test_idle_apr_accrues_report_only(self):
+        # Entry blocked by an absurd gas hurdle: the whole bankroll idles.
+        half_year = timedelta(seconds=int(365.25 * 86400) // 2)
+        first = self._event(0, 0)
+        second = replace(first, block_time=first.block_time + half_year, tx_hash="0xlater")
+        sim = simulate_pool(
+            [first, second], self._params(gas_cost_usd=1000.0), UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0, idle_apr=0.0425,
+        )
+        assert sim.idle_hurdle_credit == pytest.approx(500.0 * 0.0425 / 2, rel=1e-6)
+        assert sim.final_value == pytest.approx(500.0)  # credit is report-only
 
     def test_fee_share_includes_own_liquidity_in_denominator(self):
         cost_kwargs = {"transaction_costs": TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0)}

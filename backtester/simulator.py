@@ -15,6 +15,7 @@ from backtester.clmm_math import (
 )
 from backtester.params import BacktestParams, TransactionCostModel
 from backtester.pool_state import PoolState
+from backtester.sizing import DeployFullWallet, EntryContext, SizingPolicy
 from backtester.strategy import (
     EWMACalculator,
     calculate_fixed_pct_tick_range,
@@ -307,6 +308,9 @@ class SimResult:
     end_time: datetime | None = None
     # Post-event mark-to-market equity at each processed swap, for path metrics.
     value_samples: list[tuple[datetime, float]] = field(default_factory=list)
+    # Report-only hurdle interest accrued on the undeployed wallet balance
+    # (idle_apr > 0); never added to final_value.
+    idle_hurdle_credit: float = 0.0
 
 
 def _snapshot_composition(
@@ -1387,7 +1391,10 @@ def simulate_pool(
     pool_config: PoolConfig,
     initial_capital_usd: float = 5000.0,
     initial_pool_state: PoolState | None = None,
+    sizing_policy: SizingPolicy | None = None,
+    idle_apr: float = 0.0,
 ) -> SimResult:
+    sizing = sizing_policy if sizing_policy is not None else DeployFullWallet()
     ewma = EWMACalculator(params.ewma_lambda)
     pool_state = initial_pool_state.copy() if initial_pool_state is not None else PoolState()
     position: VirtualPosition | None = None
@@ -1616,52 +1623,79 @@ def simulate_pool(
             and not in_block_cooldown
             and _entry_filters_pass(event, params, ewma, current_price, active_liquidity, pool_config)
         ):
-            tick_lower, tick_upper = _calculate_entry_range(
-                event,
-                params,
-                ewma,
-                current_price,
-                current_tick,
-                pool_config,
+            wallet_value = wallet.value_usd(current_price)
+            deploy_target = sizing.deployed_capital_usd(
+                EntryContext(
+                    block_time=event.block_time,
+                    wallet_value_usd=wallet_value,
+                    current_price=current_price,
+                    current_tick=current_tick,
+                    active_liquidity=active_liquidity,
+                )
             )
-            liquidity, deployed_capital, entry_cost, next_wallet = _route_wallet_to_position(
-                wallet,
-                tick_lower,
-                tick_upper,
-                current_tick,
-                current_sqrt_price_x96,
-                current_price,
-                active_liquidity,
-                _event_pool_fee_rate(event, pool_config),
-                pool_config,
-                params,
-            )
-            if (
-                liquidity > 0
-                and _expected_fee_apr_passes(
+            deploy_fraction = min(deploy_target / wallet_value, 1.0) if wallet_value > 0 else 0.0
+            if deploy_fraction > 0:
+                deploy_wallet = PortfolioComposition(
+                    stable_usd=wallet.stable_usd * deploy_fraction,
+                    cngn_amount=wallet.cngn_amount * deploy_fraction,
+                )
+                idle_wallet = PortfolioComposition(
+                    stable_usd=wallet.stable_usd * (1.0 - deploy_fraction),
+                    cngn_amount=wallet.cngn_amount * (1.0 - deploy_fraction),
+                )
+                tick_lower, tick_upper = _calculate_entry_range(
                     event,
                     params,
-                    liquidity,
-                    deployed_capital,
-                    active_liquidity,
-                    previous_swap_time,
+                    ewma,
+                    current_price,
+                    current_tick,
                     pool_config,
                 )
-            ):
-                position = VirtualPosition(
-                    tick_lower=tick_lower,
-                    tick_upper=tick_upper,
-                    liquidity_L=liquidity,
-                    entry_price=current_price,
-                    entry_value=deployed_capital,
-                    entry_time=event.block_time,
-                    entry_tick=current_tick,
-                    entry_active_liquidity=active_liquidity,
-                    deployed_capital=deployed_capital,
-                    entry_transaction_cost=entry_cost,
+                liquidity, deployed_capital, entry_cost, next_wallet = _route_wallet_to_position(
+                    deploy_wallet,
+                    tick_lower,
+                    tick_upper,
+                    current_tick,
+                    current_sqrt_price_x96,
+                    current_price,
+                    active_liquidity,
+                    _event_pool_fee_rate(event, pool_config),
+                    pool_config,
+                    params,
                 )
-                wallet = next_wallet
+                if (
+                    liquidity > 0
+                    and _expected_fee_apr_passes(
+                        event,
+                        params,
+                        liquidity,
+                        deployed_capital,
+                        active_liquidity,
+                        previous_swap_time,
+                        pool_config,
+                    )
+                ):
+                    position = VirtualPosition(
+                        tick_lower=tick_lower,
+                        tick_upper=tick_upper,
+                        liquidity_L=liquidity,
+                        entry_price=current_price,
+                        entry_value=deployed_capital,
+                        entry_time=event.block_time,
+                        entry_tick=current_tick,
+                        entry_active_liquidity=active_liquidity,
+                        deployed_capital=deployed_capital,
+                        entry_transaction_cost=entry_cost,
+                    )
+                    wallet = PortfolioComposition(
+                        stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
+                        cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
+                    )
 
+        if idle_apr > 0 and previous_swap_time is not None:
+            elapsed_years = (event.block_time - previous_swap_time).total_seconds() / (365.25 * 86400)
+            if elapsed_years > 0:
+                result.idle_hurdle_credit += wallet.value_usd(current_price) * idle_apr * elapsed_years
         result.value_samples.append(
             (
                 event.block_time,
