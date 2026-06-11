@@ -120,7 +120,12 @@ def _compute_metrics(sim: SimResult, initial_capital: float) -> dict:
     max_drawdown = metrics.max_drawdown(metrics._cumulative(daily_returns)) if daily_returns else 0.0
     net_return = sim.final_value / initial_capital - 1.0 if initial_capital > 0 else 0.0
     return {
-        "composite": metrics.composite_objective(net_return, max_drawdown),
+        "composite": metrics.composite_objective(
+            net_return,
+            max_drawdown,
+            fees=sim.total_fees,
+            tx_cost=sim.total_transaction_cost,
+        ),
         "net_return": net_return,
         "max_drawdown": max_drawdown,
         "time_in_range": metrics.time_in_range_pct(sim),
@@ -478,6 +483,7 @@ def aggregate_window_results(
     min_valid_windows: int = 1,
     max_drawdown_limit: float = 1.0,
     divergent_loss_floor: float = -1.0,
+    min_fee_cost_ratio: float = 1.0,
 ) -> list[dict]:
     grouped: dict[tuple, list[WindowResult]] = defaultdict(list)
     for result in window_results:
@@ -499,6 +505,13 @@ def aggregate_window_results(
         median_validation_net_return = statistics.median(metric["net_return"] for metric in validation_metrics)
         min_validation_net_return = min(metric["net_return"] for metric in validation_metrics)
         mean_metric = lambda name: statistics.fmean(metric.get(name, 0.0) for metric in validation_metrics)
+        mean_fees = mean_metric("total_fees")
+        mean_tx_cost = mean_metric("total_transaction_cost")
+        fee_cost_ratio = (
+            mean_fees / mean_tx_cost
+            if mean_tx_cost > metrics._FEE_COST_EPS
+            else (float("inf") if mean_fees > 0 else 0.0)
+        )
         agg = {
             **_params_row(params),
             "valid_window_count": len(rows),
@@ -511,12 +524,14 @@ def aggregate_window_results(
             "positive_window_rate": sum(1 for metric in validation_metrics if metric["net_return"] > 0) / len(rows),
             "validation_top_rank_rate": win_counter / len(rows),
             "windows_won": win_counter,
-            "mean_validation_total_fees": mean_metric("total_fees"),
-            "mean_validation_total_transaction_cost": mean_metric("total_transaction_cost"),
+            "mean_validation_total_fees": mean_fees,
+            "mean_validation_total_transaction_cost": mean_tx_cost,
+            "mean_validation_fee_to_tx_cost_ratio": fee_cost_ratio,
             "mean_validation_rebalance_count": statistics.fmean(metric["rebalance_count"] for metric in validation_metrics),
             "eligible": (
                 len(rows) >= min_valid_windows
                 and median_validation_net_return > 0
+                and fee_cost_ratio >= min_fee_cost_ratio
                 and max(metric["max_drawdown"] for metric in validation_metrics) <= max_drawdown_limit
                 and min(metric["divergent_loss"] for metric in validation_metrics) >= divergent_loss_floor
             ),

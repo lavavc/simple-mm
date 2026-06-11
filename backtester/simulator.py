@@ -1261,19 +1261,31 @@ def _paper_exit_reason(
     if params.downward_range_fraction is not None and tick_width > 0 and defensive_traversal <= -params.downward_range_fraction:
         return "downward_move", exit_cost
 
+    profit_take_return = params.profit_take_return if params.profit_take_return is not None else 0.0
+    current_traversal = _range_traversal_fraction(position, current_tick, pool_config)
+
     if not position.is_in_range(defensive_tick):
         overshoot_threshold = 0.0 if params.out_of_range_overshoot_fraction is None else params.out_of_range_overshoot_fraction
         if _out_of_range_overshoot_fraction(position, defensive_tick) >= overshoot_threshold:
+            if defensive_traversal > 0 and params.harvest_upward_range_fraction is not None:
+                if (
+                    current_traversal >= params.harvest_upward_range_fraction
+                    and _profit_basis_return(position, position_value, exit_cost.total, current_price, params)
+                    >= profit_take_return
+                    and (not params.require_profit_after_cost or net_return_after_cost > 0)
+                ):
+                    return "harvest_upward", exit_cost
+                return None, TransactionCostBreakdown("exit")
+            if defensive_traversal < 0:
+                return "adverse_out_of_range", exit_cost
             return "out_of_range", exit_cost
         return None, TransactionCostBreakdown("exit")
 
     if params.harvest_upward_range_fraction is None:
         return None, TransactionCostBreakdown("exit")
-    traversal = _range_traversal_fraction(position, current_tick, pool_config)
-    if traversal < params.harvest_upward_range_fraction:
+    if current_traversal < params.harvest_upward_range_fraction:
         return None, TransactionCostBreakdown("exit")
 
-    profit_take_return = params.profit_take_return if params.profit_take_return is not None else 0.0
     if _profit_basis_return(position, position_value, exit_cost.total, current_price, params) < profit_take_return:
         return None, TransactionCostBreakdown("exit")
     if params.require_profit_after_cost and net_return_after_cost <= 0:
@@ -1282,7 +1294,7 @@ def _paper_exit_reason(
 
 
 def _is_defensive_exit(reason: str | None) -> bool:
-    return reason in {"stop_loss", "downward_move", "out_of_range"}
+    return reason in {"stop_loss", "downward_move", "out_of_range", "adverse_out_of_range"}
 
 
 def _defensive_exit_quality_passes(event: Event, params: BacktestParams) -> bool:

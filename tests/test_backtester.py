@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from backtester.data import BurnEvent, MintEvent, SwapEvent, V4Event, load_events, load_v4_events
-from backtester.clmm_math import tick_to_sqrt_price_x96
+from backtester.clmm_math import cngn_price_from_sqrt_price_x96, tick_to_sqrt_price_x96
 from backtester.run import (
     WindowSpec,
     WindowResult,
@@ -32,9 +32,11 @@ from backtester.params import BacktestParams, TransactionCostModel, generate_gri
 from backtester.simulator import (
     PANCAKESWAP_POOL,
     UNISWAP_BASE_POOL,
+    UNISWAP_BSC_POOL,
     VirtualPosition,
     _exact_clmm_output_costs,
     _event_fee_wallet,
+    _range_traversal_fraction,
     simulate_pool,
 )
 from backtester import metrics
@@ -372,17 +374,54 @@ class TestMetrics:
         assert abs(metrics.return_skew(rets)) < 0.01
 
     def test_composite_objective(self):
-        # net_return=0.05 (5% gain), max_dd=0.1 → 0.05 - 0.1 = -0.05
+        # net_return=0.05 (5% gain), max_dd=0.1, no fees/cost → 0.05 - 0.1 + 0 = -0.05
         val = metrics.composite_objective(0.05, 0.1)
         assert val == pytest.approx(0.05 - 0.1)
 
     def test_composite_negative_return(self):
-        # net_return=-0.2 (20% loss), max_dd=0.3 → -0.2 - 0.3 = -0.5
+        # net_return=-0.2 (20% loss), max_dd=0.3, zero-activity → -0.2 - 0.3 + 0 = -0.5
         val = metrics.composite_objective(-0.2, 0.3)
         assert val == pytest.approx(-0.5)
         # Same loss with less drawdown scores better (less negative)
         val2 = metrics.composite_objective(-0.2, 0.1)
         assert val2 > val
+
+    def test_composite_fee_cost_bonus(self):
+        # fees > tx_cost → positive log_ratio bonus on top of ROI−DD term.
+        baseline = metrics.composite_objective(0.0, 0.0)
+        bonus = metrics.composite_objective(0.0, 0.0, fees=2.0, tx_cost=1.0)
+        assert bonus > baseline
+        # alpha=0.001 default × log(2) ≈ 6.9e-4 increment
+        assert bonus == pytest.approx(0.001 * math.log(2.0), abs=1e-9)
+
+    def test_composite_fee_cost_penalty(self):
+        # fees < tx_cost → negative log_ratio penalty
+        baseline = metrics.composite_objective(0.0, 0.0)
+        underwater = metrics.composite_objective(0.0, 0.0, fees=0.5, tx_cost=2.0)
+        assert underwater < baseline
+        assert underwater == pytest.approx(0.001 * math.log(0.5 / 2.0), abs=1e-9)
+
+    def test_composite_fee_cost_zero_activity_neutral(self):
+        # No activity ⇒ ratio term is exactly 0, matching prior behaviour.
+        with_args = metrics.composite_objective(0.01, 0.02, fees=0.0, tx_cost=0.0)
+        without_args = metrics.composite_objective(0.01, 0.02)
+        assert with_args == pytest.approx(without_args)
+
+    def test_composite_fee_cost_zero_fees_clamped(self):
+        # fees ≈ 0 with non-trivial tx_cost would be ln(0/c) = −∞ unclamped.
+        # Clamp floor of −3 prevents domination of the ranking.
+        capped = metrics.composite_objective(0.0, 0.0, fees=0.0, tx_cost=1.0)
+        assert capped == pytest.approx(0.001 * -3.0, abs=1e-9)
+
+    def test_composite_fee_cost_huge_ratio_clamped(self):
+        # Fees ≫ tx_cost gets a bonus capped at log(2) ≈ +2 ceil.
+        capped = metrics.composite_objective(0.0, 0.0, fees=1e6, tx_cost=1.0)
+        assert capped == pytest.approx(0.001 * 2.0, abs=1e-9)
+
+    def test_fee_cost_log_ratio_signs(self):
+        assert metrics.fee_cost_log_ratio(2.0, 1.0) > 0  # break-even surplus
+        assert metrics.fee_cost_log_ratio(0.5, 1.0) < 0  # underwater
+        assert metrics.fee_cost_log_ratio(0.0, 0.0) == 0.0  # neutral
 
 
 class TestV4Loader:
@@ -498,6 +537,35 @@ class TestRollingWindows:
         aggregates = aggregate_window_results(rows)
         assert aggregates[0]["sd_multiplier"] == 1.0
 
+    def test_aggregate_eligibility_requires_fee_cost_break_even(self):
+        viable = BacktestParams(sd_multiplier=1.0)
+        underwater = BacktestParams(sd_multiplier=2.0)
+        # Both configs are net-return positive in every window, drawdown OK.
+        # `viable` earns more in fees than it pays in tx_cost (ratio 2.0).
+        # `underwater` pays more in tx_cost than it earns in fees (ratio 0.5).
+        viable_metric = {"composite": 0.5, "net_return": 0.01, "max_drawdown": 0.005, "divergent_loss": -0.001, "time_in_range": 0.5, "rebalance_count": 1, "total_fees": 2.0, "total_transaction_cost": 1.0}
+        underwater_metric = {"composite": 0.5, "net_return": 0.01, "max_drawdown": 0.005, "divergent_loss": -0.001, "time_in_range": 0.5, "rebalance_count": 5, "total_fees": 0.5, "total_transaction_cost": 1.0}
+        rows = [
+            WindowResult(0, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, viable, {"composite": 0.5}, viable_metric, 1, 1),
+            WindowResult(1, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, viable, {"composite": 0.5}, viable_metric, 1, 1),
+            WindowResult(0, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, underwater, {"composite": 0.5}, underwater_metric, 1, 1),
+            WindowResult(1, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, underwater, {"composite": 0.5}, underwater_metric, 1, 1),
+        ]
+        aggregates = aggregate_window_results(rows)
+        by_sd = {agg["sd_multiplier"]: agg for agg in aggregates}
+        assert by_sd[1.0]["eligible"] is True
+        assert by_sd[1.0]["mean_validation_fee_to_tx_cost_ratio"] == pytest.approx(2.0)
+        assert by_sd[2.0]["eligible"] is False  # ratio 0.5 < 1.0 gate
+        assert by_sd[2.0]["mean_validation_fee_to_tx_cost_ratio"] == pytest.approx(0.5)
+
+    def test_aggregate_eligibility_fee_cost_gate_tunable(self):
+        params = BacktestParams(sd_multiplier=1.0)
+        # Ratio 1.5 — should be ineligible at min_fee_cost_ratio=2.0 but eligible at 1.0.
+        metric = {"composite": 0.5, "net_return": 0.01, "max_drawdown": 0.005, "divergent_loss": -0.001, "time_in_range": 0.5, "rebalance_count": 1, "total_fees": 1.5, "total_transaction_cost": 1.0}
+        rows = [WindowResult(0, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, params, {"composite": 0.5}, metric, 1, 1)]
+        assert aggregate_window_results(rows, min_fee_cost_ratio=1.0)[0]["eligible"] is True
+        assert aggregate_window_results(rows, min_fee_cost_ratio=2.0)[0]["eligible"] is False
+
 
 class TestSimulationCompatibility:
     def test_v4_pool_fee_assumptions(self):
@@ -569,6 +637,45 @@ class TestPaperStyleSimulation:
         }
         values.update(overrides)
         return BacktestParams(**values)
+
+    def test_bsc_token1_cngn_flips_upward_tick_traversal(self):
+        entry_tick = -204_000
+        lower_tick = entry_tick - 200
+        upper_tick = entry_tick + 200
+        entry_price = cngn_price_from_sqrt_price_x96(
+            tick_to_sqrt_price_x96(entry_tick),
+            UNISWAP_BSC_POOL.token0_decimals,
+            UNISWAP_BSC_POOL.token1_decimals,
+            UNISWAP_BSC_POOL.invert_price,
+        )
+        lower_tick_price = cngn_price_from_sqrt_price_x96(
+            tick_to_sqrt_price_x96(lower_tick),
+            UNISWAP_BSC_POOL.token0_decimals,
+            UNISWAP_BSC_POOL.token1_decimals,
+            UNISWAP_BSC_POOL.invert_price,
+        )
+        upper_tick_price = cngn_price_from_sqrt_price_x96(
+            tick_to_sqrt_price_x96(upper_tick),
+            UNISWAP_BSC_POOL.token0_decimals,
+            UNISWAP_BSC_POOL.token1_decimals,
+            UNISWAP_BSC_POOL.invert_price,
+        )
+        position = VirtualPosition(
+            tick_lower=entry_tick - 500,
+            tick_upper=entry_tick + 500,
+            liquidity_L=1.0,
+            entry_price=entry_price,
+            entry_value=1.0,
+            entry_time=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+            entry_tick=entry_tick,
+            entry_active_liquidity=1_000_000,
+            deployed_capital=1.0,
+        )
+
+        assert lower_tick_price > entry_price
+        assert upper_tick_price < entry_price
+        assert _range_traversal_fraction(position, lower_tick, UNISWAP_BSC_POOL) == pytest.approx(0.2)
+        assert _range_traversal_fraction(position, upper_tick, UNISWAP_BSC_POOL) == pytest.approx(-0.2)
 
     def test_upward_in_range_harvest_records_episode_accounting(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
@@ -683,6 +790,24 @@ class TestPaperStyleSimulation:
 
         assert sim.rebalance_count == 0
         assert all(episode.exit_reason != "harvest_upward" for episode in sim.episodes)
+
+    def test_favorable_out_of_range_exit_is_profit_harvest(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 600)]
+        params = self._params(profit_take_return=-1.0, require_profit_after_cost=False)
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 1
+        assert sim.episodes[0].exit_reason == "harvest_upward"
+        assert sim.episodes[0].range_traversal_fraction > 0
+
+    def test_adverse_out_of_range_exit_is_defensive(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, -600)]
+        params = self._params(stop_loss_return=None, require_profit_after_cost=False)
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 1
+        assert sim.episodes[0].exit_reason == "adverse_out_of_range"
+        assert sim.episodes[0].range_traversal_fraction < 0
 
     def test_stop_loss_exits_in_range_position(self):
         events = [self._event(0, 0, amount_usd=0), self._event(1, 0, amount_usd=0), self._event(2, -100, amount_usd=0)]

@@ -166,15 +166,51 @@ def average_active_liquidity_share(sim: SimResult) -> float:
     return sum(shares) / len(shares)
 
 
-def composite_objective(net_return: float, max_dd: float) -> float:
-    """Risk-adjusted net return: net_return - max_drawdown.
+_FEE_COST_LOG_RATIO_FLOOR = -3.0
+_FEE_COST_LOG_RATIO_CEIL = 2.0
+_FEE_COST_EPS = 1e-9
 
-    net_return = final_value / initial_capital - 1.
-    Additive form avoids sign-inversion: higher return and lower drawdown
-    always improve the score, regardless of whether the strategy is
-    profitable or not.
+
+def fee_cost_log_ratio(fees: float, tx_cost: float) -> float:
+    """Signed, clamped log ratio of fees to transaction cost.
+
+    Returns 0 when no transaction cost has been incurred (zero-activity is
+    treated as neutral). Otherwise returns ln(max(fees, eps) / tx_cost),
+    clamped to [-3, +2] so a single underwater config can't dominate ranking
+    and so fee-heavy runs don't get unbounded credit.
     """
-    return net_return - max_dd
+    if tx_cost <= _FEE_COST_EPS:
+        return 0.0
+    raw = math.log(max(fees, _FEE_COST_EPS) / tx_cost)
+    if raw < _FEE_COST_LOG_RATIO_FLOOR:
+        return _FEE_COST_LOG_RATIO_FLOOR
+    if raw > _FEE_COST_LOG_RATIO_CEIL:
+        return _FEE_COST_LOG_RATIO_CEIL
+    return raw
+
+
+def composite_objective(
+    net_return: float,
+    max_dd: float,
+    fees: float = 0.0,
+    tx_cost: float = 0.0,
+    fee_cost_alpha: float = 0.001,
+) -> float:
+    """Risk- and structure-aware ranking score.
+
+    Combines:
+    - net_return - max_drawdown (existing risk-adjusted return)
+    - + fee_cost_alpha * fee_cost_log_ratio(fees, tx_cost)
+      Rewards configs whose fees structurally exceed their transaction cost;
+      penalises configs underwater on fees-vs-gas. Zero-activity is neutral
+      so the prior two-arg behaviour is preserved when fees and tx_cost are
+      both zero.
+
+    Default alpha=0.001 lets the log term contribute up to ±0.003 — comparable
+    to a 30 bps return delta but unable to dominate when the ROI signal is
+    strong.
+    """
+    return (net_return - max_dd) + fee_cost_alpha * fee_cost_log_ratio(fees, tx_cost)
 
 
 def _cumulative(returns: list[float]) -> list[float]:
