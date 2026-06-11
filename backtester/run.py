@@ -341,19 +341,26 @@ def _build_pool_state(events: list[Event]) -> PoolState:
     return pool_state
 
 
-def evaluate_rolling_windows(
+@dataclass(frozen=True)
+class WindowSlice:
+    window: Window
+    train_events: list[Event]
+    val_events: list[Event]
+    train_counts: WindowCounts
+    val_counts: WindowCounts
+    skipped_reason: str | None
+
+
+def _iter_window_slices(
     events: list[Event],
-    pool_config: PoolConfig,
-    grid: list[BacktestParams],
     spec: WindowSpec,
-    top_n: int,
     max_windows: int | None = None,
-) -> list[WindowResult]:
-    results: list[WindowResult] = []
+) -> list[WindowSlice]:
     if spec.mode == "swap_count":
         windows = generate_swap_count_windows(events, spec, max_windows=max_windows)
     else:
         windows = generate_windows(events, spec, max_windows=max_windows)
+    slices: list[WindowSlice] = []
     for window in windows:
         train_events = _window_train_events(events, window)
         val_events = _window_val_events(events, window)
@@ -366,6 +373,28 @@ def evaluate_rolling_windows(
             skipped_reason = "train_liquidity_events_below_min"
         elif val_counts.swap_count < spec.min_val_swaps:
             skipped_reason = "val_swaps_below_min"
+        slices.append(
+            WindowSlice(window, train_events, val_events, train_counts, val_counts, skipped_reason)
+        )
+    return slices
+
+
+def evaluate_rolling_windows(
+    events: list[Event],
+    pool_config: PoolConfig,
+    grid: list[BacktestParams],
+    spec: WindowSpec,
+    top_n: int,
+    max_windows: int | None = None,
+) -> list[WindowResult]:
+    results: list[WindowResult] = []
+    for window_slice in _iter_window_slices(events, spec, max_windows=max_windows):
+        window = window_slice.window
+        train_events = window_slice.train_events
+        val_events = window_slice.val_events
+        train_counts = window_slice.train_counts
+        val_counts = window_slice.val_counts
+        skipped_reason = window_slice.skipped_reason
 
         if skipped_reason is not None:
             results.append(
@@ -421,6 +450,45 @@ def evaluate_rolling_windows(
                 )
             )
     return results
+
+
+def evaluate_validation_matrix(
+    events: list[Event],
+    pool_config: PoolConfig,
+    grid: list[BacktestParams],
+    spec: WindowSpec,
+    max_windows: int | None = None,
+) -> list[dict]:
+    """Every grid config evaluated on every valid validation window.
+
+    No top-n selection: this is the unfiltered configs x windows performance
+    matrix CSCV/PBO needs (scripts/compute_pbo.py). Pool state is seeded from
+    the window's train slice, matching evaluate_rolling_windows.
+    """
+    rows: list[dict] = []
+    for window_slice in _iter_window_slices(events, spec, max_windows=max_windows):
+        if window_slice.skipped_reason is not None:
+            continue
+        window = window_slice.window
+        print(f"matrix window {window.index}", file=sys.stderr)
+        val_rows = _run_grid(
+            window_slice.val_events,
+            pool_config,
+            grid,
+            initial_pool_state=_build_pool_state(window_slice.train_events),
+        )
+        for params, _, metric_row in val_rows:
+            rows.append(
+                {
+                    "window_index": window.index,
+                    "window_start": window.val_start.isoformat(),
+                    "window_end": window.val_end.isoformat(),
+                    "val_swap_count": window_slice.val_counts.swap_count,
+                    **_params_row(params),
+                    **{f"validation_{key}": metric_row[key] for key in ESSENTIAL_METRIC_FIELDS},
+                }
+            )
+    return rows
 
 
 ESSENTIAL_PARAM_FIELDS = [
@@ -712,6 +780,11 @@ def main() -> None:
     parser.add_argument("--min-train-liquidity-events", type=int, default=50)
     parser.add_argument("--min-val-swaps", type=int, default=100)
     parser.add_argument("--max-windows", type=int)
+    parser.add_argument(
+        "--matrix-output",
+        help="Walk-forward only: also evaluate the FULL grid on every validation window "
+        "and write the configs x windows matrix CSV for scripts/compute_pbo.py",
+    )
     parser.add_argument("--legacy-priors-csv")
     parser.add_argument("--mint-gas-usd", type=float)
     parser.add_argument("--remove-gas-usd", type=float)
@@ -774,6 +847,8 @@ def main() -> None:
         events = load_v4_events(args.csv, pool_id=pool_config.pool_address)
 
     print(f"Loaded {len(events)} events for {args.pool}", file=sys.stderr)
+    if args.matrix_output and not args.walkforward:
+        parser.error("--matrix-output requires --walkforward")
     if not args.walkforward:
         rows = _run_grid(events, pool_config, grid)
         rows.sort(key=lambda row: row[2]["composite"], reverse=True)
@@ -802,6 +877,15 @@ def main() -> None:
     )
     aggregate_results = aggregate_window_results(window_results)
     stem = Path(args.output)
+    if args.matrix_output:
+        matrix_rows = evaluate_validation_matrix(
+            events=events,
+            pool_config=pool_config,
+            grid=grid,
+            spec=spec,
+            max_windows=args.max_windows,
+        )
+        _write_aggregate_results(matrix_rows, args.matrix_output)
     _write_window_results(window_results, str(stem.with_name(f"{stem.stem}_windows.csv")))
     _write_aggregate_results(aggregate_results, str(stem.with_name(f"{stem.stem}_aggregate.csv")))
     _write_summary_json(

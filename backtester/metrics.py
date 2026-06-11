@@ -28,7 +28,12 @@ def annualized_return(net_return: float, start: datetime | None, end: datetime |
         return 0.0
     if net_return <= -1.0:
         return -1.0
-    return (1.0 + net_return) ** (_SECONDS_PER_YEAR / elapsed_seconds) - 1.0
+    exponent = _SECONDS_PER_YEAR / elapsed_seconds * math.log1p(net_return)
+    # Spans far shorter than a year compound past float range; +/-inf marks
+    # the window as too short to annualize rather than hiding it.
+    if exponent > 700.0:
+        return float("inf")
+    return math.expm1(exponent)
 
 
 def win_score(value_samples: list[tuple[datetime, float]], initial_capital: float) -> float:

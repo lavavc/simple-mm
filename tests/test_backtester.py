@@ -14,10 +14,12 @@ from backtester.run import (
     WindowResult,
     aggregate_window_results,
     evaluate_rolling_windows,
+    evaluate_validation_matrix,
     generate_swap_count_windows,
     generate_windows,
     resolve_gas_costs,
 )
+from backtester.pbo import compute_pbo, contiguous_partitions
 from engine.math.v3 import (
     tick_to_price,
     price_to_tick,
@@ -585,6 +587,23 @@ class TestRollingWindows:
         assert len(results) == 1
         assert results[0].skipped_reason == "train_swaps_below_min"
 
+    def test_validation_matrix_covers_full_grid_per_window(self):
+        base = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        events = [
+            V4Event(base + timedelta(minutes=i), "base", "pool", "swap", f"0x{i}", 0, i, tick_to_sqrt_price_x96(0), 0, 1_000_000, 0.0015, 1, 1, 100, 0.0007, "cNGN", "USDC")
+            for i in range(12)
+        ]
+        grid = [BacktestParams(sd_multiplier=1.0), BacktestParams(sd_multiplier=2.0)]
+        spec = WindowSpec(mode="swap_count", train_swaps=5, val_swaps=3, stride_swaps=2, min_train_swaps=5, min_train_liquidity_events=0, min_val_swaps=3)
+        rows = evaluate_validation_matrix(events, UNISWAP_BASE_POOL, grid, spec)
+        # 3 valid windows x 2 configs, no top-n filtering
+        assert len(rows) == 6
+        by_window = {}
+        for row in rows:
+            by_window.setdefault(row["window_index"], set()).add(row["sd_multiplier"])
+        assert all(sds == {1.0, 2.0} for sds in by_window.values())
+        assert all("validation_net_return" in row for row in rows)
+
     def test_aggregate_selection_prefers_better_score_then_tiebreakers(self):
         p1 = BacktestParams(sd_multiplier=1.0)
         p2 = BacktestParams(sd_multiplier=2.0)
@@ -625,6 +644,48 @@ class TestRollingWindows:
         rows = [WindowResult(0, datetime.now(), datetime.now(), 10, 10, 5, 5, 5, None, params, {"composite": 0.5}, metric, 1, 1)]
         assert aggregate_window_results(rows, min_fee_cost_ratio=1.0)[0]["eligible"] is True
         assert aggregate_window_results(rows, min_fee_cost_ratio=2.0)[0]["eligible"] is False
+
+
+class TestPBO:
+    def test_contiguous_partitions_cover_all_windows(self):
+        blocks = contiguous_partitions(19, 8)
+        assert len(blocks) == 8
+        assert [i for block in blocks for i in block] == list(range(19))
+        sizes = [len(block) for block in blocks]
+        assert max(sizes) - min(sizes) <= 1
+
+    def test_contiguous_partitions_validation(self):
+        with pytest.raises(ValueError):
+            contiguous_partitions(10, 3)  # odd partition count
+        with pytest.raises(ValueError):
+            contiguous_partitions(3, 4)  # fewer windows than partitions
+
+    def test_pbo_zero_for_dominant_config(self):
+        matrix = [[1.0] * 8, [0.0] * 8]
+        result = compute_pbo(matrix, partitions=4)
+        assert result.combination_count == 6  # C(4,2)
+        assert result.pbo == 0.0
+        assert result.mean_oos_rank_percentile == pytest.approx(2 / 3)
+        assert result.oos_loss_probability == 0.0
+
+    def test_pbo_one_for_pure_overfit(self):
+        # The in-sample winner is always the out-of-sample loser.
+        matrix = [
+            [1.0, 1.0, -1.0, -1.0],
+            [-1.0, -1.0, 1.0, 1.0],
+        ]
+        result = compute_pbo(matrix, partitions=2)
+        assert result.combination_count == 2
+        assert result.pbo == 1.0
+        assert result.oos_loss_probability == 1.0
+
+    def test_pbo_input_validation(self):
+        with pytest.raises(ValueError):
+            compute_pbo([], partitions=2)
+        with pytest.raises(ValueError):
+            compute_pbo([[1.0] * 4], partitions=2)  # single config
+        with pytest.raises(ValueError):
+            compute_pbo([[1.0, 2.0], [1.0]], partitions=2)  # ragged
 
 
 class TestSimulationCompatibility:
