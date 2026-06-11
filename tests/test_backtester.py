@@ -16,6 +16,7 @@ from backtester.run import (
     evaluate_rolling_windows,
     generate_swap_count_windows,
     generate_windows,
+    resolve_gas_costs,
 )
 from engine.math.v3 import (
     tick_to_price,
@@ -28,7 +29,7 @@ from engine.math.v3 import (
 )
 from backtester.strategy import EWMACalculator, calculate_fixed_pct_tick_range, calculate_tick_range
 from backtester.pool_state import PoolState
-from backtester.params import BacktestParams, TransactionCostModel, generate_grid
+from backtester.params import BacktestParams, TransactionCostModel, generate_grid, generate_paper_grid
 from backtester.simulator import (
     PANCAKESWAP_POOL,
     UNISWAP_BASE_POOL,
@@ -325,6 +326,28 @@ class TestParams:
     def test_grid_gas_override(self):
         grid = generate_grid(gas_cost_usd=0.20)
         assert all(p.gas_cost_usd == 0.20 for p in grid)
+
+    def test_paper_grid_axes(self):
+        grid = generate_paper_grid()
+        widths = {p.fixed_width_pct for p in grid}
+        assert 0.015 in widths  # H4 interior optimum
+        profits = {p.profit_take_return for p in grid}
+        assert profits == {0.005, 0.01}  # H4: axis collapsed, parameter inert
+
+
+class TestGasDefaults:
+    def test_v4_pool_calibrated_defaults(self):
+        # H7 medians from on-chain receipts
+        assert resolve_gas_costs("uni-base", None, None) == (0.073, 0.022)
+        assert resolve_gas_costs("uni-bsc", None, None) == (0.015, 0.015)
+
+    def test_cli_override_wins(self):
+        assert resolve_gas_costs("uni-bsc", 0.20, None) == (0.20, 0.015)
+        assert resolve_gas_costs("uni-base", None, 0.5) == (0.073, 0.5)
+
+    def test_legacy_pool_passthrough(self):
+        assert resolve_gas_costs("aerodrome", None, None) == (None, None)
+        assert resolve_gas_costs("pancakeswap", 0.1, 0.2) == (0.1, 0.2)
 
 
 # ─── Metrics ─────────────────────────────────────────────────────────────

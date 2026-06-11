@@ -73,9 +73,11 @@ EWMA_LAMBDAS = [0.95, 0.975, 0.99, 0.999]
 DOWNSIDE_SKEWS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 PREEMPTIVE = [True, False]
 REBALANCE_THRESHOLDS = [1.0, 3.0, 5.0, 10.0, 15.0]
-FIXED_WIDTH_PCTS = [0.0025, 0.005, 0.01, 0.02, 0.05, 0.10]
+FIXED_WIDTH_PCTS = [0.0025, 0.005, 0.01, 0.015, 0.02, 0.05, 0.10]
 HARVEST_RANGE_FRACTIONS = [0.04, 0.06, 0.08, 0.10, 0.12]
-PROFIT_TAKE_RETURNS = [0.001, 0.0025, 0.005, 0.01]
+# H4: profit_take is inert across 0.003-0.02 at the robust operating points;
+# two values retain the axis without quadrupling the grid.
+PROFIT_TAKE_RETURNS = [0.005, 0.01]
 STOP_LOSS_RETURNS = [-0.0025, -0.005, -0.01, -0.02]
 OUT_OF_RANGE_OVERSHOOTS = [0.0, 0.02, 0.05, 0.10]
 

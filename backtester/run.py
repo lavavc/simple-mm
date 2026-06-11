@@ -40,6 +40,34 @@ V4_POOLS = {
 
 
 @dataclass(frozen=True)
+class GasDefaults:
+    mint_gas_usd: float
+    remove_gas_usd: float
+
+
+# H7-calibrated medians from on-chain receipts of the pools' own liquidity
+# events (research_log.md). CLI --mint-gas-usd / --remove-gas-usd override.
+V4_POOL_GAS_DEFAULTS = {
+    "uni-base": GasDefaults(mint_gas_usd=0.073, remove_gas_usd=0.022),
+    "uni-bsc": GasDefaults(mint_gas_usd=0.015, remove_gas_usd=0.015),
+}
+
+
+def resolve_gas_costs(
+    pool: str,
+    mint_gas_arg: float | None,
+    remove_gas_arg: float | None,
+) -> tuple[float | None, float | None]:
+    defaults = V4_POOL_GAS_DEFAULTS.get(pool)
+    if defaults is None:
+        return mint_gas_arg, remove_gas_arg
+    return (
+        defaults.mint_gas_usd if mint_gas_arg is None else mint_gas_arg,
+        defaults.remove_gas_usd if remove_gas_arg is None else remove_gas_arg,
+    )
+
+
+@dataclass(frozen=True)
 class WindowSpec:
     mode: str = "time"
     train_days: int = 30
@@ -709,11 +737,12 @@ def main() -> None:
         grid = generate_paper_grid(gas_cost_usd=gas_cost, initial_capital_usd=initial_capital)
     else:
         grid = generate_grid(gas_cost_usd=gas_cost, initial_capital_usd=initial_capital)
+    mint_gas_usd, remove_gas_usd = resolve_gas_costs(args.pool, args.mint_gas_usd, args.remove_gas_usd)
     grid = _with_transaction_costs(
         grid,
         TransactionCostModel(
-            mint_gas_usd=args.mint_gas_usd,
-            remove_gas_usd=args.remove_gas_usd,
+            mint_gas_usd=mint_gas_usd,
+            remove_gas_usd=remove_gas_usd,
             swap_slippage_bps=args.swap_slippage_bps,
             latency_slippage_bps=args.latency_slippage_bps,
             failed_tx_probability=args.failed_tx_probability,
