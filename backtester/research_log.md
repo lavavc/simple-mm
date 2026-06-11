@@ -150,10 +150,63 @@ True price bands: uni-base 4.05%, uni-bsc 6.12% peak-to-trough.
 
 ---
 
+## Infrastructure changes — 2026-06-10
+
+Codified between research rounds; all prior absolute fee/return numbers
+above are NOT comparable to future runs:
+
+1. **Gas defaults calibrated permanently.** `run.py` now defaults V4 pools to
+   the H7 medians (Base mint=$0.073/remove=$0.022, BSC mint=$0.015/remove=$0.015);
+   CLI flags still override. (Closes the "permanent gas calibration" item.)
+2. **Grid updated.** width=0.015 added (H4 interior optimum);
+   `PROFIT_TAKE_RETURNS` collapsed to {0.005, 0.01} (inert axis per H4).
+   Paper grid: 3,840 → 2,240 configs.
+3. **Fee-share dilution fix (material).** Fee share is now
+   `L_ours / (L_pool + L_ours)`; it was `L_ours / L_pool`, which could exceed
+   100%. Measured share ~9% (Base, $1.2k @ 1.5% width) and ~23% (BSC, $450 @
+   0.5% width) — BSC fee income in all entries above is overstated ~30%,
+   Base ~9%. Expect headline returns to drop on re-run; BSC's marginal
+   positive EV may not survive.
+4. **New per-config metrics.** `apy` (compounded annualization per window;
+   mean/median aggregated) for the 4.25% sGHO hurdle comparison, and
+   `win_score` (Urusov et al. omega over the mark-to-market equity path).
+5. **PBO tooling.** `--matrix-output` writes the full configs × windows
+   validation matrix; `scripts/compute_pbo.py` computes CSCV PBO
+   (default metric `validation_composite`, partitions=8).
+
+---
+
+## H11 — Swap-clock estimation (filed, not yet executed)
+
+**Hypothesis.** Re-parameterizing EWMA decay and width estimation in
+swap-event time instead of calendar time reduces the train/validation gap.
+
+**Mechanism.** Validation windows are already swap-count based; estimation
+remains calendar-based. In thin pools with bursty activity, per-swap
+volatility is more stationary than per-hour volatility, so a swap-clock
+half-life should transfer better across windows with different event density.
+
+**Expected signature.** Lower |mean_train − mean_validation| return gap at
+comparable mean validation return; lambda selected more consistently across
+windows.
+
+**Variant set.** EWMA lambda interpreted per swap (current behavior already
+updates per swap event — the hypothesis is about *width*: per-swap sigma ×
+sqrt(expected swaps-to-rebalance) instead of per-interval sigma).
+
+**Controls.** Current EWMA winners per pool; identical windows, gas, capital.
+
+**Success criteria.** Gap shrinks on both pools without mean validation
+return degrading; PBO does not increase.
+
+---
+
 ## Open items / next hypotheses
 
-- **H4 — Base Paper fine-grid.** Why does no Base Paper config win ≥5 windows? Either the grid is mis-stepped or the strategy mode is wrong for this pool.
+- **Re-run all four walk-forwards on the extended dataset** (through
+  2026-06-09) with the fee-share fix, calibrated gas, top_n=100, and
+  `--matrix-output`; compute PBO; check whether the four robust winners hold.
 - **H1 — BSC wide-passive subgrid.** Now that gas is calibrated, the wide-passive baseline can be compared to the narrow-rebalancing winner that emerged from top_n=100.
+- **H11 — Swap-clock estimation.** Filed above.
 - **H_new — Tighten on BSC EWMA / Base EWMA robust winners' neighborhoods.** Search around `(sd=2.0, λ=0.975, skew=0.6, thresh=15%)` BSC EWMA and `(sd=2.5, λ=0.95, skew=0.5, preemptive, thresh=5%)` Base EWMA.
-- **Hygiene — fix buggy CSV `cngn_usd_price` column.** Currently derived from amount0/amount1 ratio at swap events; sqrt-derived value should overwrite it. Simulator already ignores it, but downstream tooling consumes it. Filed H10 above (not yet executed).
-- **Permanent gas calibration.** `backtester/run.py:689` hard-codes `0.20` for BSC, `0.05` for Base via `params.gas_cost_usd`. Update defaults to the empirical medians from H7.
+- **Hygiene — fix buggy CSV `cngn_usd_price` column.** Currently derived from amount0/amount1 ratio at swap events; sqrt-derived value should overwrite it. Simulator already ignores it, but downstream tooling consumes it. (Not yet filed as a hypothesis entry.)

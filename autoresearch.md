@@ -164,13 +164,29 @@ Adjust capital and window sizes only with a written reason.
 
 ## Ranking Candidates
 
-Use a return-heavy but consistency-aware score. A reasonable default:
+The implemented pipeline (backtester/run.py, backtester/metrics.py) ranks by:
 
 ```text
-score =
-  0.80 * percentile(mean_validation_net_return among net-positive configs)
-+ 0.20 * percentile(-abs(mean_train_net_return - mean_validation_net_return))
+composite = net_return - max_drawdown + 0.001 * clamp(ln(fees / tx_cost), -3, +2)
 ```
+
+Training selection, validation ranking, and the aggregate
+`robust_validation_score` (median validation composite - worst window
+drawdown + worst window divergent loss) all use this composite, so one
+definition cascades through the pipeline. Aggregate eligibility additionally
+requires: enough valid windows, positive median validation return, mean
+fee/tx-cost ratio >= 1.0, drawdown and divergent-loss limits.
+
+Per-config APY (compounded annualization of each validation window's net
+return; mean and median reported) is tracked for comparison against the
+4.25% sGHO opportunity-cost benchmark. Win-score omega (Urusov et al.) is
+tracked to catch configs that end positive but spend most of the window
+underwater.
+
+Overfitting control: `--matrix-output` exports the full configs x windows
+validation matrix (no top-n selection) and `scripts/compute_pbo.py` computes
+CSCV PBO over it. Report PBO alongside any headline; a winner with PBO near
+0.5 is indistinguishable from selection noise.
 
 Then apply guardrails:
 
