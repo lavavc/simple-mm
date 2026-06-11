@@ -371,6 +371,43 @@ class TestMetrics:
         cum = [1.0, 0.9, 0.8, 1.0]
         assert metrics.max_drawdown(cum) == pytest.approx(0.2)
 
+    def test_annualized_return_identity_over_one_year(self):
+        start = datetime(2026, 1, 1)
+        end = start + timedelta(seconds=int(365.25 * 86400))
+        assert metrics.annualized_return(0.05, start, end) == pytest.approx(0.05)
+
+    def test_annualized_return_compounds_short_spans(self):
+        start = datetime(2026, 1, 1)
+        end = start + timedelta(seconds=int(365.25 * 86400) // 2)
+        assert metrics.annualized_return(0.05, start, end) == pytest.approx(1.05**2 - 1)
+
+    def test_annualized_return_degenerate_inputs(self):
+        now = datetime(2026, 1, 1)
+        assert metrics.annualized_return(0.05, None, now) == 0.0
+        assert metrics.annualized_return(0.05, now, None) == 0.0
+        assert metrics.annualized_return(0.05, now, now) == 0.0
+        assert metrics.annualized_return(-1.0, now, now + timedelta(days=1)) == -1.0
+
+    def _samples(self, *values: float) -> list[tuple[datetime, float]]:
+        base = datetime(2026, 1, 1)
+        return [(base + timedelta(hours=i), v) for i, v in enumerate(values)]
+
+    def test_win_score_always_profitable_path(self):
+        assert metrics.win_score(self._samples(1010.0, 1020.0, 1015.0), 1000.0) == 1.0
+
+    def test_win_score_always_underwater_path(self):
+        assert metrics.win_score(self._samples(990.0, 980.0, 985.0), 1000.0) == 0.0
+
+    def test_win_score_balanced_path(self):
+        # +10 PnL for one hour, -10 PnL for one hour, linear crossing between.
+        assert metrics.win_score(self._samples(1010.0, 1010.0, 990.0, 990.0), 1000.0) == pytest.approx(0.5)
+
+    def test_win_score_degenerate_inputs(self):
+        assert metrics.win_score([], 1000.0) == 0.5
+        assert metrics.win_score(self._samples(1010.0), 1000.0) == 0.5
+        assert metrics.win_score(self._samples(1000.0, 1000.0), 1000.0) == 0.5
+        assert metrics.win_score(self._samples(1010.0, 1020.0), 0.0) == 0.5
+
     def test_calmar_positive(self):
         rets = [0.01, 0.02, -0.005, 0.015]
         c = metrics.calmar_ratio(rets)
@@ -618,6 +655,7 @@ class TestSimulationCompatibility:
         sim = simulate_pool([event], BacktestParams(gas_cost_usd=1000.0), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
         assert sim.final_value == pytest.approx(500.0)
         assert sim.divergent_loss == pytest.approx(0.0)
+        assert sim.value_samples == [(event.block_time, pytest.approx(500.0))]
 
 
 class TestPaperStyleSimulation:

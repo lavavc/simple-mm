@@ -305,6 +305,8 @@ class SimResult:
     divergent_loss: float = 0.0
     start_time: datetime | None = None
     end_time: datetime | None = None
+    # Post-event mark-to-market equity at each processed swap, for path metrics.
+    value_samples: list[tuple[datetime, float]] = field(default_factory=list)
 
 
 def _snapshot_composition(
@@ -1656,6 +1658,19 @@ def simulate_pool(
                 )
                 wallet = next_wallet
 
+        result.value_samples.append(
+            (
+                event.block_time,
+                _portfolio_value(
+                    position,
+                    wallet,
+                    current_price,
+                    current_tick,
+                    current_sqrt_price_x96,
+                    pool_config,
+                ),
+            )
+        )
         previous_swap_time = event.block_time
 
     result.final_value = _portfolio_value(

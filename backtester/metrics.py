@@ -6,7 +6,59 @@ import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from backtester.simulator import SimResult
+
+
+_SECONDS_PER_YEAR = 365.25 * 86400
+
+
+def annualized_return(net_return: float, start: datetime | None, end: datetime | None) -> float:
+    """Compounded APY of ``net_return`` realized over [start, end].
+
+    Returns 0.0 when the span is empty or unknown — a config that never saw
+    two distinct event times has no annualizable record. Short windows
+    compound aggressively; this is a reporting metric, not a ranking input.
+    """
+    if start is None or end is None:
+        return 0.0
+    elapsed_seconds = (end - start).total_seconds()
+    if elapsed_seconds <= 0:
+        return 0.0
+    if net_return <= -1.0:
+        return -1.0
+    return (1.0 + net_return) ** (_SECONDS_PER_YEAR / elapsed_seconds) - 1.0
+
+
+def win_score(value_samples: list[tuple[datetime, float]], initial_capital: float) -> float:
+    """Win-score ω of Urusov et al. (2026), Appendix A, over a mark-to-market
+    equity path instead of realized position closes.
+
+    Normalizes the positive and negative parts of the cumulative PnL path by
+    the larger extreme, integrates both over time (trapezoid), and returns
+    A+ / (A+ + A-). 0.5 is neutral (flat path or degenerate input); above 0.5
+    the strategy spent more of the period in cumulative profit.
+    """
+    if initial_capital <= 0 or len(value_samples) < 2:
+        return 0.5
+    times = [sample[0].timestamp() for sample in value_samples]
+    pnl = [sample[1] - initial_capital for sample in value_samples]
+    scale = max(max(pnl), -min(pnl), 0.0)
+    if scale == 0.0 or times[-1] <= times[0]:
+        return 0.5
+    area_pos = 0.0
+    area_neg = 0.0
+    for i in range(1, len(times)):
+        dt = times[i] - times[i - 1]
+        if dt <= 0:
+            continue
+        area_pos += (max(pnl[i - 1], 0.0) + max(pnl[i], 0.0)) / 2 * dt
+        area_neg += (-min(pnl[i - 1], 0.0) - min(pnl[i], 0.0)) / 2 * dt
+    total = area_pos + area_neg
+    if total == 0.0:
+        return 0.5
+    return area_pos / total
 
 
 def sortino_ratio(returns: list[float], benchmark: float = 0.0) -> float:
