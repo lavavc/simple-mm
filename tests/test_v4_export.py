@@ -1,4 +1,5 @@
 import csv
+import json
 from decimal import Decimal
 
 from eth_abi import encode  # type: ignore[attr-defined]
@@ -16,6 +17,9 @@ from backtester.v4_export import (
     _int_from_rpc,
     _pool_id_prefix_matches,
     _read_existing_export_metadata,
+    _read_export_checkpoint,
+    _resolve_resume_start_block,
+    _write_export_checkpoint,
     _decode_mint_param,
     decode_initialize_row,
     decode_modify_liquidity_row,
@@ -246,6 +250,37 @@ class TestV4Export:
         assert metadata.row_count == 3
         assert metadata.max_block == 125
         assert metadata.initialize_found is True
+
+    def test_export_checkpoint_roundtrip(self, tmp_path):
+        path = tmp_path / "uni-base.checkpoint.json"
+
+        _write_export_checkpoint(str(path), "uni-base", 456)
+
+        assert _read_export_checkpoint(str(path), "uni-base") == 456
+        assert json.loads(path.read_text()) == {
+            "pool": "uni-base",
+            "last_scanned_block": 456,
+        }
+
+    def test_export_checkpoint_rejects_corrupt_or_wrong_pool(self, tmp_path):
+        corrupt = tmp_path / "corrupt.json"
+        corrupt.write_text('{"pool":"uni-base"}')
+        wrong_pool = tmp_path / "wrong-pool.json"
+        wrong_pool.write_text('{"pool":"uni-bsc","last_scanned_block":456}')
+
+        for path in (corrupt, wrong_pool):
+            try:
+                _read_export_checkpoint(str(path), "uni-base")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"expected invalid checkpoint to fail: {path}")
+
+    def test_resume_start_uses_furthest_durable_progress(self):
+        metadata = type("Metadata", (), {"max_block": 125})()
+
+        assert _resolve_resume_start_block(100, metadata, checkpoint_block=150) == 151
+        assert _resolve_resume_start_block(140, metadata, checkpoint_block=120) == 140
 
     def test_candidate_modify_liquidity_tx_hashes_dedupes_logs(self, monkeypatch):
         fake_logs = [

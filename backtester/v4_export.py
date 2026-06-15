@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import os
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -204,6 +207,56 @@ class ResumeMetadata:
     row_count: int
     max_block: int | None
     initialize_found: bool
+
+
+def _read_export_checkpoint(path: str | None, pool_name: str) -> int | None:
+    if path is None or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as handle:
+            payload = json.load(handle)
+        if payload != {
+            "pool": pool_name,
+            "last_scanned_block": payload.get("last_scanned_block"),
+        }:
+            raise ValueError("checkpoint pool or fields do not match")
+        block = payload["last_scanned_block"]
+        if not isinstance(block, int) or block < 0:
+            raise ValueError("checkpoint block must be a non-negative integer")
+        return block
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(f"invalid export checkpoint: {path}") from exc
+
+
+def _write_export_checkpoint(path: str, pool_name: str, last_scanned_block: int) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    payload = {"pool": pool_name, "last_scanned_block": last_scanned_block}
+    fd, temporary_path = tempfile.mkstemp(prefix=".pool-history-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+        raise
+
+
+def _resolve_resume_start_block(
+    requested_start_block: int,
+    metadata: ResumeMetadata,
+    checkpoint_block: int | None,
+) -> int:
+    durable_blocks = [requested_start_block - 1]
+    if metadata.max_block is not None:
+        durable_blocks.append(metadata.max_block)
+    if checkpoint_block is not None:
+        durable_blocks.append(checkpoint_block)
+    return max(durable_blocks) + 1
 
 
 POOL_CONFIGS = {
@@ -834,7 +887,10 @@ def export_pool_history(
     end_block: int | None = None,
     rpc_url: str | None = None,
     resume: bool = False,
+    checkpoint_path: str | None = None,
 ) -> int:
+    if checkpoint_path is not None and not resume:
+        raise ValueError("checkpoint_path requires resume=True")
     if rpc_url is not None:
         config = ExportPoolConfig(**{**config.__dict__, "rpc_url": rpc_url})
     started_at = time.time()
@@ -843,9 +899,10 @@ def export_pool_history(
     position_manager = w3.eth.contract(address=Web3.to_checksum_address(config.position_manager), abi=POSITION_MANAGER_ABI)
     latest_block = int(w3.eth.block_number)
     resume_metadata = _read_existing_export_metadata(output_path) if resume else ResumeMetadata(0, None, False)
+    checkpoint_block = _read_export_checkpoint(checkpoint_path, config.name) if resume else None
     requested_start_block = config.default_start_block if start_block is None else start_block
-    if resume and resume_metadata.max_block is not None:
-        start_block = max(requested_start_block, resume_metadata.max_block + 1)
+    if resume:
+        start_block = _resolve_resume_start_block(requested_start_block, resume_metadata, checkpoint_block)
     else:
         start_block = requested_start_block
     end_block = latest_block if end_block is None else end_block
@@ -1010,7 +1067,10 @@ def export_pool_history(
             for row in chunk_rows:
                 writer.writerow(row.__dict__)
             handle.flush()
+            os.fsync(handle.fileno())
             total_rows += len(chunk_rows)
+            if checkpoint_path is not None:
+                _write_export_checkpoint(checkpoint_path, config.name, chunk_end)
             elapsed = time.time() - started_at
             _log(
                 f"[{config.name}] chunk {chunk_index}: flushed {len(chunk_rows):,} rows. "
@@ -1033,6 +1093,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Append to an existing CSV and start after the highest exported block.",
     )
+    parser.add_argument(
+        "--checkpoint-file",
+        help="Persist the last fully flushed block so quiet ranges resume without rescanning.",
+    )
     return parser
 
 
@@ -1045,5 +1109,6 @@ def main() -> None:
         end_block=args.end_block,
         rpc_url=args.rpc_url,
         resume=args.resume,
+        checkpoint_path=args.checkpoint_file,
     )
     print(f"wrote {count} rows to {args.output}")
