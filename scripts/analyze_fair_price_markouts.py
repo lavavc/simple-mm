@@ -32,6 +32,18 @@ class EstimatorMetrics:
 
 
 @dataclass(frozen=True)
+class ProbabilityBucket:
+    feature: str
+    label: str
+    split: str
+    bucket: str
+    observations: int
+    event_count: int
+    event_probability: Decimal | None
+    mean_move: Decimal | None
+
+
+@dataclass(frozen=True)
 class HorizonReport:
     horizon_seconds: int
     label_count: int
@@ -41,6 +53,7 @@ class HorizonReport:
     max_label_lag_ms: Decimal | None
     estimators: dict[str, EstimatorMetrics]
     side_estimators: dict[str, EstimatorMetrics]
+    probability_buckets: tuple[ProbabilityBucket, ...]
 
 
 @dataclass(frozen=True)
@@ -67,13 +80,37 @@ class MarkoutReport:
 MID_ESTIMATORS: tuple[EstimatorSpec, ...] = (
     EstimatorSpec("quidax_ticker_mid", lambda row: _decimal(row.get("quidax_ticker_mid"))),
     EstimatorSpec("quidax_top_mid", lambda row: _decimal(row.get("quidax_top_mid"))),
-    EstimatorSpec("quidax_executable_mid", lambda row: _decimal(row.get("quidax_executable_mid"))),
+    EstimatorSpec(
+        "quidax_executable_mid",
+        lambda row: _decimal(row.get("quidax_executable_mid")),
+    ),
+    EstimatorSpec("quidax_owa_mid_topn", lambda row: _decimal(row.get("quidax_owa_mid_topn"))),
+    EstimatorSpec(
+        "quidax_microprice_top1",
+        lambda row: _decimal(row.get("quidax_microprice_top1")),
+    ),
+    EstimatorSpec("uni_base_mid", lambda row: _decimal(row.get("uni_base_mid"))),
+    EstimatorSpec("uni_bsc_mid", lambda row: _decimal(row.get("uni_bsc_mid"))),
     EstimatorSpec("bybit_p2p_mid", lambda row: _inverted_decimal(row.get("bybit_mid"))),
 )
 
 SIDE_ESTIMATORS: tuple[tuple[str, str, str], ...] = (
     ("quidax_buy_cngn_usd", "quidax_buy_cngn_usd", "buy_cngn_usd"),
     ("quidax_sell_cngn_usd", "quidax_sell_cngn_usd", "sell_cngn_usd"),
+)
+
+CALIBRATION_FEATURES = (
+    "quidax_cngn_usd_pressure_topn",
+    "quidax_imbalance_topn_usdt",
+    "quidax_imbalance_topn_cngn",
+)
+
+IMBALANCE_BUCKETS: tuple[tuple[str, Decimal, Decimal, bool, bool], ...] = (
+    ("[-1.0,-0.5)", Decimal("-1.0"), Decimal("-0.5"), True, False),
+    ("[-0.5,-0.1)", Decimal("-0.5"), Decimal("-0.1"), True, False),
+    ("[-0.1,0.1]", Decimal("-0.1"), Decimal("0.1"), True, True),
+    ("(0.1,0.5]", Decimal("0.1"), Decimal("0.5"), False, True),
+    ("(0.5,1.0]", Decimal("0.5"), Decimal("1.0"), False, True),
 )
 
 
@@ -129,6 +166,7 @@ def analyze_markouts(
             max_label_lag_ms=max(label_lags) if label_lags else None,
             estimators=estimator_metrics,
             side_estimators=side_metrics,
+            probability_buckets=tuple(_probability_buckets(rows, horizon)),
         )
 
     return MarkoutReport(
@@ -203,6 +241,21 @@ def render_markdown_report(report: MarkoutReport) -> str:
         for name, metrics in horizon_report.side_estimators.items():
             lines.append(_metric_table_row(name, metrics))
         lines.append("")
+        if horizon_report.probability_buckets:
+            lines.extend(
+                [
+                    "Probability calibration buckets:",
+                    "",
+                    (
+                        "| feature | label | split | bucket | observations | "
+                        "event_probability | mean_move |"
+                    ),
+                    "|---|---|---|---|---:|---:|---:|",
+                ]
+            )
+            for bucket in horizon_report.probability_buckets:
+                lines.append(_probability_bucket_row(bucket))
+            lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -311,6 +364,118 @@ def _current_reference(row: dict[str, str], label_key: str) -> Decimal | None:
     return _decimal(row.get("quidax_executable_mid"))
 
 
+def _probability_buckets(rows: list[dict[str, str]], horizon: int) -> list[ProbabilityBucket]:
+    if not rows:
+        return []
+    split_index = max(1, int(len(rows) * 0.6))
+    if split_index >= len(rows):
+        split_index = len(rows)
+    splits = [
+        ("train_60pct", rows[:split_index]),
+        ("validation_40pct", rows[split_index:]),
+    ]
+    buckets: list[ProbabilityBucket] = []
+    for split_name, split_rows in splits:
+        if not split_rows:
+            continue
+        for feature in CALIBRATION_FEATURES:
+            for label_name, current_key, label_key, event_fn in _calibration_labels(horizon):
+                buckets.extend(
+                    _buckets_for_feature_label(
+                        split_rows,
+                        feature=feature,
+                        label_name=label_name,
+                        split_name=split_name,
+                        current_key=current_key,
+                        label_key=label_key,
+                        event_fn=event_fn,
+                    )
+                )
+    return buckets
+
+
+def _calibration_labels(
+    horizon: int,
+) -> tuple[tuple[str, str, str, Callable[[Decimal], bool]], ...]:
+    return (
+        (
+            "midpoint_up",
+            "quidax_executable_mid",
+            f"label_{horizon}s_executable_mid",
+            lambda move: move > 0,
+        ),
+        (
+            "buy_cost_worse",
+            "quidax_buy_cngn_usd",
+            f"label_{horizon}s_buy_cngn_usd",
+            lambda move: move > 0,
+        ),
+        (
+            "sell_proceeds_worse",
+            "quidax_sell_cngn_usd",
+            f"label_{horizon}s_sell_cngn_usd",
+            lambda move: move < 0,
+        ),
+    )
+
+
+def _buckets_for_feature_label(
+    rows: list[dict[str, str]],
+    *,
+    feature: str,
+    label_name: str,
+    split_name: str,
+    current_key: str,
+    label_key: str,
+    event_fn: Callable[[Decimal], bool],
+) -> list[ProbabilityBucket]:
+    grouped: dict[str, list[Decimal]] = {}
+    events: dict[str, int] = {}
+    for row in rows:
+        value = _signed_decimal(row.get(feature))
+        bucket_name = _imbalance_bucket(value)
+        current = _decimal(row.get(current_key))
+        label = _decimal(row.get(label_key))
+        if value is None or bucket_name is None or current is None or label is None:
+            continue
+        move = label - current
+        grouped.setdefault(bucket_name, []).append(move)
+        if event_fn(move):
+            events[bucket_name] = events.get(bucket_name, 0) + 1
+
+    result: list[ProbabilityBucket] = []
+    for bucket_name in [bucket[0] for bucket in IMBALANCE_BUCKETS]:
+        moves = grouped.get(bucket_name)
+        if not moves:
+            continue
+        event_count = events.get(bucket_name, 0)
+        observations = len(moves)
+        result.append(
+            ProbabilityBucket(
+                feature=feature,
+                label=label_name,
+                split=split_name,
+                bucket=bucket_name,
+                observations=observations,
+                event_count=event_count,
+                event_probability=Decimal(event_count) / Decimal(observations),
+                mean_move=_mean(moves),
+            )
+        )
+    return result
+
+
+def _imbalance_bucket(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    for name, lower, upper, include_lower, include_upper in IMBALANCE_BUCKETS:
+        lower_ok = value >= lower if include_lower else value > lower
+        upper_ok = value <= upper if include_upper else value < upper
+        if lower_ok and upper_ok:
+            return name
+    return None
+
+
 def _metric_table_row(name: str, metrics: EstimatorMetrics) -> str:
     direction = (
         ""
@@ -321,6 +486,14 @@ def _metric_table_row(name: str, metrics: EstimatorMetrics) -> str:
         f"| {name} | {metrics.observations} | {_format_decimal(metrics.mae)} | "
         f"{_format_decimal(metrics.signed_bias)} | {_format_decimal(metrics.rmse)} | "
         f"{direction} |"
+    )
+
+
+def _probability_bucket_row(bucket: ProbabilityBucket) -> str:
+    return (
+        f"| {bucket.feature} | {bucket.label} | {bucket.split} | {bucket.bucket} | "
+        f"{bucket.observations} | {_format_decimal(bucket.event_probability)} | "
+        f"{_format_decimal(bucket.mean_move)} |"
     )
 
 
@@ -344,6 +517,12 @@ def _nonnegative_decimal(raw: str | None) -> Decimal | None:
     if value < 0:
         return None
     return value
+
+
+def _signed_decimal(raw: str | None) -> Decimal | None:
+    if raw is None or raw == "":
+        return None
+    return Decimal(str(raw))
 
 
 def _inverted_decimal(raw: str | None) -> Decimal | None:

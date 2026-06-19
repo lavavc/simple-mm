@@ -7,11 +7,11 @@ order: 2
 
 The engine is organised in layers. Each layer depends only on layers below it.
 
-**`engine/types.py`** — zero-dependency home for all shared domain types. Any layer may import from here freely. Covers cross-cutting types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`), order book types (`OrderBookLevel`, `OrderBookDepth`), config-adjacent params (`CexParams`, `WalletParams`), account types (`AccountInfo`, `AccountBalanceResponse`, `Alert`, etc.), and arb-domain types (`ArbitrageOpportunity`, `ArbitrageTrade`, `ArbitrageStatus`, etc.). `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
+**`engine/types.py`** — shared domain type boundary. It should stay zero-dependency so any layer can import it freely. Covers cross-cutting types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`), order book types (`OrderBookLevel`, `OrderBookDepth`), config-adjacent params (`CexParams`, `WalletParams`), account types (`AccountInfo`, `AccountBalanceResponse`, `Alert`, etc.), and arb-domain types (`ArbitrageOpportunity`, `ArbitrageTrade`, `ArbitrageStatus`, etc.). The current `ArbitrageParams` default binding to `engine/config.py` is legacy config-adjacent debt, not a precedent for new imports. `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
 
 **`engine/venues/`** — thin adapters over on-chain contracts and CEX APIs. No strategy logic lives here. Adapters expose a uniform interface: `get_position()`, `swap()`, `get_current_price()`, etc. LP position management is **not** part of the adapter; it lives in `engine/lp/uniswap_v4.py`.
 
-**`engine/market/`** — shared market data and layer-safe shared services: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), gas cost oracle (`gas_oracle.py`), and the global portfolio snapshot service (`portfolio_exposure.py` + `portfolio_registry.py`). These modules must stay importable in isolation: no HTTP-specific schemas, no concrete venue adapters, and no eager package exports that pull in higher layers. Imports from `engine/types.py` are allowed.
+**`engine/market/`** — shared market data and layer-safe services: pool state cache (`pool_state.py`), price feeds and aggregation (`price_aggregation.py`, `venue_prices.py`), DEX volume tracking (`dex_volume.py`), gas cost oracle (`gas_oracle.py`), fair price calculators (`fair_price.py`), and the global portfolio snapshot service (`portfolio_exposure.py` + `portfolio_registry.py`). These modules must stay importable in isolation: no HTTP-specific schemas, no concrete adapter imports, and no eager package exports that pull in higher layers. Imports from `engine/types.py`, `engine/config.py`, and DB store protocols are allowed.
 
 **`engine/lp/`** — LP strategy and position management. `strategy.py` contains pure math (EWMA stats, tick range calculation). `rebalancer.py` orchestrates the position lifecycle: check→remove→remint. `uniswap_v4.py` owns `V4PositionManager`, which manages all LP position operations for a single V4 pool (position queries, portfolio balances, mint/remove/ratio-swap). Nothing here knows arb exists. `DexParams` lives in `engine/config.py`; tick/ratio protocol math lives in `venues/dex/shared.py`.
 
@@ -48,7 +48,6 @@ The API package is intentionally split by concern:
 - `engine/api/router.py` composes the top-level router
 - `engine/api/deps.py` owns runtime/service dependency resolution and auth checks
 - `engine/api/helpers/` holds shared non-route helpers
-- `engine/api/protocols.py` holds small route-facing protocols
 - `engine/api/routes/` contains domain routers such as `system`, `prices`, `positions`, `venues`, `arbitrage`, and `accounts`
 
 The scheduler follows the same pattern:
@@ -67,7 +66,7 @@ The scheduler follows the same pattern:
 
 **Arb signal out:** Detection signal → `arb/routing/router.select_route` → `arb/execution/route_execution.execute_route` → on-chain transaction → DB insert.
 
-**LP cycle:** Scheduler timer → `lp/rebalancer.check_and_rebalance` → `lp/strategy.calculate_tick_range` → `lp/uniswap_v4.V4PositionManager.mint_position`.
+**LP cycle:** Scheduler timer → optional market-layer `StrategyFairPrice` from cached venue prices → `lp/rebalancer.check_and_rebalance` → `lp/policy.decide_lp_policy` for in-range policy checks → `lp/strategy.calculate_tick_range` → `lp/uniswap_v4.V4PositionManager.mint_position`.
 
 **API read path:** HTTP request → `api/deps.get_runtime` → domain router in `engine/api/routes/` → runtime service or DB store → response model.
 
@@ -81,14 +80,14 @@ The scheduler follows the same pattern:
 
 These invariants keep layers independently testable and extractable:
 
-- `market/` imports from `venues/` only
-- `lp/` imports from `venues/` and `market/` only
-- `arb/` imports from `venues/` and `market/` only
-- `lp/` and `arb/` never import from each other
-- `venues/` never imports from `lp/` or `arb/`
-- All layers may import from `engine/config.py` (shared configuration types)
-- All layers may import from `engine/types.py` (shared domain types: `Position`, `LPPosition`, `PriceQuote`, `TxResult`)
-- `engine/market/portfolio_exposure.py` must not import from `engine/api/`, concrete venue adapters, or eager package exports from `engine.db`
+- `engine/types.py` is the shared type boundary and should remain/remediate to zero-dependency; any layer may import from it.
+- `market/` stays importable in isolation: no `engine/api/` imports and no concrete adapter imports.
+- `venues/` are thin adapters only: no strategy, LP policy, or arb logic.
+- `lp/` owns LP strategy and V4 position management. It may consume market data and venue protocols, but it must not depend on arb internals.
+- `arb/` owns detection, routing, execution, recovery, and risk. It may consume market data and venue protocols, but it must not depend on LP internals.
+- `lp/` and `arb/` never import from each other.
+- `db/` consumers depend on narrow protocols from `engine/db/backend.py`, not concrete query modules.
+- `engine/market/portfolio_exposure.py` must not import from `engine/api/`, concrete venue adapters, or eager package exports from `engine.db`.
 - `engine/api/schemas.py` contains only HTTP-specific response types. All other shared types belong in `engine/types.py`
 
 This is also the packageability rule:

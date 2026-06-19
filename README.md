@@ -1,144 +1,102 @@
 # CNGN Trading Engine
 
-Automated market-making engine for CNGN stablecoin across DEXs, CEXs, and wallet systems.
+Automated CNGN market-data, concentrated-liquidity, and arbitrage engine across Quidax, Uniswap Base, Uniswap BSC, Blockradar, and reference price feeds.
 
-## Getting Started
+## Repository Map
 
-### Prerequisites
+| Path | Purpose |
+|---|---|
+| `engine/` | Production FastAPI service, scheduler, market data, LP management, arbitrage, venues, accounts, and persistence. |
+| `dashboard/` | Next.js dashboard and active implementation docs under `dashboard/docs/`. |
+| `autoresearch/` | Active research workflows for fair price, DEX LP policy, and Quidax latency. Historical notes live in `autoresearch/archive/`. |
+| `literature/` | Consolidated finance, order-book, Kelly sizing, CLMM, and fair-price PDF references. |
+| `backtester/` | LP backtesting framework and historical result artifacts. |
+| `scripts/` | Capture, export, analysis, pool-history, manual execution, and ops helper scripts. |
 
-- Python 3.11+
-- Access to Base/BSC RPC endpoints
-- API keys for venues (Quidax, Blockradar, etc.)
-
-### Quick Start
+## Setup
 
 ```bash
-cd cngn
-
-# Set up virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install
 pip install -e ".[dev]"
-
-# Configure
 cp .env.example .env
-# Edit .env — at minimum set QUIDAX_API_KEY for live CEX prices
+```
 
-# Run the engine
+At minimum, configure RPC access, Quidax credentials for live CEX data, and wallet settings appropriate for the environment. `ALCHEMY_KEY` is recommended so Base, BSC, and Ethereum RPC/WSS endpoints are generated consistently.
+
+## Run Locally
+
+Engine:
+
+```bash
+source .venv/bin/activate
 python -m engine.main
 ```
 
-## Local Checks
-
-```bash
-source .venv/bin/activate
-python -m mypy engine --no-error-summary
-python -m pytest -x -q --ignore=tests/test_dex_fork.py
-python -m pytest -q tests/test_dex_fork.py -v
-```
-
-- CI runs the same strict `mypy` check and the default pytest suite on pull requests and pushes to `main`.
-- `mypy` covers `engine/`, the production Python package, and intentionally ignores `tests/` and `dashboard/` because test doubles are looser by design and frontend code can be checked by its own toolchain.
-- The default pytest run covers the fast local suite and intentionally skips `tests/test_dex_fork.py`, because those tests need Foundry's `anvil` plus RPC-backed fork access.
-
----
-
-## Dashboard
-
-A Next.js dashboard for real-time monitoring.
-
-### Running the Dashboard
+Dashboard:
 
 ```bash
 cd dashboard
-
-# Install dependencies
 npm install
-
-# Development mode (with hot reload)
 npm run dev
-
-# Production build
-npm run build
-npm start
 ```
 
-The dashboard will be available at `http://localhost:3000`.
-
-### Configuration
-
-Create `dashboard/.env.local`:
+The dashboard expects:
 
 ```bash
 NEXT_PUBLIC_API_URL=http://localhost:8000/api
 NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
 ```
 
-### Features
+## Current Design Docs
 
-- **Real-time streaming**: WebSocket connection pushes all updates instantly — no polling
-- **System Status**: Trading state, uptime, venue health
-- **Price Feed**: Live venue prices, blended VWAP/TWAP, cross-venue comparison
-- **Venues**: Position details, LP status, parameter management
-- **Arbitrage**: Opportunity detection, statistics, parameter tuning
-- **Accounts**: HD wallet balances, refill alerts, threshold management
-- **Alerts**: Notification management and acknowledgment
+Active engine design and implementation docs live in `dashboard/docs/`:
 
----
+- `dashboard/docs/architecture.md` — layer ownership, dependency rules, runtime composition, and entry points.
+- `dashboard/docs/arbitrage/` — market data, signal, risk, execution, and post-trade behavior.
+- `dashboard/docs/lp/` — LP overview, range policy, inventory, operations, and pool-history jobs.
+- `dashboard/docs/data-persistence.md` — SQLite repository/store model and research metadata.
+- `dashboard/docs/runbook.md` — deployment, funding, controls, and operational risks.
+- `dashboard/docs/tests.md` — test tiers, commands, and coverage map.
 
-## DEX LP Strategy
+Research docs are intentionally outside the dashboard docs:
 
-Capital allocation is controlled through `DexParams`:
+- `autoresearch/fair-price.md`
+- `autoresearch/lp.md`
+- `autoresearch/quidax-latency.md`
+- `autoresearch/archive/`
+- `literature/README.md`
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `max_utilization_percent` | 80% | Maximum percentage of wallet balance to deploy |
-| `min_reserve_token0` | 0 | Minimum cNGN to keep in wallet (not deployed) |
-| `min_reserve_token1` | 0 | Minimum stablecoin to keep in wallet |
-| `max_position_usd` | None | Hard cap on total position value in USD |
+## Verification
 
-**Example configurations:**
+Backend:
 
-```python
-# Conservative: Keep significant reserves
-DexParams(
-    max_utilization_percent=Decimal("70"),
-    min_reserve_token0=Decimal("50000"),   # Keep 50k cNGN
-    min_reserve_token1=Decimal("100"),      # Keep $100 USDC
-    max_position_usd=Decimal("10000"),      # Never deploy more than $10k
-)
-
-# Aggressive: Deploy most capital
-DexParams(
-    max_utilization_percent=Decimal("95"),
-    min_reserve_token0=Decimal("1000"),     # Keep 1k cNGN for gas/emergencies
-    min_reserve_token1=Decimal("10"),       # Keep $10 USDC
-)
+```bash
+source .venv/bin/activate
+python -m mypy engine --no-error-summary
+python -m pytest -x -q --ignore=tests/test_dex_fork.py
 ```
 
-**How allocation is calculated:**
+Fork tests require Foundry `anvil` and fork-capable RPC endpoints:
 
-1. Start with wallet balance for each token
-2. Apply `max_utilization_percent` cap (e.g., 80% of balance)
-3. Subtract `min_reserve_tokenX` from each token's available amount
-4. If `max_position_usd` is set, scale down proportionally to stay under cap
-
-The `calculate_mint_amounts()` method returns the final amounts in raw token units ready for the mint transaction.
-
-### Range Calculation
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `sd_multiplier` | Decimal | 1.5 | Standard deviations for range width |
-| `min_tick_width` | int | 100 | Minimum tick range (prevents too-narrow positions) |
-| `max_tick_width` | int | 1000 | Maximum tick range (prevents too-wide positions) |
-| `lookback_points` | int | None | Limit price history for SD calculation |
-| `rebalance_threshold_percent` | Decimal | 5.0 | % out of range before rebalancing |
-| `max_slippage_percent` | Decimal | 1.0 | Max slippage for swaps |
-
-**How to Run Backtester Module**
+```bash
+source .venv/bin/activate
+python -m pytest -q tests/test_dex_fork.py -v
 ```
-python3 -m backtester.run --csv data/Aerodrome\&Pancakeswap_HistoricalData.csv --pool both --walkforward
+
+Dashboard:
+
+```bash
+cd dashboard
+npm run build
 ```
+
+## Core Invariants
+
+- `engine/venues/` are thin adapters only.
+- `engine/market/` owns market data, fair price, pool cache, gas, and portfolio aggregation.
+- `engine/lp/` owns LP policy and Uniswap V4 position management; LP volatility and rerange triggers stay venue-local, with an optional market-layer fair-price center.
+- `engine/arb/` owns detection, routing, execution, recovery, and risk.
+- Route direction metadata comes from `engine/arb/routing/route_registry.py`.
+- Global portfolio totals are explicit through `engine/market/portfolio_registry.py`.
+- Docs should follow code and typed contracts; when behavior changes, update the closest doc in the same change.

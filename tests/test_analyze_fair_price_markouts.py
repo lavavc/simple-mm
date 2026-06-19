@@ -20,6 +20,10 @@ def _row(
     bybit_age_ms: str | None = None,
     label_10s_lag_ms: str = "1000",
     label_30s_lag_ms: str = "2000",
+    owa_mid_topn: str = "",
+    microprice_top1: str = "",
+    pressure_topn: str = "",
+    uni_base_premium_bps: str = "",
 ) -> dict[str, str]:
     return {
         "timestamp_ms": timestamp_ms,
@@ -28,6 +32,10 @@ def _row(
         "quidax_ticker_mid": ticker_mid,
         "quidax_top_mid": top_mid,
         "quidax_executable_mid": executable_mid,
+        "quidax_owa_mid_topn": owa_mid_topn,
+        "quidax_microprice_top1": microprice_top1,
+        "quidax_cngn_usd_pressure_topn": pressure_topn,
+        "uni_base_premium_bps": uni_base_premium_bps,
         "quidax_buy_cngn_usd": executable_mid,
         "quidax_sell_cngn_usd": executable_mid,
         "bybit_mid": bybit_mid,
@@ -116,6 +124,99 @@ def test_analyze_markouts_computes_metrics_by_horizon_and_estimator() -> None:
     assert horizon_30.missing_label_count == 1
     assert horizon_30.label_lag_observations == 1
     assert horizon_30.median_label_lag_ms == Decimal("2000")
+
+
+def test_analyze_markouts_scores_imbalance_estimators_and_walk_forward_buckets() -> None:
+    report = analyze_markouts(
+        [
+            _row(
+                timestamp_ms="1000",
+                ticker_mid="1.00",
+                top_mid="1.00",
+                executable_mid="1.00",
+                bybit_mid="",
+                owa_mid_topn="1.08",
+                microprice_top1="1.07",
+                pressure_topn="0.70",
+                label_10s="1.10",
+            ),
+            _row(
+                timestamp_ms="2000",
+                ticker_mid="1.00",
+                top_mid="1.00",
+                executable_mid="1.00",
+                bybit_mid="",
+                owa_mid_topn="0.92",
+                microprice_top1="0.91",
+                pressure_topn="-0.80",
+                label_10s="0.90",
+            ),
+            _row(
+                timestamp_ms="3000",
+                ticker_mid="1.00",
+                top_mid="1.00",
+                executable_mid="1.00",
+                bybit_mid="",
+                owa_mid_topn="1.03",
+                microprice_top1="1.02",
+                pressure_topn="0.60",
+                label_10s="1.05",
+            ),
+            _row(
+                timestamp_ms="4000",
+                ticker_mid="1.00",
+                top_mid="1.00",
+                executable_mid="1.00",
+                bybit_mid="",
+                owa_mid_topn="0.97",
+                microprice_top1="0.98",
+                pressure_topn="-0.60",
+                label_10s="0.95",
+            ),
+        ],
+        horizons_seconds=[10],
+    )
+
+    horizon = report.horizons[10]
+    assert horizon.estimators["quidax_owa_mid_topn"].observations == 4
+    assert horizon.estimators["quidax_owa_mid_topn"].direction_hit_rate == Decimal("1")
+    assert horizon.estimators["quidax_microprice_top1"].observations == 4
+
+    validation_positive = next(
+        bucket
+        for bucket in horizon.probability_buckets
+        if bucket.feature == "quidax_cngn_usd_pressure_topn"
+        and bucket.label == "midpoint_up"
+        and bucket.split == "validation_40pct"
+        and bucket.bucket == "(0.5,1.0]"
+    )
+    assert validation_positive.observations == 1
+    assert validation_positive.event_count == 1
+    assert validation_positive.event_probability == Decimal("1")
+
+    validation_negative = next(
+        bucket
+        for bucket in horizon.probability_buckets
+        if bucket.feature == "quidax_cngn_usd_pressure_topn"
+        and bucket.label == "midpoint_up"
+        and bucket.split == "validation_40pct"
+        and bucket.bucket == "[-1.0,-0.5)"
+    )
+    assert validation_negative.observations == 1
+    assert validation_negative.event_count == 0
+    assert validation_negative.event_probability == Decimal("0")
+
+    markdown = render_markdown_report(report)
+    assert "Probability calibration buckets:" in markdown
+    assert (
+        "| feature | label | split | bucket | observations | event_probability | mean_move |"
+        in markdown
+    )
+    assert (
+        "| quidax_cngn_usd_pressure_topn | midpoint_up | validation_40pct | "
+        "(0.5,1.0] | 1 | 1 | 0.05 |"
+        in markdown
+    )
 
 
 def test_render_markdown_report_includes_metrics_table() -> None:

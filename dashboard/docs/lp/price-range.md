@@ -3,14 +3,21 @@ title: Price Range Management
 order: 2
 ---
 
-## Venue-local history
+## Venue-local history and center
 
-LP range-setting is based only on the venue's own pool history:
+LP volatility, range width, and rerange triggers are based on the venue's own
+pool history:
 
 - `uni-base` uses `uni-base_pool` snapshots
 - `uni-bsc` uses `uni-bsc_pool` snapshots
 
-The LP subsystem does not use blended pricing or cross-venue fair-value estimates to decide when or how to rerange. That boundary is deliberate so LP can remain a separately shippable package.
+The range center defaults to that venue-local EWMA mean. The current scheduler
+can also compute a market-layer `StrategyFairPrice` from cached venue prices and
+pass it into LP range creation; when available, `calculate_tick_range` uses that
+as the center. The current scheduler uses flat inventory (`net_cngn=0`) for this
+calculation, so full inventory-skewed LP centering remains future work.
+
+LP policy does not use arb route state.
 
 ## EWMA volatility estimation
 
@@ -25,12 +32,12 @@ The EWMA being "online" means it is not pre-seeded from historical data, so it a
 
 ## Range calculation
 
-Given EWMA, mean, and σ, the tick range is:
+Given center price, EWMA σ, and configured skew, the tick range is:
 
 ```
-total_width = σ × sd_multiplier × 2
-lower_price = mean - total_width × downside_skew
-upper_price = mean + total_width × (1 - downside_skew)
+range_width = σ × sd_multiplier × 2
+lower_price = center × exp(-range_width × downside_skew)
+upper_price = center × exp(range_width × (1 - downside_skew))
 ```
 
 `downside_skew` controls the asymmetry of the range:
@@ -61,7 +68,16 @@ The second condition prevents churning on brief range exits caused by momentary 
 
 A venue-local early-rerange trigger is still a legitimate future improvement if ranges get tighter, pool trading gets heavier, or churn economics justify acting before price fully exits the range. The likely form would be a local EWMA or local historical-average trigger using the same venue-local pool history.
 
-That is intentionally out of scope for the current production LP rollout. The live implementation today remains range-exit-only.
+The current research workflow can now join LP episodes with fair-price markout
+features that are local to the DEX venue: previous-or-equal pool premium versus
+Quidax executable mid, and swap-flow imbalance derived from V4 swap events.
+Those features are valid LP autoresearch inputs because they describe the venue
+being managed, not arbitrage route internals.
+
+That is intentionally out of scope for the current production LP rollout. The
+live implementation today remains range-exit-only until markouts show that an
+early rerange would have avoided more loss than gas, realized IL, and ratio-swap
+cost.
 
 ## Pool fees and their effects
 

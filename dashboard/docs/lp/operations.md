@@ -22,7 +22,7 @@ This matters operationally: a transient RPC or cache failure should not be read 
 
 ## Balance alerts
 
-When any account balance falls below its minimum threshold, a `refill` alert fires: it appears on the dashboard, is pushed to the Telegram operator group, and is logged. Default thresholds by role are set in `engine/core/accounts.py`.
+When any account balance falls below its minimum threshold, a `refill` alert fires: it appears on the dashboard, is pushed to the Telegram operator group, and is logged. Default thresholds by role are set in `engine/accounts.py`; Quidax-specific CEX thresholds live in `engine/config.py`.
 
 Keep hot wallet balances minimal — only enough for daily operations. Bulk funds stay in the treasury multisig and are transferred manually when alerts fire.
 

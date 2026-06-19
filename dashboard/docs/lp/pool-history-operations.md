@@ -1,3 +1,8 @@
+---
+title: Pool History Operations
+order: 5
+---
+
 # Pool History Data Operations
 
 The backtester datasets are updated by `scripts/update_v4_pool_history.py`.

@@ -43,4 +43,8 @@ When an LP position moves outside its tick range and the price has drifted more 
 
 All three steps are persisted in the action log so the LP lifecycle can be reconstructed from the database without relying on runtime logs.
 
-The `downside_skew` adapts to mean-reversion probability: if the current price is 1σ above the EWMA mean, skew shifts up by 0.15 (more range above); if 1σ below, it shifts down. This is capped at ±0.8.
+On a rebalance, the removed position's current price is passed back as
+`recovery_price`. `calculate_tick_range` compares that price to the venue-local
+EWMA center using log deviation and adjusts `downside_skew` proportionally
+(`deviation * 0.15`), then clamps it to `[0.2, 0.8]`. Initial mints do not apply
+this recovery skew because there is no removed-position price to recover from.

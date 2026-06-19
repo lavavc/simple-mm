@@ -32,6 +32,10 @@ price-discovery truth.
 - Fixed the capture loop to use fixed-rate scheduling. `--interval` now targets
   start-to-start cadence instead of sleeping after each fetch completes.
 - Fixed analyzer lag handling so `0ms` label lag is counted as observed data.
+- Added research export fields for Quidax book imbalance, cNGN/USD pressure,
+  order-weighted average price, microprice, and DEX premium/age controls.
+- Added analyzer probability buckets so imbalance features can be tested for
+  event calibration, not only point-estimator error.
 
 Live smoke findings:
 
@@ -44,8 +48,33 @@ Live smoke findings:
 - Quidax-only capture improved cadence. Before fixed-rate scheduling, a 5s
   interval produced a median Quidax gap of about `7168ms`; after fixed-rate
   scheduling, a short smoke produced a median gap of about `4547ms`.
+- A later low-stress Quidax-only capture at 15s persisted `40/40` attempted
+  rows with complete metadata and executable depth. Median source gap was about
+  `14873ms`; max gap was about `20281ms`.
 - Short smoke samples had no Quidax price/book movement, so they validate the
   pipeline but do not support estimator ranking yet.
+
+Session closeout on 2026-06-19:
+
+- Before restarting forward collection, `data/cngn.db` contained saved
+  fair-price feed history only from the current research session: `109` Quidax
+  rows from `2026-06-19 12:26:40` to `2026-06-19 14:22:04` UTC, and `7` Bybit
+  P2P rows from `2026-06-19 12:26:49` to `2026-06-19 14:22:24` UTC.
+- All pre-forward Quidax rows had metadata; `108/109` had executable depth at
+  the tested `100 USD` size.
+- The saved Quidax ticker mid has `1` distinct value so far. Treat these rows
+  as capture/feed-quality evidence, not estimator-ranking evidence.
+- No public Quidax historical OHLCV, candles, trades, or order-book backfill
+  endpoint has been confirmed from the current API docs or SDK. Historical
+  values should be treated as available only from our own `price_snapshots`
+  capture unless Quidax provides an institutional export.
+- Forward collection is running in detached `screen` sessions:
+  `fair_price_quidax` writes to `logs/fair_price_quidax_capture_screen.log`
+  every 15s for 5760 iterations, and `fair_price_bybit` writes to
+  `logs/fair_price_bybit_capture_screen.log` every 60s for 1440 iterations.
+  Check status with `screen -ls`; stop a session with
+  `screen -S fair_price_quidax -X quit` or
+  `screen -S fair_price_bybit -X quit`.
 
 ## Primary Markout Target
 
@@ -143,6 +172,52 @@ Failure criteria:
 - Side labels add noise because available depth changes faster than our reaction
   time.
 
+### H5: Book Imbalance Predicts Short-Run Executable Markouts
+
+Hypothesis: Quidax order-book imbalance, OWA, and microprice features improve
+10-120s direction hit rate and side-specific execution error versus raw top-of-
+book mid.
+
+Mechanism: A native USDT/cNGN book that is bid-heavy predicts higher
+cNGN-per-USDT and therefore lower cNGN/USD. The research export records both
+native imbalance and sign-flipped cNGN/USD pressure so the analyzer can test the
+direction explicitly rather than relying on intuition.
+
+Success criteria:
+
+- OWA or microprice estimators improve direction hit rate without worsening MAE.
+- Walk-forward probability buckets show stable event probabilities in the
+  validation split, especially at high absolute imbalance.
+- Side-specific buckets identify when buy cost or sell proceeds are likely to
+  worsen before execution.
+
+Failure criteria:
+
+- Bucket probabilities collapse toward 50% out of sample.
+- Signal only works in flat-book samples or is dominated by stale label lag.
+
+### H6: DEX Divergence Is A LP-Rebalance Feature, Not A Fair-Value Label
+
+Hypothesis: Previous-or-equal `uni-base_pool` and `uni-bsc_pool` premiums versus
+Quidax executable mid explain LP rerange and rebalance outcomes, but should not
+replace the CEX-led executable label.
+
+Mechanism: DEX pools are the venue-local state LP actually manages. Their
+premium/discount versus executable CEX value is useful for LP autoresearch:
+whether a range exit was caused by local pool flow, stale external price
+discovery, or a real market-wide move.
+
+Success criteria:
+
+- Rebalance markouts differ meaningfully by DEX premium/discount bucket.
+- Venue-local pool premium plus swap-flow imbalance identifies defensive
+  reranges that would have avoided more loss than their gas and ratio-swap cost.
+
+Failure criteria:
+
+- DEX premium buckets mostly describe noise or self-impact and do not explain
+  post-rebalance P&L.
+
 ## Data To Capture
 
 Minimum fields per observation:
@@ -185,6 +260,10 @@ Future collectors to add:
 - CEX executable midpoint: average of side-specific depth-walk prices at target
   size.
 - CEX microprice: top-of-book or depth-weighted price adjusted by imbalance.
+- Quidax OWA: square-root order-weighted average from top-book and top-N depth,
+  using cNGN/USD bid/ask after normalizing the native USDT/cNGN book.
+- Quidax pressure buckets: native top-N imbalance and sign-flipped cNGN/USD
+  pressure, calibrated to future midpoint and side-specific adverse movement.
 - CEX robust anchor: median or trimmed mean across executable CEXs once multiple
   CEX feeds exist.
 - CEX plus slow reference: CEX executable value with low-frequency P2P residual
@@ -209,6 +288,8 @@ Future collectors to add:
    - signed bias
    - direction hit rate
    - side-specific execution error
+   - walk-forward probability buckets for imbalance-driven midpoint and side
+     adverse movement
    - error by spread/depth regime
    - error around our own ladder updates
 6. Use walk-forward splits by observation count, not random rows.
@@ -282,6 +363,14 @@ python scripts/export_fair_price_markouts.py \
   --max-label-lag-seconds 15
 ```
 
+The export now includes Quidax book features and previous-or-equal DEX context:
+
+- `quidax_imbalance_top1_usdt`, `quidax_imbalance_topn_usdt`
+- `quidax_imbalance_topn_cngn`, `quidax_cngn_usd_pressure_topn`
+- `quidax_owa_mid_top1`, `quidax_owa_mid_topn`, `quidax_microprice_top1`
+- `uni_base_mid`, `uni_base_premium_bps`
+- `uni_bsc_mid`, `uni_bsc_premium_bps`
+
 Raw feed-quality command:
 
 ```bash
@@ -304,14 +393,19 @@ python scripts/analyze_fair_price_markouts.py \
   --out data/fair_price_markout_report.md
 ```
 
-Recommended separated capture commands:
+The analyzer reports the new OWA/microprice estimators and walk-forward
+probability calibration buckets. Treat those buckets as research evidence only.
+Do not promote them into `ExecutablePriceCalculator` or Kelly-style sizing caps
+until validation buckets remain stable over a full operational sample.
+
+Recommended separated capture commands for forward collection:
 
 ```bash
 python scripts/capture_fair_price_feeds.py \
   --db data/cngn.db \
   --sources quidax \
-  --interval 5 \
-  --iterations 720 \
+  --interval 15 \
+  --iterations 5760 \
   --quidax-cache-seconds 0
 
 python scripts/capture_fair_price_feeds.py \
@@ -321,8 +415,12 @@ python scripts/capture_fair_price_feeds.py \
   --iterations 60
 ```
 
-Run Quidax at high cadence for labels. Run Bybit separately at slower cadence
-as a reference feature so P2P latency does not distort executable CEX labels.
+Run Quidax as a separate label feed and Bybit separately at slower cadence as a
+reference feature so P2P latency does not distort executable CEX labels. The
+15s Quidax cadence is the current overnight/default collection setting because
+it avoided the 5s stress-run failures while still supporting operational
+10-600s markout analysis. Re-test 5s, 1s, and sub-1s horizons only after the
+Quidax execution-latency benchmark and feed-capacity benchmark are complete.
 
 ## Minimum Report Template
 

@@ -5,20 +5,40 @@ order: 4
 
 ## Route selection
 
-When we find multiple profitable candidates, the router (`engine/core/arbitrage/router.py`) selects the single best one.
+When multiple profitable candidates exist, `engine/arb/routing/router.py`
+selects the single route to execute. Direction metadata, venue names, pipeline
+type, leg type, and `cngn_effect` come from
+`engine/arb/routing/route_registry.py`; other modules should not duplicate
+direction lists or classify routes independently.
 
-We do this via the following 3 steps:
+Route selection has three steps:
 
-1. We **filter** trades: is the trade proditable, does it stay within the bounds of inventory paramaters?
-2. Then we **score** trades: `net_profit = expected_profit - gas - rebalance_cost_penalty`. The highest net profit is prioritised.
-    1. `gas` is provided by `engine/core/gas_oracle.py`, which refreshes every 30s. Gas units are conservative constants measured from real on-chain swaps, currrently set to 200k gas per DEX swap. The USD cost is computed dynamically:`gas_usd = gas_units × gas_price_gwei × 10⁻⁹ × native_token_usd`.   
-    Gas price (gwei) is fetched from each chain via `eth_gasPrice`. Native token prices (ETH/USD, BNB/USD) are fetched from the Alchemy Prices API (`tokens/by-symbol`). CEX-DEX routes use the per-chain cost; DEX-DEX round trips use the sum of both.  
-    2. The `rebalance_cost_penalty` is a special term we add that dynamically adjusts to inventory levels. That is, as one of our accounts on a given chain/platform moves into an imbalanced state, this penalty scales, because the need to rebalance is closer and so the cost of trading from that account is subsequently higher.
-3. When two routes have similar net profit, **inventory alignment** is used as a tiebreak: if we are net long cNGN (imbalance > $10), routes that sell cNGN to a CEX score higher; if net short, routes that buy cNGN from a CEX score higher. This nudges the system back toward balance without requiring explicit rebalancing trades.
+1. **Filter** candidates that are not profitable or cannot fit inside venue-local inventory limits.
+2. **Score** remaining candidates with adjusted expected profit:
+
+   ```
+   net_profit = expected_profit - gas - rebalance_cost_penalty
+   ```
+
+   Gas costs come from `engine/market/gas_oracle.py`. Gas price is read from
+   each chain via `eth_gasPrice`, native token prices come from Alchemy Prices,
+   and CEX-DEX / DEX-DEX routes use the relevant per-chain cost.
+
+   `rebalance_cost_penalty` grows as the route pushes a venue closer to an
+   inventory imbalance. This makes a nominally profitable route less attractive
+   when it increases future rebalancing pressure.
+3. **Tiebreak** with inventory alignment. When routes have similar net profit,
+   long-cNGN inventory prefers routes that sell cNGN; short-cNGN inventory
+   prefers routes that buy cNGN.
+
+`SelectedRoute` stores the selected routed size and profit metadata. Execution
+does not trust routed token amounts; live token amounts are derived again at
+execution time.
 
 ## Pre-trade risk gates
 
-Before any execution task is created, `inventory.can_trade(size_usd, buy_venue, sell_venue)` checks the following in order:
+Before any execution task is created,
+`engine/arb/risk/inventory.py` checks the following:
 
 | Check | Parameter | Default |
 |-------|-----------|---------|
@@ -31,9 +51,16 @@ Before any execution task is created, `inventory.can_trade(size_usd, buy_venue, 
 
 The 24h volume uses a **rolling window** (not a midnight reset) to prevent exposure bursts at day boundaries.
 
+Inventory is venue-local. Quidax, `uni-base`, and `uni-bsc` balances are capped
+independently; a fill on one venue does not make inventory available on another.
+
 ## Size adjustment
 
-The router also caps `optimal_size_usd` to the available stablecoin balance on the buy-side venue. This ensures we never attempt a trade we can't fund. The min_out for the sell leg is then derived from the adjusted size:
+The router caps `optimal_size_usd` to the available stablecoin balance on the
+buy-side venue and to sell-side cNGN inventory where applicable. This prevents
+routes that cannot be funded on both legs.
+
+The minimum output for the sell leg is derived from the adjusted size:
 
 ```
 min_out_usd = adjusted_size * (1 - slippage_tolerance_bps / 10_000)

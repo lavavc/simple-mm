@@ -33,25 +33,26 @@ In practice that means the DEX trade accounts, the Blockradar account, and any r
 
 ## What needs funding and when
 
-### Phase 1 (now) — price feeds + LP on Uniswap Base
+### LP management
 
-Fund only **`uni-base-lp`** on Base:
-- ETH: ≥ 0.001 (gas — bridged from Ethereum or bought on Base)
-- cNGN: however much liquidity you want to deploy
-- USDC: paired amount at the current price ratio
+Fund the LP wallet for each pool that should be actively managed:
 
-USDT is **not needed** for Base/Uniswap. The cNGN/USDC pair is used.
+- **`uni-base-lp`** on Base: ETH for gas, cNGN, and USDC.
+- **`uni-bsc-lp`** on BSC: BNB for gas, cNGN, and USDT.
 
-### Phase 2 (arbitrage execution)
+The LP path deploys the full LP wallet balance. Single-token funding is valid:
+the engine swaps to the required ratio before minting when the next LP cycle
+runs.
 
-Also fund **`uni-base-trade`** on Base (same tokens) for DEX swap legs.
+### Arbitrage execution
 
-### Phase 3 (Uniswap BSC)
+Fund the trade wallets only when live DEX legs should execute:
 
-Fund **`uni-bsc-lp`** and **`uni-bsc-trade`** on BSC:
-- BNB: ≥ 0.001 (gas)
-- cNGN: `0xa8aea66b361a8d53e8865c62d142167af28af058`
-- USDT: `0x55d398326f99059fF775485246999027B3197955`
+- **`uni-base-trade`** on Base: ETH for gas, cNGN, and USDC.
+- **`uni-bsc-trade`** on BSC: BNB for gas, cNGN, and USDT.
+
+Quidax-side inventory is venue-local and independent from the on-chain trade
+wallets. A fill on Quidax does not make inventory available on Base or BSC.
 
 ### External venues — depositing via the engine
 
@@ -84,9 +85,13 @@ TELEGRAM_BOT_TOKEN=          # from @BotFather
 TELEGRAM_CHAT_ID=            # operator group chat ID (negative integer)
 ```
 
-When enabling live trading, set in `engine/config.py`:
-```python
-arb_execute_cex_dex_enabled: bool = True   # or dex_dex
+Live trading toggles are loaded through `engine/config.py` and can be overridden
+from `.env`:
+
+```bash
+ARB_DETECTION_ENABLED=true
+ARB_EXECUTE_CEX_DEX_ENABLED=true
+ARB_EXECUTE_DEX_DEX_ENABLED=true
 ```
 
 All other tunable parameters (arbitrage thresholds, scheduler intervals, fee estimates) have code defaults in `engine/config.py`. Override in `.env` only when the default needs changing for a specific deployment. See `.env.example` for a full list of overridable variables.
@@ -140,20 +145,15 @@ All operational controls go through the Telegram operator bot. See [LP Operation
 
 ```bash
 source .venv/bin/activate
-python -m engine
+python -m engine.main
 ```
 
-## Known issues to fix before trading real money
+## Known operational risk
 
-### HIGH — infinite token approvals
+### Infinite token approvals
 `engine/lp/uniswap_v4.py` (`V4PositionManager._approve_lp_tokens_if_needed`) approves `2**256 - 1` (unlimited) for each token before the
 first swap or mint. If the router contract were compromised the entire wallet balance would
 be at risk. Should approve only the amount needed per transaction.
-
-### LOW — quidax position sync disabled
-`QuidaxAdapter.get_position()` returns a stub. When order-ladder trading on Quidax is
-ready, restore the authenticated `/users/me/wallets` call and verify the API key has the
-correct permission scope.
 
 ---
 

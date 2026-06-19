@@ -41,6 +41,21 @@ def _quidax_snapshot(
     )
 
 
+def _source_snapshot(
+    source: str,
+    timestamp_ms: int,
+    mid: str,
+) -> PriceSnapshot:
+    return PriceSnapshot(
+        source=source,
+        timestamp_ms=timestamp_ms,
+        bid=Decimal(mid),
+        ask=Decimal(mid),
+        mid=Decimal(mid),
+        metadata=None,
+    )
+
+
 def test_build_markout_rows_uses_future_quidax_executable_depth() -> None:
     rows = build_markout_rows(
         [
@@ -76,6 +91,42 @@ def test_build_markout_rows_uses_future_quidax_executable_depth() -> None:
     assert row["label_10s_buy_cngn_usd"] == "0.0006172839506172839506172839506"
     assert row["label_10s_sell_cngn_usd"] == "0.0006134969325153374233128834356"
     assert row["label_10s_executable_mid"] == "0.0006153904415663106869650836931"
+
+
+def test_build_markout_rows_exports_book_imbalance_owa_and_dex_divergence() -> None:
+    rows = build_markout_rows(
+        [
+            _source_snapshot("uni-base_pool", 500, "0.000620"),
+            _source_snapshot("uni-bsc_pool", 800, "0.000640"),
+            _quidax_snapshot(
+                1_000,
+                bid_levels=[["1600", "10"], ["1590", "30"]],
+                ask_levels=[["1610", "20"], ["1620", "40"]],
+            ),
+            _quidax_snapshot(
+                11_000,
+                bid_levels=[["1605", "100"]],
+                ask_levels=[["1615", "100"]],
+            ),
+        ],
+        horizons_seconds=[10],
+        target_usd=Decimal("10"),
+    )
+
+    row = rows[0]
+
+    assert row["quidax_imbalance_top1_usdt"] == "-0.3333333333333333333333333333"
+    assert row["quidax_imbalance_topn_usdt"] == "-0.2"
+    assert row["quidax_cngn_usd_pressure_topn"] == "0.2"
+    assert row["quidax_owa_mid_top1"] == "0.0006233949616750590033310394744"
+    assert row["quidax_owa_mid_topn"] == "0.0006232623175097076680019177853"
+    assert row["quidax_microprice_top1"] == "0.0006237113734182108708538439731"
+    assert row["uni_base_mid"] == "0.00062"
+    assert row["uni_base_age_ms"] == "500"
+    assert row["uni_base_premium_bps"] == "-49.09657320872274143302180685"
+    assert row["uni_bsc_mid"] == "0.00064"
+    assert row["uni_bsc_age_ms"] == "200"
+    assert row["uni_bsc_premium_bps"] == "271.9003115264797507788161994"
 
 
 def test_build_markout_rows_skips_labels_when_future_depth_cannot_fill_size() -> None:

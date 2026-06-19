@@ -35,6 +35,22 @@ summaries; Bybit P2P rows include ad-filter diagnostics and depth proxy fields.
 The normalized columns remain the stable chart/TWAP surface, while metadata is
 the raw evidence surface for fair-price markouts.
 
+Fair-price research agents should inspect saved history before starting a new
+capture run:
+
+```bash
+sqlite3 -header -column data/cngn.db \
+  "select source, count(*) as rows, datetime(min(timestamp_ms)/1000,'unixepoch') as first_utc, datetime(max(timestamp_ms)/1000,'unixepoch') as last_utc from price_snapshots group by source order by source;"
+
+python scripts/report_fair_price_feed_quality.py \
+  --db data/cngn.db \
+  --out data/fair_price_feed_quality_current.md
+```
+
+This DB is the canonical local source for historical Quidax values. The public
+Quidax API surface currently used by the engine provides live ticker/depth data,
+not a confirmed historical OHLCV, trade, or order-book backfill endpoint.
+
 ## Downtime
 
 [Historical Data] ----gap---- [New Data]
@@ -70,7 +86,7 @@ The API and dashboard read from the store/query layer, not from raw SQL inside r
 
 If you request 24 hours but only have 30 minutes of data, you'll get only those 30 minutes of points.
 
-## TODO
+## Operational Follow-Ups
 
 For full historical continuity:
 1. Consider a backup strategy for ./data/cngn.db

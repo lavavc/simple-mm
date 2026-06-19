@@ -22,6 +22,10 @@ if str(REPO_ROOT) not in sys.path:
 
 DEFAULT_HORIZONS_SECONDS = (10, 30, 60, 120, 300, 600)
 DEFAULT_TARGET_USD = Decimal("100")
+DEX_SOURCE_ALIASES = {
+    "uni-base": ("uni-base_pool", "uni_base_pool"),
+    "uni-bsc": ("uni-bsc_pool", "uni_bsc_pool"),
+}
 
 
 @dataclass(frozen=True)
@@ -63,7 +67,7 @@ async def load_price_snapshots(
 ) -> list[PriceSnapshot]:
     query = (
         "SELECT source, timestamp_ms, bid, ask, mid, metadata_json "
-        "FROM price_snapshots WHERE source IN ('quidax', 'bybit_p2p')"
+        "FROM price_snapshots WHERE 1=1"
     )
     params: list[Any] = []
     if from_ts is not None:
@@ -107,13 +111,26 @@ def build_markout_rows(
 ) -> list[dict[str, str]]:
     quidax_rows = [row for row in snapshots if row.source == "quidax"]
     bybit_rows = [row for row in snapshots if row.source == "bybit_p2p"]
+    dex_rows = {
+        venue: [
+            row
+            for row in snapshots
+            if row.source in aliases
+        ]
+        for venue, aliases in DEX_SOURCE_ALIASES.items()
+    }
     quidax_timestamps = [row.timestamp_ms for row in quidax_rows]
     bybit_timestamps = [row.timestamp_ms for row in bybit_rows]
+    dex_timestamps = {
+        venue: [row.timestamp_ms for row in rows]
+        for venue, rows in dex_rows.items()
+    }
     output: list[dict[str, str]] = []
 
     for row in quidax_rows:
         current_top = _quidax_top_of_book_prices(row)
         current_exec = _quidax_executable_prices(row, target_usd=target_usd)
+        book_features = _quidax_book_features(row)
         bybit_row = _previous_or_equal(bybit_rows, bybit_timestamps, row.timestamp_ms)
         record = {
             "timestamp_ms": str(row.timestamp_ms),
@@ -128,6 +145,13 @@ def build_markout_rows(
             "quidax_buy_cngn_usd": _format_optional_decimal(current_exec.buy_cngn_usd),
             "quidax_sell_cngn_usd": _format_optional_decimal(current_exec.sell_cngn_usd),
             "quidax_executable_mid": _format_optional_decimal(current_exec.executable_mid),
+            **book_features,
+            **_dex_reference_fields(
+                row,
+                dex_rows=dex_rows,
+                dex_timestamps=dex_timestamps,
+                reference_mid=current_exec.executable_mid,
+            ),
             "bybit_mid": _format_optional_decimal(bybit_row.mid if bybit_row else None),
             "bybit_age_ms": str(row.timestamp_ms - bybit_row.timestamp_ms)
             if bybit_row
@@ -186,6 +210,19 @@ def _fieldnames(horizons_seconds: list[int]) -> list[str]:
         "quidax_buy_cngn_usd",
         "quidax_sell_cngn_usd",
         "quidax_executable_mid",
+        "quidax_imbalance_top1_usdt",
+        "quidax_imbalance_topn_usdt",
+        "quidax_imbalance_topn_cngn",
+        "quidax_cngn_usd_pressure_topn",
+        "quidax_owa_mid_top1",
+        "quidax_owa_mid_topn",
+        "quidax_microprice_top1",
+        "uni_base_mid",
+        "uni_base_age_ms",
+        "uni_base_premium_bps",
+        "uni_bsc_mid",
+        "uni_bsc_age_ms",
+        "uni_bsc_premium_bps",
         "bybit_mid",
         "bybit_age_ms",
     ]
@@ -283,6 +320,134 @@ def _walk_asks_sell_cngn(row: PriceSnapshot, *, target_cngn: Decimal) -> Decimal
         if remaining_cngn > 0 or target_cngn <= 0:
             return None
         return total_usdt / target_cngn
+
+
+def _quidax_book_features(row: PriceSnapshot) -> dict[str, str]:
+    bids, asks = _quidax_book(row)
+    top_bids = bids[:1]
+    top_asks = asks[:1]
+    topn_bid_usdt = _book_usdt(top_bids)
+    topn_ask_usdt = _book_usdt(top_asks)
+    all_bid_usdt = _book_usdt(bids)
+    all_ask_usdt = _book_usdt(asks)
+    all_bid_cngn = _book_cngn(bids)
+    all_ask_cngn = _book_cngn(asks)
+    top = _quidax_top_of_book_prices(row)
+
+    imbalance_topn = _imbalance(all_bid_usdt, all_ask_usdt)
+    return {
+        "quidax_imbalance_top1_usdt": _format_optional_decimal(
+            _imbalance(topn_bid_usdt, topn_ask_usdt)
+        ),
+        "quidax_imbalance_topn_usdt": _format_optional_decimal(imbalance_topn),
+        "quidax_imbalance_topn_cngn": _format_optional_decimal(
+            _imbalance(all_bid_cngn, all_ask_cngn)
+        ),
+        # Quidax native pair is USDT/cNGN. Native bid-heavy pressure raises
+        # cNGN-per-USDT and lowers USD-per-cNGN, so cNGN/USD pressure flips sign.
+        "quidax_cngn_usd_pressure_topn": _format_optional_decimal(
+            -imbalance_topn if imbalance_topn is not None else None
+        ),
+        "quidax_owa_mid_top1": _format_optional_decimal(
+            _order_weighted_mid(
+                bid_price=top.sell_cngn_usd,
+                ask_price=top.buy_cngn_usd,
+                bid_qty=_book_cngn(top_asks),
+                ask_qty=_book_cngn(top_bids),
+                sqrt_weighted=True,
+            )
+        ),
+        "quidax_owa_mid_topn": _format_optional_decimal(
+            _order_weighted_mid(
+                bid_price=top.sell_cngn_usd,
+                ask_price=top.buy_cngn_usd,
+                bid_qty=_book_cngn(asks),
+                ask_qty=_book_cngn(bids),
+                sqrt_weighted=True,
+            )
+        ),
+        "quidax_microprice_top1": _format_optional_decimal(
+            _order_weighted_mid(
+                bid_price=top.sell_cngn_usd,
+                ask_price=top.buy_cngn_usd,
+                bid_qty=_book_cngn(top_asks),
+                ask_qty=_book_cngn(top_bids),
+                sqrt_weighted=False,
+            )
+        ),
+    }
+
+
+def _dex_reference_fields(
+    row: PriceSnapshot,
+    *,
+    dex_rows: dict[str, list[PriceSnapshot]],
+    dex_timestamps: dict[str, list[int]],
+    reference_mid: Decimal | None,
+) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for venue in ("uni-base", "uni-bsc"):
+        key = venue.replace("-", "_")
+        dex_row = _previous_or_equal(
+            dex_rows.get(venue, []),
+            dex_timestamps.get(venue, []),
+            row.timestamp_ms,
+        )
+        mid = dex_row.mid if dex_row else None
+        fields[f"{key}_mid"] = _format_optional_decimal(mid)
+        fields[f"{key}_age_ms"] = str(row.timestamp_ms - dex_row.timestamp_ms) if dex_row else ""
+        fields[f"{key}_premium_bps"] = _format_optional_decimal(
+            _premium_bps(mid, reference_mid)
+        )
+    return fields
+
+
+def _book_usdt(levels: list[BookLevel]) -> Decimal:
+    return sum((level.amount_usdt for level in levels), Decimal("0"))
+
+
+def _book_cngn(levels: list[BookLevel]) -> Decimal:
+    return sum(
+        (level.amount_usdt * level.price_cngn_per_usdt for level in levels),
+        Decimal("0"),
+    )
+
+
+def _imbalance(left: Decimal, right: Decimal) -> Decimal | None:
+    total = left + right
+    if total <= 0:
+        return None
+    with localcontext() as context:
+        context.prec = 50
+        return (left - right) / total
+
+
+def _order_weighted_mid(
+    *,
+    bid_price: Decimal | None,
+    ask_price: Decimal | None,
+    bid_qty: Decimal,
+    ask_qty: Decimal,
+    sqrt_weighted: bool,
+) -> Decimal | None:
+    if bid_price is None or ask_price is None or bid_qty <= 0 or ask_qty <= 0:
+        return None
+    with localcontext() as context:
+        context.prec = 50
+        bid_weight = bid_qty.sqrt() if sqrt_weighted else bid_qty
+        ask_weight = ask_qty.sqrt() if sqrt_weighted else ask_qty
+        total = bid_weight + ask_weight
+        if total <= 0:
+            return None
+        return (ask_weight / total) * bid_price + (bid_weight / total) * ask_price
+
+
+def _premium_bps(price: Decimal | None, reference: Decimal | None) -> Decimal | None:
+    if price is None or reference is None or reference <= 0:
+        return None
+    with localcontext() as context:
+        context.prec = 50
+        return (price - reference) / reference * Decimal("10000")
 
 
 def _first_at_or_after(

@@ -1,6 +1,7 @@
 # DEX LP Strategy Research Log
 
-Companion to `autoresearch.md`. Each entry follows the autoresearch reporting standard.
+Historical companion to `autoresearch/lp.md`. Each entry follows the LP
+autoresearch reporting standard that was active when the experiment was run.
 
 Pool definitions (engine/venues/dex/uniswap_*.py):
 

@@ -4,7 +4,11 @@
 
 SD-Bollinger band concentrated LP: calculate mean and standard deviation of recent cNGN/USD prices, set LP tick range to `mean ± (sd_multiplier × stdev)`, rebalance when price exits range. Full remove + re-mint on each rebalance.
 
-Implementation: [engine/venues/dex/base.py](../engine/venues/dex/base.py) (`calculate_tick_range`), [engine/core/scheduler.py](../engine/core/scheduler.py) (`_check_dex_rebalance`).
+Historical implementation note: this plan pre-dates the current LP split. The
+current production implementation lives in
+[engine/lp/strategy.py](../../engine/lp/strategy.py) for range math and
+[engine/lp/rebalancer.py](../../engine/lp/rebalancer.py) for lifecycle
+orchestration.
 
 ---
 
@@ -257,6 +261,19 @@ If the swap crosses tick boundaries, segment the calculation per tick range sinc
 ### Rebalance markout analysis
 
 Per QTS Lecture 11: mark each rebalance with market state at decision time, measure the new position's P&L at 1hr/4hr/24hr post-rebalance. The **break-even time** (when fee income exceeds rebalance cost) is the key metric. Split by pre-emptive vs reactive, trigger type (threshold vs venue-divergence), vol regime, and direction.
+
+The fair-price markout export now provides the cross-workflow features needed
+for this split:
+
+- Quidax executable midpoint and side-specific executable labels.
+- Quidax top-N imbalance, OWA, microprice, and cNGN/USD pressure buckets.
+- Previous-or-equal `uni-base_pool` and `uni-bsc_pool` premiums versus Quidax
+  executable mid.
+
+For LP autoresearch, use DEX premium and venue-local swap-flow imbalance as
+explanatory variables for range exits and defensive reranges. Do not use
+arbitrage route state or global blended fair value as LP decision inputs unless
+the package boundary is deliberately changed and documented.
 
 
 ### Stress testing

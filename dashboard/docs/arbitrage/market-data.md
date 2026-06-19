@@ -5,7 +5,7 @@ order: 2
 
 ## Sources
 
-Six venues feed the price pipeline. Four contribute to fair-value calculations; two are display-only.
+Six venues feed the price pipeline. Three currently contribute to fair-value calculations; the rest are reference or display-only.
 
 **Bybit P2P — REST + fraud filtering**
 
@@ -14,7 +14,7 @@ Bybit's P2P market is the primary NGN/USD reference rate. Raw listings contain m
 - Prices more than 2% from the median of the remaining ads are removed
 - The modal price (most frequently occurring integer NGN rate) of the survivors is used as the side price
 
-The result is the rate the largest cohort of reputable mid-market merchants agree on. This is the primary input that determines the NGN leg of the blended price.
+The result is the rate the largest cohort of reputable mid-market merchants agree on. Bybit is useful as a slow NGN reference and research feature, but it is excluded from live fair-value math because it is not an executable venue.
 
 Each persisted Bybit snapshot also carries capture metadata in
 `price_snapshots.metadata_json`: raw ad counts, reputable/filter survivor
@@ -30,6 +30,19 @@ The periodic price job persists the ticker quote plus depth capture metadata in
 `price_snapshots.metadata_json`: native cNGN-per-USDT ticker fields, top book
 levels, top-N bid/ask depth, and native spread bps. This is the first data
 surface for CEX-led 10-600 second fair-price markouts.
+
+The markout exporter derives research-only microstructure features from that
+metadata: native top-1/top-N imbalance, sign-flipped cNGN/USD pressure,
+order-weighted average price, and microprice. These are calibration inputs for
+future executable-price improvements; they do not change live fair-value or
+route-sizing behavior by themselves.
+
+Historical Quidax market values are available from our own `price_snapshots`
+capture history only. The current public Quidax docs and SDK have not confirmed
+a candles, historical-trades, OHLCV, or order-book backfill endpoint. If deeper
+history is required for fair-price research, request an institutional Quidax
+export and keep the export source-attributed; do not silently substitute DEX or
+P2P history as Quidax executable truth.
 
 **Uniswap V4 pools (Base + BSC) — WebSocket**
 
@@ -68,13 +81,22 @@ Adding a new pair from any venue only requires adding its string to `CNGN_USD_PA
 
 ## Blended Price
 
-The blended price combines a VWAP (current snapshot) with two TWAP windows (5-minute and 1-hour). It is published on the prices WebSocket channel and used for arbitrage and portfolio delta management. LP range-setting is intentionally separate and uses venue-local pool history only.
+The blended price combines a VWAP (current snapshot) with two TWAP windows
+(5-minute and 1-hour). It is published on the prices WebSocket channel and used
+for arbitrage and portfolio delta management. LP volatility, width, and rerange
+triggers stay venue-local; when the scheduler can compute a market-layer
+`StrategyFairPrice`, LP range creation can use that fair price as the center.
+
+The neutral blended price remains separate from short-run executable markout
+research. Order-book imbalance and DEX premium features are tested against
+future Quidax executable labels before any calibrated output can be promoted
+into `ExecutableFairPrice`.
 
 ### VWAP
 
-The VWAP is computed across the four fair-value venues (Bybit, Quidax, uni-base, uni-bsc) with each venue weighted by its effective market depth or volume. The weights are not equal — they reflect how much liquidity each venue actually represents.
+The VWAP is computed across the fair-value venues (`quidax`, `uni-base`, `uni-bsc`) with each venue weighted by effective market depth or volume. The weights are not equal — they reflect how much liquidity each venue actually represents.
 
-**Bybit** — Bybit does not expose a 24h traded P2P volume figure via its API. Instead we derive a depth proxy: fetch page 1 (200 ads) of the buy-side order book, sum `lastQuantity` (remaining USDT available on each ad), then extrapolate to the full ad count using `result.count`. This gives total listed depth across all active buy ads. We then apply a utilization factor (`depth_utilization`, default 5%) on the basis that most listed P2P depth is not actually traded. At typical book sizes (~$30–35M total listed buy-side depth) this produces a proxy of ~$1.5–1.8M, making Bybit the highest-weighted venue. The depth is refreshed every 5 minutes.
+**Bybit** — Bybit does not contribute to live VWAP/TWAP fair value. Its filtered price, ad counts, and depth proxy are persisted as reference and research metadata for slower anchoring experiments.
 
 **Quidax** — The `/markets/tickers` response includes a `vol` field (24h traded volume in USDT). This is used directly as the VWAP weight.
 
