@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from eth_abi import decode  # type: ignore[attr-defined]
+from eth_abi.exceptions import DecodingError  # type: ignore[attr-defined]
 from requests import HTTPError
 from web3 import Web3
 try:
@@ -552,8 +553,11 @@ def _pool_key_matches(pool_key: tuple[Any, ...], config: ExportPoolConfig) -> bo
 
 def decode_modify_liquidities_payload(input_data: str) -> tuple[bytes, list[bytes]]:
     raw = bytes.fromhex(coerce_hex_str(input_data)[10:])
-    unlock_data, _deadline = decode(["bytes", "uint256"], raw)
-    actions, params = decode(["bytes", "bytes[]"], unlock_data)
+    try:
+        unlock_data, _deadline = decode(["bytes", "uint256"], raw)
+        actions, params = decode(["bytes", "bytes[]"], unlock_data)
+    except DecodingError:
+        return b"", []
     return actions, list(params)
 
 

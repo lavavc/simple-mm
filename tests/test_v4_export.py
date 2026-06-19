@@ -160,6 +160,12 @@ class TestV4Export:
         assert liquidity_delta == 111
         assert _decode_burn_param(params[2]) == 55
 
+    def test_decode_modify_liquidities_payload_skips_malformed_candidate(self):
+        actions, params = decode_modify_liquidities_payload("0x" + "00" * 4)
+
+        assert actions == b""
+        assert params == []
+
     def test_amounts_from_liquidity_returns_positive_amounts(self):
         amount0, amount1 = _amounts_from_liquidity(
             liquidity=1_000_000,
