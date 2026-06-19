@@ -519,11 +519,13 @@ Expected: both reports are written and show `monotonic_blocks: true`.
 
 **Interfaces:**
 - Produces: `ReplayEvent(block_number: int, log_index: int, event_order: int, event_type: str, sqrt_price_x96: int | None, tick: int | None)`.
-- Produces: `attach_event_time_state(events: Sequence[ReplayEvent], initial_state: PoolStateSnapshot) -> list[ReplayedEvent]`.
+- Produces: `attach_event_time_state(events: Sequence[ReplayEvent], initial_state: PoolStateSnapshot | None) -> list[ReplayedEvent]`.
 - `PoolStateSnapshot` has `sqrt_price_x96`, `tick`, `source`.
 - `ReplayedEvent` carries `event_time_sqrt_price_x96`, `event_time_tick`, `event_time_state_source`.
+- `initial_state=None` is allowed only when the sorted event stream first seeds price from an initialize or swap row.
+- State source labels are `self_event`, `same_block_prior_event`, `prior_event`, or the provided initial seed source.
 
-- [ ] **Step 1: Write failing same-block lookahead test**
+- [x] **Step 1: Write failing same-block lookahead test**
 
 ```python
 from backtester.v4_event_replay import PoolStateSnapshot, ReplayEvent, attach_event_time_state
@@ -541,25 +543,27 @@ def test_liquidity_event_before_swap_gets_prior_price_not_swap_price():
     assert replayed[2].event_time_state_source == "same_block_prior_event"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest -q tests/test_v4_event_replay.py`
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement replay helper**
+- [x] **Step 3: Implement replay helper**
 
 Sort by `(block_number, log_index, event_order)`. Update carried state only on initialize/swap events with non-null sqrt/tick. Raise `ValueError` if a liquidity event appears before any seed state.
 
-- [ ] **Step 4: Integrate into exporter after active collectors finish**
+- [x] **Step 4: Integrate into exporter after active collectors finish**
 
 Modify liquidity row construction so `sqrt_price_x96`, `tick`, and `cngn_usd_price` use replayed event-time state rather than `state_view.getSlot0(..., block_identifier=block_number)` for all events in the block.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `python -m pytest -q tests/test_v4_event_replay.py tests/test_v4_export.py`
 
 Expected: PASS.
+
+Implementation note: the exporter applies replay as a post-decode, pre-write pass over each chunk, preserving the raw CSV schema. It also normalizes the ERC-20 `Transfer` topic constant through `coerce_hex_str` so Web3.py v7 `HexBytes.hex()` output and normalized log topics compare consistently.
 
 ---
 

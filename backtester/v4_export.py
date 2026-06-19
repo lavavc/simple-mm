@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -23,8 +23,9 @@ try:
     from web3.middleware import ExtraDataToPOAMiddleware as POA_MIDDLEWARE
 except ImportError:  # web3.py v6
     from web3.middleware import geth_poa_middleware as POA_MIDDLEWARE
-from engine.config import settings
 from backtester.clmm_math import cngn_price_from_sqrt_price_x96
+from backtester.v4_event_replay import PoolStateSnapshot, ReplayEvent, attach_event_time_state
+from engine.config import settings
 
 _V4_LP_INCREASE_LIQUIDITY = 0
 _V4_LP_DECREASE_LIQUIDITY = 1
@@ -122,7 +123,7 @@ STATE_VIEW_ABI = [
 ]
 from engine.web3_utils import as_hexstr, coerce_hex_str
 
-_TRANSFER_EVENT_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex().lower()
+_TRANSFER_EVENT_TOPIC = coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex()).lower()
 
 
 def _tick_to_sqrt_price_x96(tick: int) -> int:
@@ -655,6 +656,68 @@ def _state_at_block(state_view: Any, config: ExportPoolConfig, block_number: int
     return sqrt_price_x96, tick, liquidity, cngn_price
 
 
+def _event_time_seed_required(rows: list[ExportRow]) -> bool:
+    state_known = False
+    for row in sorted(rows, key=lambda value: (value.block_number, value.log_index)):
+        if row.event_type in {"initialize", "swap"}:
+            state_known = True
+        elif row.event_type in {"mint", "burn", "collect"}:
+            if not state_known:
+                return True
+        else:
+            raise ValueError(f"unsupported export event type: {row.event_type}")
+    return False
+
+
+def _state_seed_before_block(
+    state_view: Any,
+    config: ExportPoolConfig,
+    block_number: int,
+) -> PoolStateSnapshot | None:
+    if block_number <= config.default_start_block:
+        return None
+    sqrt_price_x96, tick, _active_liquidity, _cngn_usd_price = _state_at_block(
+        state_view,
+        config,
+        block_number - 1,
+    )
+    return PoolStateSnapshot(sqrt_price_x96=sqrt_price_x96, tick=tick, source="prior_block")
+
+
+def _apply_event_time_price_replay(
+    rows: list[ExportRow],
+    initial_state: PoolStateSnapshot | None,
+    config: ExportPoolConfig,
+) -> list[ExportRow]:
+    sorted_rows = sorted(rows, key=lambda value: (value.block_number, value.log_index))
+    replay_events = [
+        ReplayEvent(
+            block_number=row.block_number,
+            log_index=row.log_index,
+            event_order=event_order,
+            event_type=row.event_type,
+            sqrt_price_x96=row.sqrt_price_x96 if row.event_type in {"initialize", "swap"} else None,
+            tick=row.tick if row.event_type in {"initialize", "swap"} else None,
+        )
+        for event_order, row in enumerate(sorted_rows)
+    ]
+    replayed_events = attach_event_time_state(replay_events, initial_state)
+    replayed_rows: list[ExportRow] = []
+    for row, replayed_event in zip(sorted_rows, replayed_events):
+        if row.event_type in {"initialize", "swap"}:
+            replayed_rows.append(row)
+            continue
+        replayed_rows.append(
+            replace(
+                row,
+                sqrt_price_x96=replayed_event.event_time_sqrt_price_x96,
+                tick=replayed_event.event_time_tick,
+                cngn_usd_price=_cngn_price_from_pool_state(replayed_event.event_time_sqrt_price_x96, config),
+            )
+        )
+    return replayed_rows
+
+
 def _find_minted_token_id(receipt: dict[str, Any], position_manager: str) -> int | None:
     for log in receipt["logs"]:
         if Web3.to_checksum_address(log["address"]) != Web3.to_checksum_address(position_manager):
@@ -1070,6 +1133,12 @@ def export_pool_history(
                         )
                     )
 
+            event_time_seed = (
+                _state_seed_before_block(state_view, config, chunk_start)
+                if _event_time_seed_required(chunk_rows)
+                else None
+            )
+            chunk_rows = _apply_event_time_price_replay(chunk_rows, event_time_seed, config)
             chunk_rows.sort(key=lambda row: (row.block_time, row.block_number, row.log_index))
             for row in chunk_rows:
                 writer.writerow(row.__dict__)

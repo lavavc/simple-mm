@@ -8,6 +8,7 @@ from backtester.v4_export import (
     POOL_CONFIGS,
     _candidate_modify_liquidity_tx_hashes,
     _amounts_from_liquidity,
+    _apply_event_time_price_replay,
     build_liquidity_rows_for_tx,
     _decode_position_info,
     _decode_take_pair_param,
@@ -27,6 +28,7 @@ from backtester.v4_export import (
     decode_swap_row,
     derive_cngn_price,
 )
+from backtester.v4_event_replay import PoolStateSnapshot
 from engine.lp.types import _V4_LP_BURN_POSITION, _V4_LP_INCREASE_LIQUIDITY, _V4_LP_MINT_POSITION, _V4_LP_TAKE_PAIR
 from web3 import Web3
 
@@ -458,3 +460,106 @@ class TestV4Export:
         )
         assert len(rows) == 1
         assert rows[0].event_type == "collect"
+
+    def test_event_time_replay_keeps_liquidity_before_same_block_swap_at_prior_price(self):
+        config = POOL_CONFIGS["uni-base"]
+        prior_sqrt = 2**96
+        swap_sqrt = 2 * 2**96
+        rows = [
+            decode_modify_liquidity_row(
+                {
+                    "data": "0x"
+                    + (
+                        (-120).to_bytes(32, "big", signed=True)
+                        + (120).to_bytes(32, "big", signed=True)
+                        + (999).to_bytes(32, "big", signed=True)
+                        + bytes.fromhex("34" * 32)
+                    ).hex(),
+                    "topics": ["0x" + "bb" * 32, config.pool_id, "0x" + "00" * 12 + "11" * 20],
+                    "transactionHash": "0x" + "13" * 32,
+                    "logIndex": 5,
+                    "blockNumber": 124,
+                },
+                1_700_000_000,
+                (swap_sqrt, 2, 1_000_000, 4.0),
+                config,
+            ),
+            decode_swap_row(
+                {
+                    "data": "0x"
+                    + (
+                        int(-1_500 * 10**6).to_bytes(32, "big", signed=True)
+                        + int(1 * 10**6).to_bytes(32, "big", signed=True)
+                        + swap_sqrt.to_bytes(32, "big")
+                        + (1_000_000).to_bytes(32, "big")
+                        + (2).to_bytes(32, "big", signed=True)
+                        + (1500).to_bytes(32, "big")
+                    ).hex(),
+                    "transactionHash": "0x" + "11" * 32,
+                    "logIndex": 6,
+                    "blockNumber": 124,
+                },
+                1_700_000_000,
+                config,
+            ),
+        ]
+
+        replayed = _apply_event_time_price_replay(rows, PoolStateSnapshot(prior_sqrt, 1, "prior_block"), config)
+
+        assert replayed[0].event_type == "mint"
+        assert replayed[0].sqrt_price_x96 == prior_sqrt
+        assert replayed[0].tick == 1
+        assert replayed[0].cngn_usd_price == 1.0
+        assert replayed[1].event_type == "swap"
+        assert replayed[1].sqrt_price_x96 == swap_sqrt
+
+    def test_event_time_replay_updates_liquidity_after_same_block_swap(self):
+        config = POOL_CONFIGS["uni-base"]
+        prior_sqrt = 2**96
+        swap_sqrt = 2 * 2**96
+        rows = [
+            decode_swap_row(
+                {
+                    "data": "0x"
+                    + (
+                        int(-1_500 * 10**6).to_bytes(32, "big", signed=True)
+                        + int(1 * 10**6).to_bytes(32, "big", signed=True)
+                        + swap_sqrt.to_bytes(32, "big")
+                        + (1_000_000).to_bytes(32, "big")
+                        + (2).to_bytes(32, "big", signed=True)
+                        + (1500).to_bytes(32, "big")
+                    ).hex(),
+                    "transactionHash": "0x" + "11" * 32,
+                    "logIndex": 6,
+                    "blockNumber": 124,
+                },
+                1_700_000_000,
+                config,
+            ),
+            decode_modify_liquidity_row(
+                {
+                    "data": "0x"
+                    + (
+                        (-120).to_bytes(32, "big", signed=True)
+                        + (120).to_bytes(32, "big", signed=True)
+                        + (-999).to_bytes(32, "big", signed=True)
+                        + bytes.fromhex("34" * 32)
+                    ).hex(),
+                    "topics": ["0x" + "bb" * 32, config.pool_id, "0x" + "00" * 12 + "11" * 20],
+                    "transactionHash": "0x" + "13" * 32,
+                    "logIndex": 7,
+                    "blockNumber": 124,
+                },
+                1_700_000_000,
+                (prior_sqrt, 1, 1_000_000, 1.0),
+                config,
+            ),
+        ]
+
+        replayed = _apply_event_time_price_replay(rows, PoolStateSnapshot(prior_sqrt, 1, "prior_block"), config)
+
+        assert replayed[0].event_type == "swap"
+        assert replayed[1].event_type == "burn"
+        assert replayed[1].sqrt_price_x96 == swap_sqrt
+        assert replayed[1].tick == 2
+        assert replayed[1].cngn_usd_price == 4.0

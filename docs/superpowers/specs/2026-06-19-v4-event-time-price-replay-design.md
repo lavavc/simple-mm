@@ -17,14 +17,14 @@ The module exposes:
 - `PoolStateSnapshot(sqrt_price_x96: int, tick: int, source: str)`
 - `ReplayEvent(block_number: int, log_index: int, event_order: int, event_type: str, sqrt_price_x96: int | None, tick: int | None)`
 - `ReplayedEvent`, carrying original event metadata plus `event_time_sqrt_price_x96`, `event_time_tick`, and `event_time_state_source`
-- `attach_event_time_state(events, initial_state)` sorted by `(block_number, log_index, event_order)`
+- `attach_event_time_state(events, initial_state)` sorted by `(block_number, log_index, event_order)`. `initial_state` may be `None` only when initialize or swap events seed state before any liquidity or collect event consumes it.
 
 Replay rules:
 
 - Initialize and swap events with non-null sqrt/tick consume the current carried state for their row, then update the carried state to their own sqrt/tick.
 - Liquidity and collect events consume the current carried state and do not mutate price state.
 - A liquidity or collect event before any seed state raises `ValueError`.
-- State sources are explicit: initial seed source, `same_block_prior_event`, or `self_event`.
+- State sources are explicit: initial seed source, `same_block_prior_event`, `prior_event`, or `self_event`.
 
 Exporter integration stays narrow:
 
