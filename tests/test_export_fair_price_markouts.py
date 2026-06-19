@@ -1,10 +1,15 @@
 import json
+import sqlite3
+import subprocess
+import sys
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from engine.db.connection import SQLiteConnectionManager
 from engine.db.migrations import bootstrap_schema
+from engine.db.migrations.schema import SCHEMA_SQL
 from scripts.export_fair_price_markouts import (
     PriceSnapshot,
     build_markout_rows,
@@ -129,6 +134,63 @@ def test_build_markout_rows_exports_book_imbalance_owa_and_dex_divergence() -> N
     assert row["uni_bsc_premium_bps"] == "271.9003115264797507788161994"
 
 
+def test_build_markout_rows_joins_pool_features_by_previous_or_equal_timestamp() -> None:
+    rows = build_markout_rows(
+        [
+            PriceSnapshot(
+                source="quidax",
+                timestamp_ms=10_000,
+                bid=Decimal("1"),
+                ask=Decimal("1"),
+                mid=Decimal("1"),
+                metadata={"capture_type": "ticker_depth"},
+            ),
+            PriceSnapshot(
+                source="quidax",
+                timestamp_ms=20_000,
+                bid=Decimal("1.1"),
+                ask=Decimal("1.1"),
+                mid=Decimal("1.1"),
+                metadata={"capture_type": "ticker_depth"},
+            ),
+        ],
+        horizons_seconds=[10],
+        target_usd=Decimal("100"),
+        pool_feature_rows={
+            "uni-base": [
+                {
+                    "timestamp_ms": "9000",
+                    "dex_premium_cone_pct": "0.90",
+                    "swap_flow_imbalance_cone_pct": "0.80",
+                    "active_liquidity_cone_pct": "0.10",
+                }
+            ],
+            "uni-bsc": [
+                {
+                    "timestamp_ms": "7000",
+                    "dex_premium_cone_pct": "0.70",
+                    "swap_flow_imbalance_cone_pct": "0.60",
+                    "active_liquidity_cone_pct": "0.50",
+                },
+                {
+                    "timestamp_ms": "10001",
+                    "dex_premium_cone_pct": "0.99",
+                    "swap_flow_imbalance_cone_pct": "0.99",
+                    "active_liquidity_cone_pct": "0.99",
+                },
+            ],
+        },
+        feature_max_age_ms=2_000,
+    )
+
+    assert rows[0]["uni_base_feature_age_ms"] == "1000"
+    assert rows[0]["uni_base_dex_premium_cone_pct"] == "0.90"
+    assert rows[0]["uni_base_swap_flow_imbalance_cone_pct"] == "0.80"
+    assert rows[0]["uni_base_active_liquidity_cone_pct"] == "0.10"
+    assert rows[0]["uni_bsc_feature_age_ms"] == ""
+    assert rows[0]["uni_bsc_dex_premium_cone_pct"] == ""
+
+
 def test_build_markout_rows_skips_labels_when_future_depth_cannot_fill_size() -> None:
     rows = build_markout_rows(
         [
@@ -212,3 +274,70 @@ async def test_load_price_snapshots_reads_metadata_from_sqlite(tmp_path) -> None
             metadata=metadata,
         )
     ]
+
+
+def test_export_fair_price_markouts_writes_pool_feature_quality_json(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "cngn.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL)
+        conn.executemany(
+            """
+            INSERT INTO price_snapshots (
+                source, timestamp_ms, bid, ask, mid, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("quidax", 10_000, 1, 1, 1, json.dumps({"capture_type": "ticker_depth"})),
+                (
+                    "quidax",
+                    20_000,
+                    1.1,
+                    1.1,
+                    1.1,
+                    json.dumps({"capture_type": "ticker_depth"}),
+                ),
+            ],
+        )
+    feature_csv = tmp_path / "uni_base_features.csv"
+    feature_csv.write_text(
+        "timestamp_ms,pool,dex_premium_cone_pct,swap_flow_imbalance_cone_pct,"
+        "active_liquidity_cone_pct\n"
+        "9000,uni-base,0.90,0.80,0.10\n"
+    )
+    out_csv = tmp_path / "markouts.csv"
+    quality_out = tmp_path / "quality.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts/export_fair_price_markouts.py"
+            ),
+            "--db",
+            str(db_path),
+            "--out",
+            str(out_csv),
+            "--horizons",
+            "10",
+            "--pool-feature-csv",
+            f"uni-base={feature_csv}",
+            "--quality-out",
+            str(quality_out),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    quality = json.loads(quality_out.read_text())
+    assert quality["feature_max_age_seconds"] == 900
+    assert quality["missing_feature_counts"] == {"uni-base": 0}
+    assert quality["median_feature_age_ms"] == {"uni-base": 1000}
+    assert quality["max_feature_age_ms"] == {"uni-base": 1000}
+    assert quality["pool_features"]["uni-base"]["missing_rows"] == 0
+    assert quality["pool_features"]["uni-base"]["max_age_ms"] == 1000

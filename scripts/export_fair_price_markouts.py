@@ -11,7 +11,7 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Mapping, TextIO
 
 import aiosqlite
 
@@ -22,10 +22,16 @@ if str(REPO_ROOT) not in sys.path:
 
 DEFAULT_HORIZONS_SECONDS = (10, 30, 60, 120, 300, 600)
 DEFAULT_TARGET_USD = Decimal("100")
+DEFAULT_FEATURE_MAX_AGE_SECONDS = Decimal("900")
 DEX_SOURCE_ALIASES = {
     "uni-base": ("uni-base_pool", "uni_base_pool"),
     "uni-bsc": ("uni-bsc_pool", "uni_bsc_pool"),
 }
+POOL_FEATURE_FIELDS = (
+    "dex_premium_cone_pct",
+    "swap_flow_imbalance_cone_pct",
+    "active_liquidity_cone_pct",
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,12 @@ class PriceSnapshot:
 class BookLevel:
     price_cngn_per_usdt: Decimal
     amount_usdt: Decimal
+
+
+@dataclass(frozen=True)
+class PoolFeatureRow:
+    timestamp_ms: int
+    row: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -108,6 +120,8 @@ def build_markout_rows(
     horizons_seconds: list[int],
     target_usd: Decimal,
     max_label_lag_ms: int | None = None,
+    pool_feature_rows: Mapping[str, list[dict[str, str]]] | None = None,
+    feature_max_age_ms: int | None = None,
 ) -> list[dict[str, str]]:
     quidax_rows = [row for row in snapshots if row.source == "quidax"]
     bybit_rows = [row for row in snapshots if row.source == "bybit_p2p"]
@@ -124,6 +138,11 @@ def build_markout_rows(
     dex_timestamps = {
         venue: [row.timestamp_ms for row in rows]
         for venue, rows in dex_rows.items()
+    }
+    prepared_pool_features = _prepare_pool_features(pool_feature_rows)
+    pool_feature_timestamps = {
+        pool: [row.timestamp_ms for row in rows]
+        for pool, rows in prepared_pool_features.items()
     }
     output: list[dict[str, str]] = []
 
@@ -151,6 +170,12 @@ def build_markout_rows(
                 dex_rows=dex_rows,
                 dex_timestamps=dex_timestamps,
                 reference_mid=current_exec.executable_mid,
+            ),
+            **_pool_feature_fields(
+                row.timestamp_ms,
+                pool_features=prepared_pool_features,
+                pool_feature_timestamps=pool_feature_timestamps,
+                feature_max_age_ms=feature_max_age_ms,
             ),
             "bybit_mid": _format_optional_decimal(bybit_row.mid if bybit_row else None),
             "bybit_age_ms": str(row.timestamp_ms - bybit_row.timestamp_ms)
@@ -196,7 +221,11 @@ def build_markout_rows(
     return output
 
 
-def _fieldnames(horizons_seconds: list[int]) -> list[str]:
+def _fieldnames(
+    horizons_seconds: list[int],
+    *,
+    pool_feature_pools: list[str] | None = None,
+) -> list[str]:
     base = [
         "timestamp_ms",
         "source",
@@ -223,9 +252,21 @@ def _fieldnames(horizons_seconds: list[int]) -> list[str]:
         "uni_bsc_mid",
         "uni_bsc_age_ms",
         "uni_bsc_premium_bps",
+    ]
+    for pool in _ordered_pools(pool_feature_pools or []):
+        prefix = _pool_prefix(pool)
+        base.extend(
+            [
+                f"{prefix}_feature_age_ms",
+                *(f"{prefix}_{field}" for field in POOL_FEATURE_FIELDS),
+            ]
+        )
+    base.extend(
+        [
         "bybit_mid",
         "bybit_age_ms",
-    ]
+        ]
+    )
     for horizon in horizons_seconds:
         prefix = f"label_{horizon}s"
         base.extend(
@@ -402,6 +443,86 @@ def _dex_reference_fields(
     return fields
 
 
+def _prepare_pool_features(
+    pool_feature_rows: Mapping[str, list[dict[str, str]]] | None,
+) -> dict[str, list[PoolFeatureRow]]:
+    if pool_feature_rows is None:
+        return {}
+
+    prepared: dict[str, list[PoolFeatureRow]] = {}
+    for pool in _ordered_pools(pool_feature_rows):
+        rows = pool_feature_rows[pool]
+        prepared[pool] = sorted(
+            (
+                PoolFeatureRow(
+                    timestamp_ms=_pool_feature_timestamp_ms(pool, row),
+                    row=dict(row),
+                )
+                for row in rows
+            ),
+            key=lambda row: row.timestamp_ms,
+        )
+    return prepared
+
+
+def _pool_feature_timestamp_ms(pool: str, row: Mapping[str, str]) -> int:
+    raw_pool = row.get("pool")
+    if raw_pool not in (None, "", pool):
+        raise ValueError(f"Feature row pool {raw_pool!r} does not match {pool!r}")
+    raw_timestamp_ms = row.get("timestamp_ms")
+    if raw_timestamp_ms in (None, ""):
+        raise ValueError(f"Feature row for {pool} is missing timestamp_ms")
+    for field in POOL_FEATURE_FIELDS:
+        if field not in row:
+            raise ValueError(f"Feature row for {pool} is missing {field}")
+    return int(raw_timestamp_ms)
+
+
+def _pool_feature_fields(
+    timestamp_ms: int,
+    *,
+    pool_features: dict[str, list[PoolFeatureRow]],
+    pool_feature_timestamps: dict[str, list[int]],
+    feature_max_age_ms: int | None,
+) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for pool in _ordered_pools(pool_features):
+        prefix = _pool_prefix(pool)
+        feature_row = _previous_or_equal_pool_feature(
+            pool_features[pool],
+            pool_feature_timestamps[pool],
+            timestamp_ms,
+        )
+        age_ms = timestamp_ms - feature_row.timestamp_ms if feature_row else None
+        if (
+            feature_row is None
+            or age_ms is None
+            or (feature_max_age_ms is not None and age_ms > feature_max_age_ms)
+        ):
+            fields[f"{prefix}_feature_age_ms"] = ""
+            for field in POOL_FEATURE_FIELDS:
+                fields[f"{prefix}_{field}"] = ""
+            continue
+
+        fields[f"{prefix}_feature_age_ms"] = str(age_ms)
+        for field in POOL_FEATURE_FIELDS:
+            fields[f"{prefix}_{field}"] = feature_row.row[field]
+    return fields
+
+
+def _previous_or_equal_pool_feature(
+    rows: list[PoolFeatureRow],
+    timestamps: list[int],
+    target_timestamp_ms: int,
+) -> PoolFeatureRow | None:
+    idx = bisect_left(timestamps, target_timestamp_ms)
+    if idx < len(timestamps) and timestamps[idx] == target_timestamp_ms:
+        return rows[idx]
+    if idx == 0:
+        return None
+    return rows[idx - 1]
+
+
 def _book_usdt(levels: list[BookLevel]) -> Decimal:
     return sum((level.amount_usdt for level in levels), Decimal("0"))
 
@@ -502,6 +623,105 @@ def _parse_horizons(raw: str) -> list[int]:
     return horizons
 
 
+def _load_pool_feature_csvs(raw_configs: list[str]) -> dict[str, list[dict[str, str]]]:
+    pool_feature_rows: dict[str, list[dict[str, str]]] = {}
+    for raw_config in raw_configs:
+        pool, csv_path = _parse_pool_feature_csv_arg(raw_config)
+        if pool in pool_feature_rows:
+            raise ValueError(f"Duplicate --pool-feature-csv for {pool}")
+        with csv_path.open(newline="") as file:
+            reader = csv.DictReader(file)
+            rows: list[dict[str, str]] = []
+            for raw_row in reader:
+                if None in raw_row:
+                    raise ValueError(f"Feature CSV {csv_path} has extra unnamed columns")
+                rows.append({key: value or "" for key, value in raw_row.items()})
+        pool_feature_rows[pool] = rows
+
+    _prepare_pool_features(pool_feature_rows)
+    return pool_feature_rows
+
+
+def _parse_pool_feature_csv_arg(raw_config: str) -> tuple[str, Path]:
+    if "=" not in raw_config:
+        raise ValueError("--pool-feature-csv must use POOL=PATH")
+    pool, raw_path = raw_config.split("=", 1)
+    if pool not in DEX_SOURCE_ALIASES:
+        raise ValueError(f"Unsupported pool feature source: {pool}")
+    if raw_path == "":
+        raise ValueError(f"Missing feature CSV path for {pool}")
+    return pool, Path(raw_path)
+
+
+def _pool_feature_quality_report(
+    rows: list[dict[str, str]],
+    *,
+    pool_feature_pools: list[str],
+    feature_max_age_seconds: Decimal,
+    feature_max_age_ms: int,
+) -> dict[str, Any]:
+    missing_feature_counts: dict[str, int] = {}
+    median_feature_age_ms: dict[str, int | float | None] = {}
+    max_feature_age_ms: dict[str, int | None] = {}
+    pool_features: dict[str, dict[str, int | float | None]] = {}
+
+    for pool in _ordered_pools(pool_feature_pools):
+        prefix = _pool_prefix(pool)
+        age_field = f"{prefix}_feature_age_ms"
+        ages = [int(row[age_field]) for row in rows if row.get(age_field, "") != ""]
+        missing_rows = len(rows) - len(ages)
+        median_age = _median_number(sorted(ages)) if ages else None
+        max_age = max(ages) if ages else None
+
+        missing_feature_counts[pool] = missing_rows
+        median_feature_age_ms[pool] = median_age
+        max_feature_age_ms[pool] = max_age
+        pool_features[pool] = {
+            "rows": len(rows),
+            "observed_rows": len(ages),
+            "missing_rows": missing_rows,
+            "median_age_ms": median_age,
+            "max_age_ms": max_age,
+        }
+
+    return {
+        "feature_max_age_seconds": _json_decimal(feature_max_age_seconds),
+        "feature_max_age_ms": feature_max_age_ms,
+        "missing_feature_counts": missing_feature_counts,
+        "median_feature_age_ms": median_feature_age_ms,
+        "max_feature_age_ms": max_feature_age_ms,
+        "pool_features": pool_features,
+    }
+
+
+def _median_number(values: list[int]) -> int | float:
+    midpoint = len(values) // 2
+    if len(values) % 2 == 1:
+        return values[midpoint]
+    numerator = values[midpoint - 1] + values[midpoint]
+    if numerator % 2 == 0:
+        return numerator // 2
+    return numerator / 2
+
+
+def _json_decimal(value: Decimal) -> int | float:
+    if value == value.to_integral_value():
+        return int(value)
+    return float(value)
+
+
+def _ordered_pools(pools: Mapping[str, object] | list[str]) -> list[str]:
+    requested = set(pools)
+    unsupported = requested.difference(DEX_SOURCE_ALIASES)
+    if unsupported:
+        raise ValueError(f"Unsupported pool feature source: {sorted(unsupported)[0]}")
+    return [pool for pool in DEX_SOURCE_ALIASES if pool in requested]
+
+
+def _pool_prefix(pool: str) -> str:
+    return pool.replace("-", "_")
+
+
 def _write_csv(rows: list[dict[str, str]], fieldnames: list[str], out: TextIO) -> None:
     writer = csv.DictWriter(out, fieldnames=fieldnames)
     writer.writeheader()
@@ -529,12 +749,34 @@ async def _main() -> None:
         default=None,
         help="Drop labels whose first available future row is later than this tolerance.",
     )
+    parser.add_argument(
+        "--pool-feature-csv",
+        action="append",
+        default=[],
+        metavar="POOL=PATH",
+        help="Pool feature CSV to join by previous-or-equal timestamp. Repeatable.",
+    )
+    parser.add_argument(
+        "--feature-max-age-seconds",
+        type=Decimal,
+        default=DEFAULT_FEATURE_MAX_AGE_SECONDS,
+        help="Maximum accepted pool feature age in seconds.",
+    )
+    parser.add_argument(
+        "--quality-out",
+        default=None,
+        help="Output feature quality JSON path.",
+    )
     args = parser.parse_args()
 
     horizons = _parse_horizons(args.horizons)
     target_usd = Decimal(str(args.target_usd))
     if target_usd <= 0:
         raise ValueError("--target-usd must be positive")
+    if args.feature_max_age_seconds < 0:
+        raise ValueError("--feature-max-age-seconds must be nonnegative")
+    feature_max_age_ms = int(args.feature_max_age_seconds * Decimal("1000"))
+    pool_feature_rows = _load_pool_feature_csvs(args.pool_feature_csv)
 
     snapshots = await load_price_snapshots(
         args.db,
@@ -551,8 +793,28 @@ async def _main() -> None:
             if args.max_label_lag_seconds is not None
             else None
         ),
+        pool_feature_rows=pool_feature_rows or None,
+        feature_max_age_ms=feature_max_age_ms,
     )
-    fieldnames = _fieldnames(horizons)
+    pool_feature_pools = _ordered_pools(pool_feature_rows)
+    fieldnames = _fieldnames(horizons, pool_feature_pools=pool_feature_pools)
+
+    if args.quality_out is not None:
+        quality_out = Path(args.quality_out)
+        quality_out.parent.mkdir(parents=True, exist_ok=True)
+        quality_out.write_text(
+            json.dumps(
+                _pool_feature_quality_report(
+                    rows,
+                    pool_feature_pools=pool_feature_pools,
+                    feature_max_age_seconds=args.feature_max_age_seconds,
+                    feature_max_age_ms=feature_max_age_ms,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
 
     if args.out == "-":
         _write_csv(rows, fieldnames, sys.stdout)
