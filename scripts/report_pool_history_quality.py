@@ -9,17 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from backtester.data import _infer_v4_cngn_price_from_state
+from backtester.pool_price_semantics import classify_pool_price_row
 
 
 _EXPECTED_TOKEN_ORDER = {
     "uni-base": ("CNGN", "USDC"),
     "uni-bsc": ("USDT", "CNGN"),
 }
-
-_PRICE_REL_TOLERANCE = 1e-9
-_PRICE_ABS_TOLERANCE = 1e-12
-
 
 @dataclass(frozen=True)
 class PoolHistoryQualityReport:
@@ -34,6 +30,12 @@ class PoolHistoryQualityReport:
     monotonic_blocks: bool
     token_order_valid: bool
     sqrt_price_mismatch_count: int
+    legacy_amount_ratio_price_count: int
+    unexplained_price_mismatch_count: int
+    stored_price_model_counts: dict[str, int]
+    legacy_amount_ratio_first_block: int | None
+    legacy_amount_ratio_last_block: int | None
+    sqrt_mid_first_block: int | None
     missing_active_liquidity_swaps: int
     coverage_days: float
 
@@ -55,6 +57,12 @@ def analyze_pool_history(csv_path: Path, pool: str) -> PoolHistoryQualityReport:
     duplicate_events = 0
     token_order_valid = True
     sqrt_price_mismatch_count = 0
+    legacy_amount_ratio_price_count = 0
+    unexplained_price_mismatch_count = 0
+    stored_price_model_counts: Counter[str] = Counter()
+    legacy_amount_ratio_first_block: int | None = None
+    legacy_amount_ratio_last_block: int | None = None
+    sqrt_mid_first_block: int | None = None
     missing_active_liquidity_swaps = 0
 
     with csv_path.open(newline="") as handle:
@@ -94,11 +102,20 @@ def analyze_pool_history(csv_path: Path, pool: str) -> PoolHistoryQualityReport:
             if event_type == "swap" and _missing_active_liquidity(row):
                 missing_active_liquidity_swaps += 1
 
-            sqrt_price_x96 = int(row["sqrt_price_x96"])
-            observed_price = float(row["cngn_usd_price"])
-            inferred_price = _infer_v4_cngn_price_from_state(row, sqrt_price_x96)
-            if not _price_matches(observed_price, inferred_price):
+            price_semantics = classify_pool_price_row(row)
+            stored_price_model_counts[price_semantics.stored_price_model] += 1
+            if price_semantics.stored_price_model != "sqrt_mid":
                 sqrt_price_mismatch_count += 1
+            if price_semantics.stored_price_model == "swap_amount_ratio":
+                legacy_amount_ratio_price_count += 1
+                if legacy_amount_ratio_first_block is None:
+                    legacy_amount_ratio_first_block = block_number
+                legacy_amount_ratio_last_block = block_number
+            elif price_semantics.stored_price_model == "sqrt_mid" and event_type == "swap":
+                if sqrt_mid_first_block is None:
+                    sqrt_mid_first_block = block_number
+            elif price_semantics.stored_price_model == "unexplained":
+                unexplained_price_mismatch_count += 1
 
     coverage_days = 0.0
     if first_time is not None and last_time is not None:
@@ -116,6 +133,12 @@ def analyze_pool_history(csv_path: Path, pool: str) -> PoolHistoryQualityReport:
         monotonic_blocks=monotonic_blocks,
         token_order_valid=token_order_valid,
         sqrt_price_mismatch_count=sqrt_price_mismatch_count,
+        legacy_amount_ratio_price_count=legacy_amount_ratio_price_count,
+        unexplained_price_mismatch_count=unexplained_price_mismatch_count,
+        stored_price_model_counts=dict(stored_price_model_counts),
+        legacy_amount_ratio_first_block=legacy_amount_ratio_first_block,
+        legacy_amount_ratio_last_block=legacy_amount_ratio_last_block,
+        sqrt_mid_first_block=sqrt_mid_first_block,
         missing_active_liquidity_swaps=missing_active_liquidity_swaps,
         coverage_days=coverage_days,
     )
@@ -127,19 +150,44 @@ def render_pool_history_quality_markdown(report: PoolHistoryQualityReport) -> st
         "",
         "| pool | rows | first_block | last_block | monotonic_blocks | "
         "token_order_valid | duplicate_events | sqrt_price_mismatch_count | "
+        "legacy_amount_ratio_price_count | unexplained_price_mismatch_count | "
         "missing_active_liquidity_swaps | coverage_days |",
-        "|---|---:|---:|---:|---|---|---:|---:|---:|---:|",
+        "|---|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|",
         f"| {report.pool} | {report.row_count} | {_format_optional_int(report.first_block)} | "
         f"{_format_optional_int(report.last_block)} | {report.monotonic_blocks} | "
         f"{report.token_order_valid} | {report.duplicate_events} | "
         f"{report.sqrt_price_mismatch_count} | "
+        f"{report.legacy_amount_ratio_price_count} | "
+        f"{report.unexplained_price_mismatch_count} | "
         f"{report.missing_active_liquidity_swaps} | {report.coverage_days:.6f} |",
         "",
-        "## Event Counts",
+        "## Stored Price Models",
         "",
-        "| event_type | count |",
+        "| stored_price_model | count |",
         "|---|---:|",
     ]
+    for model, count in sorted(report.stored_price_model_counts.items()):
+        lines.append(f"| {model} | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Stored Price Model Boundaries",
+            "",
+            f"Legacy amount-ratio first block: {_format_optional_int(report.legacy_amount_ratio_first_block)}",
+            f"Legacy amount-ratio last block: {_format_optional_int(report.legacy_amount_ratio_last_block)}",
+            f"First sqrt-mid stored swap block: {_format_optional_int(report.sqrt_mid_first_block)}",
+            "",
+        ]
+    )
+    lines.extend(
+        [
+            "",
+            "## Event Counts",
+            "",
+            "| event_type | count |",
+            "|---|---:|",
+        ]
+    )
     for event_type, count in sorted(report.event_counts.items()):
         lines.append(f"| {event_type} | {count} |")
     return "\n".join(lines).rstrip() + "\n"
@@ -148,14 +196,6 @@ def render_pool_history_quality_markdown(report: PoolHistoryQualityReport) -> st
 def _missing_active_liquidity(row: dict[str, str]) -> bool:
     raw = row["active_liquidity"].strip()
     return raw == "" or int(raw) <= 0
-
-
-def _price_matches(observed: float, inferred: float) -> bool:
-    difference = abs(observed - inferred)
-    return difference <= max(
-        _PRICE_ABS_TOLERANCE,
-        _PRICE_REL_TOLERANCE * max(abs(observed), abs(inferred)),
-    )
 
 
 def _format_optional_int(value: int | None) -> str:
@@ -171,11 +211,14 @@ def _main() -> None:
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
-    markdown = render_pool_history_quality_markdown(
-        analyze_pool_history(args.csv, args.pool)
-    )
+    report = analyze_pool_history(args.csv, args.pool)
+    markdown = render_pool_history_quality_markdown(report)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(markdown)
+    if report.unexplained_price_mismatch_count:
+        raise SystemExit(
+            f"unexplained stored price mismatches: {report.unexplained_price_mismatch_count}"
+        )
 
 
 if __name__ == "__main__":

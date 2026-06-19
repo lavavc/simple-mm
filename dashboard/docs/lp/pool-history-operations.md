@@ -10,6 +10,11 @@ The updater runs Base and BSC sequentially, resumes after the last durable
 checkpoint, retries transient RPC failures, and validates each CSV before
 moving to the next pool.
 
+The active research data model is broader than the raw pool CSVs. See
+`autoresearch/data-methodology-refactor.md` for the planned DEX pool snapshot
+bridge, paper-faithful LP lifecycle ledger, event-time price reconstruction,
+and derived episode features.
+
 ## Manual update
 
 Update both pools to each chain's latest block:
@@ -62,3 +67,21 @@ launchctl bootout "gui/$(id -u)/com.cngn.pool-history-update"
 
 If a day is missed, the next run catches up from the checkpoint rather than
 limiting itself to a calendar-day slice.
+
+## Research Methodology Guardrails
+
+Pool CSV updates must remain append-only and auditable. Derived research data
+should be built from the CSVs or a sidecar ledger rather than replacing raw
+rows in place.
+
+Before serious LP or Fair Value runs, verify:
+
+- each pool has expected token order and cNGN/USD inversion
+- `sqrt_price_x96` is the canonical marginal pool price source
+- raw CSV `cngn_usd_price` is classified as `sqrt_mid`, `swap_amount_ratio`, or `unexplained`
+- `unexplained` stored-price rows are zero before derived imports or backtests
+- swap rows have canonical signed cNGN flow fields
+- `price_snapshots` contains `uni-base_pool` and `uni-bsc_pool` rows for DEX premium features
+- liquidity-operation prices are reconstructed by event order, not block-end state
+- causal cone feature tables report as-of source ages and missingness
+- calendar stress slices are available alongside swap-count walk-forward windows

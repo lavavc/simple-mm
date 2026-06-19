@@ -9,7 +9,7 @@ import sqlite3
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from decimal import Decimal, localcontext
+from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
 
@@ -17,8 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backtester.clmm_math import sqrt_price_x96_to_native_price
 from backtester.pool_features import derive_swap_flow
+from backtester.pool_price_semantics import (
+    classify_pool_price_row,
+    fee_adjusted_bid_ask,
+)
 from engine.types import PriceQuote
 
 
@@ -118,15 +121,14 @@ def _quote_from_row(
         raise ValueError("sqrt_price_x96 must be positive")
 
     fee_rate = Decimal(str(row["fee_rate"]))
-    fee_multiplier = Decimal("1") - fee_rate
-    if fee_multiplier <= 0 or fee_rate < 0:
-        raise ValueError("fee_rate must be at least 0 and less than 1")
+    price_semantics = classify_pool_price_row(row)
+    if price_semantics.stored_price_model == "unexplained":
+        raise ValueError(
+            "stored cngn_usd_price matches neither sqrt-derived price nor swap amount ratio"
+        )
 
-    mid = _raw_sqrt_mid(row, sqrt_price_x96)
-    with localcontext() as context:
-        context.prec = 60
-        bid = mid * fee_multiplier
-        ask = mid / fee_multiplier
+    mid = price_semantics.raw_sqrt_mid
+    bid, ask = fee_adjusted_bid_ask(mid, fee_rate)
 
     quote = PriceQuote(
         source=source,
@@ -142,6 +144,8 @@ def _quote_from_row(
         "chain": row["chain"],
         "event_type": row["event_type"],
         "fee_rate": str(fee_rate),
+        "fee_adjusted_ask": str(ask),
+        "fee_adjusted_bid": str(bid),
         "gas_included": False,
         "hooks_included": False,
         "log_index": int(row["log_index"]),
@@ -153,39 +157,19 @@ def _quote_from_row(
         "signed_cngn_amount": str(swap_flow.signed_cngn_amount),
         "signed_usd_notional": str(swap_flow.signed_usd_notional),
         "sqrt_price_x96": str(sqrt_price_x96),
+        "stored_cngn_usd_price": str(price_semantics.stored_cngn_usd_price),
+        "stored_price_model": price_semantics.stored_price_model,
+        "amount_ratio_price": (
+            str(price_semantics.amount_ratio_price)
+            if price_semantics.amount_ratio_price is not None
+            else None
+        ),
         "tick": int(row["tick"]),
         "tick_crossing_included": False,
         "tx_hash": row["tx_hash"],
         "cngn_flow_direction": swap_flow.cngn_flow_direction,
     }
     return quote, metadata
-
-
-def _raw_sqrt_mid(row: dict[str, str], sqrt_price_x96: int) -> Decimal:
-    chain = row["chain"].strip()
-    token0_symbol = row["token0_symbol"].strip()
-    token1_symbol = row["token1_symbol"].strip()
-    token0_decimals = _token_decimals(token0_symbol, chain)
-    token1_decimals = _token_decimals(token1_symbol, chain)
-    invert_price = token1_symbol.upper() == "CNGN"
-    native = sqrt_price_x96_to_native_price(sqrt_price_x96, token0_decimals, token1_decimals)
-    if native <= 0:
-        raise ValueError("sqrt-derived mid must be positive")
-    if invert_price:
-        with localcontext() as context:
-            context.prec = 60
-            return Decimal("1") / native
-    return native
-
-
-def _token_decimals(symbol: str, chain: str) -> int:
-    normalized_symbol = symbol.strip().upper()
-    normalized_chain = chain.strip().lower()
-    if normalized_symbol in {"CNGN", "USDC"}:
-        return 6
-    if normalized_symbol == "USDT":
-        return 18 if normalized_chain in {"bsc", "bnb"} else 6
-    raise ValueError(f"Cannot infer decimals for token symbol {symbol!r} on chain {chain!r}")
 
 
 def _block_time_ms(value: str) -> int:

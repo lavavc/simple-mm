@@ -38,6 +38,9 @@ def test_quality_report_counts_events_and_blocks(tmp_path: Path) -> None:
     assert report.duplicate_events == 0
     assert report.monotonic_blocks is True
     assert report.token_order_valid is True
+    assert report.stored_price_model_counts == {"sqrt_mid": 2}
+    assert report.legacy_amount_ratio_price_count == 0
+    assert report.unexplained_price_mismatch_count == 0
     assert report.coverage_days == pytest.approx(1 / 1440)
 
 
@@ -60,7 +63,35 @@ def test_quality_report_flags_duplicate_nonmonotonic_token_and_price_anomalies(
     assert report.duplicate_events == 1
     assert report.monotonic_blocks is False
     assert report.sqrt_price_mismatch_count == 1
+    assert report.unexplained_price_mismatch_count == 1
     assert report.token_order_valid is False
+
+
+def test_quality_report_classifies_legacy_amount_ratio_price_without_unexplained_alert(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pool.csv"
+    _write_rows(
+        csv_path,
+        [
+            "2026-01-01T00:00:00+00:00,base,0xpool,swap,0xlegacy,1,10,"
+            "79228162514264337593543950336,0,100,0.0015,-1000,998.5,998.5,0.9985,cNGN,USDC\n",
+            "2026-01-01T00:01:00+00:00,base,0xpool,swap,0xsqrt,2,11,"
+            "79228162514264337593543950336,0,100,0.0015,-1000,998.5,998.5,1,cNGN,USDC\n",
+        ],
+    )
+
+    report = analyze_pool_history(csv_path, "uni-base")
+
+    assert report.sqrt_price_mismatch_count == 1
+    assert report.legacy_amount_ratio_price_count == 1
+    assert report.unexplained_price_mismatch_count == 0
+    assert report.stored_price_model_counts == {
+        "sqrt_mid": 1,
+        "swap_amount_ratio": 1,
+    }
+    assert report.legacy_amount_ratio_last_block == 10
+    assert report.sqrt_mid_first_block == 11
 
 
 def test_quality_report_counts_swaps_missing_active_liquidity(
@@ -123,4 +154,5 @@ def test_cli_writes_markdown_report(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     markdown = out_path.read_text()
     assert "# Pool History Quality Report" in markdown
-    assert "| uni-base | 1 | 10 | 10 | True | True | 0 | 0 | 0 |" in markdown
+    assert "| uni-base | 1 | 10 | 10 | True | True | 0 | 0 | 0 | 0 | 0 |" in markdown
+    assert "| sqrt_mid | 1 |" in markdown

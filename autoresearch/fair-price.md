@@ -27,6 +27,8 @@ Implemented:
 
 Current data caveat: existing Quidax captures have mostly flat prices. They validate plumbing and feed quality, not estimator quality.
 
+DEX context caveat: the markout exporter expects previous-or-equal `uni-base_pool` and `uni-bsc_pool` rows in `price_snapshots`. Those rows must come from the pool-history bridge described in `autoresearch/data-methodology-refactor.md`; Quidax and Bybit capture jobs do not create them.
+
 ## Primary Label
 
 Use future CEX executable value, currently Quidax depth-walk value at the tested size:
@@ -45,6 +47,35 @@ Do not label against DEX mid, blended price, Bybit P2P, or Blockradar.
 4. Side-specific labels beat a symmetric midpoint for rebalancing.
 5. Book imbalance, OWA, and microprice improve short-run direction hit rate.
 6. DEX premium explains LP rebalance outcomes but must not replace CEX labels.
+7. DEX premium cone percentiles explain LP outcomes conditionally, but should not improve CEX executable-label prediction enough to become a label proxy.
+8. Fair Value estimator improvements should be stress-conditioned; improvements that appear only through unstable global parameter jumps should not be promoted.
+
+## DEX Pool Context Requirements
+
+Before testing DEX premium hypotheses, import pool-history swap prices into `price_snapshots` as:
+
+- `uni-base_pool`
+- `uni-bsc_pool`
+
+Each imported row should use sqrt-derived cNGN/USD as `mid`, fee-adjusted infinitesimal executable prices as `bid` and `ask`, and include block number, transaction hash, log index, active liquidity, fee rate, quote model, signed cNGN flow fields, `stored_cngn_usd_price`, and `stored_price_model` in metadata. The importer must be idempotent, must reject unexplained stored-price rows, and must not rewrite CEX labels.
+
+The DEX quote convention is:
+
+- `mid = sqrt_mid`
+- `bid = sqrt_mid * (1 - fee_rate)`
+- `ask = sqrt_mid / (1 - fee_rate)`
+
+These DEX bid/ask values include pool fee only. They do not include price impact, gas, routing, hooks, or tick crossing.
+
+## Cone and As-Of Feature Requirements
+
+Fair Value research should consume causal cone features only through as-of joins:
+
+- CEX book imbalance and pressure features with source age
+- DEX premium cone percentile with DEX source age
+- pool liquidity, volume, and flow cone percentiles with pool source age
+
+Every markout export should report missing counts and max-age statistics for CEX labels, DEX context, and pool-derived features. If DEX or pool features are stale beyond the configured max age, bucket-level conclusions should be reported as unavailable rather than silently backfilled.
 
 ## Standard Workflow
 
@@ -101,6 +132,7 @@ Before changing `ExecutablePriceCalculator` or route sizing:
 - validation buckets must remain stable out of sample
 - side-specific errors must improve for the relevant execution direction
 - Quidax execution latency must support the chosen markout horizon
+- parameter-cone and stress-bucket improvements must survive out-of-sample validation
+- estimator parameters must be stable across neighboring windows unless a measured regime shift explains the jump
 
 Archive detail: `autoresearch/archive/fair_price_autoresearch.md` and `autoresearch/archive/FAIR_PRICE_PROGRESS.md`.
-

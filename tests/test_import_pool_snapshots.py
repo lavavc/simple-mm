@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -39,9 +40,55 @@ def test_import_pool_snapshots_upserts_dex_rows(tmp_path: Path):
     assert '"tx_hash": "0x1"' in metadata
     parsed_metadata = json.loads(metadata)
     assert parsed_metadata["raw_sqrt_mid"] == "1"
+    assert parsed_metadata["fee_adjusted_bid"] == "0.9985"
+    assert Decimal(parsed_metadata["fee_adjusted_ask"]) == pytest.approx(
+        Decimal("1") / Decimal("0.9985")
+    )
     assert parsed_metadata["fee_rate"] == "0.0015"
     assert parsed_metadata["quote_model"] == "dex_fee_adjusted_sqrt"
     assert parsed_metadata["price_impact_included"] is False
+    assert parsed_metadata["stored_cngn_usd_price"] == "1"
+    assert parsed_metadata["stored_price_model"] == "sqrt_mid"
+
+
+def test_import_pool_snapshots_uses_sqrt_mid_when_legacy_price_column_is_amount_ratio(
+    tmp_path: Path,
+):
+    db = tmp_path / "cngn.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(SCHEMA_SQL)
+    csv_path = tmp_path / "pool.csv"
+    csv_path.write_text(
+        "block_time,chain,pool_id,event_type,tx_hash,log_index,block_number,sqrt_price_x96,tick,active_liquidity,fee_rate,amount0,amount1,amount_usd,cngn_usd_price,token0_symbol,token1_symbol\n"
+        "2026-01-01T00:00:00+00:00,base,0xpool,swap,0x1,7,10,79228162514264337593543950336,0,100,0.0015,-1000,998.5,998.5,0.9985,cNGN,USDC\n"
+    )
+
+    import_pool_snapshots(db, csv_path, "uni-base")
+
+    with sqlite3.connect(db) as conn:
+        mid, metadata = conn.execute(
+            "select mid, metadata_json from price_snapshots"
+        ).fetchone()
+    parsed_metadata = json.loads(metadata)
+    assert mid == pytest.approx(1.0)
+    assert parsed_metadata["raw_sqrt_mid"] == "1"
+    assert parsed_metadata["stored_cngn_usd_price"] == "0.9985"
+    assert parsed_metadata["amount_ratio_price"] == "0.9985"
+    assert parsed_metadata["stored_price_model"] == "swap_amount_ratio"
+
+
+def test_import_pool_snapshots_rejects_unexplained_stored_price(tmp_path: Path):
+    db = tmp_path / "cngn.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(SCHEMA_SQL)
+    csv_path = tmp_path / "pool.csv"
+    csv_path.write_text(
+        "block_time,chain,pool_id,event_type,tx_hash,log_index,block_number,sqrt_price_x96,tick,active_liquidity,fee_rate,amount0,amount1,amount_usd,cngn_usd_price,token0_symbol,token1_symbol\n"
+        "2026-01-01T00:00:00+00:00,base,0xpool,swap,0x1,7,10,79228162514264337593543950336,0,100,0.0015,-1000,998.5,998.5,2,cNGN,USDC\n"
+    )
+
+    with pytest.raises(ValueError, match="stored cngn_usd_price"):
+        import_pool_snapshots(db, csv_path, "uni-base")
 
 
 def test_import_pool_snapshots_sequences_rows_in_same_source_second(tmp_path: Path):
