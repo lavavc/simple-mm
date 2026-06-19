@@ -10,7 +10,7 @@ import structlog
 from eth_abi import encode  # type: ignore[attr-defined]
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
-from web3.middleware import geth_poa_middleware # type: ignore[attr-defined]
+from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import BlockData, Nonce, TxParams, TxReceipt, Wei
 
 from engine.types import Position, PriceQuote, TxResult
@@ -187,7 +187,7 @@ class BaseV4DexAdapter(VenueAdapter):
 
         self.w3 = Web3(Web3.HTTPProvider(config.rpc_url))
         if config.chain_id in (56, 97):
-            self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+            self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
         self.lp_account = self.w3.eth.account.from_key(lp_private_key)
         self.trade_account = self.w3.eth.account.from_key(trade_private_key)
