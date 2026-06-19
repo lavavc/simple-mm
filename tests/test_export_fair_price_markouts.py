@@ -299,6 +299,14 @@ def test_export_fair_price_markouts_writes_pool_feature_quality_json(
                     1.1,
                     json.dumps({"capture_type": "ticker_depth"}),
                 ),
+                (
+                    "quidax",
+                    30_000,
+                    1.2,
+                    1.2,
+                    1.2,
+                    json.dumps({"capture_type": "ticker_depth"}),
+                ),
             ],
         )
     feature_csv = tmp_path / "uni_base_features.csv"
@@ -306,6 +314,7 @@ def test_export_fair_price_markouts_writes_pool_feature_quality_json(
         "timestamp_ms,pool,dex_premium_cone_pct,swap_flow_imbalance_cone_pct,"
         "active_liquidity_cone_pct\n"
         "9000,uni-base,0.90,0.80,0.10\n"
+        "19000,uni-base,,0.40,0.20\n"
     )
     out_csv = tmp_path / "markouts.csv"
     quality_out = tmp_path / "quality.json"
@@ -336,8 +345,40 @@ def test_export_fair_price_markouts_writes_pool_feature_quality_json(
     assert result.returncode == 0, result.stderr
     quality = json.loads(quality_out.read_text())
     assert quality["feature_max_age_seconds"] == 900
-    assert quality["missing_feature_counts"] == {"uni-base": 0}
+    assert quality["missing_feature_counts"] == {"uni-base": 1}
     assert quality["median_feature_age_ms"] == {"uni-base": 1000}
     assert quality["max_feature_age_ms"] == {"uni-base": 1000}
-    assert quality["pool_features"]["uni-base"]["missing_rows"] == 0
+    assert quality["pool_features"]["uni-base"]["observed_rows"] == 1
+    assert quality["pool_features"]["uni-base"]["missing_rows"] == 1
     assert quality["pool_features"]["uni-base"]["max_age_ms"] == 1000
+
+
+def test_export_fair_price_markouts_rejects_nonfinite_feature_max_age(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "cngn.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL)
+    out_csv = tmp_path / "markouts.csv"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts/export_fair_price_markouts.py"
+            ),
+            "--db",
+            str(db_path),
+            "--out",
+            str(out_csv),
+            "--feature-max-age-seconds",
+            "NaN",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--feature-max-age-seconds must be finite" in result.stderr

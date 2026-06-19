@@ -668,7 +668,12 @@ def _pool_feature_quality_report(
     for pool in _ordered_pools(pool_feature_pools):
         prefix = _pool_prefix(pool)
         age_field = f"{prefix}_feature_age_ms"
-        ages = [int(row[age_field]) for row in rows if row.get(age_field, "") != ""]
+        ages = [
+            int(row[age_field])
+            for row in rows
+            if row.get(age_field, "") != ""
+            and _row_has_complete_pool_features(row, prefix)
+        ]
         missing_rows = len(rows) - len(ages)
         median_age = _median_number(sorted(ages)) if ages else None
         max_age = max(ages) if ages else None
@@ -692,6 +697,10 @@ def _pool_feature_quality_report(
         "max_feature_age_ms": max_feature_age_ms,
         "pool_features": pool_features,
     }
+
+
+def _row_has_complete_pool_features(row: dict[str, str], prefix: str) -> bool:
+    return all(row.get(f"{prefix}_{field}", "") != "" for field in POOL_FEATURE_FIELDS)
 
 
 def _median_number(values: list[int]) -> int | float:
@@ -773,6 +782,8 @@ async def _main() -> None:
     target_usd = Decimal(str(args.target_usd))
     if target_usd <= 0:
         raise ValueError("--target-usd must be positive")
+    if not args.feature_max_age_seconds.is_finite():
+        raise ValueError("--feature-max-age-seconds must be finite")
     if args.feature_max_age_seconds < 0:
         raise ValueError("--feature-max-age-seconds must be nonnegative")
     feature_max_age_ms = int(args.feature_max_age_seconds * Decimal("1000"))
