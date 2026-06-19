@@ -16,9 +16,20 @@ Bybit's P2P market is the primary NGN/USD reference rate. Raw listings contain m
 
 The result is the rate the largest cohort of reputable mid-market merchants agree on. This is the primary input that determines the NGN leg of the blended price.
 
+Each persisted Bybit snapshot also carries capture metadata in
+`price_snapshots.metadata_json`: raw ad counts, reputable/filter survivor
+counts, median price, filtered depth, depth proxy, and filter thresholds. This
+metadata is for research and diagnostics; Bybit remains a reference feed, not an
+executable venue.
+
 **Quidax order book — REST polling**
 
 The Quidax CEX API is polled on a short interval (`price_update_interval`, default 10s) for the full order book depth on the cNGN/USDT pair. The raw bids and asks are stored in memory and passed directly into the signal layer. Market data hits the public depth endpoint; the configured Quidax API key is used only for authenticated trading and subaccount balance/order calls.
+
+The periodic price job persists the ticker quote plus depth capture metadata in
+`price_snapshots.metadata_json`: native cNGN-per-USDT ticker fields, top book
+levels, top-N bid/ask depth, and native spread bps. This is the first data
+surface for CEX-led 10-600 second fair-price markouts.
 
 **Uniswap V4 pools (Base + BSC) — WebSocket**
 

@@ -14,7 +14,6 @@ from engine.db.connection import SQLiteConnectionManager
 from engine.db.repository import DatabaseRepository
 from engine.types import (
     ArbitrageHistoryEvent,
-    ArbitrageHistoryWalletSnapshot,
     ArbitrageOpportunity,
     DexArbOpportunity,
     PriceQuote,
@@ -91,6 +90,38 @@ class TestPriceSourceFiltering:
 
         prices = await db.prices.get_recent_prices_for_source("uni-base_pool", limit=10)
         assert prices == [Decimal("0.000601"), Decimal("0.000602"), Decimal("0.000604")]
+
+    @pytest.mark.asyncio
+    async def test_price_window_returns_capture_metadata(self, db):
+        """Research markouts need the raw feed metadata attached to each quote row."""
+        now = int(time.time() * 1000)
+        metadata = {
+            "capture_type": "ticker_depth",
+            "depth": {"bid_depth_usdt": "5", "ask_depth_usdt": "2"},
+        }
+        await db.prices.insert_price_snapshot(
+            PriceQuote(
+                source="quidax",
+                timestamp=now,
+                bid=Decimal("0.000700"),
+                ask=Decimal("0.000702"),
+                mid=Decimal("0.000701"),
+            ),
+            metadata=metadata,
+        )
+
+        rows = await db.prices.get_price_snapshots_in_window(now - 1, now + 1)
+
+        assert rows == [
+            {
+                "timestamp": now,
+                "source": "quidax",
+                "bid": 0.0007,
+                "ask": 0.000702,
+                "mid": 0.000701,
+                "metadata": metadata,
+            }
+        ]
 
 
 # =============================================================================

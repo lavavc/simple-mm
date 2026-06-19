@@ -8,10 +8,10 @@ from typing import Callable, cast
 
 import structlog
 
-from engine.types import CexAnchorSource
 from engine.market.venue_prices import VenuePrice
 from engine.scheduler.context import SchedulerContext
 from engine.scheduler.types import SchedulerState
+from engine.types import CexAnchorSource
 from engine.venues.base import SyncOrderLadderVenue
 
 logger = structlog.get_logger()
@@ -64,7 +64,10 @@ class MarketJobs:
                     }
                 )
                 if price.quote:
-                    await self.context.price_store.insert_price_snapshot(price.quote)
+                    await self.context.price_store.insert_price_snapshot(
+                        price.quote,
+                        metadata=price.metadata,
+                    )
 
             self.context.broadcast({"type": "venue_prices", "data": prices_data})
             valid_count = sum(1 for price in venue_prices.values() if price.is_valid)
@@ -165,7 +168,7 @@ class MarketJobs:
         return await self.context.price_aggregator.fetch_all()
 
     async def sync_blockradar_rates(self) -> None:
-        from engine.venues.wallet.blockradar import BlockradarAdapter, _ROUTES
+        from engine.venues.wallet.blockradar import _ROUTES, BlockradarAdapter
 
         blockradar = self.context.venues.get("blockradar")
         if not isinstance(blockradar, BlockradarAdapter) or not blockradar._current_rates_usd:

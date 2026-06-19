@@ -71,7 +71,10 @@ async def get_price_history(
     to_ts: int | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    query = "SELECT source, timestamp_ms, bid, ask, mid, metadata_json FROM price_snapshots WHERE 1=1"
+    query = (
+        "SELECT source, timestamp_ms, bid, ask, mid, metadata_json "
+        "FROM price_snapshots WHERE 1=1"
+    )
     params: list[Any] = []
     if from_ts is not None:
         query += " AND timestamp_ms >= ?"
@@ -106,7 +109,7 @@ async def get_price_snapshots_in_window(
     limit: int = 5000,
 ) -> list[dict[str, Any]]:
     query = (
-        "SELECT timestamp_ms, source, bid, ask, mid "
+        "SELECT timestamp_ms, source, bid, ask, mid, metadata_json "
         "FROM price_snapshots WHERE timestamp_ms >= ? AND timestamp_ms <= ?"
     )
     params: list[Any] = [from_ts, to_ts]
@@ -124,6 +127,7 @@ async def get_price_snapshots_in_window(
             "bid": row["bid"],
             "ask": row["ask"],
             "mid": row["mid"],
+            "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else None,
         }
         for row in rows
     ]

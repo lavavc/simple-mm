@@ -16,8 +16,8 @@ import httpx
 import structlog
 
 from engine.config import settings
-from engine.types import PriceQuote
 from engine.market.dex_volume import get_pool_volume_24h_usd
+from engine.types import PriceQuote
 
 if TYPE_CHECKING:
     from engine.venues.base import VenueAdapter
@@ -36,6 +36,7 @@ class VenuePriceSource(ABC):
     name: str
     pair: str  # e.g. "USDT/NGN", "cNGN/USDC"
     volume_24h_usd: Optional[Decimal] = None  # Set during fetch_price(); used for VWAP weighting
+    latest_metadata: dict[str, Any] | None = None
 
     @abstractmethod
     async def fetch_price(self) -> Optional[PriceQuote]:
@@ -61,6 +62,19 @@ class P2PAd:
     completion_rate: float
     avg_release_time: int
     is_online: bool
+    available_quantity: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class P2PAggregation:
+    """Filtered P2P side diagnostics used for quote metadata."""
+
+    price: Decimal
+    raw_count: int
+    reputable_count: int
+    filtered_count: int
+    median: Decimal
+    filtered_depth_usdt: Decimal
 
 
 @dataclass
@@ -72,7 +86,8 @@ class BybitConfig:
     max_avg_release_time: int = 900  # 15 minutes
     max_deviation_from_median: float = 0.02  # 2%
     cache_seconds: int = 60
-    depth_utilization: float = 0.05   # Fraction of total listed depth treated as effective trading activity
+    # Fraction of total listed depth treated as effective trading activity.
+    depth_utilization: float = 0.05
     depth_cache_seconds: int = 300    # Depth is stable; refresh every 5 minutes
 
 
@@ -93,6 +108,7 @@ class BybitP2PPriceSource(VenuePriceSource):
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: Optional[tuple[PriceQuote, float]] = None
         self._depth_cache_time: float = 0
+        self.latest_metadata = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -120,12 +136,14 @@ class BybitP2PPriceSource(VenuePriceSource):
                 logger.warning("bybit_insufficient_ads")
                 return None
 
-            ask = self._filter_and_aggregate(buy_ads)
-            bid = self._filter_and_aggregate(sell_ads)
+            ask_result = self._aggregate_ads(buy_ads)
+            bid_result = self._aggregate_ads(sell_ads)
 
-            if ask is None or bid is None:
+            if ask_result is None or bid_result is None:
                 return None
 
+            ask = ask_result.price
+            bid = bid_result.price
             mid = (bid + ask) / 2
             quote = PriceQuote(
                 source="bybit_p2p",
@@ -142,6 +160,26 @@ class BybitP2PPriceSource(VenuePriceSource):
                 if depth is not None:
                     self.volume_24h_usd = depth
                 self._depth_cache_time = time.time()
+
+            self.latest_metadata = {
+                "capture_type": "p2p_order_ads",
+                "venue": self.name,
+                "pair": self.pair,
+                "bid_source_api_side": "sell",
+                "ask_source_api_side": "buy",
+                "bid": self._p2p_aggregation_metadata(bid_result),
+                "ask": self._p2p_aggregation_metadata(ask_result),
+                "depth_proxy_usdt": str(self.volume_24h_usd)
+                if self.volume_24h_usd is not None
+                else None,
+                "filters": {
+                    "min_completed_orders": self.config.min_completed_orders,
+                    "min_completion_rate": self.config.min_completion_rate,
+                    "max_avg_release_time": self.config.max_avg_release_time,
+                    "max_deviation_from_median": self.config.max_deviation_from_median,
+                    "depth_utilization": self.config.depth_utilization,
+                },
+            }
 
             logger.info(
                 "bybit_price_fetched",
@@ -228,6 +266,11 @@ class BybitP2PPriceSource(VenuePriceSource):
                         completion_rate=float(item.get("recentExecuteRate", 0)),
                         avg_release_time=int(item.get("avgReleaseTime", 0)),
                         is_online=item.get("isOnline", False),
+                        available_quantity=(
+                            Decimal(str(item["lastQuantity"]))
+                            if item.get("lastQuantity") is not None
+                            else None
+                        ),
                     )
                 )
             return ads
@@ -238,6 +281,13 @@ class BybitP2PPriceSource(VenuePriceSource):
 
     def _filter_and_aggregate(self, ads: list[P2PAd]) -> Optional[Decimal]:
         """Apply fraud filtering and return the modal price."""
+        result = self._aggregate_ads(ads)
+        if result is None:
+            return None
+        return result.price
+
+    def _aggregate_ads(self, ads: list[P2PAd]) -> Optional[P2PAggregation]:
+        """Apply fraud filtering and return quote plus diagnostics."""
         reputable = [
             ad
             for ad in ads
@@ -263,12 +313,91 @@ class BybitP2PPriceSource(VenuePriceSource):
         # Mode: round to nearest integer NGN to cluster equivalent prices
         counts = Counter(int(ad.price.to_integral_value()) for ad in filtered)
         mode_ngn = counts.most_common(1)[0][0]
-        return Decimal(str(mode_ngn))
+        depth_values = (
+            ad.available_quantity
+            if ad.available_quantity is not None
+            else Decimal("0")
+            for ad in filtered
+        )
+        filtered_depth_usdt = sum(depth_values, Decimal("0"))
+        return P2PAggregation(
+            price=Decimal(str(mode_ngn)),
+            raw_count=len(ads),
+            reputable_count=len(reputable),
+            filtered_count=len(filtered),
+            median=median,
+            filtered_depth_usdt=filtered_depth_usdt,
+        )
+
+    @staticmethod
+    def _p2p_aggregation_metadata(result: P2PAggregation) -> dict[str, Any]:
+        return {
+            "price": str(result.price),
+            "raw_count": result.raw_count,
+            "reputable_count": result.reputable_count,
+            "filtered_count": result.filtered_count,
+            "median": str(result.median),
+            "filtered_depth_usdt": str(result.filtered_depth_usdt),
+        }
 
 
 # =============================================================================
 # Quidax (public API)
 # =============================================================================
+
+
+def _parse_quidax_book_side(rows: Any, top_levels: int) -> list[dict[str, str]]:
+    levels: list[dict[str, str]] = []
+    if not isinstance(rows, list):
+        return levels
+
+    for row in rows[:top_levels]:
+        if not isinstance(row, list | tuple) or len(row) < 2:
+            continue
+        price = Decimal(str(row[0]))
+        amount = Decimal(str(row[1]))
+        if price <= 0 or amount < 0:
+            continue
+        levels.append({"price": str(price), "amount": str(amount)})
+    return levels
+
+
+def _notional_usdt(levels: list[dict[str, str]]) -> Decimal:
+    return sum((Decimal(level["amount"]) for level in levels), Decimal("0"))
+
+
+def _notional_cngn(levels: list[dict[str, str]]) -> Decimal:
+    return sum(
+        (Decimal(level["price"]) * Decimal(level["amount"]) for level in levels),
+        Decimal("0"),
+    )
+
+
+def _build_quidax_depth_metadata(depth_data: dict[str, Any], top_levels: int) -> dict[str, Any]:
+    bids = _parse_quidax_book_side(depth_data.get("bids", []), top_levels)
+    asks = _parse_quidax_book_side(depth_data.get("asks", []), top_levels)
+
+    best_bid = Decimal(bids[0]["price"]) if bids else None
+    best_ask = Decimal(asks[0]["price"]) if asks else None
+    spread_bps: int | None = None
+    if best_bid is not None and best_ask is not None:
+        native_mid = (best_bid + best_ask) / Decimal("2")
+        if native_mid > 0:
+            spread_bps = int((best_ask - best_bid) / native_mid * Decimal("10000"))
+
+    return {
+        "depth_limit": top_levels,
+        "timestamp_ms": depth_data.get("timestamp"),
+        "bid_levels": bids,
+        "ask_levels": asks,
+        "best_bid_cngn_per_usdt": str(best_bid) if best_bid is not None else None,
+        "best_ask_cngn_per_usdt": str(best_ask) if best_ask is not None else None,
+        "spread_bps_native": spread_bps,
+        "bid_depth_usdt": str(_notional_usdt(bids)),
+        "ask_depth_usdt": str(_notional_usdt(asks)),
+        "bid_depth_cngn": str(_notional_cngn(bids)),
+        "ask_depth_cngn": str(_notional_cngn(asks)),
+    }
 
 
 @dataclass
@@ -278,6 +407,7 @@ class QuidaxConfig:
     base_url: str = "https://openapi.quidax.io/exchange-open-api/api/v1"
     pair: str = "usdtcngn"  # Active Quidax market: USDT=base, cNGN=quote
     cache_seconds: int = 30
+    depth_limit: int = 20
 
 
 class QuidaxPriceSource(VenuePriceSource):
@@ -295,6 +425,7 @@ class QuidaxPriceSource(VenuePriceSource):
         self.config = config or QuidaxConfig()
         self._client: Optional[httpx.AsyncClient] = None
         self._cache: Optional[tuple[PriceQuote, float]] = None
+        self.latest_metadata = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -369,7 +500,22 @@ class QuidaxPriceSource(VenuePriceSource):
             self._cache = (quote, time.time())
 
             vol = ticker.get("vol")
-            self.volume_24h_usd = Decimal(str(vol)) if vol else None
+            self.volume_24h_usd = Decimal(str(vol)) if vol is not None else None
+            self.latest_metadata = {
+                "capture_type": "ticker_depth",
+                "venue": self.name,
+                "pair": self.pair,
+                "venue_pair": self.config.pair,
+                "ticker": {
+                    "buy_cngn_per_usdt": str(buy_cngn_per_usdt),
+                    "sell_cngn_per_usdt": str(sell_cngn_per_usdt),
+                    "last_cngn_per_usdt": str(last_cngn_per_usdt),
+                    "vol": str(self.volume_24h_usd)
+                    if self.volume_24h_usd is not None
+                    else None,
+                },
+                "depth": await self._fetch_depth_metadata(client),
+            }
 
             logger.info(
                 "quidax_price_fetched",
@@ -384,6 +530,25 @@ class QuidaxPriceSource(VenuePriceSource):
         except Exception as e:
             logger.error("quidax_fetch_failed", error=str(e))
             return None
+
+    async def _fetch_depth_metadata(self, client: httpx.AsyncClient) -> dict[str, Any]:
+        try:
+            response = await client.get(
+                f"{self.config.base_url}/markets/{self.config.pair}/depth",
+                params={"limit": self.config.depth_limit},
+                headers={"accept": "application/json"},
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") != "success":
+                return {"error": data.get("message", "quidax depth status not success")}
+            payload = data.get("data", {})
+            if not isinstance(payload, dict):
+                return {"error": "quidax depth data is not an object"}
+            return _build_quidax_depth_metadata(payload, self.config.depth_limit)
+        except Exception as exc:
+            logger.warning("quidax_depth_metadata_fetch_failed", error=str(exc))
+            return {"error": str(exc)}
 
 
 # =============================================================================
@@ -427,7 +592,7 @@ class BlockradarPriceSource(VenuePriceSource):
 class DexAdapterPriceSource(VenuePriceSource):
     """Wraps the global simulator cache as a zero-latency price source.
 
-    Instead of making redundant RPC calls, this source instantly pulls the 
+    Instead of making redundant RPC calls, this source instantly pulls the
     most recent mathematical `sqrtPriceX96` from the Arbitrage WebSocket Listener.
     """
 
@@ -442,7 +607,7 @@ class DexAdapterPriceSource(VenuePriceSource):
         self.pool_address = pool_address
 
     async def fetch_price(self) -> Optional[PriceQuote]:
-        from engine.market.pool_state import get_cached_pool_state, Q96
+        from engine.market.pool_state import Q96, get_cached_pool_state
 
         sqrt_p, _, _, _ = get_cached_pool_state(self.pool_address)
 
@@ -485,6 +650,7 @@ class VenuePrice:
     error: Optional[str] = None
     fetched_at: float = field(default_factory=time.time)
     volume_24h_usd: Optional[Decimal] = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -548,6 +714,7 @@ class VenuePriceAggregator:
                 quote=quote,
                 error=None if quote else "No price returned",
                 volume_24h_usd=source.volume_24h_usd,
+                metadata=source.latest_metadata,
             )
         except Exception as e:
             return VenuePrice(
@@ -590,9 +757,9 @@ def create_venue_aggregator(
 
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
-        
-    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+    from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
     sources.append(
         DexAdapterPriceSource(

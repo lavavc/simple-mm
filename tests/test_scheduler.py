@@ -7,7 +7,6 @@ WS listener provides pool-state updates so the periodic recalc is only
 a fallback when a connection is down.
 """
 
-import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -15,10 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from engine.scheduler import TradingScheduler, SchedulerConfig
-from engine.types import CexParams
-from tests.fakes import FakeDexAdapter
-
+from engine.market.venue_prices import VenuePrice
+from engine.scheduler import SchedulerConfig, TradingScheduler
+from engine.types import CexParams, PriceQuote
 
 # =============================================================================
 # Helpers
@@ -206,6 +204,31 @@ class TestWsHealthGate:
 
 
 class TestCexSyncFallback:
+    @pytest.mark.asyncio
+    async def test_update_price_persists_capture_metadata(self):
+        quote = PriceQuote(
+            source="quidax",
+            timestamp=1_700_000_000_000,
+            bid=Decimal("0.000700"),
+            ask=Decimal("0.000702"),
+            mid=Decimal("0.000701"),
+        )
+        metadata = {"capture_type": "ticker_depth", "depth": {"bid_depth_usdt": "5"}}
+        price = VenuePrice(
+            venue="quidax",
+            pair="cNGN/USDT",
+            quote=quote,
+            metadata=metadata,
+        )
+        db = MockDB()
+        sched = _build_scheduler({}, [], db)
+        sched.state.trading_enabled = False
+        sched.context.price_aggregator.fetch_all = AsyncMock(return_value={"quidax": price})
+
+        await sched.market_jobs.update_price()
+
+        db.insert_price_snapshot.assert_awaited_once_with(quote, metadata=metadata)
+
     @pytest.mark.asyncio
     async def test_sync_cex_orders_falls_back_to_main_quidax_when_lp_is_missing(self):
         """The ladder should still sync when only the main Quidax venue exists."""

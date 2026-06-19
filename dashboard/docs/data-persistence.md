@@ -29,6 +29,12 @@ This split matters operationally too: most subsystems now depend on narrow store
 
 For LP specifically, the `actions` table is the canonical audit surface. Ratio-prep swaps, mints, removals, manual withdraws, and shutdown unwinds are stored there with structured metadata so the LP package does not need a second bespoke audit trail.
 
+For market research, `price_snapshots.metadata_json` stores raw capture context
+alongside the normalized bid/ask/mid. Quidax rows include ticker and depth
+summaries; Bybit P2P rows include ad-filter diagnostics and depth proxy fields.
+The normalized columns remain the stable chart/TWAP surface, while metadata is
+the raw evidence surface for fair-price markouts.
+
 ## Downtime
 
 [Historical Data] ----gap---- [New Data]
