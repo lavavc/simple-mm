@@ -43,16 +43,20 @@ OUTPUT_FIELDS = [
     "dex_premium_bps",
     "dex_premium_cone_pct",
     "active_liquidity_cone_pct",
-    "active_share_cone_pct",
+    "active_liquidity_running_max_share",
+    "active_liquidity_running_max_share_cone_pct",
+    "active_liquidity_running_max_denominator",
     "swap_flow_imbalance",
     "swap_flow_imbalance_cone_pct",
-    "fee_apr",
-    "fee_apr_cone_pct",
+    "fee_intensity_proxy",
+    "fee_intensity_proxy_cone_pct",
+    "fee_intensity_proxy_model",
     "volume_cone_pct",
     "source_age_ms",
 ]
 SUPPORTED_POOLS = ("uni-base", "uni-bsc")
 SECONDS_PER_YEAR = Decimal("31536000")
+FEE_INTENSITY_PROXY_MODEL = "fee_rate_volume_over_active_liquidity_annualized_proxy"
 
 
 @dataclass(frozen=True)
@@ -81,9 +85,9 @@ def build_pool_feature_table(
         "realized_volatility": [],
         "dex_premium_bps": [],
         "active_liquidity": [],
-        "active_share": [],
+        "active_liquidity_running_max_share": [],
         "swap_flow_imbalance": [],
-        "fee_apr": [],
+        "fee_intensity_proxy": [],
         "volume": [],
     }
     last_swap_price: Decimal | None = None
@@ -177,11 +181,18 @@ def _build_feature_row(
         else None
     )
     active_liquidity = Decimal(str(row["active_liquidity"]))
-    active_share = _active_share(active_liquidity, max_active_liquidity)
+    active_liquidity_running_max_denominator = _active_liquidity_running_max_denominator(
+        active_liquidity,
+        max_active_liquidity,
+    )
+    active_liquidity_running_max_share = _active_liquidity_running_max_share(
+        active_liquidity,
+        active_liquidity_running_max_denominator,
+    )
     swap_flow = derive_swap_flow(row)
     swap_flow_imbalance = _swap_flow_imbalance(swap_flow.signed_usd_notional)
     volume = Decimal(str(row["amount_usd"])).copy_abs()
-    fee_apr = _fee_apr(
+    fee_intensity_proxy = _fee_intensity_proxy(
         fee_rate=fee_rate,
         volume=volume,
         active_liquidity=active_liquidity,
@@ -193,9 +204,9 @@ def _build_feature_row(
         "realized_volatility": realized_volatility,
         "dex_premium_bps": dex_premium_bps,
         "active_liquidity": active_liquidity,
-        "active_share": active_share,
+        "active_liquidity_running_max_share": active_liquidity_running_max_share,
         "swap_flow_imbalance": swap_flow_imbalance,
-        "fee_apr": fee_apr,
+        "fee_intensity_proxy": fee_intensity_proxy,
         "volume": volume,
     }
     cone_percentiles = {
@@ -228,17 +239,24 @@ def _build_feature_row(
             "active_liquidity_cone_pct": _format_optional_decimal(
                 cone_percentiles["active_liquidity"],
             ),
-            "active_share_cone_pct": _format_optional_decimal(
-                cone_percentiles["active_share"],
+            "active_liquidity_running_max_share": _format_optional_decimal(
+                active_liquidity_running_max_share,
+            ),
+            "active_liquidity_running_max_share_cone_pct": _format_optional_decimal(
+                cone_percentiles["active_liquidity_running_max_share"],
+            ),
+            "active_liquidity_running_max_denominator": _format_optional_decimal(
+                active_liquidity_running_max_denominator,
             ),
             "swap_flow_imbalance": _format_decimal(swap_flow_imbalance),
             "swap_flow_imbalance_cone_pct": _format_optional_decimal(
                 cone_percentiles["swap_flow_imbalance"],
             ),
-            "fee_apr": _format_optional_decimal(fee_apr),
-            "fee_apr_cone_pct": _format_optional_decimal(
-                cone_percentiles["fee_apr"],
+            "fee_intensity_proxy": _format_optional_decimal(fee_intensity_proxy),
+            "fee_intensity_proxy_cone_pct": _format_optional_decimal(
+                cone_percentiles["fee_intensity_proxy"],
             ),
+            "fee_intensity_proxy_model": FEE_INTENSITY_PROXY_MODEL,
             "volume_cone_pct": _format_optional_decimal(cone_percentiles["volume"]),
             "source_age_ms": str(fair_value.age_ms) if fair_value is not None else "",
         },
@@ -309,7 +327,7 @@ def _dex_premium_bps(pool_mid: Decimal, fair_mid: Decimal | None) -> Decimal | N
         return ((pool_mid / fair_mid) - Decimal("1")) * Decimal("10000")
 
 
-def _active_share(
+def _active_liquidity_running_max_denominator(
     active_liquidity: Decimal,
     max_active_liquidity: Decimal | None,
 ) -> Decimal | None:
@@ -319,6 +337,17 @@ def _active_share(
     if max_active_liquidity is not None and max_active_liquidity > denominator:
         denominator = max_active_liquidity
     if denominator <= 0:
+        return None
+    return denominator
+
+
+def _active_liquidity_running_max_share(
+    active_liquidity: Decimal,
+    denominator: Decimal | None,
+) -> Decimal | None:
+    if active_liquidity < 0:
+        raise ValueError("active_liquidity must not be negative")
+    if denominator is None:
         return None
     with localcontext() as context:
         context.prec = 60
@@ -332,7 +361,7 @@ def _swap_flow_imbalance(signed_usd_notional: Decimal) -> Decimal:
     return signed_usd_notional / volume
 
 
-def _fee_apr(
+def _fee_intensity_proxy(
     *,
     fee_rate: Decimal,
     volume: Decimal,

@@ -293,7 +293,7 @@ Expected: PASS.
 - Produces: `AsOfValue(timestamp_ms: int, value: object, age_ms: int)`.
 - Produces: `causal_percentile(prior_values: Sequence[Decimal], current: Decimal) -> Decimal | None`.
 - Produces CLI: `python scripts/build_pool_feature_table.py --pool uni-base --csv data/uni_base_pool_history.csv --db data/cngn.db --out data/derived/uni_base_pool_features.csv`.
-- Output fields include `timestamp_ms`, `pool`, `block_number`, `tx_hash`, `log_index`, `raw_sqrt_mid`, `fee_adjusted_bid`, `fee_adjusted_ask`, `stored_cngn_usd_price`, `stored_price_model`, `realized_volatility`, `realized_volatility_cone_pct`, `dex_premium_bps`, `dex_premium_cone_pct`, `active_liquidity_cone_pct`, `active_share_cone_pct`, `swap_flow_imbalance`, `swap_flow_imbalance_cone_pct`, `fee_apr`, `fee_apr_cone_pct`, `volume_cone_pct`, `source_age_ms`.
+- Output fields include `timestamp_ms`, `pool`, `block_number`, `tx_hash`, `log_index`, `raw_sqrt_mid`, `fee_adjusted_bid`, `fee_adjusted_ask`, `stored_cngn_usd_price`, `stored_price_model`, `realized_volatility`, `realized_volatility_cone_pct`, `dex_premium_bps`, `dex_premium_cone_pct`, `active_liquidity_cone_pct`, `active_liquidity_running_max_share`, `active_liquidity_running_max_share_cone_pct`, `active_liquidity_running_max_denominator`, `swap_flow_imbalance`, `swap_flow_imbalance_cone_pct`, `fee_intensity_proxy`, `fee_intensity_proxy_cone_pct`, `fee_intensity_proxy_model`, `volume_cone_pct`, `source_age_ms`.
 
 - [ ] **Step 1: Write failing causal percentile test**
 

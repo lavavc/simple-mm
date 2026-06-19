@@ -27,11 +27,14 @@ EXPECTED_FIELDS = [
     "dex_premium_bps",
     "dex_premium_cone_pct",
     "active_liquidity_cone_pct",
-    "active_share_cone_pct",
+    "active_liquidity_running_max_share",
+    "active_liquidity_running_max_share_cone_pct",
+    "active_liquidity_running_max_denominator",
     "swap_flow_imbalance",
     "swap_flow_imbalance_cone_pct",
-    "fee_apr",
-    "fee_apr_cone_pct",
+    "fee_intensity_proxy",
+    "fee_intensity_proxy_cone_pct",
+    "fee_intensity_proxy_model",
     "volume_cone_pct",
     "source_age_ms",
 ]
@@ -93,11 +96,57 @@ def test_build_pool_feature_table_writes_causal_swap_features(tmp_path: Path):
     assert rows[1]["dex_premium_bps"] == "10000"
     assert rows[1]["dex_premium_cone_pct"] == "1.0000000000"
     assert rows[1]["active_liquidity_cone_pct"] == "0.0000000000"
-    assert rows[1]["active_share_cone_pct"] == "0.0000000000"
+    assert rows[1]["active_liquidity_running_max_share"] == "0.5"
+    assert rows[1]["active_liquidity_running_max_share_cone_pct"] == "0.0000000000"
+    assert rows[1]["active_liquidity_running_max_denominator"] == "100"
     assert rows[1]["swap_flow_imbalance"] == "-1"
     assert rows[1]["swap_flow_imbalance_cone_pct"] == "0.0000000000"
+    assert rows[1]["fee_intensity_proxy"] != ""
+    assert rows[1]["fee_intensity_proxy_cone_pct"] == ""
+    assert rows[1]["fee_intensity_proxy_model"] == (
+        "fee_rate_volume_over_active_liquidity_annualized_proxy"
+    )
     assert rows[1]["volume_cone_pct"] == "0.0000000000"
     assert rows[1]["source_age_ms"] == "500"
+
+
+def test_build_pool_feature_table_blanks_asof_fields_when_no_fair_source(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "cngn.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL)
+    csv_path = tmp_path / "pool.csv"
+    out_path = tmp_path / "derived" / "features.csv"
+    _write_pool_csv(csv_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts/build_pool_feature_table.py",
+            ),
+            "--pool",
+            "uni-base",
+            "--csv",
+            str(csv_path),
+            "--db",
+            str(db_path),
+            "--out",
+            str(out_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    with out_path.open(newline="") as output_file:
+        rows = list(csv.DictReader(output_file))
+
+    assert rows[0]["dex_premium_bps"] == ""
+    assert rows[0]["source_age_ms"] == ""
 
 
 def _write_price_snapshot_db(db_path: Path) -> None:
