@@ -229,20 +229,16 @@ def build_stability_report(
         row for row in window_rows if _clean_value(row.get("skipped_reason", "")) == ""
     ]
     selected_rows = _selected_window_rows(eligible_rows)
-    opportunity_rows = _selected_window_rows(
-        [
-            row
-            for row in eligible_rows
-            if _parse_decimal_field(row, "validation_total_transaction_cost") == 0
-        ]
-    )
-    full_costed_rows = _selected_window_rows(
-        [
-            row
-            for row in eligible_rows
-            if _parse_decimal_field(row, "validation_total_transaction_cost") != 0
-        ]
-    )
+    opportunity_rows = [
+        row
+        for row in selected_rows
+        if _parse_decimal_field(row, "validation_total_transaction_cost") == 0
+    ]
+    full_costed_rows = [
+        row
+        for row in selected_rows
+        if _parse_decimal_field(row, "validation_total_transaction_cost") != 0
+    ]
     jumps = parameter_jump_rows(
         selected_rows,
         feature_by_window,
@@ -565,7 +561,8 @@ def _window_for_timestamp(
     timestamp_ms: int,
 ) -> WindowBounds | None:
     for bound in bounds:
-        if bound.start_ms <= timestamp_ms <= bound.end_ms:
+        # Feature tables add a millisecond sequence to rows sharing a block_time second.
+        if bound.start_ms <= timestamp_ms <= bound.end_ms + 999:
             return bound
     return None
 

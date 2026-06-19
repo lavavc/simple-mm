@@ -223,17 +223,17 @@ def test_report_summarizes_selected_rows_not_candidate_grid() -> None:
     rows = [
         _window_row(
             window_index="1",
-            train_rank="2",
+            train_rank="1",
             validation_rank="1",
-            validation_net_return="0.90",
+            validation_net_return="0.01",
             validation_total_transaction_cost="3",
         ),
         _window_row(
             window_index="1",
-            train_rank="1",
+            train_rank="2",
             validation_rank="2",
-            validation_net_return="0.01",
-            validation_total_transaction_cost="3",
+            validation_net_return="0.90",
+            validation_total_transaction_cost="0",
         ),
         _window_row(
             window_index="2",
@@ -254,6 +254,7 @@ def test_report_summarizes_selected_rows_not_candidate_grid() -> None:
         regime_fields=["realized_volatility_cone_pct"],
     )
 
+    assert report.opportunity.rows == 0
     assert report.full_costed.rows == 2
     assert report.full_costed.mean_return_on_capital == Decimal("0.015")
 
@@ -280,6 +281,11 @@ def test_load_feature_by_window_includes_window_end_and_skips_blank_values(
                 "realized_volatility_cone_pct": "0.30",
                 "dex_premium_cone_pct": "",
             },
+            {
+                "timestamp_ms": "1767312000001",
+                "realized_volatility_cone_pct": "0.50",
+                "dex_premium_cone_pct": "",
+            },
         ],
     )
 
@@ -295,7 +301,7 @@ def test_load_feature_by_window_includes_window_end_and_skips_blank_values(
         regime_fields=["realized_volatility_cone_pct", "dex_premium_cone_pct"],
     )
 
-    assert feature_by_window == {1: {"realized_volatility_cone_pct": 0.2}}
+    assert feature_by_window == {1: {"realized_volatility_cone_pct": 0.3}}
 
 
 def test_parameter_jumps_skip_unavailable_regime_fields() -> None:
