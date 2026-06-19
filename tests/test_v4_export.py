@@ -346,6 +346,42 @@ class TestV4Export:
         )
         assert rows == []
 
+    def test_liquidity_tx_with_malformed_action_param_is_skipped(self):
+        tx = {
+            "input": _build_modify_input(bytes([_V4_LP_BURN_POSITION]), [b""]),
+            "hash": "0x" + "66" * 32,
+            "blockNumber": 123,
+        }
+        receipt = {"logs": []}
+
+        class _FakeCall:
+            def __init__(self, result):
+                self._result = result
+
+            def call(self, block_identifier=None):
+                return self._result
+
+        class _FakeFunctions:
+            def getSlot0(self, pool_id_bytes):
+                return _FakeCall((2**96, 0, 0, 1500))
+
+            def getLiquidity(self, pool_id_bytes):
+                return _FakeCall(1_000_000)
+
+        class _FakeStateView:
+            functions = _FakeFunctions()
+
+        rows = build_liquidity_rows_for_tx(
+            tx,
+            receipt,
+            1_700_000_000,
+            _FakeStateView(),
+            object(),
+            POOL_CONFIGS["uni-base"],
+            {},
+        )
+        assert rows == []
+
     def test_collect_emits_when_burn_token_id_resolves_to_target_pool(self):
         burn_param = encode(["uint256", "uint128", "uint128", "bytes"], [55, 0, 0, b""])
         take_pair_param = encode(

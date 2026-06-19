@@ -807,80 +807,83 @@ def build_liquidity_rows_for_tx(
     )
     tx_targets_pool = False
 
-    for action, raw in zip(actions, params):
-        action_code = action if isinstance(action, int) else action
-        if isinstance(action_code, bytes):
-            action_code = action_code[0]
-        if action_code == _V4_LP_MINT_POSITION:
-            pool_key, tick_lower, tick_upper, liquidity_delta, amount0_max, amount1_max = _decode_mint_param(raw)
-            if not _pool_key_matches(pool_key, config):
-                continue
-            tx_targets_pool = True
-            token_id = _find_minted_token_id(receipt, config.position_manager)
-            if token_id is not None:
-                token_state[token_id] = PositionTokenState(
-                    pool_id=config.pool_id,
-                    tick_lower=tick_lower,
-                    tick_upper=tick_upper,
-                    liquidity=liquidity_delta,
-                )
-        elif action_code in {_V4_LP_INCREASE_LIQUIDITY, _V4_LP_DECREASE_LIQUIDITY}:
-            token_id, liquidity_delta = _decode_increase_or_decrease_param(raw)
-            position = token_state.get(token_id)
-            if position is None:
-                position = _position_state_from_chain(token_id, position_manager, config, resolve_block)
-                if position is not None:
-                    token_state[token_id] = position
-            if position is None or position.pool_id != config.pool_id:
-                continue
-            tx_targets_pool = True
-            event_type = "mint" if action_code == _V4_LP_INCREASE_LIQUIDITY else "burn"
-            new_liquidity = position.liquidity + liquidity_delta if event_type == "mint" else max(position.liquidity - liquidity_delta, 0)
-            token_state[token_id] = PositionTokenState(
-                pool_id=position.pool_id,
-                tick_lower=position.tick_lower,
-                tick_upper=position.tick_upper,
-                liquidity=new_liquidity,
-            )
-        elif action_code == _V4_LP_BURN_POSITION:
-            token_id = _decode_burn_param(raw)
-            position = token_state.get(token_id)
-            if position is None:
-                position = _position_state_from_chain(token_id, position_manager, config, resolve_block)
-                if position is not None:
-                    token_state[token_id] = position
-            if position is not None and position.pool_id == config.pool_id:
+    try:
+        for action, raw in zip(actions, params):
+            action_code = action if isinstance(action, int) else action
+            if isinstance(action_code, bytes):
+                action_code = action_code[0]
+            if action_code == _V4_LP_MINT_POSITION:
+                pool_key, tick_lower, tick_upper, liquidity_delta, amount0_max, amount1_max = _decode_mint_param(raw)
+                if not _pool_key_matches(pool_key, config):
+                    continue
                 tx_targets_pool = True
-            token_state.pop(token_id, None)
-        elif action_code == _V4_LP_TAKE_PAIR:
-            if not tx_targets_pool:
-                continue
-            _currency0, _currency1, recipient = _decode_take_pair_param(raw)
-            amount0, amount1 = _extract_take_pair_amounts(receipt, recipient, config)
-            stable_amount, _ = _stable_and_cngn_amounts(amount0, amount1, config)
-            rows.append(
-                ExportRow(
-                    block_time=_datetime_from_block_ts(block_timestamp),
-                    chain=config.chain,
-                    pool_id=config.pool_id,
-                    event_type="collect",
-                    tx_hash=coerce_hex_str(tx["hash"]),
-                    log_index=int(receipt["logs"][-1]["logIndex"]) if receipt["logs"] else 0,
-                    block_number=block_number,
-                    sqrt_price_x96=sqrt_price_x96,
-                    tick=tick,
-                    active_liquidity=active_liquidity,
-                    fee_rate=config.fee_rate,
-                    amount0=float(amount0),
-                    amount1=float(amount1),
-                    amount_usd=float(stable_amount),
-                    cngn_usd_price=cngn_usd_price,
-                    token0_symbol=config.token0_symbol,
-                    token1_symbol=config.token1_symbol,
-                    event_source="position_manager_take_pair",
-                    recipient=recipient,
+                token_id = _find_minted_token_id(receipt, config.position_manager)
+                if token_id is not None:
+                    token_state[token_id] = PositionTokenState(
+                        pool_id=config.pool_id,
+                        tick_lower=tick_lower,
+                        tick_upper=tick_upper,
+                        liquidity=liquidity_delta,
+                    )
+            elif action_code in {_V4_LP_INCREASE_LIQUIDITY, _V4_LP_DECREASE_LIQUIDITY}:
+                token_id, liquidity_delta = _decode_increase_or_decrease_param(raw)
+                position = token_state.get(token_id)
+                if position is None:
+                    position = _position_state_from_chain(token_id, position_manager, config, resolve_block)
+                    if position is not None:
+                        token_state[token_id] = position
+                if position is None or position.pool_id != config.pool_id:
+                    continue
+                tx_targets_pool = True
+                event_type = "mint" if action_code == _V4_LP_INCREASE_LIQUIDITY else "burn"
+                new_liquidity = position.liquidity + liquidity_delta if event_type == "mint" else max(position.liquidity - liquidity_delta, 0)
+                token_state[token_id] = PositionTokenState(
+                    pool_id=position.pool_id,
+                    tick_lower=position.tick_lower,
+                    tick_upper=position.tick_upper,
+                    liquidity=new_liquidity,
                 )
-            )
+            elif action_code == _V4_LP_BURN_POSITION:
+                token_id = _decode_burn_param(raw)
+                position = token_state.get(token_id)
+                if position is None:
+                    position = _position_state_from_chain(token_id, position_manager, config, resolve_block)
+                    if position is not None:
+                        token_state[token_id] = position
+                if position is not None and position.pool_id == config.pool_id:
+                    tx_targets_pool = True
+                token_state.pop(token_id, None)
+            elif action_code == _V4_LP_TAKE_PAIR:
+                if not tx_targets_pool:
+                    continue
+                _currency0, _currency1, recipient = _decode_take_pair_param(raw)
+                amount0, amount1 = _extract_take_pair_amounts(receipt, recipient, config)
+                stable_amount, _ = _stable_and_cngn_amounts(amount0, amount1, config)
+                rows.append(
+                    ExportRow(
+                        block_time=_datetime_from_block_ts(block_timestamp),
+                        chain=config.chain,
+                        pool_id=config.pool_id,
+                        event_type="collect",
+                        tx_hash=coerce_hex_str(tx["hash"]),
+                        log_index=int(receipt["logs"][-1]["logIndex"]) if receipt["logs"] else 0,
+                        block_number=block_number,
+                        sqrt_price_x96=sqrt_price_x96,
+                        tick=tick,
+                        active_liquidity=active_liquidity,
+                        fee_rate=config.fee_rate,
+                        amount0=float(amount0),
+                        amount1=float(amount1),
+                        amount_usd=float(stable_amount),
+                        cngn_usd_price=cngn_usd_price,
+                        token0_symbol=config.token0_symbol,
+                        token1_symbol=config.token1_symbol,
+                        event_source="position_manager_take_pair",
+                        recipient=recipient,
+                    )
+                )
+    except DecodingError:
+        return []
     return rows
 
 
