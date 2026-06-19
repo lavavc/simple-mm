@@ -14,6 +14,7 @@ from typing import Sequence
 
 SECONDS_PER_YEAR = Decimal("31557600")
 SGHO_APY = Decimal("0.0425")
+REGIME_DIAGNOSTIC_SCOPE = "retrospective validation-window"
 
 REQUIRED_WINDOW_FIELDS = (
     "window_index",
@@ -74,8 +75,9 @@ class BacktestSectionSummary:
     total_transaction_cost: Decimal | None
     fee_cost_ratio: Decimal | None
     mean_apy: Decimal | None
-    sgho_excess_apy: Decimal | None
-    windows_above_sgho: int | None
+    mean_sgho_hurdle_return: Decimal | None
+    mean_sgho_excess_return: Decimal | None
+    windows_above_sgho_hurdle: int | None
     capacity_status: str
     capacity_valid_rows: int | None
     capacity_invalid_rows: int | None
@@ -89,6 +91,7 @@ class StabilityReport:
     sgho_apy: Decimal
     opportunity: BacktestSectionSummary
     full_costed: BacktestSectionSummary
+    regime_diagnostic_scope: str
     parameter_jumps: list[dict[str, object]]
     regime_delta_rows: list[dict[str, object]]
     unexplained_jump_count: int
@@ -151,6 +154,8 @@ def load_feature_by_window(
             if bound is None:
                 continue
             for field in regime_fields:
+                if _clean_value(row[field]) == "":
+                    continue
                 value = _parse_decimal(row[field], field)
                 feature_values[bound.window_index][field].append(value)
 
@@ -204,6 +209,7 @@ def parameter_jump_rows(
                     "max_regime_field": max_regime_field,
                     "max_regime_delta": max_regime_delta,
                     "unexplained_jump": max_regime_delta < min_regime_delta,
+                    "regime_diagnostic_scope": REGIME_DIAGNOSTIC_SCOPE,
                 }
             )
     return jumps
@@ -222,31 +228,36 @@ def build_stability_report(
     eligible_rows = [
         row for row in window_rows if _clean_value(row.get("skipped_reason", "")) == ""
     ]
-    opportunity_rows = [
-        row
-        for row in eligible_rows
-        if _parse_decimal_field(row, "validation_total_transaction_cost") == 0
-    ]
-    full_costed_rows = [
-        row
-        for row in eligible_rows
-        if _parse_decimal_field(row, "validation_total_transaction_cost") != 0
-    ]
+    selected_rows = _selected_window_rows(eligible_rows)
+    opportunity_rows = _selected_window_rows(
+        [
+            row
+            for row in eligible_rows
+            if _parse_decimal_field(row, "validation_total_transaction_cost") == 0
+        ]
+    )
+    full_costed_rows = _selected_window_rows(
+        [
+            row
+            for row in eligible_rows
+            if _parse_decimal_field(row, "validation_total_transaction_cost") != 0
+        ]
+    )
     jumps = parameter_jump_rows(
-        eligible_rows,
+        selected_rows,
         feature_by_window,
         list(parameter_fields),
         list(regime_fields),
         min_regime_delta,
     )
     regime_rows = _neighbor_regime_delta_rows(
-        eligible_rows,
+        selected_rows,
         feature_by_window,
         regime_fields=list(regime_fields),
     )
     return StabilityReport(
         total_rows=len(window_rows),
-        selected_window_count=len(_selected_window_rows(eligible_rows)),
+        selected_window_count=len(selected_rows),
         sgho_apy=sgho_apy,
         opportunity=_section_summary(
             "Opportunity Screen",
@@ -258,6 +269,7 @@ def build_stability_report(
             full_costed_rows,
             sgho_apy=sgho_apy,
         ),
+        regime_diagnostic_scope=REGIME_DIAGNOSTIC_SCOPE,
         parameter_jumps=jumps,
         regime_delta_rows=regime_rows,
         unexplained_jump_count=sum(1 for jump in jumps if jump["unexplained_jump"]),
@@ -280,6 +292,11 @@ def render_stability_markdown(report: StabilityReport) -> str:
         [
             "",
             "## Parameter Jump Stability",
+            "",
+            (
+                "Regime diagnostics are retrospective validation-window summaries; "
+                "use them for post-run stability audit, not ex-ante parameter selection."
+            ),
             "",
             f"Unexplained jump count: {report.unexplained_jump_count}",
             "",
@@ -339,8 +356,12 @@ def _section_lines(summary: BacktestSectionSummary) -> list[str]:
         f"| total_transaction_cost | {_format_decimal(summary.total_transaction_cost)} |",
         f"| fee_cost_ratio | {_format_decimal(summary.fee_cost_ratio)} |",
         f"| mean_apy | {_format_decimal(summary.mean_apy)} |",
-        f"| sgho_excess_apy | {_format_decimal(summary.sgho_excess_apy)} |",
-        f"| windows_above_sgho | {_format_optional_int(summary.windows_above_sgho)} |",
+        f"| mean_sgho_hurdle_return | {_format_decimal(summary.mean_sgho_hurdle_return)} |",
+        f"| mean_sgho_excess_return | {_format_decimal(summary.mean_sgho_excess_return)} |",
+        (
+            "| windows_above_sgho_hurdle | "
+            f"{_format_optional_int(summary.windows_above_sgho_hurdle)} |"
+        ),
         "",
         f"Capacity/share validity: {summary.capacity_status}",
     ]
@@ -373,8 +394,9 @@ def _section_summary(
             total_transaction_cost=None,
             fee_cost_ratio=None,
             mean_apy=None,
-            sgho_excess_apy=None,
-            windows_above_sgho=None,
+            mean_sgho_hurdle_return=None,
+            mean_sgho_excess_return=None,
+            windows_above_sgho_hurdle=None,
             capacity_status="not_available",
             capacity_valid_rows=None,
             capacity_invalid_rows=None,
@@ -398,6 +420,10 @@ def _section_summary(
         Decimal("0"),
     )
     apys = [_row_apy(row) for row in rows]
+    sgho_hurdles = [_row_sgho_hurdle_return(row, sgho_apy) for row in rows]
+    sgho_excess_returns = [
+        net_return - hurdle for net_return, hurdle in zip(returns, sgho_hurdles)
+    ]
     capacity = _capacity_summary(rows)
 
     return BacktestSectionSummary(
@@ -411,8 +437,11 @@ def _section_summary(
         total_transaction_cost=total_cost,
         fee_cost_ratio=(total_fees / total_cost if total_cost != 0 else None),
         mean_apy=_mean(apys),
-        sgho_excess_apy=_mean(apys) - sgho_apy,
-        windows_above_sgho=sum(1 for apy in apys if apy > sgho_apy),
+        mean_sgho_hurdle_return=_mean(sgho_hurdles),
+        mean_sgho_excess_return=_mean(sgho_excess_returns),
+        windows_above_sgho_hurdle=sum(
+            1 for net_return, hurdle in zip(returns, sgho_hurdles) if net_return > hurdle
+        ),
         capacity_status=capacity[0],
         capacity_valid_rows=capacity[1],
         capacity_invalid_rows=capacity[2],
@@ -464,6 +493,7 @@ def _neighbor_regime_delta_rows(
                     "to_window_index": current_index,
                     "regime_field": field,
                     "delta": delta,
+                    "regime_diagnostic_scope": REGIME_DIAGNOSTIC_SCOPE,
                 }
             )
     return rows
@@ -480,11 +510,13 @@ def _regime_deltas(
     current_features = _features_for_window(feature_by_window, current_index)
     deltas: dict[str, float] = {}
     for field in regime_fields:
-        if field not in previous_features:
-            raise ValueError(f"window {previous_index} is missing regime field {field}")
-        if field not in current_features:
-            raise ValueError(f"window {current_index} is missing regime field {field}")
+        if field not in previous_features or field not in current_features:
+            continue
         deltas[field] = abs(float(current_features[field]) - float(previous_features[field]))
+    if regime_fields and not deltas:
+        raise ValueError(
+            f"no common usable regime fields for windows {previous_index} and {current_index}"
+        )
     return deltas
 
 
@@ -533,7 +565,7 @@ def _window_for_timestamp(
     timestamp_ms: int,
 ) -> WindowBounds | None:
     for bound in bounds:
-        if bound.start_ms <= timestamp_ms < bound.end_ms:
+        if bound.start_ms <= timestamp_ms <= bound.end_ms:
             return bound
     return None
 
@@ -658,9 +690,7 @@ def _row_apy(row: dict[str, str]) -> Decimal:
     if "validation_apy" in row and _clean_value(row["validation_apy"]) != "":
         return _parse_decimal(row["validation_apy"], "validation_apy")
     net_return = _parse_decimal_field(row, "validation_net_return")
-    start_ms = _parse_timestamp_ms(row["window_start"])
-    end_ms = _parse_timestamp_ms(row["window_end"])
-    elapsed_seconds = Decimal(end_ms - start_ms) / Decimal("1000")
+    elapsed_seconds = _row_elapsed_seconds(row)
     if elapsed_seconds <= 0:
         raise ValueError("window_end must be after window_start")
     if net_return <= Decimal("-1"):
@@ -669,6 +699,20 @@ def _row_apy(row: dict[str, str]) -> Decimal:
     if exponent > 700:
         return Decimal("Infinity")
     return Decimal(str(math.expm1(exponent)))
+
+
+def _row_sgho_hurdle_return(row: dict[str, str], sgho_apy: Decimal) -> Decimal:
+    elapsed_seconds = _row_elapsed_seconds(row)
+    if elapsed_seconds <= 0:
+        raise ValueError("window_end must be after window_start")
+    exponent = float(elapsed_seconds / SECONDS_PER_YEAR) * math.log1p(float(sgho_apy))
+    return Decimal(str(math.expm1(exponent)))
+
+
+def _row_elapsed_seconds(row: dict[str, str]) -> Decimal:
+    start_ms = _parse_timestamp_ms(row["window_start"])
+    end_ms = _parse_timestamp_ms(row["window_end"])
+    return Decimal(end_ms - start_ms) / Decimal("1000")
 
 
 def _mean(values: Sequence[Decimal]) -> Decimal:
