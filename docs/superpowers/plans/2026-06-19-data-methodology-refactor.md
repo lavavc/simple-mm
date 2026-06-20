@@ -837,3 +837,4 @@ Expected: reports are written under `data/quality/` and derived CSVs are written
 - Normal path: fixture CSV -> quality report -> pool snapshot bridge -> feature table -> markout export -> stability report.
 - Failure path: malformed token order, duplicate tx/log, stale as-of feature, timestamp collision above 1000 rows per source second, missing receipt.
 - Integration edge: same-block liquidity event before swap must use prior price; liquidity event after swap must use same-block prior swap price.
+- Replay rebuild edge: use `scripts/replay_pool_history_prices.py` for local corrected research histories from completed CSVs. A full from-genesis RPC export is not the default rebuild path until the PositionManager candidate scan is optimized.

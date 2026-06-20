@@ -92,3 +92,37 @@ price; mint, burn, and collect rows inherit the most recent prior event-time
 price or a prior-block seed. This prevents same-block block-end lookahead from
 entering liquidity-operation price fields while preserving the existing CSV
 schema.
+
+To rebuild corrected research histories from already completed raw CSVs without
+new RPC calls:
+
+```bash
+PYTHONPATH=. python3 scripts/replay_pool_history_prices.py \
+  --input data/uni_base_pool_history.csv \
+  --output data/derived/uni_base_pool_history_replay.csv \
+  --pool uni-base
+
+PYTHONPATH=. python3 scripts/replay_pool_history_prices.py \
+  --input data/uni_bsc_pool_history.csv \
+  --output data/derived/uni_bsc_pool_history_replay.csv \
+  --pool uni-bsc
+```
+
+Then validate:
+
+```bash
+PYTHONPATH=. python3 scripts/report_pool_history_quality.py \
+  --csv data/derived/uni_base_pool_history_replay.csv \
+  --pool uni-base \
+  --out data/quality/uni_base_pool_history_replay.md
+
+PYTHONPATH=. python3 scripts/report_pool_history_quality.py \
+  --csv data/derived/uni_bsc_pool_history_replay.csv \
+  --pool uni-bsc \
+  --out data/quality/uni_bsc_pool_history_replay.md
+```
+
+Do not use a full from-genesis RPC export as the default replay rebuild path
+until the PositionManager scan is refactored. The current exporter is suitable
+for incremental catch-up, but a full rebuild has to scan the global
+PositionManager log stream per chunk and then fetch candidate transactions.
