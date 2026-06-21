@@ -256,6 +256,22 @@ This refactor does not make DEX prices Fair Value labels.
 
 It also does not prove that real LP population behavior transfers to our strategy. The paper-faithful ledger supports that hypothesis test; it does not assume the answer.
 
+## Non-Destructive Run Order
+
+1. Wait for any active pool exporters to finish; do not read partially appending CSVs for research outputs.
+2. Snapshot `data/uni_base_pool_history.csv` and `data/uni_bsc_pool_history.csv` into `data/snapshots/`.
+3. Run pool-history quality reports on those snapshots.
+4. Build replay-corrected pool histories under `data/derived/`.
+5. Import replayed DEX pool snapshots into `price_snapshots`.
+6. Build causal pool feature tables for Base and BSC.
+7. Export Fair Value markouts with pool feature CSVs joined as previous-or-equal context.
+8. Run regime-stability diagnostics on walk-forward outputs and feature tables.
+9. Export LP lifecycle ledgers once decoded PositionManager action inputs are available.
+10. Reconstruct paper LP episodes from ledger rows and join receipt sidecars for gas-adjusted views.
+
+Exact commands live in `dashboard/docs/lp/pool-history-operations.md` under
+`Research Methodology Guardrails`.
+
 ## Implementation Order
 
 1. Add pool-history validation and canonical swap-flow fields.

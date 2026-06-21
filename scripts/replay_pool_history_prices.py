@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from backtester.clmm_math import cngn_price_from_sqrt_price_x96
 from backtester.v4_event_replay import ReplayEvent, attach_event_time_state

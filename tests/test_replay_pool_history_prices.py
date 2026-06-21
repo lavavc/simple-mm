@@ -1,8 +1,13 @@
 import csv
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from scripts.replay_pool_history_prices import replay_pool_history_prices
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 FIELDNAMES = [
@@ -130,3 +135,52 @@ def test_replay_pool_history_prices_fails_when_liquidity_precedes_price_state(tm
 
     with pytest.raises(ValueError, match="no pool price state"):
         replay_pool_history_prices(input_path, output_path, "uni-base")
+
+
+def test_replay_pool_history_prices_cli_bootstraps_repo_imports(tmp_path):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    _write_rows(
+        input_path,
+        [
+            {
+                "block_time": "2026-01-01T00:00:00+00:00",
+                "chain": "base",
+                "pool_id": "0xpool",
+                "event_type": "initialize",
+                "tx_hash": "0x1",
+                "log_index": "1",
+                "block_number": "100",
+                "sqrt_price_x96": str(2**96),
+                "tick": "0",
+                "active_liquidity": "1000",
+                "fee_rate": "0.0015",
+                "amount0": "0.0",
+                "amount1": "0.0",
+                "amount_usd": "0.0",
+                "cngn_usd_price": "1.0",
+                "token0_symbol": "cNGN",
+                "token1_symbol": "USDC",
+            }
+        ],
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/replay_pool_history_prices.py",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--pool",
+            "uni-base",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert output_path.exists()

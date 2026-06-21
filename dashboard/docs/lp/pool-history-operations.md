@@ -86,6 +86,129 @@ Before serious LP or Fair Value runs, verify:
 - causal cone feature tables report as-of source ages and missingness
 - calendar stress slices are available alongside swap-count walk-forward windows
 
+### Non-Destructive Research Runbook
+
+Do not run these commands against a CSV while an updater is appending to it.
+Use completed snapshots or make fresh snapshots first:
+
+```bash
+mkdir -p data/snapshots data/quality data/derived
+
+cp data/uni_base_pool_history.csv \
+  data/snapshots/uni_base_pool_history_pre_replay_refactor.csv
+cp data/uni_bsc_pool_history.csv \
+  data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv
+```
+
+Run pool quality reports on the snapshots:
+
+```bash
+python3 scripts/report_pool_history_quality.py \
+  --csv data/snapshots/uni_base_pool_history_pre_replay_refactor.csv \
+  --pool uni-base \
+  --out data/quality/uni_base_pool_history_pre_replay_refactor.md
+
+python3 scripts/report_pool_history_quality.py \
+  --csv data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv \
+  --pool uni-bsc \
+  --out data/quality/uni_bsc_pool_history_pre_replay_refactor.md
+```
+
+Build replay-corrected pool histories from the snapshots:
+
+```bash
+python3 scripts/replay_pool_history_prices.py \
+  --input data/snapshots/uni_base_pool_history_pre_replay_refactor.csv \
+  --output data/derived/uni_base_pool_history_replay.csv \
+  --pool uni-base
+
+python3 scripts/replay_pool_history_prices.py \
+  --input data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv \
+  --output data/derived/uni_bsc_pool_history_replay.csv \
+  --pool uni-bsc
+```
+
+Import DEX pool context into `price_snapshots` and build causal pool feature
+tables:
+
+```bash
+python3 scripts/import_pool_snapshots.py \
+  --db data/cngn.db \
+  --csv data/derived/uni_base_pool_history_replay.csv \
+  --pool uni-base
+
+python3 scripts/import_pool_snapshots.py \
+  --db data/cngn.db \
+  --csv data/derived/uni_bsc_pool_history_replay.csv \
+  --pool uni-bsc
+
+python3 scripts/build_pool_feature_table.py \
+  --pool uni-base \
+  --csv data/derived/uni_base_pool_history_replay.csv \
+  --db data/cngn.db \
+  --out data/derived/uni_base_pool_features.csv
+
+python3 scripts/build_pool_feature_table.py \
+  --pool uni-bsc \
+  --csv data/derived/uni_bsc_pool_history_replay.csv \
+  --db data/cngn.db \
+  --out data/derived/uni_bsc_pool_features.csv
+```
+
+Export Fair Value markouts with pool features and then run regime-stability
+diagnostics:
+
+```bash
+python3 scripts/export_fair_price_markouts.py \
+  --db data/cngn.db \
+  --out data/derived/fair_price_markouts_with_pool_features.csv \
+  --pool-feature-csv uni-base=data/derived/uni_base_pool_features.csv \
+  --pool-feature-csv uni-bsc=data/derived/uni_bsc_pool_features.csv \
+  --quality-out data/quality/fair_price_markouts_with_pool_features.json
+
+python3 scripts/report_backtest_regime_stability.py \
+  --windows data/derived/backtest_walk_forward_windows.csv \
+  --features data/derived/uni_base_pool_features.csv \
+  --out data/quality/backtest_regime_stability.md
+```
+
+The LP lifecycle ledger exporter is currently fixture-backed until the full
+PositionManager RPC decoder is added. The executable fixture path is:
+
+```bash
+python3 scripts/export_v4_lp_ledger.py \
+  --pool uni-base \
+  --start-block 42926879 \
+  --end-block 47130126 \
+  --decoded-actions data/derived/uni_base_decoded_actions.json \
+  --ownership-events data/derived/uni_base_ownership_events.json \
+  --price-events data/derived/uni_base_price_events.json \
+  --out data/derived/uni_base_lp_ledger.csv
+
+python3 scripts/export_v4_lp_ledger.py \
+  --pool uni-bsc \
+  --start-block 84655203 \
+  --end-block 103315324 \
+  --decoded-actions data/derived/uni_bsc_decoded_actions.json \
+  --ownership-events data/derived/uni_bsc_ownership_events.json \
+  --price-events data/derived/uni_bsc_price_events.json \
+  --out data/derived/uni_bsc_lp_ledger.csv
+```
+
+After LP ledgers exist, export gas sidecars:
+
+```bash
+python3 scripts/export_tx_receipts.py \
+  --chain base \
+  --tx-csv data/derived/uni_base_lp_ledger.csv \
+  --out data/derived/uni_base_tx_receipts.csv
+
+python3 scripts/export_tx_receipts.py \
+  --chain bsc \
+  --tx-csv data/derived/uni_bsc_lp_ledger.csv \
+  --out data/derived/uni_bsc_tx_receipts.csv
+```
+
 The V4 exporter applies event-time price replay after decoding a chunk and
 before writing CSV rows. Swap and initialize rows keep their event-native pool
 price; mint, burn, and collect rows inherit the most recent prior event-time

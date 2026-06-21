@@ -795,7 +795,7 @@ fake Web3 client and do not hit network.
   7. Run stability diagnostics.
   8. Run LP ledger and paper episode reconstruction.
 
-- [ ] **Step 1: Add derived artifact README**
+- [x] **Step 1: Add derived artifact README**
 
 Create `data/derived/README.md` with exact filenames:
 
@@ -810,7 +810,7 @@ Create `data/derived/README.md` with exact filenames:
 - `uni_bsc_tx_receipts.csv`: gas sidecar for BSC LP lifecycle transactions.
 ```
 
-- [ ] **Step 2: Update docs**
+- [x] **Step 2: Update docs**
 
 Add the exact run commands to `dashboard/docs/lp/pool-history-operations.md` under `Research Methodology Guardrails`.
 
@@ -835,11 +835,24 @@ python -m pytest -q \
 
 Expected: PASS.
 
-- [ ] **Step 4: Run first read-only reports on a CSV snapshot**
+Verification note: The exact command currently runs 54 tests and then fails only
+on `tests/test_export_fair_price_markouts.py::test_load_price_snapshots_reads_metadata_from_sqlite`
+because this Python 3.12 environment does not have an active async pytest
+plugin (`pytest-asyncio` mark is unknown). The same non-network suite with that
+one plugin-gated test deselected passed: 57 passed, 1 deselected.
+
+- [x] **Step 4: Run first read-only reports on a CSV snapshot**
 
 Run against `data/snapshots/*_pre_replay_refactor.csv`, not active CSVs.
 
 Expected: reports are written under `data/quality/` and derived CSVs are written under `data/derived/`.
+
+Implementation note: Snapshot quality reports, replay-corrected CSVs, replay
+quality reports, and causal pool feature tables were regenerated from the
+snapshot inputs. Base replay produced 1,596 rows and 1,508 feature rows; BSC
+replay produced 3,119 rows and 3,105 feature rows. Replay quality reports show
+`unexplained_price_mismatch_count=0`, `duplicate_events=0`, and
+`monotonic_blocks=True` for both pools.
 
 ---
 
