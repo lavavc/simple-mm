@@ -9,7 +9,10 @@ from typing import Deque, Sequence
 
 from backtester.clmm_math import sqrt_price_x96_to_native_price, tick_to_sqrt_price_x96
 from backtester.v4_export import ExportPoolConfig, POOL_CONFIGS
-from backtester.v4_lp_ledger import LPLedgerRow
+from backtester.v4_lp_ledger import LPLedgerRow, OPENING_ATTRIBUTION_EXACT
+
+
+_EXACT_OPENING_ATTRIBUTION_STATUSES = {OPENING_ATTRIBUTION_EXACT, "fixture_exact"}
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,8 @@ def reconstruct_paper_episodes(rows: Sequence[LPLedgerRow]) -> list[PaperLPEpiso
         key = (pool, owner, tick_lower, tick_upper)
 
         if row.liquidity_delta > 0:
+            if row.amount_attribution_status not in _EXACT_OPENING_ATTRIBUTION_STATUSES:
+                continue
             open_lots.setdefault(key, deque()).append(_open_lot(row, pool, owner, tick_lower, tick_upper))
             continue
 
@@ -169,7 +174,7 @@ def _open_lot(
     tick_upper: int,
 ) -> _OpenLot:
     lower_price, upper_price = _price_bounds_for_row(row, tick_lower, tick_upper)
-    opening_capital = _capital_value(row, row.amount0, row.amount1)
+    opening_capital = _capital_value(row, row.amount0_actual, row.amount1_actual)
     return _OpenLot(
         pool=pool,
         lp_owner=owner,

@@ -16,17 +16,28 @@ from web3 import Web3
 from backtester.clmm_math import cngn_price_from_sqrt_price_x96
 from backtester.v4_event_replay import ReplayedEvent
 from backtester.v4_export import ExportPoolConfig, POOL_CONFIGS, V4_MODIFY_LIQUIDITY_TOPIC
+from engine.config import settings
 from engine.lp.types import (
     _V4_LP_BURN_POSITION,
     _V4_LP_DECREASE_LIQUIDITY,
     _V4_LP_INCREASE_LIQUIDITY,
     _V4_LP_MINT_POSITION,
+    _V4_LP_SETTLE_PAIR,
     _V4_LP_TAKE_PAIR,
 )
 from engine.web3_utils import coerce_hex_str
 
 
 TRANSFER_EVENT_TOPIC = coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex()).lower()
+OPENING_ATTRIBUTION_EXACT = "exact"
+OPENING_ATTRIBUTION_PENDING = "pending_receipt_attribution"
+OPENING_ATTRIBUTION_NOT_APPLICABLE = "not_applicable"
+OPENING_ATTRIBUTION_AMBIGUOUS_MULTIPLE = "ambiguous_multiple_add_actions"
+OPENING_ATTRIBUTION_AMBIGUOUS_MISSING_SETTLE = "ambiguous_missing_settle_pair"
+OPENING_ATTRIBUTION_AMBIGUOUS_NO_TRANSFER = "ambiguous_no_settlement_transfer"
+OPENING_ATTRIBUTION_SOURCE_TRANSFER = "erc20_transfer_to_settlement"
+OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS = "ambiguous"
+OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True)
@@ -52,6 +63,11 @@ class DecodedLiquidityAction:
     amount0_raw: str = ""
     amount1_raw: str = ""
     timestamp_ms: int | None = None
+    amount0_actual: Decimal | int | str | None = None
+    amount1_actual: Decimal | int | str | None = None
+    amount0_attribution_source: str = ""
+    amount1_attribution_source: str = ""
+    amount_attribution_status: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +108,11 @@ class LPLedgerRow:
     liquidity_after: int
     amount0: Decimal
     amount1: Decimal
+    amount0_actual: Decimal
+    amount1_actual: Decimal
+    amount0_attribution_source: str
+    amount1_attribution_source: str
+    amount_attribution_status: str
     amount0_raw: str
     amount1_raw: str
     collect_amount0: Decimal
@@ -158,19 +179,29 @@ def decode_liquidity_actions_for_tx(
     tx_targets_pool = False
     active_token_id: int | None = None
     pending_negative_index: int | None = None
+    tx_sender = _checksum_address_or_none(tx.get("from"))
+    add_action_indices: list[int] = []
+    add_action_allowed_senders: dict[int, set[str]] = {}
+    add_action_settle_pairs: dict[int, int] = {}
+    last_add_action_index: int | None = None
 
     try:
         for event_order, (action, raw) in enumerate(zip(actions, params)):
             action_code = _action_code(action)
+            settlement_candidate_index = (
+                last_add_action_index if action_code == _V4_LP_SETTLE_PAIR else None
+            )
+            if action_code != _V4_LP_SETTLE_PAIR:
+                last_add_action_index = None
             if action_code == _V4_LP_MINT_POSITION:
                 (
                     pool_key,
                     tick_lower,
                     tick_upper,
                     liquidity_delta,
-                    amount0_raw,
-                    amount1_raw,
-                    _recipient,
+                    _amount0_max,
+                    _amount1_max,
+                    recipient,
                 ) = _decode_mint_param(raw)
                 if not _pool_key_matches(pool_key, config):
                     continue
@@ -187,16 +218,22 @@ def decode_liquidity_actions_for_tx(
                     tick_lower=tick_lower,
                     tick_upper=tick_upper,
                     liquidity_delta=liquidity_delta,
-                    amount0_raw=amount0_raw,
-                    amount1_raw=amount1_raw,
+                    amount0_raw=0,
+                    amount1_raw=0,
                     collect_amount0=Decimal("0"),
                     collect_amount1=Decimal("0"),
                     block_time=block_time,
                     timestamp_ms=timestamp_ms,
                     tx_hash=tx_hash,
                     config=config,
+                    amount0_attribution_source=OPENING_ATTRIBUTION_PENDING,
+                    amount1_attribution_source=OPENING_ATTRIBUTION_PENDING,
+                    amount_attribution_status=OPENING_ATTRIBUTION_PENDING,
                 )
                 decoded_actions.append(action_row)
+                add_index = len(decoded_actions) - 1
+                add_action_indices.append(add_index)
+                add_action_allowed_senders[add_index] = _non_none_addresses(tx_sender, recipient)
                 token_state[token_id] = LedgerPositionState(
                     pool_id=config.pool_id,
                     tick_lower=tick_lower,
@@ -206,10 +243,11 @@ def decode_liquidity_actions_for_tx(
                 tx_targets_pool = True
                 active_token_id = token_id
                 pending_negative_index = None
+                last_add_action_index = add_index
                 continue
 
             if action_code in {_V4_LP_INCREASE_LIQUIDITY, _V4_LP_DECREASE_LIQUIDITY}:
-                token_id, liquidity_delta, amount0_raw, amount1_raw = _decode_increase_or_decrease_param(raw)
+                token_id, liquidity_delta, _amount0_max, _amount1_max = _decode_increase_or_decrease_param(raw)
                 position = token_state.get(token_id)
                 if position is None and position_resolver is not None:
                     position = position_resolver(token_id, max(block_number - 1, 0))
@@ -219,9 +257,17 @@ def decode_liquidity_actions_for_tx(
                     continue
                 event_type = "mint" if action_code == _V4_LP_INCREASE_LIQUIDITY else "burn"
                 signed_delta = liquidity_delta if event_type == "mint" else -liquidity_delta
-                amount0_for_action = amount0_raw if event_type == "mint" else 0
-                amount1_for_action = amount1_raw if event_type == "mint" else 0
                 log_index = _next_modify_log_index(modify_log_indices, receipt)
+                amount_source = (
+                    OPENING_ATTRIBUTION_PENDING
+                    if event_type == "mint"
+                    else OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE
+                )
+                amount_status = (
+                    OPENING_ATTRIBUTION_PENDING
+                    if event_type == "mint"
+                    else OPENING_ATTRIBUTION_NOT_APPLICABLE
+                )
                 action_row = _decoded_action(
                     action_type=event_type,
                     block_number=block_number,
@@ -231,16 +277,24 @@ def decode_liquidity_actions_for_tx(
                     tick_lower=position.tick_lower,
                     tick_upper=position.tick_upper,
                     liquidity_delta=signed_delta,
-                    amount0_raw=amount0_for_action,
-                    amount1_raw=amount1_for_action,
+                    amount0_raw=0,
+                    amount1_raw=0,
                     collect_amount0=Decimal("0"),
                     collect_amount1=Decimal("0"),
                     block_time=block_time,
                     timestamp_ms=timestamp_ms,
                     tx_hash=tx_hash,
                     config=config,
+                    amount0_attribution_source=amount_source,
+                    amount1_attribution_source=amount_source,
+                    amount_attribution_status=amount_status,
                 )
                 decoded_actions.append(action_row)
+                if event_type == "mint":
+                    add_index = len(decoded_actions) - 1
+                    add_action_indices.append(add_index)
+                    add_action_allowed_senders[add_index] = _non_none_addresses(tx_sender)
+                    last_add_action_index = add_index
                 token_state[token_id] = replace(
                     position,
                     liquidity_after=max(position.liquidity_after + signed_delta, 0),
@@ -248,6 +302,8 @@ def decode_liquidity_actions_for_tx(
                 tx_targets_pool = True
                 active_token_id = token_id
                 pending_negative_index = len(decoded_actions) - 1 if signed_delta < 0 else None
+                if event_type != "mint":
+                    last_add_action_index = None
                 continue
 
             if action_code == _V4_LP_BURN_POSITION:
@@ -279,10 +335,25 @@ def decode_liquidity_actions_for_tx(
                         timestamp_ms=timestamp_ms,
                         tx_hash=tx_hash,
                         config=config,
+                        amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
+                        amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
+                        amount_attribution_status=OPENING_ATTRIBUTION_NOT_APPLICABLE,
                     )
                     decoded_actions.append(action_row)
                     pending_negative_index = len(decoded_actions) - 1
                 token_state.pop(token_id, None)
+                last_add_action_index = None
+                continue
+
+            if action_code == _V4_LP_SETTLE_PAIR:
+                if settlement_candidate_index is None:
+                    continue
+                currency0, currency1 = _decode_settle_pair_param(raw)
+                if _settle_pair_matches(currency0, currency1, config):
+                    add_action_settle_pairs[settlement_candidate_index] = (
+                        add_action_settle_pairs.get(settlement_candidate_index, 0) + 1
+                    )
+                last_add_action_index = None
                 continue
 
             if action_code == _V4_LP_TAKE_PAIR:
@@ -320,11 +391,22 @@ def decode_liquidity_actions_for_tx(
                         timestamp_ms=timestamp_ms,
                         tx_hash=tx_hash,
                         config=config,
+                        amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
+                        amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
+                        amount_attribution_status=OPENING_ATTRIBUTION_NOT_APPLICABLE,
                     )
                 )
+                last_add_action_index = None
     except DecodingError:
         return []
-    return decoded_actions
+    return _apply_opening_amount_attribution(
+        decoded_actions,
+        add_action_indices,
+        add_action_allowed_senders,
+        add_action_settle_pairs,
+        receipt,
+        config,
+    )
 
 
 def build_lp_ledger_rows(
@@ -341,6 +423,19 @@ def build_lp_ledger_rows(
     rows: list[LPLedgerRow] = []
 
     for action in sorted(decoded_actions, key=_action_sort_key):
+        if (
+            action.amount0_actual is None
+            or action.amount1_actual is None
+            or not action.amount0_attribution_source
+            or not action.amount1_attribution_source
+            or not action.amount_attribution_status
+            or action.amount_attribution_status == OPENING_ATTRIBUTION_PENDING
+        ):
+            raise ValueError(
+                "missing finalized amount attribution for "
+                f"{action.action_type} token_id={action.token_id} at "
+                f"{action.block_number}:{action.log_index}:{action.event_order}"
+            )
         price_event = price_by_event.get((action.block_number, action.log_index, action.event_order))
         if price_event is None:
             raise ValueError(
@@ -387,6 +482,11 @@ def build_lp_ledger_rows(
                 liquidity_after=liquidity_after,
                 amount0=_decimal(action.amount0),
                 amount1=_decimal(action.amount1),
+                amount0_actual=_decimal(action.amount0_actual),
+                amount1_actual=_decimal(action.amount1_actual),
+                amount0_attribution_source=action.amount0_attribution_source,
+                amount1_attribution_source=action.amount1_attribution_source,
+                amount_attribution_status=action.amount_attribution_status,
                 amount0_raw=action.amount0_raw,
                 amount1_raw=action.amount1_raw,
                 collect_amount0=_decimal(action.collect_amount0),
@@ -475,7 +575,12 @@ def _decoded_action(
     timestamp_ms: int,
     tx_hash: str,
     config: ExportPoolConfig,
+    amount0_attribution_source: str,
+    amount1_attribution_source: str,
+    amount_attribution_status: str,
 ) -> DecodedLiquidityAction:
+    amount0 = _token_amount(amount0_raw, config.token0_decimals)
+    amount1 = _token_amount(amount1_raw, config.token1_decimals)
     return DecodedLiquidityAction(
         action_type=action_type,
         block_number=block_number,
@@ -486,8 +591,8 @@ def _decoded_action(
         tick_lower=tick_lower,
         tick_upper=tick_upper,
         liquidity_delta=liquidity_delta,
-        amount0=_token_amount(amount0_raw, config.token0_decimals),
-        amount1=_token_amount(amount1_raw, config.token1_decimals),
+        amount0=amount0,
+        amount1=amount1,
         amount0_raw=str(amount0_raw),
         amount1_raw=str(amount1_raw),
         collect_amount0=collect_amount0,
@@ -498,7 +603,198 @@ def _decoded_action(
         tx_hash=tx_hash,
         position_manager=config.position_manager,
         timestamp_ms=timestamp_ms,
+        amount0_actual=amount0,
+        amount1_actual=amount1,
+        amount0_attribution_source=amount0_attribution_source,
+        amount1_attribution_source=amount1_attribution_source,
+        amount_attribution_status=amount_attribution_status,
     )
+
+
+def _apply_opening_amount_attribution(
+    decoded_actions: list[DecodedLiquidityAction],
+    add_action_indices: Sequence[int],
+    add_action_allowed_senders: dict[int, set[str]],
+    add_action_settle_pairs: dict[int, int],
+    receipt: dict[str, Any],
+    config: ExportPoolConfig,
+) -> list[DecodedLiquidityAction]:
+    if not add_action_indices:
+        return decoded_actions
+
+    if len(add_action_indices) > 1:
+        return [
+            _replace_opening_amounts(
+                action,
+                amount0_raw=0,
+                amount1_raw=0,
+                config=config,
+                amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS,
+                amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS,
+                amount_attribution_status=OPENING_ATTRIBUTION_AMBIGUOUS_MULTIPLE,
+            )
+            if index in add_action_indices
+            else action
+            for index, action in enumerate(decoded_actions)
+        ]
+
+    add_index = add_action_indices[0]
+    if add_action_settle_pairs.get(add_index, 0) == 0:
+        return _replace_action_at_index(
+            decoded_actions,
+            add_index,
+            _replace_opening_amounts(
+                decoded_actions[add_index],
+                amount0_raw=0,
+                amount1_raw=0,
+                config=config,
+                amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS,
+                amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS,
+                amount_attribution_status=OPENING_ATTRIBUTION_AMBIGUOUS_MISSING_SETTLE,
+            ),
+        )
+
+    amount0_raw, amount1_raw = _extract_settlement_deposit_raw_amounts(
+        receipt,
+        config,
+        add_action_allowed_senders[add_index],
+    )
+    if amount0_raw == 0 and amount1_raw == 0:
+        return _replace_action_at_index(
+            decoded_actions,
+            add_index,
+            _replace_opening_amounts(
+                decoded_actions[add_index],
+                amount0_raw=0,
+                amount1_raw=0,
+                config=config,
+                amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS,
+                amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS,
+                amount_attribution_status=OPENING_ATTRIBUTION_AMBIGUOUS_NO_TRANSFER,
+            ),
+        )
+
+    return _replace_action_at_index(
+        decoded_actions,
+        add_index,
+        _replace_opening_amounts(
+            decoded_actions[add_index],
+            amount0_raw=amount0_raw,
+            amount1_raw=amount1_raw,
+            config=config,
+            amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_TRANSFER,
+            amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_TRANSFER,
+            amount_attribution_status=OPENING_ATTRIBUTION_EXACT,
+        ),
+    )
+
+
+def _replace_action_at_index(
+    actions: list[DecodedLiquidityAction],
+    index: int,
+    replacement: DecodedLiquidityAction,
+) -> list[DecodedLiquidityAction]:
+    updated = list(actions)
+    updated[index] = replacement
+    return updated
+
+
+def _replace_opening_amounts(
+    action: DecodedLiquidityAction,
+    *,
+    amount0_raw: int,
+    amount1_raw: int,
+    config: ExportPoolConfig,
+    amount0_attribution_source: str,
+    amount1_attribution_source: str,
+    amount_attribution_status: str,
+) -> DecodedLiquidityAction:
+    amount0 = _token_amount(amount0_raw, config.token0_decimals)
+    amount1 = _token_amount(amount1_raw, config.token1_decimals)
+    return replace(
+        action,
+        amount0=amount0,
+        amount1=amount1,
+        amount0_actual=amount0,
+        amount1_actual=amount1,
+        amount0_raw=str(amount0_raw),
+        amount1_raw=str(amount1_raw),
+        amount0_attribution_source=amount0_attribution_source,
+        amount1_attribution_source=amount1_attribution_source,
+        amount_attribution_status=amount_attribution_status,
+    )
+
+
+def _extract_settlement_deposit_raw_amounts(
+    receipt: dict[str, Any],
+    config: ExportPoolConfig,
+    allowed_senders: set[str],
+) -> tuple[int, int]:
+    amount0_raw = 0
+    amount1_raw = 0
+    token0 = Web3.to_checksum_address(config.token0_address)
+    token1 = Web3.to_checksum_address(config.token1_address)
+    for log in receipt.get("logs", []):
+        if not _is_pool_token_transfer_to_settlement(log, config, allowed_senders):
+            continue
+        token_addr = Web3.to_checksum_address(log["address"])
+        amount_raw = _int_from_rpc(log["data"])
+        if token_addr == token0:
+            amount0_raw += amount_raw
+        elif token_addr == token1:
+            amount1_raw += amount_raw
+    return amount0_raw, amount1_raw
+
+
+def _is_pool_token_transfer_to_settlement(
+    log: dict[str, Any],
+    config: ExportPoolConfig,
+    allowed_senders: set[str],
+) -> bool:
+    token_addresses = {
+        Web3.to_checksum_address(config.token0_address),
+        Web3.to_checksum_address(config.token1_address),
+    }
+    if Web3.to_checksum_address(log["address"]) not in token_addresses:
+        return False
+    topics = log.get("topics", [])
+    if len(topics) < 3 or coerce_hex_str(topics[0]).lower() != TRANSFER_EVENT_TOPIC:
+        return False
+    sender = _address_from_topic(topics[1])
+    if not allowed_senders or sender not in allowed_senders:
+        return False
+    recipient = _address_from_topic(topics[2])
+    return recipient in _settlement_sink_addresses(config)
+
+
+def _settlement_sink_addresses(config: ExportPoolConfig) -> set[str]:
+    return {
+        Web3.to_checksum_address(config.pool_manager),
+        Web3.to_checksum_address(config.position_manager),
+        Web3.to_checksum_address(settings.permit2_address),
+    }
+
+
+def _decode_settle_pair_param(raw: bytes) -> tuple[str, str]:
+    currency0, currency1 = decode(["address", "address"], raw)
+    return Web3.to_checksum_address(str(currency0)), Web3.to_checksum_address(str(currency1))
+
+
+def _settle_pair_matches(currency0: str, currency1: str, config: ExportPoolConfig) -> bool:
+    return (
+        Web3.to_checksum_address(currency0) == Web3.to_checksum_address(config.token0_address)
+        and Web3.to_checksum_address(currency1) == Web3.to_checksum_address(config.token1_address)
+    )
+
+
+def _checksum_address_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return Web3.to_checksum_address(str(value))
+
+
+def _non_none_addresses(*addresses: str | None) -> set[str]:
+    return {address for address in addresses if address is not None}
 
 
 def _decode_modify_liquidities_payload(input_data: str) -> tuple[bytes, list[bytes]]:

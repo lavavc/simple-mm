@@ -630,10 +630,15 @@ fixture-backed CSV export, and an RPC export path that decodes PositionManager
 transfers, resolves pre-sample positions from chain state, processes candidate
 transactions chronologically, merges negative liquidity plus `TAKE_PAIR` into
 `burn_collect`, and replays event-time prices for ledger rows. Collect payouts
-come from exact receipt transfer amounts. Add-liquidity opening amounts currently
-come from action max-amount parameters, so exact deposit attribution from
-settlement transfers remains a follow-up before treating opening capital as
-fully paper-faithful.
+come from exact receipt transfer amounts. Single mint/increase openings now use
+exact ERC-20 pool-token transfers into the PositionManager, Permit2, or
+PoolManager settlement path when an immediately following `SETTLE_PAIR` and
+strict recipient/sender filters prove attribution. Multi-add transactions and
+transactions without provable settlement transfers are marked ambiguous through
+`amount_attribution_status` with zero opening amounts, so exact-PnL studies can
+exclude them until a more granular settlement decoder resolves them. The paper
+episode reconstruction consumes `amount*_actual` and skips non-exact opening
+rows.
 
 ---
 

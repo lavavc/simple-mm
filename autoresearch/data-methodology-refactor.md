@@ -101,6 +101,11 @@ Minimum ledger fields:
 - `liquidity_after`
 - `amount0`
 - `amount1`
+- `amount0_actual`
+- `amount1_actual`
+- `amount0_attribution_source`
+- `amount1_attribution_source`
+- `amount_attribution_status`
 - `amount0_raw`
 - `amount1_raw`
 - `collect_amount0`
@@ -118,17 +123,23 @@ supports fixture-backed CSV export and a first RPC export path. The RPC path
 extracts ERC-721 ownership transfers, resolves pre-sample positions from chain
 state, processes candidate transactions chronologically, merges negative
 liquidity plus `TAKE_PAIR` into `burn_collect`, and attaches event-time prices.
-Collect payouts use exact receipt transfer amounts. Add-liquidity opening
-amounts currently use action max-amount parameters, so exact deposit attribution
-from settlement transfers remains required before opening capital should be
-treated as fully paper-faithful.
+Collect payouts use exact receipt transfer amounts. Single mint/increase
+openings use exact ERC-20 pool-token transfers into the PositionManager,
+Permit2, or PoolManager settlement path when the transaction contains a matching
+immediately following `SETTLE_PAIR` and strict sender filters match the action
+recipient or transaction sender. Multi-add transactions and transactions without
+a provable settlement transfer are marked through `amount_attribution_status` as
+ambiguous, with zero opening amounts, and must be excluded from exact-PnL studies
+until a more granular settlement decoder resolves them.
 
 `backtester/lp_paper_episodes.py` now defines the first pure episode
 reconstruction layer on top of those ledger rows. It closes in-sample mint lots
 FIFO when fully consumed, carries partial-removal proceeds forward until the lot
 is closed, caps over-burns to observed liquidity, values capital using each
-pool's cNGN/stable token orientation, and exposes the initial position-type and
-paper win-score helpers. Full 15-type paper taxonomy expansion remains pending.
+pool's cNGN/stable token orientation, uses the exact `amount*_actual` opening
+fields, skips non-exact opening rows for exact-PnL reconstruction, and exposes
+the initial position-type and paper win-score helpers. Full 15-type paper
+taxonomy expansion remains pending.
 
 ### 4. Event-Time Price Reconstruction
 

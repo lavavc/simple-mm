@@ -255,7 +255,14 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
 
 
 def _decoded_action_from_json(payload: dict[str, Any]) -> DecodedLiquidityAction:
-    decimal_fields = {"amount0", "amount1", "collect_amount0", "collect_amount1"}
+    decimal_fields = {
+        "amount0",
+        "amount1",
+        "amount0_actual",
+        "amount1_actual",
+        "collect_amount0",
+        "collect_amount1",
+    }
     normalized = {
         key: Decimal(str(value)) if key in decimal_fields else value
         for key, value in payload.items()

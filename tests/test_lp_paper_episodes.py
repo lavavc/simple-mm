@@ -21,7 +21,11 @@ def ledger_row(
     collect_amount1: Decimal = Decimal("0"),
     price: Decimal = Decimal("1"),
     timestamp_ms: int = 1000,
+    amount_attribution_status: str | None = None,
 ) -> LPLedgerRow:
+    status = amount_attribution_status
+    if status is None:
+        status = "fixture_exact" if action_type == "mint" else "not_applicable"
     return LPLedgerRow(
         chain="base",
         pool_id="0xpool",
@@ -41,6 +45,11 @@ def ledger_row(
         liquidity_after=max(liquidity_delta, 0),
         amount0=amount0,
         amount1=amount1,
+        amount0_actual=amount0,
+        amount1_actual=amount1,
+        amount0_attribution_source="fixture",
+        amount1_attribution_source="fixture",
+        amount_attribution_status=status,
         amount0_raw=str(amount0),
         amount1_raw=str(amount1),
         collect_amount0=collect_amount0,
@@ -130,6 +139,34 @@ def test_overburn_is_capped_to_observed_open_liquidity() -> None:
     assert len(episodes) == 1
     assert episodes[0].closed_liquidity == Decimal("100")
     assert episodes[0].closing_capital == Decimal("60")
+
+
+def test_ambiguous_opening_rows_are_excluded_from_exact_pnl_reconstruction() -> None:
+    rows = [
+        ledger_row(
+            "mint",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=100,
+            amount0=Decimal("10"),
+            amount1=Decimal("10"),
+            amount_attribution_status="ambiguous_multiple_add_actions",
+            timestamp_ms=1000,
+        ),
+        ledger_row(
+            "burn_collect",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=-100,
+            collect_amount0=Decimal("30"),
+            collect_amount1=Decimal("30"),
+            timestamp_ms=3000,
+        ),
+    ]
+
+    assert reconstruct_paper_episodes(rows) == []
 
 
 def test_partial_lot_realized_payout_is_carried_until_full_close() -> None:

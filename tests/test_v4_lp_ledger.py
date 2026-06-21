@@ -89,6 +89,7 @@ def _transfer_log(
 def _erc20_transfer_log(
     *,
     token: str,
+    from_address: str = "0x0000000000000000000000000000000000000011",
     to_address: str,
     amount_raw: int,
     log_index: int,
@@ -97,7 +98,7 @@ def _erc20_transfer_log(
         "address": token,
         "topics": [
             TRANSFER_TOPIC,
-            _topic_address("0x0000000000000000000000000000000000000011"),
+            _topic_address(from_address),
             _topic_address(to_address),
         ],
         "data": hex(amount_raw),
@@ -121,7 +122,26 @@ def _modify_liquidity_log(log_index: int) -> dict[str, object]:
 def test_collect_row_carries_token_id_owner_range_and_event_price():
     rows = build_lp_ledger_rows(
         decoded_actions=[
-            DecodedLiquidityAction("mint", 100, 10, 0, 42, "0xowner", -120, 120, 1000, 0, 1, 2, chain="base"),
+            DecodedLiquidityAction(
+                "mint",
+                100,
+                10,
+                0,
+                42,
+                "0xowner",
+                -120,
+                120,
+                1000,
+                0,
+                1,
+                2,
+                chain="base",
+                amount0_actual=0,
+                amount1_actual=1,
+                amount0_attribution_source="fixture",
+                amount1_attribution_source="fixture",
+                amount_attribution_status="fixture_exact",
+            ),
             DecodedLiquidityAction(
                 "collect",
                 100,
@@ -137,6 +157,11 @@ def test_collect_row_carries_token_id_owner_range_and_event_price():
                 collect_amount0=3,
                 collect_amount1=4,
                 chain="base",
+                amount0_actual=0,
+                amount1_actual=0,
+                amount0_attribution_source="not_applicable",
+                amount1_attribution_source="not_applicable",
+                amount_attribution_status="not_applicable",
             ),
         ],
         ownership_events=[OwnershipEvent(100, 9, 42, None, "0xowner")],
@@ -160,8 +185,46 @@ def test_collect_row_carries_token_id_owner_range_and_event_price():
 def test_owner_lookup_uses_latest_transfer_at_or_before_action():
     rows = build_lp_ledger_rows(
         decoded_actions=[
-            DecodedLiquidityAction("mint", 100, 10, 0, 42, None, -120, 120, 1000, 0, 1, 2, chain="base"),
-            DecodedLiquidityAction("burn", 100, 30, 0, 42, None, -120, 120, -400, 0, 0, 0, chain="base"),
+            DecodedLiquidityAction(
+                "mint",
+                100,
+                10,
+                0,
+                42,
+                None,
+                -120,
+                120,
+                1000,
+                0,
+                1,
+                2,
+                chain="base",
+                amount0_actual=0,
+                amount1_actual=1,
+                amount0_attribution_source="fixture",
+                amount1_attribution_source="fixture",
+                amount_attribution_status="fixture_exact",
+            ),
+            DecodedLiquidityAction(
+                "burn",
+                100,
+                30,
+                0,
+                42,
+                None,
+                -120,
+                120,
+                -400,
+                0,
+                0,
+                0,
+                chain="base",
+                amount0_actual=0,
+                amount1_actual=0,
+                amount0_attribution_source="not_applicable",
+                amount1_attribution_source="not_applicable",
+                amount_attribution_status="not_applicable",
+            ),
         ],
         ownership_events=[
             OwnershipEvent(100, 9, 42, None, "0xfirst"),
@@ -221,6 +284,7 @@ def test_decode_ownership_events_from_position_manager_transfers():
 def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
     config = POOL_CONFIGS["uni-base"]
     recipient = "0x00000000000000000000000000000000000000AA"
+    sender = "0x00000000000000000000000000000000000000BB"
     mint_param = encode(
         ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
         [
@@ -245,6 +309,7 @@ def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
         "input": _build_modify_input(bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR]), [mint_param, settle_param]),
         "hash": "0x" + "11" * 32,
         "blockNumber": 100,
+        "from": sender,
     }
     receipt = {
         "logs": [
@@ -254,6 +319,20 @@ def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
                 to_address=recipient,
                 token_or_amount=77,
                 log_index=5,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=700_000,
+                log_index=6,
+            ),
+            _erc20_transfer_log(
+                token=config.token1_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=1_500_000,
+                log_index=7,
             ),
             _modify_liquidity_log(8),
         ],
@@ -267,12 +346,158 @@ def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
     assert actions[0].tick_lower == -120
     assert actions[0].tick_upper == 120
     assert actions[0].liquidity_delta == 999
-    assert actions[0].amount0 == Decimal("1")
-    assert actions[0].amount1 == Decimal("2")
-    assert actions[0].amount0_raw == "1000000"
-    assert actions[0].amount1_raw == "2000000"
+    assert actions[0].amount0 == Decimal("0.7")
+    assert actions[0].amount1 == Decimal("1.5")
+    assert actions[0].amount0_actual == Decimal("0.7")
+    assert actions[0].amount1_actual == Decimal("1.5")
+    assert actions[0].amount0_raw == "700000"
+    assert actions[0].amount1_raw == "1500000"
+    assert actions[0].amount0_attribution_source == "erc20_transfer_to_settlement"
+    assert actions[0].amount1_attribution_source == "erc20_transfer_to_settlement"
+    assert actions[0].amount_attribution_status == "exact"
     assert actions[0].log_index == 8
     assert actions[0].timestamp_ms == 1_700_000_000_000
+
+
+def test_decode_multiple_add_actions_marks_opening_amounts_ambiguous():
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x00000000000000000000000000000000000000AA"
+    sender = "0x00000000000000000000000000000000000000BB"
+    settle_param = encode(["address", "address"], [config.token0_address, config.token1_address])
+    mint_param = encode(
+        ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
+        [
+            (
+                config.token0_address,
+                config.token1_address,
+                1500,
+                30,
+                "0x0000000000000000000000000000000000000000",
+            ),
+            -120,
+            120,
+            999,
+            1_000_000,
+            2_000_000,
+            recipient,
+            b"",
+        ],
+    )
+    increase_param = encode(["uint256", "uint256", "uint128", "uint128", "bytes"], [77, 111, 500_000, 1_000_000, b""])
+    tx = {
+        "input": _build_modify_input(
+            bytes([
+                _V4_LP_MINT_POSITION,
+                _V4_LP_SETTLE_PAIR,
+                _V4_LP_INCREASE_LIQUIDITY,
+                _V4_LP_SETTLE_PAIR,
+            ]),
+            [mint_param, settle_param, increase_param, settle_param],
+        ),
+        "hash": "0x" + "14" * 32,
+        "blockNumber": 100,
+        "from": sender,
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=1_200_000,
+                log_index=6,
+            ),
+            _erc20_transfer_log(
+                token=config.token1_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=2_500_000,
+                log_index=7,
+            ),
+            _modify_liquidity_log(8),
+            _modify_liquidity_log(12),
+        ],
+    }
+
+    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+
+    assert [action.action_type for action in actions] == ["mint", "mint"]
+    assert [action.amount_attribution_status for action in actions] == [
+        "ambiguous_multiple_add_actions",
+        "ambiguous_multiple_add_actions",
+    ]
+    assert [(action.amount0, action.amount1) for action in actions] == [
+        (Decimal("0"), Decimal("0")),
+        (Decimal("0"), Decimal("0")),
+    ]
+    assert [action.amount0_attribution_source for action in actions] == ["ambiguous", "ambiguous"]
+
+
+def test_settle_pair_must_immediately_follow_add_action_for_exact_attribution():
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x00000000000000000000000000000000000000AA"
+    sender = "0x00000000000000000000000000000000000000BB"
+    mint_param = encode(
+        ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
+        [
+            (
+                config.token0_address,
+                config.token1_address,
+                1500,
+                30,
+                "0x0000000000000000000000000000000000000000",
+            ),
+            -120,
+            120,
+            999,
+            1_000_000,
+            2_000_000,
+            recipient,
+            b"",
+        ],
+    )
+    settle_param = encode(["address", "address"], [config.token0_address, config.token1_address])
+    tx = {
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION, 0x99, _V4_LP_SETTLE_PAIR]),
+            [mint_param, b"", settle_param],
+        ),
+        "hash": "0x" + "15" * 32,
+        "blockNumber": 100,
+        "from": sender,
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=700_000,
+                log_index=6,
+            ),
+            _modify_liquidity_log(8),
+        ],
+    }
+
+    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+
+    assert len(actions) == 1
+    assert actions[0].amount_attribution_status == "ambiguous_missing_settle_pair"
+    assert actions[0].amount0 == Decimal("0")
 
 
 def test_decode_decrease_take_pair_combines_burn_and_collect_amounts():
@@ -355,6 +580,7 @@ def test_decode_decrease_resolves_preexisting_position_before_action_block():
 def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch):
     config = POOL_CONFIGS["uni-base"]
     recipient = "0x00000000000000000000000000000000000000AA"
+    sender = "0x00000000000000000000000000000000000000BB"
     mint_param = encode(
         ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
         [
@@ -380,6 +606,7 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
         "input": _build_modify_input(bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR]), [mint_param, settle_param]),
         "hash": tx_hash,
         "blockNumber": 100,
+        "from": sender,
     }
     receipt = {
         "blockNumber": 100,
@@ -390,6 +617,20 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
                 to_address=recipient,
                 token_or_amount=77,
                 log_index=5,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=700_000,
+                log_index=6,
+            ),
+            _erc20_transfer_log(
+                token=config.token1_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=1_500_000,
+                log_index=7,
             ),
             _modify_liquidity_log(8),
         ],
@@ -419,6 +660,9 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
     assert rows[0]["token_id"] == "77"
     assert rows[0]["lp_owner"] == Web3.to_checksum_address(recipient)
     assert rows[0]["event_type"] == "mint"
+    assert rows[0]["amount0"] == "0.7"
+    assert rows[0]["amount1"] == "1.5"
+    assert rows[0]["amount_attribution_status"] == "exact"
 
 
 def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp_path, monkeypatch):
@@ -533,6 +777,11 @@ def test_export_v4_lp_ledger_cli_writes_fixture_rows(tmp_path):
             "liquidity_delta": 1000,
             "amount0": "1",
             "amount1": "2",
+            "amount0_actual": "1",
+            "amount1_actual": "2",
+            "amount0_attribution_source": "fixture",
+            "amount1_attribution_source": "fixture",
+            "amount_attribution_status": "fixture_exact",
             "collect_amount0": "0",
             "collect_amount1": "0",
             "chain": "base",
@@ -600,3 +849,5 @@ def test_export_v4_lp_ledger_cli_writes_fixture_rows(tmp_path):
     assert rows[0]["token_id"] == "42"
     assert rows[0]["lp_owner"] == "0xowner"
     assert rows[0]["sqrt_price_x96_at_event"] == "222"
+    assert rows[0]["amount0_actual"] == "1"
+    assert rows[0]["amount_attribution_status"] == "fixture_exact"
