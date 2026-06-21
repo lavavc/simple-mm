@@ -117,6 +117,14 @@ currently supports fixture-backed CSV export for deterministic tests; the
 network/RPC decoder that turns PositionManager transactions into decoded
 liquidity actions is still pending.
 
+`backtester/lp_paper_episodes.py` now defines the first pure episode
+reconstruction layer on top of those ledger rows. It closes in-sample mint lots
+FIFO when fully consumed, carries partial-removal proceeds forward until the lot
+is closed, caps over-burns to observed liquidity, values capital using each
+pool's cNGN/stable token orientation, and exposes the initial position-type and
+paper win-score helpers. The full RPC ledger population and full 15-type paper
+taxonomy expansion remain pending.
+
 ### 4. Event-Time Price Reconstruction
 
 The exporter must not use end-of-block pool state as the price for all liquidity events in the block. That creates lookahead when a liquidity action and a swap share a block.

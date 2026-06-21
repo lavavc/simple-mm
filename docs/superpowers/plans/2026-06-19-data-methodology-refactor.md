@@ -643,7 +643,7 @@ Task 9 continuation before population-level ledger exports.
 - Produces: `paper_win_score(episodes: Sequence[PaperLPEpisode], start_ms: int, end_ms: int) -> Decimal`.
 - Produces: `PaperLPEpisode(pool: str, lp_owner: str, tick_lower: int, tick_upper: int, open_ms: int, close_ms: int, opening_capital: Decimal, closing_capital: Decimal, pnl: Decimal, start_price: Decimal, end_price: Decimal, lower_price: Decimal, upper_price: Decimal, closed_liquidity: Decimal, position_type: int | None, delta_traversed: Decimal | None)`.
 
-- [ ] **Step 1: Write failing FIFO partial-burn test**
+- [x] **Step 1: Write failing FIFO partial-burn test**
 
 ```python
 from decimal import Decimal
@@ -692,17 +692,17 @@ def test_partial_burn_closes_first_position_and_splits_payout():
     assert episodes[0].closing_capital == Decimal("60")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest -q tests/test_lp_paper_episodes.py`
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement reconstruction**
+- [x] **Step 3: Implement reconstruction**
 
 Group by `(pool, lp_owner, tick_lower, tick_upper)`, drop over-burns that exceed observed liquidity, close FIFO, and split collect payout by consumed liquidity fraction.
 
-- [ ] **Step 4: Add taxonomy and win-score tests**
+- [x] **Step 4: Add taxonomy and win-score tests**
 
 Assert:
 
@@ -716,11 +716,19 @@ losing_episode = PaperLPEpisode("uni-base", "0xlp", -100, 100, 5_000, 10_000, De
 assert paper_win_score([winning_episode, losing_episode], 0, 10_000) == Decimal("0.5")
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `python -m pytest -q tests/test_lp_paper_episodes.py`
 
 Expected: PASS.
+
+Implementation note: Task 10 now provides pure paper episode reconstruction
+from `LPLedgerRow` inputs. The implementation closes mint lots FIFO only when a
+lot is fully consumed, carries partial-burn proceeds forward, caps over-burns to
+observed in-sample liquidity, values capital according to each pool's cNGN/stable
+token orientation, derives range bounds from event-time tick math, and exposes
+the first taxonomy/win-score helpers. Full 15-type taxonomy expansion remains a
+later derived-feature task.
 
 ---
 
