@@ -623,11 +623,17 @@ Run: `python -m pytest -q tests/test_v4_lp_ledger.py`
 
 Expected: PASS.
 
-Implementation note: Task 9 currently provides the pure ledger dataclasses,
-deterministic owner/range/liquidity matching, event-time price attachment, and
-a fixture-backed CSV export smoke path. Full RPC decoding of PositionManager
-actions into fixture-equivalent `DecodedLiquidityAction` rows remains the next
-Task 9 continuation before population-level ledger exports.
+Implementation note: Task 9 now provides the pure ledger dataclasses,
+deterministic owner/range/liquidity matching, event-time price attachment,
+fixture-backed CSV export, and an RPC export path that decodes PositionManager
+`modifyLiquidities` transactions. The RPC path extracts ERC-721 ownership
+transfers, resolves pre-sample positions from chain state, processes candidate
+transactions chronologically, merges negative liquidity plus `TAKE_PAIR` into
+`burn_collect`, and replays event-time prices for ledger rows. Collect payouts
+come from exact receipt transfer amounts. Add-liquidity opening amounts currently
+come from action max-amount parameters, so exact deposit attribution from
+settlement transfers remains a follow-up before treating opening capital as
+fully paper-faithful.
 
 ---
 

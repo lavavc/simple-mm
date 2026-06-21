@@ -37,7 +37,7 @@ class ReplayedEvent:
 
 
 _PRICE_EVENTS = {"initialize", "swap"}
-_CARRIED_STATE_EVENTS = {"mint", "burn", "collect"}
+_CARRIED_STATE_EVENTS = {"mint", "burn", "collect", "burn_collect"}
 
 
 def attach_event_time_state(

@@ -112,18 +112,23 @@ Minimum ledger fields:
 The ledger should track PositionManager `Transfer` events for token ownership and token ids. For increases, decreases, burns, and collect payouts, the row must carry the token id and the best known owner at the event timestamp.
 
 Current implementation status: `backtester/v4_lp_ledger.py` defines the pure
-ledger row builder and ownership matching logic. `scripts/export_v4_lp_ledger.py`
-currently supports fixture-backed CSV export for deterministic tests; the
-network/RPC decoder that turns PositionManager transactions into decoded
-liquidity actions is still pending.
+ledger row builder, ownership matching logic, receipt ownership decoder, and
+PositionManager `modifyLiquidities` action decoder. `scripts/export_v4_lp_ledger.py`
+supports fixture-backed CSV export and a first RPC export path. The RPC path
+extracts ERC-721 ownership transfers, resolves pre-sample positions from chain
+state, processes candidate transactions chronologically, merges negative
+liquidity plus `TAKE_PAIR` into `burn_collect`, and attaches event-time prices.
+Collect payouts use exact receipt transfer amounts. Add-liquidity opening
+amounts currently use action max-amount parameters, so exact deposit attribution
+from settlement transfers remains required before opening capital should be
+treated as fully paper-faithful.
 
 `backtester/lp_paper_episodes.py` now defines the first pure episode
 reconstruction layer on top of those ledger rows. It closes in-sample mint lots
 FIFO when fully consumed, carries partial-removal proceeds forward until the lot
 is closed, caps over-burns to observed liquidity, values capital using each
 pool's cNGN/stable token orientation, and exposes the initial position-type and
-paper win-score helpers. The full RPC ledger population and full 15-type paper
-taxonomy expansion remain pending.
+paper win-score helpers. Full 15-type paper taxonomy expansion remains pending.
 
 ### 4. Event-Time Price Reconstruction
 

@@ -172,8 +172,24 @@ python3 scripts/report_backtest_regime_stability.py \
   --out data/quality/backtest_regime_stability.md
 ```
 
-The LP lifecycle ledger exporter is currently fixture-backed until the full
-PositionManager RPC decoder is added. The executable fixture path is:
+The LP lifecycle ledger exporter now has an RPC path for PositionManager
+`modifyLiquidities` transactions:
+
+```bash
+python3 scripts/export_v4_lp_ledger.py \
+  --pool uni-base \
+  --start-block 42926879 \
+  --end-block 47130126 \
+  --out data/derived/uni_base_lp_ledger.csv
+
+python3 scripts/export_v4_lp_ledger.py \
+  --pool uni-bsc \
+  --start-block 84655203 \
+  --end-block 103315324 \
+  --out data/derived/uni_bsc_lp_ledger.csv
+```
+
+Use the fixture path for deterministic decoder tests or hand-built fixtures:
 
 ```bash
 python3 scripts/export_v4_lp_ledger.py \

@@ -68,6 +68,19 @@ def test_initialize_can_seed_replay_without_prior_state():
     assert replayed[1].event_time_state_source == "same_block_prior_event"
 
 
+def test_burn_collect_uses_carried_price_state():
+    events = [
+        ReplayEvent(100, 1, 0, "swap", 222, 2),
+        ReplayEvent(100, 2, 0, "burn_collect", None, None),
+    ]
+
+    replayed = attach_event_time_state(events, PoolStateSnapshot(111, 1, "prior_block"))
+
+    assert replayed[1].event_time_sqrt_price_x96 == 222
+    assert replayed[1].event_time_tick == 2
+    assert replayed[1].event_time_state_source == "same_block_prior_event"
+
+
 def test_liquidity_without_seed_or_prior_price_fails():
     events = [ReplayEvent(100, 1, 0, "collect", None, None)]
 
