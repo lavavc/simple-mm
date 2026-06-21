@@ -187,6 +187,12 @@ Add a receipt sidecar keyed by `chain,tx_hash` with:
 
 Gas should be joined into derived LP episodes, not required for the raw pool CSV to remain usable.
 
+Current implementation status: `scripts/export_tx_receipts.py` exports the
+sidecar from any CSV with a `tx_hash` column. It normalizes Web3 receipt fields,
+deduplicates transaction hashes before RPC calls, fails if any receipt is
+missing, computes `native_fee_wei = gas_used * effective_gas_price_wei`, and
+writes rows sorted by `block_number,tx_hash`.
+
 ### 7. Causal Cone and Stress Feature Tables
 
 Parameter cones should become first-class derived features. They measure whether the current state is unusual relative to its own venue-local history across multiple lookback windows.

@@ -742,7 +742,7 @@ later derived-feature task.
 - Produces CLI: `python scripts/export_tx_receipts.py --chain base --tx-csv data/derived/uni_base_lp_ledger.csv --out data/derived/uni_base_tx_receipts.csv`.
 - Output fields: `chain`, `tx_hash`, `block_number`, `gas_used`, `effective_gas_price_wei`, `native_fee_wei`, `tx_from`, `tx_to`.
 
-- [ ] **Step 1: Write failing receipt normalization test**
+- [x] **Step 1: Write failing receipt normalization test**
 
 ```python
 from scripts.export_tx_receipts import receipt_row
@@ -753,21 +753,27 @@ def test_receipt_row_computes_native_fee():
     assert row["tx_hash"] == "0x1"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest -q tests/test_export_tx_receipts.py`
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement receipt exporter**
+- [x] **Step 3: Implement receipt exporter**
 
 Deduplicate tx hashes before RPC calls. Write rows sorted by `block_number,tx_hash`. Fail if a receipt is missing; do not silently skip.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `python -m pytest -q tests/test_export_tx_receipts.py`
 
 Expected: PASS.
+
+Implementation note: Task 11 now provides `scripts/export_tx_receipts.py` with
+receipt normalization, input-CSV tx hash deduplication, fail-fast missing receipt
+checks, deterministic `block_number,tx_hash` output sorting, and a CLI that
+builds a Web3 client from the configured Base/BSC pool RPCs. Unit tests use a
+fake Web3 client and do not hit network.
 
 ---
 
