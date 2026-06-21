@@ -581,7 +581,7 @@ Implementation note: the exporter applies replay as a post-decode, pre-write pas
 - Produces: `build_lp_ledger_rows(decoded_actions: Sequence[DecodedLiquidityAction], ownership_events: Sequence[OwnershipEvent], price_events: Sequence[ReplayedEvent]) -> list[LPLedgerRow]`.
 - Produces CLI: `python scripts/export_v4_lp_ledger.py --pool uni-base --start-block 42926879 --end-block 47130126 --out data/derived/uni_base_lp_ledger.csv`.
 
-- [ ] **Step 1: Write failing owner/token-id ledger test**
+- [x] **Step 1: Write failing owner/token-id ledger test**
 
 ```python
 from backtester.v4_event_replay import ReplayedEvent
@@ -603,25 +603,31 @@ def test_collect_row_carries_token_id_owner_range_and_event_price():
     assert rows[1].sqrt_price_x96_at_event == 222
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest -q tests/test_v4_lp_ledger.py`
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement ledger types and pure row builder**
+- [x] **Step 3: Implement ledger types and pure row builder**
 
 Keep network/RPC code in `scripts/export_v4_lp_ledger.py`; keep deterministic matching and ownership logic in `backtester/v4_lp_ledger.py`.
 
-- [ ] **Step 4: Add CLI smoke test with fixture data**
+- [x] **Step 4: Add CLI smoke test with fixture data**
 
 Use monkeypatched RPC readers or local fixture inputs. Do not hit network in unit tests.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `python -m pytest -q tests/test_v4_lp_ledger.py`
 
 Expected: PASS.
+
+Implementation note: Task 9 currently provides the pure ledger dataclasses,
+deterministic owner/range/liquidity matching, event-time price attachment, and
+a fixture-backed CSV export smoke path. Full RPC decoding of PositionManager
+actions into fixture-equivalent `DecodedLiquidityAction` rows remains the next
+Task 9 continuation before population-level ledger exports.
 
 ---
 

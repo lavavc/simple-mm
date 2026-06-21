@@ -111,6 +111,12 @@ Minimum ledger fields:
 
 The ledger should track PositionManager `Transfer` events for token ownership and token ids. For increases, decreases, burns, and collect payouts, the row must carry the token id and the best known owner at the event timestamp.
 
+Current implementation status: `backtester/v4_lp_ledger.py` defines the pure
+ledger row builder and ownership matching logic. `scripts/export_v4_lp_ledger.py`
+currently supports fixture-backed CSV export for deterministic tests; the
+network/RPC decoder that turns PositionManager transactions into decoded
+liquidity actions is still pending.
+
 ### 4. Event-Time Price Reconstruction
 
 The exporter must not use end-of-block pool state as the price for all liquidity events in the block. That creates lookahead when a liquidity action and a swap share a block.

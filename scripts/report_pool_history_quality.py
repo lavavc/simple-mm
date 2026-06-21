@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from backtester.pool_price_semantics import classify_pool_price_row
 
