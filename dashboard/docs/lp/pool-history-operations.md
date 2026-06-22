@@ -211,6 +211,27 @@ python3 scripts/export_v4_lp_ledger.py \
   --out data/derived/uni_bsc_lp_ledger.csv
 ```
 
+After LP ledgers exist, run attribution QA before exact-PnL reconstruction:
+
+```bash
+python3 scripts/report_lp_ledger_attribution.py \
+  --ledger uni-base=data/derived/uni_base_lp_ledger.csv \
+  --ledger uni-bsc=data/derived/uni_bsc_lp_ledger.csv \
+  --out data/quality/lp_ledger_attribution.md
+```
+
+Then rebuild paper LP episodes from exact-attributed ledgers:
+
+```bash
+python3 scripts/export_lp_paper_episodes.py \
+  --ledger data/derived/uni_base_lp_ledger.csv \
+  --out data/derived/uni_base_paper_episodes.csv
+
+python3 scripts/export_lp_paper_episodes.py \
+  --ledger data/derived/uni_bsc_lp_ledger.csv \
+  --out data/derived/uni_bsc_paper_episodes.csv
+```
+
 After LP ledgers exist, export gas sidecars:
 
 ```bash
