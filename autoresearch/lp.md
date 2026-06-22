@@ -32,6 +32,7 @@ Implemented:
 - finite-state policy scaffold: enter, hold, harvest, reset, defend
 - CLI analysis through `scripts/analyze_lp_strategy.py`
 - backtester research log and capacity/sizing experiments archived for traceability
+- paper LP episode feature export with receipt-backed native gas fields
 
 Known limitations:
 
@@ -41,6 +42,8 @@ Known limitations:
 - historical pool CSV rows do not yet provide a paper-faithful LP owner/token-id ledger
 - liquidity-operation prices must be reconstructed by event order, not block-end state
 - policy thresholds are not yet venue-configurable
+- gas-adjusted paper episode USD PnL requires an explicit native-token USD price input
+- interim collect gas is not yet split across open lots
 
 ## Research Discipline
 
@@ -100,7 +103,8 @@ Keep swap-count walk-forward windows for primary selection. Add calendar stress 
 4. Add the LP lifecycle ledger with token id and LP owner tracking.
 5. Add burn+collect matching and FIFO transaction-native episode accounting.
 6. Add causal cone and stress feature tables.
-7. Persist derived `lp_episode_features`.
+7. Extend `lp_episode_features` with as-of native-token USD gas pricing and
+   interim-collect gas splitting.
 8. Add the full paper position taxonomy and exact realized-PnL win-score.
 9. Add opportunity-screen versus full-costed-backtest reporting.
 10. Add parameter stability diagnostics across walk-forward windows.

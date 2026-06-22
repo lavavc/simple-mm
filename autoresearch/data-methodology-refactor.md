@@ -209,6 +209,17 @@ deduplicates transaction hashes before RPC calls, fails if any receipt is
 missing, computes `native_fee_wei = gas_used * effective_gas_price_wei`, and
 writes rows sorted by `block_number,tx_hash`.
 
+`backtester/lp_episode_features.py` and
+`scripts/export_lp_episode_features.py` now provide the first gas-aware
+episode feature layer. The exporter reconstructs paper episodes from the LP
+ledger, matches each episode to its exact opening and closing transaction,
+joins receipt sidecars, and emits gross PnL, native gas fees, and optional
+net-of-gas USD fields. Net USD fields are populated only when an explicit
+native-token USD price is supplied for the run; otherwise the artifact retains
+native gas amounts and marks `net_pnl_status=native_price_missing`. Episodes
+with interim collect attribution are marked as open/close-gas-only because
+interim collect gas is not yet split across open lots.
+
 ### 7. Causal Cone and Stress Feature Tables
 
 Parameter cones should become first-class derived features. They measure whether the current state is unusual relative to its own venue-local history across multiple lookback windows.
