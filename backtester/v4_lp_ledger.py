@@ -15,7 +15,7 @@ from web3 import Web3
 
 from backtester.clmm_math import cngn_price_from_sqrt_price_x96
 from backtester.v4_event_replay import ReplayedEvent
-from backtester.v4_export import ExportPoolConfig, POOL_CONFIGS, V4_MODIFY_LIQUIDITY_TOPIC
+from backtester.v4_export import POOL_CONFIGS, V4_MODIFY_LIQUIDITY_TOPIC, ExportPoolConfig
 from engine.config import settings
 from engine.lp.types import (
     _V4_LP_BURN_POSITION,
@@ -27,7 +27,6 @@ from engine.lp.types import (
     _V4_LP_TAKE_PAIR,
 )
 from engine.web3_utils import coerce_hex_str
-
 
 TRANSFER_EVENT_TOPIC = coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex()).lower()
 MODIFY_LIQUIDITIES_SELECTOR = coerce_hex_str(Web3.keccak(text="modifyLiquidities(bytes,uint256)")[:4].hex()).lower()
@@ -41,6 +40,7 @@ OPENING_ATTRIBUTION_AMBIGUOUS_NO_TRANSFER = "ambiguous_no_settlement_transfer"
 OPENING_ATTRIBUTION_SOURCE_TRANSFER = "erc20_transfer_to_settlement"
 OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS = "ambiguous"
 OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE = "not_applicable"
+ACTION_RECIPIENT_MSG_SENDER = Web3.to_checksum_address("0x0000000000000000000000000000000000000001")
 
 
 @dataclass(frozen=True)
@@ -376,7 +376,8 @@ def decode_liquidity_actions_for_tx(
                 if not tx_targets_pool:
                     continue
                 _currency0, _currency1, recipient = _decode_take_pair_param(raw)
-                collect_amount0, collect_amount1 = _extract_take_pair_amounts(receipt, recipient, config)
+                transfer_recipient = _resolve_action_recipient(recipient, tx_sender)
+                collect_amount0, collect_amount1 = _extract_take_pair_amounts(receipt, transfer_recipient, config)
                 if pending_negative_index is not None:
                     decoded_actions[pending_negative_index] = replace(
                         decoded_actions[pending_negative_index],
@@ -393,7 +394,7 @@ def decode_liquidity_actions_for_tx(
                     _decoded_action(
                         action_type="collect",
                         block_number=block_number,
-                        log_index=_last_transfer_log_index_to_recipient(receipt, recipient, config),
+                        log_index=_last_transfer_log_index_to_recipient(receipt, transfer_recipient, config),
                         event_order=event_order,
                         token_id=active_token_id,
                         tick_lower=position.tick_lower if position is not None else None,
@@ -823,6 +824,15 @@ def _checksum_address_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return Web3.to_checksum_address(str(value))
+
+
+def _resolve_action_recipient(recipient: str, tx_sender: str | None) -> str:
+    recipient = Web3.to_checksum_address(recipient)
+    if recipient == ACTION_RECIPIENT_MSG_SENDER:
+        if tx_sender is None:
+            raise ValueError("TAKE_PAIR MSG_SENDER recipient requires tx.from")
+        return tx_sender
+    return recipient
 
 
 def _non_none_addresses(*addresses: str | None) -> set[str]:

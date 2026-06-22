@@ -253,6 +253,23 @@ direct close-row proceeds (`exact_collect`), same-transaction collect rows
 (`same_tx_collect`), interim collect rows (`interim_collect`), mixed-source
 closes, zero-proceed closes, and unmatched collect capital.
 
+Close-side receipt attribution resolves the Uniswap V4 periphery
+`MSG_SENDER` recipient sentinel (`0x0000000000000000000000000000000000000001`)
+to the transaction sender before scanning pool-token `Transfer` logs. Treating
+that sentinel as a literal address incorrectly marks real close proceeds as
+zero. If `tx.from` is unavailable for such an action, the decoder fails rather
+than silently zeroing the collect.
+
+Treat the `paper_compatible` sample in the close-attribution QA report as the
+default realized-PnL sample for paper-style studies. It includes direct,
+same-transaction, interim, and mixed collect-attributed closes, and excludes
+`zero_collect_close` episodes whose close proceeds remain unresolved. The
+`strict` sample includes only direct and same-transaction collect attribution.
+The `lower_bound` sample includes zero-collect closes as zero proceeds and is a
+stress/sensitivity view, not the default optimization target. The
+`zero_collect_excluded` row reports unresolved capital removed from the default
+sample.
+
 After LP ledgers exist, export gas sidecars:
 
 ```bash

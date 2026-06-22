@@ -14,6 +14,7 @@ def _ledger_row(
     liquidity_delta: str,
     timestamp_ms: int,
     *,
+    owner: str = "0xlp",
     collect_amount0: str = "0",
     collect_amount1: str = "0",
 ) -> dict[str, str]:
@@ -28,7 +29,7 @@ def _ledger_row(
         "event_type": event_type,
         "position_manager": "0xpm",
         "token_id": "1",
-        "lp_owner": "0xlp",
+        "lp_owner": owner,
         "owner_source": "fixture",
         "tick_lower": "-100",
         "tick_upper": "100",
@@ -76,3 +77,52 @@ def test_pool_episode_attribution_report_counts_sources_and_unmatched_collects(t
     assert summary.unmatched_collect_rows == 1
     assert summary.unmatched_collect_capital == Decimal("6")
     assert "| `uni-base` | 1 | 0 | 0 | 1 | 0 | 1 | 6 |" in markdown
+
+
+def test_pool_episode_attribution_report_includes_pnl_sample_tiers(tmp_path):
+    ledger = tmp_path / "ledger.csv"
+    fieldnames = [field.name for field in fields(LPLedgerRow)]
+    with ledger.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(_ledger_row("mint", "100", 1000, owner="0xstrict"))
+        writer.writerow(
+            _ledger_row(
+                "burn_collect",
+                "-100",
+                2000,
+                owner="0xstrict",
+                collect_amount0="5",
+                collect_amount1="5",
+            )
+        )
+        writer.writerow(_ledger_row("mint", "100", 3000, owner="0xpaper"))
+        writer.writerow(
+            _ledger_row(
+                "collect",
+                "0",
+                3500,
+                owner="0xpaper",
+                collect_amount0="5",
+                collect_amount1="5",
+            )
+        )
+        writer.writerow(_ledger_row("burn_collect", "-100", 4000, owner="0xpaper"))
+        writer.writerow(_ledger_row("mint", "100", 5000, owner="0xlower"))
+        writer.writerow(_ledger_row("burn_collect", "-100", 6000, owner="0xlower"))
+
+    summary = analyze_pool_episode_attribution("uni-base", ledger)
+    markdown = render_markdown([summary])
+
+    assert summary.sample_summaries["strict"].episodes == 1
+    assert summary.sample_summaries["strict"].opening_capital == Decimal("20")
+    assert summary.sample_summaries["strict"].pnl == Decimal("-10")
+    assert summary.sample_summaries["paper_compatible"].episodes == 2
+    assert summary.sample_summaries["paper_compatible"].opening_capital == Decimal("40")
+    assert summary.sample_summaries["paper_compatible"].pnl == Decimal("-20")
+    assert summary.sample_summaries["lower_bound"].episodes == 3
+    assert summary.sample_summaries["lower_bound"].opening_capital == Decimal("60")
+    assert summary.sample_summaries["lower_bound"].pnl == Decimal("-40")
+    assert summary.sample_summaries["zero_collect_excluded"].episodes == 1
+    assert "| `uni-base` | `paper_compatible` | 2 | 40 | 20 | -20 | -50% |" in markdown
+    assert "| `uni-base` | `lower_bound` | 3 | 60 | 20 | -40 | -66.6667% |" in markdown

@@ -19,13 +19,12 @@ from eth_abi import decode  # type: ignore[attr-defined]
 from eth_abi.exceptions import DecodingError  # type: ignore[attr-defined]
 from requests import HTTPError
 from web3 import Web3
-try:
-    from web3.middleware import ExtraDataToPOAMiddleware as POA_MIDDLEWARE
-except ImportError:  # web3.py v6
-    from web3.middleware import geth_poa_middleware as POA_MIDDLEWARE
+from web3.middleware import ExtraDataToPOAMiddleware
+
 from backtester.clmm_math import cngn_price_from_sqrt_price_x96
 from backtester.v4_event_replay import PoolStateSnapshot, ReplayEvent, attach_event_time_state
 from engine.config import settings
+from engine.web3_utils import as_hexstr, coerce_hex_str
 
 _V4_LP_INCREASE_LIQUIDITY = 0
 _V4_LP_DECREASE_LIQUIDITY = 1
@@ -121,7 +120,6 @@ STATE_VIEW_ABI = [
         "type": "function",
     },
 ]
-from engine.web3_utils import as_hexstr, coerce_hex_str
 
 _TRANSFER_EVENT_TOPIC = coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex()).lower()
 
@@ -306,7 +304,7 @@ POOL_CONFIGS = {
 def _make_web3(config: ExportPoolConfig) -> Web3:
     w3 = Web3(Web3.HTTPProvider(config.rpc_url))
     if config.chain == "bsc":
-        w3.middleware_onion.inject(POA_MIDDLEWARE, layer=0)
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return w3
 
 

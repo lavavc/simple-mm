@@ -5,16 +5,15 @@ from __future__ import annotations
 import json
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Deque
-from collections.abc import Mapping
 
 import structlog
-from eth_typing import HexStr
 from web3 import AsyncWeb3
-from web3.middleware import async_geth_poa_middleware  # type: ignore[attr-defined]
+from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import LogReceipt
 
 from engine.config import settings
@@ -219,7 +218,7 @@ def _rpc_candidates(config: V4PoolReadConfig) -> list[str]:
 def _make_async_w3(config: V4PoolReadConfig, rpc_url: str) -> AsyncWeb3:
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
     if config.chain_id_str == "bsc":
-        w3.middleware_onion.inject(async_geth_poa_middleware, layer=0)
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return w3
 
 
@@ -333,8 +332,8 @@ async def _refresh_pool(config: V4PoolReadConfig) -> None:
 async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> None:
     """Restore and backfill rolling 24h volume for tracked DEX pools."""
     if configs is None:
-        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
         configs = [UNISWAP_BSC_POOL_READ_CONFIG, UNISWAP_BASE_POOL_READ_CONFIG]
 

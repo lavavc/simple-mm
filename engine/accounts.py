@@ -6,11 +6,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional
 
+import structlog
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
-from web3.middleware import geth_poa_middleware  # type: ignore[attr-defined]
-import structlog
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from engine.config import settings
 
@@ -173,7 +173,7 @@ class AccountManager:
         if chain_id not in self._web3_instances:
             w3 = Web3(Web3.HTTPProvider(rpc_url))
             if chain_id in (56, 97):  # BSC mainnet and testnet are POA chains
-                w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
             self._web3_instances[chain_id] = w3
         return self._web3_instances[chain_id]
 

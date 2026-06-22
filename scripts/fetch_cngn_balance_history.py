@@ -29,9 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from web3 import Web3
-from web3.middleware import geth_poa_middleware
 from dotenv import load_dotenv
+from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
 
 load_dotenv()
 
@@ -71,7 +71,7 @@ def _build_web3(chain: str) -> Web3:
     """Build a Web3 client with chain-specific middleware."""
     w3 = Web3(Web3.HTTPProvider(_rpc_url(chain)))
     if chain == "bsc":
-        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return w3
 
 

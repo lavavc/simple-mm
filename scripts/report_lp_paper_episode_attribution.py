@@ -16,11 +16,44 @@ if str(REPO_ROOT) not in sys.path:
 from backtester.lp_paper_episodes import (  # noqa: E402
     CLOSE_ATTRIBUTION_EXACT_COLLECT,
     CLOSE_ATTRIBUTION_INTERIM_COLLECT,
+    CLOSE_ATTRIBUTION_MIXED,
     CLOSE_ATTRIBUTION_SAME_TX_COLLECT,
     CLOSE_ATTRIBUTION_ZERO_COLLECT,
+    PaperLPEpisode,
     analyze_paper_episode_attribution,
 )
 from scripts.export_lp_paper_episodes import _read_ledger_rows  # noqa: E402
+
+STRICT_SAMPLE = "strict"
+PAPER_COMPATIBLE_SAMPLE = "paper_compatible"
+LOWER_BOUND_SAMPLE = "lower_bound"
+ZERO_COLLECT_EXCLUDED_SAMPLE = "zero_collect_excluded"
+_STRICT_CLOSE_STATUSES = {
+    CLOSE_ATTRIBUTION_EXACT_COLLECT,
+    CLOSE_ATTRIBUTION_SAME_TX_COLLECT,
+}
+_PAPER_COMPATIBLE_CLOSE_STATUSES = {
+    CLOSE_ATTRIBUTION_EXACT_COLLECT,
+    CLOSE_ATTRIBUTION_SAME_TX_COLLECT,
+    CLOSE_ATTRIBUTION_INTERIM_COLLECT,
+    CLOSE_ATTRIBUTION_MIXED,
+}
+_SAMPLE_ORDER = (
+    STRICT_SAMPLE,
+    PAPER_COMPATIBLE_SAMPLE,
+    LOWER_BOUND_SAMPLE,
+    ZERO_COLLECT_EXCLUDED_SAMPLE,
+)
+
+
+@dataclass(frozen=True)
+class PnLSampleSummary:
+    name: str
+    episodes: int
+    opening_capital: Decimal
+    closing_capital: Decimal
+    pnl: Decimal
+    return_on_capital: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -33,6 +66,7 @@ class PoolEpisodeAttributionSummary:
     zero_collect_closes: int
     unmatched_collect_rows: int
     unmatched_collect_capital: Decimal
+    sample_summaries: dict[str, PnLSampleSummary]
 
 
 def analyze_pool_episode_attribution(pool: str, path: Path) -> PoolEpisodeAttributionSummary:
@@ -51,6 +85,7 @@ def analyze_pool_episode_attribution(pool: str, path: Path) -> PoolEpisodeAttrib
         zero_collect_closes=status_counts.get(CLOSE_ATTRIBUTION_ZERO_COLLECT, 0),
         unmatched_collect_rows=attribution.unmatched_collect_rows,
         unmatched_collect_capital=attribution.unmatched_collect_capital,
+        sample_summaries=_sample_summaries(attribution.episodes),
     )
 
 
@@ -74,6 +109,30 @@ def render_markdown(summaries: Sequence[PoolEpisodeAttributionSummary]) -> str:
             f"{summary.unmatched_collect_rows} | "
             f"{_format_decimal(summary.unmatched_collect_capital)} |"
         )
+
+    lines.extend(
+        [
+            "",
+            "## PnL Sample Tiers",
+            "",
+            "| Pool | Sample | Episodes | Opening capital | Closing capital | "
+            "PnL | Return on capital |",
+            "|---|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for summary in summaries:
+        for sample_name in _SAMPLE_ORDER:
+            sample = summary.sample_summaries[sample_name]
+            lines.append(
+                "| "
+                f"`{summary.pool}` | "
+                f"`{sample.name}` | "
+                f"{sample.episodes} | "
+                f"{_format_decimal(sample.opening_capital)} | "
+                f"{_format_decimal(sample.closing_capital)} | "
+                f"{_format_decimal(sample.pnl)} | "
+                f"{_format_percent(sample.return_on_capital)} |"
+            )
 
     lines.extend(["", "## Status Counts", ""])
     for summary in summaries:
@@ -127,6 +186,51 @@ def _counts(values: Iterable[str]) -> dict[str, int]:
     return counts
 
 
+def _sample_summaries(episodes: Sequence[PaperLPEpisode]) -> dict[str, PnLSampleSummary]:
+    return {
+        STRICT_SAMPLE: _pnl_summary(
+            STRICT_SAMPLE,
+            [
+                episode
+                for episode in episodes
+                if episode.close_attribution_status in _STRICT_CLOSE_STATUSES
+            ],
+        ),
+        PAPER_COMPATIBLE_SAMPLE: _pnl_summary(
+            PAPER_COMPATIBLE_SAMPLE,
+            [
+                episode
+                for episode in episodes
+                if episode.close_attribution_status in _PAPER_COMPATIBLE_CLOSE_STATUSES
+            ],
+        ),
+        LOWER_BOUND_SAMPLE: _pnl_summary(LOWER_BOUND_SAMPLE, episodes),
+        ZERO_COLLECT_EXCLUDED_SAMPLE: _pnl_summary(
+            ZERO_COLLECT_EXCLUDED_SAMPLE,
+            [
+                episode
+                for episode in episodes
+                if episode.close_attribution_status == CLOSE_ATTRIBUTION_ZERO_COLLECT
+            ],
+        ),
+    }
+
+
+def _pnl_summary(name: str, episodes: Sequence[PaperLPEpisode]) -> PnLSampleSummary:
+    opening_capital = sum((episode.opening_capital for episode in episodes), Decimal("0"))
+    closing_capital = sum((episode.closing_capital for episode in episodes), Decimal("0"))
+    pnl = sum((episode.pnl for episode in episodes), Decimal("0"))
+    return_on_capital = None if opening_capital == 0 else pnl / opening_capital
+    return PnLSampleSummary(
+        name=name,
+        episodes=len(episodes),
+        opening_capital=opening_capital,
+        closing_capital=closing_capital,
+        pnl=pnl,
+        return_on_capital=return_on_capital,
+    )
+
+
 def _source_counts(values: Iterable[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -139,6 +243,15 @@ def _source_counts(values: Iterable[str]) -> dict[str, int]:
 
 def _format_decimal(value: Decimal) -> str:
     return format(value.normalize(), "f")
+
+
+def _format_percent(value: Decimal | None) -> str:
+    if value is None:
+        return "n/a"
+    percent = (value * Decimal("100")).quantize(Decimal("0.0001"))
+    if percent == 0:
+        return "0%"
+    return f"{format(percent.normalize(), 'f')}%"
 
 
 if __name__ == "__main__":

@@ -9,17 +9,13 @@ from pathlib import Path
 from typing import Mapping, Protocol
 
 from web3 import Web3
-
-try:
-    from web3.middleware import ExtraDataToPOAMiddleware as POA_MIDDLEWARE
-except ImportError:  # web3.py v6
-    from web3.middleware import geth_poa_middleware as POA_MIDDLEWARE
+from web3.middleware import ExtraDataToPOAMiddleware
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backtester.v4_export import ExportPoolConfig, POOL_CONFIGS
+from backtester.v4_export import POOL_CONFIGS, ExportPoolConfig
 from engine.web3_utils import as_hexstr, coerce_hex_str
 
 RECEIPT_FIELDS = [
@@ -108,7 +104,7 @@ def build_web3(chain: str) -> Web3:
         raise ValueError(f"missing RPC URL for chain={chain}")
     web3_client = Web3(Web3.HTTPProvider(config.rpc_url))
     if chain == "bsc":
-        web3_client.middleware_onion.inject(POA_MIDDLEWARE, layer=0)
+        web3_client.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return web3_client
 
 

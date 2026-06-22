@@ -657,6 +657,48 @@ def test_decode_decrease_take_pair_combines_burn_and_collect_amounts():
     assert token_state[55].liquidity_after == 600
 
 
+def test_decode_decrease_take_pair_resolves_msg_sender_recipient():
+    config = POOL_CONFIGS["uni-base"]
+    sender = "0x00000000000000000000000000000000000000BB"
+    action_recipient = "0x0000000000000000000000000000000000000001"
+    decrease_param = encode(["uint256", "uint256", "uint128", "uint128", "bytes"], [55, 400, 0, 0, b""])
+    take_pair_param = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, action_recipient],
+    )
+    tx = {
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease_param, take_pair_param],
+        ),
+        "hash": "0x" + "25" * 32,
+        "blockNumber": 100,
+        "from": sender,
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(8),
+            _erc20_transfer_log(token=config.token0_address, to_address=sender, amount_raw=2_500_000, log_index=9),
+            _erc20_transfer_log(token=config.token1_address, to_address=sender, amount_raw=1_250_000, log_index=10),
+        ],
+    }
+    token_state = {
+        55: LedgerPositionState(
+            pool_id=config.pool_id,
+            tick_lower=-120,
+            tick_upper=120,
+            liquidity_after=1_000,
+        )
+    }
+
+    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, token_state)
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "burn_collect"
+    assert actions[0].collect_amount0 == Decimal("2.5")
+    assert actions[0].collect_amount1 == Decimal("1.25")
+
+
 def test_decode_decrease_resolves_preexisting_position_before_action_block():
     config = POOL_CONFIGS["uni-base"]
     recipient = "0x00000000000000000000000000000000000000AA"
