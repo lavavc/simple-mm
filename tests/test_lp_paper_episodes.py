@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from backtester.lp_paper_episodes import (
     PaperLPEpisode,
+    analyze_paper_episode_attribution,
     classify_position_type,
     paper_win_score,
     reconstruct_paper_episodes,
@@ -106,6 +107,8 @@ def test_partial_burn_closes_first_position_and_splits_payout() -> None:
     assert episodes[0].opening_capital == Decimal("20")
     assert episodes[0].closing_capital == Decimal("60")
     assert episodes[0].pnl == Decimal("40")
+    assert episodes[0].close_attribution_status == "exact_collect"
+    assert episodes[0].close_attribution_source == "exact_collect"
 
 
 def test_overburn_is_capped_to_observed_open_liquidity() -> None:
@@ -139,6 +142,7 @@ def test_overburn_is_capped_to_observed_open_liquidity() -> None:
     assert len(episodes) == 1
     assert episodes[0].closed_liquidity == Decimal("100")
     assert episodes[0].closing_capital == Decimal("60")
+    assert episodes[0].close_attribution_status == "exact_collect"
 
 
 def test_ambiguous_opening_rows_are_excluded_from_exact_pnl_reconstruction() -> None:
@@ -220,6 +224,141 @@ def test_partial_lot_realized_payout_is_carried_until_full_close() -> None:
     assert episodes[1].opening_capital == Decimal("40")
     assert episodes[1].closing_capital == Decimal("60")
     assert episodes[1].pnl == Decimal("20")
+
+
+def test_same_transaction_collect_row_funds_liquidity_close() -> None:
+    rows = [
+        ledger_row(
+            "mint",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=100,
+            amount0=Decimal("10"),
+            amount1=Decimal("10"),
+            timestamp_ms=1000,
+        ),
+        ledger_row(
+            "burn",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=-100,
+            timestamp_ms=3000,
+        ),
+        ledger_row(
+            "collect",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=0,
+            collect_amount0=Decimal("15"),
+            collect_amount1=Decimal("15"),
+            timestamp_ms=3000,
+        ),
+    ]
+
+    episodes = reconstruct_paper_episodes(rows)
+
+    assert len(episodes) == 1
+    assert episodes[0].opening_capital == Decimal("20")
+    assert episodes[0].closing_capital == Decimal("30")
+    assert episodes[0].pnl == Decimal("10")
+    assert episodes[0].close_attribution_status == "same_tx_collect"
+    assert episodes[0].close_attribution_source == "same_tx_collect"
+
+
+def test_interim_collect_row_is_carried_until_lot_closes() -> None:
+    rows = [
+        ledger_row(
+            "mint",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=100,
+            amount0=Decimal("10"),
+            amount1=Decimal("10"),
+            timestamp_ms=1000,
+        ),
+        ledger_row(
+            "collect",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=0,
+            collect_amount0=Decimal("15"),
+            collect_amount1=Decimal("15"),
+            timestamp_ms=2000,
+        ),
+        ledger_row(
+            "burn_collect",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=-100,
+            timestamp_ms=3000,
+        ),
+    ]
+
+    episodes = reconstruct_paper_episodes(rows)
+
+    assert len(episodes) == 1
+    assert episodes[0].opening_capital == Decimal("20")
+    assert episodes[0].closing_capital == Decimal("30")
+    assert episodes[0].pnl == Decimal("10")
+    assert episodes[0].close_attribution_status == "interim_collect"
+    assert episodes[0].close_attribution_source == "interim_collect"
+
+
+def test_zero_collect_close_is_flagged() -> None:
+    rows = [
+        ledger_row(
+            "mint",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=100,
+            amount0=Decimal("10"),
+            amount1=Decimal("10"),
+            timestamp_ms=1000,
+        ),
+        ledger_row(
+            "burn_collect",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=-100,
+            timestamp_ms=3000,
+        ),
+    ]
+
+    episodes = reconstruct_paper_episodes(rows)
+
+    assert len(episodes) == 1
+    assert episodes[0].closing_capital == Decimal("0")
+    assert episodes[0].close_attribution_status == "zero_collect_close"
+    assert episodes[0].close_attribution_source == "none"
+
+
+def test_unmatched_collect_rows_are_reported() -> None:
+    rows = [
+        ledger_row(
+            "collect",
+            owner="0xlp",
+            tick_lower=-100,
+            tick_upper=100,
+            liquidity_delta=0,
+            collect_amount0=Decimal("15"),
+            collect_amount1=Decimal("15"),
+            timestamp_ms=2000,
+        ),
+    ]
+
+    attribution = analyze_paper_episode_attribution(rows)
+
+    assert attribution.episodes == []
+    assert attribution.unmatched_collect_rows == 1
+    assert attribution.unmatched_collect_capital == Decimal("30")
 
 
 def test_position_taxonomy_and_duration_weighted_win_score() -> None:

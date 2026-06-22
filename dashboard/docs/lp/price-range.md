@@ -81,18 +81,18 @@ cost.
 
 ## Pool fees and their effects
 
-Each pool has a fee tier (`pool_fee`), charged on every swap through the LP's active range:
+Each pool has a fixed fee tier, charged on every swap through the LP's active range:
 
-| Venue | `pool_fee` |
-|-------|-----------|
-| `uni-base` | — (V4 hook-based, set at pool creation) |
-| `uni-bsc` | — (V4 hook-based, set at pool creation) |
+| Venue | `pool_fee` | Fee rate |
+|-------|-----------|----------|
+| `uni-base` | `1500` | `0.15%` / `15 bps` |
+| `uni-bsc` | `1200` | `0.12%` / `12 bps` |
 
 Pool fee has a dual role:
 
 **As LP income**: every swap earns the LP a share of the fee proportional to their liquidity. Narrower ranges concentrate liquidity and earn more per unit of capital deployed, but go out-of-range more often.
 
-**As arb cost**: pool fee is paid by the arb engine on every DEX swap leg. Higher fees reduce arb profitability and raise the minimum spread required for a trade to be worth executing. This creates a natural tension: the same fee that earns LP income also slows down arb execution.
+**As arb cost**: pool fee is paid by the arb engine on every DEX swap leg. Higher fees reduce arb profitability and raise the minimum spread required for a trade to be worth executing. This creates a natural tension: the same fee that earns LP income also slows down arb execution. The two UniV4 pools do not share a fee tier, so Base and BSC should be analyzed separately.
 
 **Effect on trade frequency and size**: in a tighter-fee pool, more arb opportunities cross the profitability threshold, but at smaller sizes. In a higher-fee pool, only large spread events are worth trading, but each trade is more profitable net of LP fee income.
 

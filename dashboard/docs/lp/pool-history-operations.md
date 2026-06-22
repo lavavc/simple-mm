@@ -232,6 +232,27 @@ python3 scripts/export_lp_paper_episodes.py \
   --out data/derived/uni_bsc_paper_episodes.csv
 ```
 
+Run close-side attribution QA after rebuilding episodes:
+
+```bash
+python3 scripts/report_lp_paper_episode_attribution.py \
+  --ledger uni-base=data/derived/uni_base_lp_ledger.csv \
+  --ledger uni-bsc=data/derived/uni_bsc_lp_ledger.csv \
+  --out data/quality/lp_paper_episode_attribution.md
+```
+
+Paper episode reconstruction opens lots only from exact-attributed mint/increase
+rows. Burn or burn_collect rows close those lots FIFO by pool, owner, and tick
+range. Collect proceeds are included in realized closing capital when they appear
+on the close row, on a zero-delta collect row in the same transaction as the
+close, or on an interim zero-delta collect row while the exact lot is still
+open. Collect rows without a matching exact open lot are ignored for exact-PnL
+studies rather than being inferred onto an unknown basis. Episode exports include
+`close_attribution_status` and `close_attribution_source` so reports can separate
+direct close-row proceeds (`exact_collect`), same-transaction collect rows
+(`same_tx_collect`), interim collect rows (`interim_collect`), mixed-source
+closes, zero-proceed closes, and unmatched collect capital.
+
 After LP ledgers exist, export gas sidecars:
 
 ```bash

@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from typing import Deque, Sequence
 
 from backtester.clmm_math import sqrt_price_x96_to_native_price, tick_to_sqrt_price_x96
-from backtester.v4_export import ExportPoolConfig, POOL_CONFIGS
-from backtester.v4_lp_ledger import LPLedgerRow, OPENING_ATTRIBUTION_EXACT
-
+from backtester.v4_export import POOL_CONFIGS, ExportPoolConfig
+from backtester.v4_lp_ledger import OPENING_ATTRIBUTION_EXACT, LPLedgerRow
 
 _EXACT_OPENING_ATTRIBUTION_STATUSES = {OPENING_ATTRIBUTION_EXACT, "fixture_exact"}
+CLOSE_ATTRIBUTION_EXACT_COLLECT = "exact_collect"
+CLOSE_ATTRIBUTION_SAME_TX_COLLECT = "same_tx_collect"
+CLOSE_ATTRIBUTION_INTERIM_COLLECT = "interim_collect"
+CLOSE_ATTRIBUTION_MIXED = "mixed_collect"
+CLOSE_ATTRIBUTION_ZERO_COLLECT = "zero_collect_close"
+CLOSE_ATTRIBUTION_NONE = "none"
+_CLOSE_ATTRIBUTION_SOURCE_ORDER = (
+    CLOSE_ATTRIBUTION_EXACT_COLLECT,
+    CLOSE_ATTRIBUTION_SAME_TX_COLLECT,
+    CLOSE_ATTRIBUTION_INTERIM_COLLECT,
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +43,15 @@ class PaperLPEpisode:
     closed_liquidity: Decimal
     position_type: int | None
     delta_traversed: Decimal | None
+    close_attribution_status: str = CLOSE_ATTRIBUTION_ZERO_COLLECT
+    close_attribution_source: str = CLOSE_ATTRIBUTION_NONE
+
+
+@dataclass(frozen=True)
+class PaperEpisodeAttribution:
+    episodes: list[PaperLPEpisode]
+    unmatched_collect_rows: int
+    unmatched_collect_capital: Decimal
 
 
 @dataclass
@@ -47,16 +66,37 @@ class _OpenLot:
     remaining_liquidity: Decimal
     opening_capital_remaining: Decimal
     closing_capital_realized: Decimal
+    closing_attribution_sources: set[str]
     start_price: Decimal
     lower_price: Decimal
     upper_price: Decimal
 
 
 def reconstruct_paper_episodes(rows: Sequence[LPLedgerRow]) -> list[PaperLPEpisode]:
+    return analyze_paper_episode_attribution(rows).episodes
+
+
+def analyze_paper_episode_attribution(rows: Sequence[LPLedgerRow]) -> PaperEpisodeAttribution:
+    sorted_rows = sorted(rows, key=_row_sort_key)
+    same_tx_collect_capital = _same_tx_zero_delta_collect_capital(sorted_rows)
+    same_tx_close_liquidity = _same_tx_close_liquidity(sorted_rows)
     open_lots: dict[tuple[str, str, int, int], Deque[_OpenLot]] = {}
     episodes: list[PaperLPEpisode] = []
-    for row in sorted(rows, key=_row_sort_key):
+    unmatched_collect_rows = 0
+    unmatched_collect_capital = Decimal("0")
+    for row in sorted_rows:
         if row.liquidity_delta == 0:
+            if (
+                row.collect_amount0 != 0
+                or row.collect_amount1 != 0
+            ) and _tx_position_key(row) not in same_tx_close_liquidity:
+                if not _apply_interim_collect_to_open_lots(row, open_lots):
+                    unmatched_collect_rows += 1
+                    unmatched_collect_capital += _capital_value(
+                        row,
+                        row.collect_amount0,
+                        row.collect_amount1,
+                    )
             continue
         owner = _required_owner(row)
         tick_lower = _required_tick(row.tick_lower, "tick_lower", row)
@@ -67,17 +107,31 @@ def reconstruct_paper_episodes(rows: Sequence[LPLedgerRow]) -> list[PaperLPEpiso
         if row.liquidity_delta > 0:
             if row.amount_attribution_status not in _EXACT_OPENING_ATTRIBUTION_STATUSES:
                 continue
-            open_lots.setdefault(key, deque()).append(_open_lot(row, pool, owner, tick_lower, tick_upper))
+            open_lots.setdefault(key, deque()).append(
+                _open_lot(row, pool, owner, tick_lower, tick_upper)
+            )
             continue
 
         lots = open_lots.get(key)
         if not lots:
+            unmatched_capital = _unmatched_close_collect_capital(
+                row,
+                same_tx_collect_capital,
+            )
+            if unmatched_capital != 0:
+                unmatched_collect_rows += 1
+                unmatched_collect_capital += unmatched_capital
             continue
         observed_liquidity = sum((lot.remaining_liquidity for lot in lots), Decimal("0"))
         liquidity_to_close = min(Decimal(str(abs(row.liquidity_delta))), observed_liquidity)
         if liquidity_to_close <= 0:
             continue
-        collect_capital = _capital_value(row, row.collect_amount0, row.collect_amount1)
+        close_collects = _close_collect_sources(
+            row,
+            same_tx_collect_capital,
+            same_tx_close_liquidity,
+        )
+        collect_capital = sum((capital for _source, capital in close_collects), Decimal("0"))
         remaining_to_close = liquidity_to_close
         while lots and remaining_to_close > 0:
             lot = lots[0]
@@ -88,6 +142,12 @@ def reconstruct_paper_episodes(rows: Sequence[LPLedgerRow]) -> list[PaperLPEpiso
             opening_capital_consumed = lot.opening_capital_remaining * lot_fraction
             closing_capital_consumed = collect_capital * burn_fraction
             lot.closing_capital_realized += closing_capital_consumed
+            if closing_capital_consumed != 0:
+                lot.closing_attribution_sources.update(
+                    source
+                    for source, capital in close_collects
+                    if capital != 0
+                )
             lot.remaining_liquidity -= closed_liquidity
             lot.opening_capital_remaining -= opening_capital_consumed
             remaining_to_close -= closed_liquidity
@@ -95,6 +155,9 @@ def reconstruct_paper_episodes(rows: Sequence[LPLedgerRow]) -> list[PaperLPEpiso
                 closing_capital = lot.closing_capital_realized
                 pnl = closing_capital - lot.opening_capital
                 delta_traversed = row.cngn_usd_price_at_event - lot.start_price
+                close_status, close_source = _close_attribution(
+                    lot.closing_attribution_sources
+                )
                 episodes.append(
                     PaperLPEpisode(
                         pool=lot.pool,
@@ -119,12 +182,18 @@ def reconstruct_paper_episodes(rows: Sequence[LPLedgerRow]) -> list[PaperLPEpiso
                             pnl,
                         ),
                         delta_traversed=delta_traversed,
+                        close_attribution_status=close_status,
+                        close_attribution_source=close_source,
                     )
                 )
                 lots.popleft()
         if not lots:
             del open_lots[key]
-    return episodes
+    return PaperEpisodeAttribution(
+        episodes=episodes,
+        unmatched_collect_rows=unmatched_collect_rows,
+        unmatched_collect_capital=unmatched_collect_capital,
+    )
 
 
 def classify_position_type(
@@ -186,9 +255,132 @@ def _open_lot(
         remaining_liquidity=Decimal(str(row.liquidity_delta)),
         opening_capital_remaining=opening_capital,
         closing_capital_realized=Decimal("0"),
+        closing_attribution_sources=set(),
         start_price=row.cngn_usd_price_at_event,
         lower_price=lower_price,
         upper_price=upper_price,
+    )
+
+
+def _same_tx_zero_delta_collect_capital(
+    rows: Sequence[LPLedgerRow],
+) -> dict[tuple[str, str, int, int, str], Decimal]:
+    collect_capital: dict[tuple[str, str, int, int, str], Decimal] = defaultdict(Decimal)
+    for row in rows:
+        if row.liquidity_delta != 0:
+            continue
+        if row.collect_amount0 == 0 and row.collect_amount1 == 0:
+            continue
+        collect_capital[_tx_position_key(row)] += _capital_value(
+            row,
+            row.collect_amount0,
+            row.collect_amount1,
+        )
+    return dict(collect_capital)
+
+
+def _same_tx_close_liquidity(
+    rows: Sequence[LPLedgerRow],
+) -> dict[tuple[str, str, int, int, str], Decimal]:
+    close_liquidity: dict[tuple[str, str, int, int, str], Decimal] = defaultdict(Decimal)
+    for row in rows:
+        if row.liquidity_delta >= 0:
+            continue
+        close_liquidity[_tx_position_key(row)] += Decimal(str(abs(row.liquidity_delta)))
+    return dict(close_liquidity)
+
+
+def _same_tx_collect_capital_for_close(
+    row: LPLedgerRow,
+    same_tx_collect_capital: dict[tuple[str, str, int, int, str], Decimal],
+    same_tx_close_liquidity: dict[tuple[str, str, int, int, str], Decimal],
+) -> Decimal:
+    key = _tx_position_key(row)
+    collect_capital = same_tx_collect_capital.get(key, Decimal("0"))
+    if collect_capital == 0:
+        return Decimal("0")
+    close_liquidity = same_tx_close_liquidity[key]
+    if close_liquidity <= 0:
+        raise ValueError(f"non-positive same-tx close liquidity for token_id={row.token_id}")
+    return collect_capital * Decimal(str(abs(row.liquidity_delta))) / close_liquidity
+
+
+def _close_collect_sources(
+    row: LPLedgerRow,
+    same_tx_collect_capital: dict[tuple[str, str, int, int, str], Decimal],
+    same_tx_close_liquidity: dict[tuple[str, str, int, int, str], Decimal],
+) -> list[tuple[str, Decimal]]:
+    sources: list[tuple[str, Decimal]] = []
+    direct_collect_capital = _capital_value(row, row.collect_amount0, row.collect_amount1)
+    if direct_collect_capital != 0:
+        sources.append((CLOSE_ATTRIBUTION_EXACT_COLLECT, direct_collect_capital))
+    same_tx_collect = _same_tx_collect_capital_for_close(
+        row,
+        same_tx_collect_capital,
+        same_tx_close_liquidity,
+    )
+    if same_tx_collect != 0:
+        sources.append((CLOSE_ATTRIBUTION_SAME_TX_COLLECT, same_tx_collect))
+    return sources
+
+
+def _unmatched_close_collect_capital(
+    row: LPLedgerRow,
+    same_tx_collect_capital: dict[tuple[str, str, int, int, str], Decimal],
+) -> Decimal:
+    return (
+        _capital_value(row, row.collect_amount0, row.collect_amount1)
+        + same_tx_collect_capital.get(
+            _tx_position_key(row),
+            Decimal("0"),
+        )
+    )
+
+
+def _apply_interim_collect_to_open_lots(
+    row: LPLedgerRow,
+    open_lots: dict[tuple[str, str, int, int], Deque[_OpenLot]],
+) -> bool:
+    owner = _required_owner(row)
+    tick_lower = _required_tick(row.tick_lower, "tick_lower", row)
+    tick_upper = _required_tick(row.tick_upper, "tick_upper", row)
+    pool = _pool_name(row)
+    lots = open_lots.get((pool, owner, tick_lower, tick_upper))
+    if not lots:
+        return False
+    collect_capital = _capital_value(row, row.collect_amount0, row.collect_amount1)
+    observed_liquidity = sum((lot.remaining_liquidity for lot in lots), Decimal("0"))
+    if observed_liquidity <= 0:
+        raise ValueError(f"non-positive observed liquidity for collect token_id={row.token_id}")
+    for lot in lots:
+        collected_capital = collect_capital * lot.remaining_liquidity / observed_liquidity
+        lot.closing_capital_realized += collected_capital
+        if collected_capital != 0:
+            lot.closing_attribution_sources.add(CLOSE_ATTRIBUTION_INTERIM_COLLECT)
+    return True
+
+
+def _close_attribution(sources: set[str]) -> tuple[str, str]:
+    ordered_sources = [
+        source
+        for source in _CLOSE_ATTRIBUTION_SOURCE_ORDER
+        if source in sources
+    ]
+    if not ordered_sources:
+        return CLOSE_ATTRIBUTION_ZERO_COLLECT, CLOSE_ATTRIBUTION_NONE
+    source_text = "|".join(ordered_sources)
+    if len(ordered_sources) == 1:
+        return ordered_sources[0], source_text
+    return CLOSE_ATTRIBUTION_MIXED, source_text
+
+
+def _tx_position_key(row: LPLedgerRow) -> tuple[str, str, int, int, str]:
+    return (
+        _pool_name(row),
+        _required_owner(row),
+        _required_tick(row.tick_lower, "tick_lower", row),
+        _required_tick(row.tick_upper, "tick_upper", row),
+        row.tx_hash.lower(),
     )
 
 

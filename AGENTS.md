@@ -25,6 +25,8 @@ In EngineRuntime, venues and lp_managers are parallel dicts keyed by venue name.
 Portfolio totals are governed by engine/market/portfolio_registry.py. Unregistered positions must not silently affect global totals.
 The engine must stay splittable into three packages (Prices/dashboard, LP, Arbitrage). Cross-subsystem dependencies need explicit justification.
 LP core decisions (range setting, rerange, lifecycle) must not depend on arb or blended fair value.
+Pool Data Methodology
+Historical V4 pool CSVs straddle a `cngn_usd_price` methodology change, so that column is not temporally uniform. Legacy swap rows before the divide store realized swap amount-ratio prices; newer rows store sqrt-derived marginal pool prices. Treat `sqrt_price_x96` as the canonical marginal pool price for research/backtests, preserve stored `cngn_usd_price` only as classified diagnostic metadata, and guard analyses around the known first sqrt-mid blocks: Base `45848255`, BSC `97799490`.
 Code Style
 No safe defaults for anything. Fail quickly and alert.
 No defensive coding, dead abstractions, or compatibility shims.

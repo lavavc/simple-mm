@@ -3,10 +3,20 @@ from dataclasses import fields
 from decimal import Decimal
 
 from backtester.v4_lp_ledger import LPLedgerRow
-from scripts.export_lp_paper_episodes import export_paper_episodes
+from scripts.report_lp_paper_episode_attribution import (
+    analyze_pool_episode_attribution,
+    render_markdown,
+)
 
 
-def _ledger_row(event_type: str, liquidity_delta: str, timestamp_ms: int) -> dict[str, str]:
+def _ledger_row(
+    event_type: str,
+    liquidity_delta: str,
+    timestamp_ms: int,
+    *,
+    collect_amount0: str = "0",
+    collect_amount1: str = "0",
+) -> dict[str, str]:
     row = {
         "chain": "base",
         "pool_id": "",
@@ -35,8 +45,8 @@ def _ledger_row(event_type: str, liquidity_delta: str, timestamp_ms: int) -> dic
         ),
         "amount0_raw": "10",
         "amount1_raw": "10",
-        "collect_amount0": "15" if Decimal(liquidity_delta) < 0 else "0",
-        "collect_amount1": "15" if Decimal(liquidity_delta) < 0 else "0",
+        "collect_amount0": collect_amount0,
+        "collect_amount1": collect_amount1,
         "sqrt_price_x96_at_event": str(2**96),
         "tick_at_event": "0",
         "cngn_usd_price_at_event": "1",
@@ -45,23 +55,24 @@ def _ledger_row(event_type: str, liquidity_delta: str, timestamp_ms: int) -> dic
     return {field.name: row[field.name] for field in fields(LPLedgerRow)}
 
 
-def test_export_paper_episodes_writes_reconstructed_episode_csv(tmp_path):
+def test_pool_episode_attribution_report_counts_sources_and_unmatched_collects(tmp_path):
     ledger = tmp_path / "ledger.csv"
-    output = tmp_path / "episodes.csv"
     fieldnames = [field.name for field in fields(LPLedgerRow)]
     with ledger.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerow(_ledger_row("mint", "100", 1000))
+        writer.writerow(_ledger_row("collect", "0", 2000, collect_amount0="5", collect_amount1="5"))
         writer.writerow(_ledger_row("burn_collect", "-100", 3000))
+        writer.writerow(_ledger_row("collect", "0", 4000, collect_amount0="3", collect_amount1="3"))
 
-    count = export_paper_episodes(ledger, output)
+    summary = analyze_pool_episode_attribution("uni-base", ledger)
+    markdown = render_markdown([summary])
 
-    rows = list(csv.DictReader(output.open()))
-    assert count == 1
-    assert rows[0]["pool"] == "uni-base"
-    assert rows[0]["opening_capital"] == "20"
-    assert rows[0]["closing_capital"] == "30"
-    assert rows[0]["pnl"] == "10"
-    assert rows[0]["close_attribution_status"] == "exact_collect"
-    assert rows[0]["close_attribution_source"] == "exact_collect"
+    assert summary.episodes == 1
+    assert summary.source_counts == {"interim_collect": 1}
+    assert summary.status_counts == {"interim_collect": 1}
+    assert summary.zero_collect_closes == 0
+    assert summary.unmatched_collect_rows == 1
+    assert summary.unmatched_collect_capital == Decimal("6")
+    assert "| `uni-base` | 1 | 0 | 0 | 1 | 0 | 1 | 6 |" in markdown
