@@ -3,6 +3,11 @@
 .venv/
 __pycache__/
 *.pyc
+.DS_Store
+*.Rhistory
+tmp/
+literature/03_Backtesting_Basics.pdf
+literature/04-Parameter_Reversion_And_Cones.pdf
 data/
 .coverage
 engine_full.log
