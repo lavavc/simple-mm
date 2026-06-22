@@ -825,7 +825,7 @@ Create `data/derived/README.md` with exact filenames:
 
 Add the exact run commands to `dashboard/docs/lp/pool-history-operations.md` under `Research Methodology Guardrails`.
 
-- [ ] **Step 3: Run non-network tests**
+- [x] **Step 3: Run non-network tests**
 
 Run:
 
@@ -846,11 +846,11 @@ python -m pytest -q \
 
 Expected: PASS.
 
-Verification note: The exact command currently runs 54 tests and then fails only
+Verification note: The exact command currently runs 73 tests and then fails only
 on `tests/test_export_fair_price_markouts.py::test_load_price_snapshots_reads_metadata_from_sqlite`
 because this Python 3.12 environment does not have an active async pytest
 plugin (`pytest-asyncio` mark is unknown). The same non-network suite with that
-one plugin-gated test deselected passed: 57 passed, 1 deselected.
+one plugin-gated test deselected passed: 72 passed, 1 deselected.
 
 - [x] **Step 4: Run first read-only reports on a CSV snapshot**
 
@@ -864,6 +864,10 @@ snapshot inputs. Base replay produced 1,596 rows and 1,508 feature rows; BSC
 replay produced 3,119 rows and 3,105 feature rows. Replay quality reports show
 `unexplained_price_mismatch_count=0`, `duplicate_events=0`, and
 `monotonic_blocks=True` for both pools.
+
+Receipt sidecars were also generated from the current rebuilt LP ledgers:
+`uni_base_tx_receipts.csv` has 36 receipt rows and `uni_bsc_tx_receipts.csv`
+has 12 receipt rows.
 
 ---
 
