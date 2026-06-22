@@ -335,16 +335,19 @@ def _candidate_modify_liquidity_tx_hashes(
     from_block: int,
     to_block: int,
 ) -> list[str]:
-    logs = _fetch_logs_with_debug(
-        w3,
-        {
-            "address": Web3.to_checksum_address(config.position_manager),
-            "fromBlock": from_block,
-            "toBlock": to_block,
-        },
-        context=f"[{config.name}] position manager logs {from_block:,}->{to_block:,}",
-    )
-    tx_hashes = {coerce_hex_str(log["transactionHash"]) for log in logs if log.get("transactionHash")}
+    tx_hashes: set[str] = set()
+    for chunk_start in range(from_block, to_block + 1, config.chunk_size):
+        chunk_end = min(chunk_start + config.chunk_size - 1, to_block)
+        logs = _fetch_logs_with_debug(
+            w3,
+            {
+                "address": Web3.to_checksum_address(config.position_manager),
+                "fromBlock": chunk_start,
+                "toBlock": chunk_end,
+            },
+            context=f"[{config.name}] position manager logs {chunk_start:,}->{chunk_end:,}",
+        )
+        tx_hashes.update(coerce_hex_str(log["transactionHash"]) for log in logs if log.get("transactionHash"))
     return sorted(tx_hashes)
 
 

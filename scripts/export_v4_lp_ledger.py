@@ -9,7 +9,7 @@ import sys
 from dataclasses import asdict, fields
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from web3 import Web3
 
@@ -43,6 +43,10 @@ from backtester.v4_lp_ledger import (
     decode_liquidity_actions_for_tx,
     decode_ownership_events_from_receipt,
 )
+from engine.web3_utils import coerce_hex_str
+
+
+_LP_CANDIDATE_EVENT_TYPES = frozenset({"mint", "burn", "collect"})
 
 
 def export_fixture_lp_ledger(
@@ -74,6 +78,7 @@ def export_rpc_lp_ledger(
     start_block: int,
     end_block: int,
     output_path: Path,
+    candidate_tx_hashes: Sequence[str] | None = None,
 ) -> int:
     config = POOL_CONFIGS[pool]
     w3 = _make_web3(config)
@@ -82,6 +87,7 @@ def export_rpc_lp_ledger(
         config,
         start_block,
         end_block,
+        candidate_tx_hashes,
     )
     price_events = _replayed_price_events_for_actions(
         w3,
@@ -100,6 +106,7 @@ def _decode_rpc_lp_inputs(
     config: Any,
     start_block: int,
     end_block: int,
+    candidate_tx_hashes: Sequence[str] | None,
 ) -> tuple[list[DecodedLiquidityAction], list[OwnershipEvent]]:
     position_manager = w3.eth.contract(
         address=Web3.to_checksum_address(config.position_manager),
@@ -121,7 +128,12 @@ def _decode_rpc_lp_inputs(
         )
 
     tx_receipts = []
-    for tx_hash in _candidate_modify_liquidity_tx_hashes(w3, config, start_block, end_block):
+    tx_hashes = (
+        list(candidate_tx_hashes)
+        if candidate_tx_hashes is not None
+        else _candidate_modify_liquidity_tx_hashes(w3, config, start_block, end_block)
+    )
+    for tx_hash in tx_hashes:
         tx = dict(w3.eth.get_transaction(tx_hash))
         receipt = dict(w3.eth.get_transaction_receipt(tx_hash))
         tx_receipts.append((tx, receipt))
@@ -247,6 +259,26 @@ def _pool_replay_events(
     return events
 
 
+def _candidate_tx_hashes_from_csv(path: Path, start_block: int, end_block: int) -> list[str]:
+    tx_hashes: set[str] = set()
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        required_fields = {"block_number", "event_type", "tx_hash"}
+        if reader.fieldnames is None or not required_fields.issubset(reader.fieldnames):
+            raise ValueError(f"candidate tx CSV missing required fields {sorted(required_fields)}: {path}")
+        for row in reader:
+            if row["event_type"] not in _LP_CANDIDATE_EVENT_TYPES:
+                continue
+            block_number = int(row["block_number"])
+            if block_number < start_block or block_number > end_block:
+                continue
+            tx_hash = row["tx_hash"].strip()
+            if not tx_hash:
+                continue
+            tx_hashes.add(coerce_hex_str(tx_hash))
+    return sorted(tx_hashes)
+
+
 def _read_json_list(path: Path) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text())
     if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
@@ -293,6 +325,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-block", required=True, type=int)
     parser.add_argument("--end-block", required=True, type=int)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--candidate-tx-csv", type=Path)
     parser.add_argument("--decoded-actions", type=Path)
     parser.add_argument("--ownership-events", type=Path)
     parser.add_argument("--price-events", type=Path)
@@ -316,7 +349,18 @@ def main() -> None:
             "provide all fixture inputs together: --decoded-actions, "
             "--ownership-events, and --price-events"
         )
-    count = export_rpc_lp_ledger(args.pool, args.start_block, args.end_block, args.out)
+    candidate_tx_hashes = (
+        _candidate_tx_hashes_from_csv(args.candidate_tx_csv, args.start_block, args.end_block)
+        if args.candidate_tx_csv is not None
+        else None
+    )
+    count = export_rpc_lp_ledger(
+        args.pool,
+        args.start_block,
+        args.end_block,
+        args.out,
+        candidate_tx_hashes=candidate_tx_hashes,
+    )
     print(f"wrote {count} LP ledger rows to {args.out}")
 
 

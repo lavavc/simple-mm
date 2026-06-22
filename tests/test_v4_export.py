@@ -304,6 +304,28 @@ class TestV4Export:
         tx_hashes = _candidate_modify_liquidity_tx_hashes(object(), POOL_CONFIGS["uni-base"], 1, 100)
         assert tx_hashes == ["0x" + "11" * 32, "0x" + "22" * 32]
 
+    def test_candidate_modify_liquidity_tx_hashes_chunks_block_ranges(self, monkeypatch):
+        calls = []
+
+        def _fake_fetch_logs(_w3, params, context=None):
+            calls.append((params["fromBlock"], params["toBlock"], context))
+            if params["fromBlock"] == 1:
+                return [{"transactionHash": "0x" + "11" * 32}]
+            if params["fromBlock"] == 5_001:
+                return [{"transactionHash": "0x" + "22" * 32}]
+            return [{"transactionHash": "0x" + "11" * 32}]
+
+        monkeypatch.setattr("backtester.v4_export._fetch_logs_with_debug", _fake_fetch_logs)
+
+        tx_hashes = _candidate_modify_liquidity_tx_hashes(object(), POOL_CONFIGS["uni-base"], 1, 12_000)
+
+        assert calls == [
+            (1, 5_000, "[uni-base] position manager logs 1->5,000"),
+            (5_001, 10_000, "[uni-base] position manager logs 5,001->10,000"),
+            (10_001, 12_000, "[uni-base] position manager logs 10,001->12,000"),
+        ]
+        assert tx_hashes == ["0x" + "11" * 32, "0x" + "22" * 32]
+
     def test_collect_is_skipped_when_tx_was_not_tied_to_target_pool(self):
         take_pair_param = encode(
             ["address", "address", "address"],

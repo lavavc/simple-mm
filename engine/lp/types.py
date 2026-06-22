@@ -16,6 +16,7 @@ _V4_LP_MINT_POSITION      = 2   # 0x02
 _V4_LP_BURN_POSITION      = 3   # 0x03
 _V4_LP_SETTLE_PAIR        = 13  # 0x0d
 _V4_LP_TAKE_PAIR          = 17  # 0x11
+_V4_LP_SETTLE             = 18  # 0x12
 
 
 @dataclass(slots=True)

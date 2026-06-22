@@ -22,6 +22,7 @@ from engine.lp.types import (
     _V4_LP_DECREASE_LIQUIDITY,
     _V4_LP_INCREASE_LIQUIDITY,
     _V4_LP_MINT_POSITION,
+    _V4_LP_SETTLE,
     _V4_LP_SETTLE_PAIR,
     _V4_LP_TAKE_PAIR,
 )
@@ -29,6 +30,8 @@ from engine.web3_utils import coerce_hex_str
 
 
 TRANSFER_EVENT_TOPIC = coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex()).lower()
+MODIFY_LIQUIDITIES_SELECTOR = coerce_hex_str(Web3.keccak(text="modifyLiquidities(bytes,uint256)")[:4].hex()).lower()
+MULTICALL_SELECTOR = coerce_hex_str(Web3.keccak(text="multicall(bytes[])")[:4].hex()).lower()
 OPENING_ATTRIBUTION_EXACT = "exact"
 OPENING_ATTRIBUTION_PENDING = "pending_receipt_attribution"
 OPENING_ATTRIBUTION_NOT_APPLICABLE = "not_applicable"
@@ -182,16 +185,18 @@ def decode_liquidity_actions_for_tx(
     tx_sender = _checksum_address_or_none(tx.get("from"))
     add_action_indices: list[int] = []
     add_action_allowed_senders: dict[int, set[str]] = {}
-    add_action_settle_pairs: dict[int, int] = {}
+    add_action_settled_currencies: dict[int, set[str]] = {}
     last_add_action_index: int | None = None
 
     try:
         for event_order, (action, raw) in enumerate(zip(actions, params)):
             action_code = _action_code(action)
             settlement_candidate_index = (
-                last_add_action_index if action_code == _V4_LP_SETTLE_PAIR else None
+                last_add_action_index
+                if action_code in {_V4_LP_SETTLE_PAIR, _V4_LP_SETTLE}
+                else None
             )
-            if action_code != _V4_LP_SETTLE_PAIR:
+            if action_code not in {_V4_LP_SETTLE_PAIR, _V4_LP_SETTLE}:
                 last_add_action_index = None
             if action_code == _V4_LP_MINT_POSITION:
                 (
@@ -350,10 +355,21 @@ def decode_liquidity_actions_for_tx(
                     continue
                 currency0, currency1 = _decode_settle_pair_param(raw)
                 if _settle_pair_matches(currency0, currency1, config):
-                    add_action_settle_pairs[settlement_candidate_index] = (
-                        add_action_settle_pairs.get(settlement_candidate_index, 0) + 1
+                    add_action_settled_currencies.setdefault(settlement_candidate_index, set()).update(
+                        _required_settlement_currencies(config)
                     )
                 last_add_action_index = None
+                continue
+
+            if action_code == _V4_LP_SETTLE:
+                if settlement_candidate_index is None:
+                    continue
+                currency = _decode_settle_param(raw)
+                if _settle_currency_matches(currency, config):
+                    add_action_settled_currencies.setdefault(settlement_candidate_index, set()).add(
+                        Web3.to_checksum_address(currency)
+                    )
+                last_add_action_index = settlement_candidate_index
                 continue
 
             if action_code == _V4_LP_TAKE_PAIR:
@@ -403,7 +419,7 @@ def decode_liquidity_actions_for_tx(
         decoded_actions,
         add_action_indices,
         add_action_allowed_senders,
-        add_action_settle_pairs,
+        add_action_settled_currencies,
         receipt,
         config,
     )
@@ -615,7 +631,7 @@ def _apply_opening_amount_attribution(
     decoded_actions: list[DecodedLiquidityAction],
     add_action_indices: Sequence[int],
     add_action_allowed_senders: dict[int, set[str]],
-    add_action_settle_pairs: dict[int, int],
+    add_action_settled_currencies: dict[int, set[str]],
     receipt: dict[str, Any],
     config: ExportPoolConfig,
 ) -> list[DecodedLiquidityAction]:
@@ -639,7 +655,7 @@ def _apply_opening_amount_attribution(
         ]
 
     add_index = add_action_indices[0]
-    if add_action_settle_pairs.get(add_index, 0) == 0:
+    if not _required_settlement_currencies(config).issubset(add_action_settled_currencies.get(add_index, set())):
         return _replace_action_at_index(
             decoded_actions,
             add_index,
@@ -780,11 +796,27 @@ def _decode_settle_pair_param(raw: bytes) -> tuple[str, str]:
     return Web3.to_checksum_address(str(currency0)), Web3.to_checksum_address(str(currency1))
 
 
+def _decode_settle_param(raw: bytes) -> str:
+    currency, = decode(["address"], raw)
+    return Web3.to_checksum_address(str(currency))
+
+
 def _settle_pair_matches(currency0: str, currency1: str, config: ExportPoolConfig) -> bool:
     return (
         Web3.to_checksum_address(currency0) == Web3.to_checksum_address(config.token0_address)
         and Web3.to_checksum_address(currency1) == Web3.to_checksum_address(config.token1_address)
     )
+
+
+def _settle_currency_matches(currency: str, config: ExportPoolConfig) -> bool:
+    return Web3.to_checksum_address(currency) in _required_settlement_currencies(config)
+
+
+def _required_settlement_currencies(config: ExportPoolConfig) -> set[str]:
+    return {
+        Web3.to_checksum_address(config.token0_address),
+        Web3.to_checksum_address(config.token1_address),
+    }
 
 
 def _checksum_address_or_none(value: Any) -> str | None:
@@ -798,7 +830,31 @@ def _non_none_addresses(*addresses: str | None) -> set[str]:
 
 
 def _decode_modify_liquidities_payload(input_data: str) -> tuple[bytes, list[bytes]]:
-    raw = bytes.fromhex(coerce_hex_str(input_data)[10:])
+    input_hex = coerce_hex_str(input_data)
+    selector = input_hex[:10].lower()
+    raw = bytes.fromhex(input_hex[10:])
+    if selector == MULTICALL_SELECTOR:
+        try:
+            calls, = decode(["bytes[]"], raw)
+        except DecodingError:
+            return b"", []
+        actions = b""
+        params: list[bytes] = []
+        for call in calls:
+            call_bytes = bytes(call)
+            call_selector = coerce_hex_str(call_bytes[:4].hex()).lower()
+            if call_selector != MODIFY_LIQUIDITIES_SELECTOR:
+                continue
+            call_actions, call_params = _decode_modify_liquidities_call(call_bytes[4:])
+            actions += call_actions
+            params.extend(call_params)
+        return actions, params
+    if selector != MODIFY_LIQUIDITIES_SELECTOR:
+        return b"", []
+    return _decode_modify_liquidities_call(raw)
+
+
+def _decode_modify_liquidities_call(raw: bytes) -> tuple[bytes, list[bytes]]:
     try:
         unlock_data, _deadline = decode(["bytes", "uint256"], raw)
         actions, params = decode(["bytes", "bytes[]"], unlock_data)

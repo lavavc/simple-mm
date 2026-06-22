@@ -61,6 +61,12 @@ def _build_modify_input(actions: bytes, params: list[bytes], deadline: int = 123
     return "0x" + calldata.hex()
 
 
+def _build_multicall_input(calls: list[bytes]) -> str:
+    selector = Web3.keccak(text="multicall(bytes[])")[:4]
+    calldata = selector + encode(["bytes[]"], [calls])
+    return "0x" + calldata.hex()
+
+
 def _topic_address(address: str) -> str:
     return "0x" + "00" * 12 + address[2:].lower()
 
@@ -359,6 +365,69 @@ def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
     assert actions[0].timestamp_ms == 1_700_000_000_000
 
 
+def test_decode_mint_action_inside_position_manager_multicall():
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x00000000000000000000000000000000000000AA"
+    sender = "0x00000000000000000000000000000000000000BB"
+    mint_param = encode(
+        ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
+        [
+            (
+                config.token0_address,
+                config.token1_address,
+                1500,
+                30,
+                "0x0000000000000000000000000000000000000000",
+            ),
+            -120,
+            120,
+            999,
+            1_000_000,
+            2_000_000,
+            recipient,
+            b"",
+        ],
+    )
+    settle_param = encode(["address", "address"], [config.token0_address, config.token1_address])
+    modify_input = bytes.fromhex(
+        _build_modify_input(bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR]), [mint_param, settle_param])[2:]
+    )
+    unrelated_call = bytes.fromhex("002a3e3a") + encode(["address"], [recipient])
+    tx = {
+        "input": _build_multicall_input([unrelated_call, modify_input]),
+        "hash": "0x" + "16" * 32,
+        "blockNumber": 100,
+        "from": sender,
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=700_000,
+                log_index=6,
+            ),
+            _modify_liquidity_log(8),
+        ],
+    }
+
+    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "mint"
+    assert actions[0].token_id == 77
+    assert actions[0].amount0 == Decimal("0.7")
+    assert actions[0].amount_attribution_status == "exact"
+
+
 def test_decode_multiple_add_actions_marks_opening_amounts_ambiguous():
     config = POOL_CONFIGS["uni-base"]
     recipient = "0x00000000000000000000000000000000000000AA"
@@ -498,6 +567,54 @@ def test_settle_pair_must_immediately_follow_add_action_for_exact_attribution():
     assert len(actions) == 1
     assert actions[0].amount_attribution_status == "ambiguous_missing_settle_pair"
     assert actions[0].amount0 == Decimal("0")
+
+
+def test_decode_increase_with_single_currency_settle_actions_uses_exact_transfers():
+    config = POOL_CONFIGS["uni-base"]
+    sender = "0x00000000000000000000000000000000000000BB"
+    increase_param = encode(["uint256", "uint256", "uint128", "uint128", "bytes"], [55, 400, 1_000_000, 2_000_000, b""])
+    settle0_param = encode(["address"], [config.token0_address])
+    settle1_param = encode(["address"], [config.token1_address])
+    tx = {
+        "input": _build_modify_input(bytes([_V4_LP_INCREASE_LIQUIDITY, 18, 18]), [increase_param, settle0_param, settle1_param]),
+        "hash": "0x" + "17" * 32,
+        "blockNumber": 100,
+        "from": sender,
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(8),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=700_000,
+                log_index=9,
+            ),
+            _erc20_transfer_log(
+                token=config.token1_address,
+                from_address=sender,
+                to_address=config.pool_manager,
+                amount_raw=1_500_000,
+                log_index=10,
+            ),
+        ],
+    }
+    token_state = {
+        55: LedgerPositionState(
+            pool_id=config.pool_id,
+            tick_lower=-120,
+            tick_upper=120,
+            liquidity_after=1_000,
+        )
+    }
+
+    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, token_state)
+
+    assert len(actions) == 1
+    assert actions[0].amount_attribution_status == "exact"
+    assert actions[0].amount0 == Decimal("0.7")
+    assert actions[0].amount1 == Decimal("1.5")
 
 
 def test_decode_decrease_take_pair_combines_burn_and_collect_amounts():
@@ -757,6 +874,24 @@ def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp
     assert count == 2
     assert [row["event_type"] for row in rows] == ["mint", "mint"]
     assert rows[1]["liquidity_delta"] == "111"
+
+
+def test_candidate_tx_hashes_from_csv_filters_lp_events_and_block_range(tmp_path):
+    path = tmp_path / "pool_history.csv"
+    path.write_text(
+        "block_number,event_type,tx_hash\n"
+        f"99,mint,0x{'99' * 32}\n"
+        f"100,swap,0x{'11' * 32}\n"
+        f"101,mint,0x{'22' * 32}\n"
+        f"102,burn,0x{'33' * 32}\n"
+        f"103,collect,0x{'22' * 32}\n"
+        "104,collect,\n"
+        f"105,mint,0x{'44' * 32}\n"
+    )
+
+    tx_hashes = lp_ledger_export._candidate_tx_hashes_from_csv(path, 100, 104)
+
+    assert tx_hashes == ["0x" + "22" * 32, "0x" + "33" * 32]
 
 
 def test_export_v4_lp_ledger_cli_writes_fixture_rows(tmp_path):
