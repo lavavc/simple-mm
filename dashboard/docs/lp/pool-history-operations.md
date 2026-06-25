@@ -299,11 +299,33 @@ python3 research/scripts/export_lp_episode_features.py \
 ```
 
 `export_lp_episode_features.py` always reports native-token gas fees in wei and
-native units. Pass `--native-token-usd <price>` only when using an explicit
-as-of native-token USD price for that run; otherwise gas USD and net-PnL USD
-fields stay blank and `net_pnl_status` records `native_price_missing`. Episodes
-with interim collect attribution report open/close transaction gas only and
-mark `gas_attribution_status` accordingly.
+native units. Pass `--native-token-usd <price>` only for a controlled run with
+one explicit price. For historical net-of-gas USD accounting, pass a local
+previous-or-equal price sidecar instead:
+
+```bash
+python3 research/scripts/export_lp_episode_features.py \
+  --ledger research/data/derived/uni_base_lp_ledger.csv \
+  --receipts research/data/derived/uni_base_tx_receipts.csv \
+  --native-price-csv research/data/derived/native_token_usd_prices.csv \
+  --native-price-max-age-ms 3600000 \
+  --out research/data/derived/uni_base_lp_episode_features.csv
+
+python3 research/scripts/export_lp_episode_features.py \
+  --ledger research/data/derived/uni_bsc_lp_ledger.csv \
+  --receipts research/data/derived/uni_bsc_tx_receipts.csv \
+  --native-price-csv research/data/derived/native_token_usd_prices.csv \
+  --native-price-max-age-ms 3600000 \
+  --out research/data/derived/uni_bsc_lp_episode_features.csv
+```
+
+The sidecar must contain `chain,timestamp_ms,native_token_usd,source`. The
+exporter prices each open/close gas transaction at the latest prior native
+price for that chain, records `native_price_max_age_ms`, and fails if the
+source is missing or stale. Without either price source, gas USD and net-PnL
+USD fields stay blank and `net_pnl_status` records `native_price_missing`.
+Episodes with interim collect attribution report open/close transaction gas
+only and mark `gas_attribution_status` accordingly.
 
 The V4 exporter applies event-time price replay after decoding a chunk and
 before writing CSV rows. Swap and initialize rows keep their event-native pool

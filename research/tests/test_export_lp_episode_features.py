@@ -80,3 +80,43 @@ def test_export_lp_episode_features_writes_gas_adjusted_rows(tmp_path):
     assert rows[0]["gas_cost_usd"] == "10.000"
     assert rows[0]["net_pnl_after_gas"] == "2.000"
     assert rows[0]["gas_attribution_status"] == "exact_open_close"
+
+
+def test_export_lp_episode_features_reads_native_price_sidecar(tmp_path):
+    ledger = tmp_path / "ledger.csv"
+    receipts = tmp_path / "receipts.csv"
+    native_prices = tmp_path / "native_prices.csv"
+    output = tmp_path / "features.csv"
+    ledger_fields = [field.name for field in fields(LPLedgerRow)]
+    with ledger.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=ledger_fields)
+        writer.writeheader()
+        writer.writerow(_ledger_row("mint", "0xaaa", "100", 1000))
+        writer.writerow(_ledger_row("burn_collect", "0xbbb", "-100", 3000))
+    receipts.write_text(
+        "chain,tx_hash,block_number,gas_used,effective_gas_price_wei,"
+        "native_fee_wei,tx_from,tx_to\n"
+        "base,0xaaa,1,1,1,2000000000000000,0xfrom,0xto\n"
+        "base,0xbbb,2,1,1,3000000000000000,0xfrom,0xto\n"
+    )
+    native_prices.write_text(
+        "chain,timestamp_ms,native_token_usd,source\n"
+        "base,900,2000,coinbase\n"
+        "base,2500,2100,coinbase\n"
+    )
+
+    count = export_lp_episode_features(
+        ledger,
+        receipts,
+        output,
+        native_price_path=native_prices,
+        native_price_max_age_ms=1000,
+    )
+
+    rows = list(csv.DictReader(output.open()))
+    assert count == 1
+    assert rows[0]["native_token_usd"] == "2060"
+    assert rows[0]["native_price_source"] == "coinbase"
+    assert rows[0]["native_price_max_age_ms"] == "500"
+    assert rows[0]["gas_cost_usd"] == "10.300"
+    assert rows[0]["net_pnl_after_gas"] == "1.700"

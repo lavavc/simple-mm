@@ -66,6 +66,15 @@ def receipt(tx_hash: str, native_fee_wei: int) -> dict[str, str]:
     }
 
 
+def native_price(timestamp_ms: int, price: str, *, source: str = "fixture") -> dict[str, str]:
+    return {
+        "chain": "base",
+        "timestamp_ms": str(timestamp_ms),
+        "native_token_usd": price,
+        "source": source,
+    }
+
+
 def test_episode_features_join_open_close_receipts_and_compute_net_pnl() -> None:
     rows = [
         ledger_row(
@@ -109,6 +118,101 @@ def test_episode_features_join_open_close_receipts_and_compute_net_pnl() -> None
     assert feature.net_pnl_status == "net_usd_available"
 
 
+def test_episode_features_join_as_of_native_prices_per_gas_transaction() -> None:
+    rows = [
+        ledger_row(
+            "mint",
+            "0xaaa",
+            100,
+            1_000,
+            amount0=Decimal("10"),
+            amount1=Decimal("10"),
+        ),
+        ledger_row(
+            "burn_collect",
+            "0xbbb",
+            -100,
+            3_000,
+            collect_amount0=Decimal("16"),
+            collect_amount1=Decimal("16"),
+        ),
+    ]
+
+    features = build_lp_episode_features(
+        rows,
+        [receipt("0xaaa", 2_000_000_000_000_000), receipt("0xbbb", 3_000_000_000_000_000)],
+        native_price_rows=[
+            native_price(900, "2000", source="coinbase"),
+            native_price(2_500, "2100", source="coinbase"),
+        ],
+        native_price_max_age_ms=1_000,
+    )
+
+    feature = features[0]
+    assert feature.gas_native_fee == Decimal("0.005")
+    assert feature.native_token_usd == Decimal("2060")
+    assert feature.native_price_source == "coinbase"
+    assert feature.native_price_max_age_ms == 500
+    assert feature.gas_cost_usd == Decimal("10.3000")
+    assert feature.net_pnl_after_gas == Decimal("1.7000")
+    assert feature.net_return_on_capital == Decimal("0.0850")
+    assert feature.net_pnl_status == "net_usd_available"
+
+
+def test_episode_features_reject_stale_native_prices() -> None:
+    rows = [
+        ledger_row("mint", "0xaaa", 100, 1_000, amount0=Decimal("10"), amount1=Decimal("10")),
+        ledger_row(
+            "burn_collect",
+            "0xbbb",
+            -100,
+            3_000,
+            collect_amount0=Decimal("16"),
+            collect_amount1=Decimal("16"),
+        ),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="missing native price for chain=base timestamp_ms=1000 max_age_ms=50",
+    ):
+        build_lp_episode_features(
+            rows,
+            [
+                receipt("0xaaa", 2_000_000_000_000_000),
+                receipt("0xbbb", 3_000_000_000_000_000),
+            ],
+            native_price_rows=[native_price(900, "2000")],
+            native_price_max_age_ms=50,
+        )
+
+
+def test_episode_features_reject_mixed_native_price_modes() -> None:
+    rows = [
+        ledger_row("mint", "0xaaa", 100, 1_000, amount0=Decimal("10"), amount1=Decimal("10")),
+        ledger_row(
+            "burn_collect",
+            "0xbbb",
+            -100,
+            3_000,
+            collect_amount0=Decimal("16"),
+            collect_amount1=Decimal("16"),
+        ),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="native_token_usd and native_price_rows are mutually exclusive",
+    ):
+        build_lp_episode_features(
+            rows,
+            [receipt("0xaaa", 1), receipt("0xbbb", 1)],
+            native_token_usd=Decimal("2000"),
+            native_price_rows=[native_price(900, "2000")],
+            native_price_max_age_ms=1_000,
+        )
+
+
 def test_episode_features_without_native_price_leave_net_usd_blank() -> None:
     rows = [
         ledger_row("mint", "0xaaa", 100, 1_000, amount0=Decimal("10"), amount1=Decimal("10")),
@@ -130,6 +234,8 @@ def test_episode_features_without_native_price_leave_net_usd_blank() -> None:
     assert feature.gas_native_fee_wei == 5_000_000_000_000_000
     assert feature.gas_native_fee == Decimal("0.005")
     assert feature.native_token_usd is None
+    assert feature.native_price_source == ""
+    assert feature.native_price_max_age_ms is None
     assert feature.gas_cost_usd is None
     assert feature.net_pnl_after_gas is None
     assert feature.net_return_on_capital is None

@@ -103,8 +103,7 @@ Keep swap-count walk-forward windows for primary selection. Add calendar stress 
 4. Add the LP lifecycle ledger with token id and LP owner tracking.
 5. Add burn+collect matching and FIFO transaction-native episode accounting.
 6. Add causal cone and stress feature tables.
-7. Extend `lp_episode_features` with as-of native-token USD gas pricing and
-   interim-collect gas splitting.
+7. Split interim-collect gas across the affected open lots in `lp_episode_features`.
 8. Add the full paper position taxonomy and exact realized-PnL win-score.
 9. Add opportunity-screen versus full-costed-backtest reporting.
 10. Add parameter stability diagnostics across walk-forward windows.

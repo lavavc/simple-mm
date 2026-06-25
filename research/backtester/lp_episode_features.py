@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -48,6 +49,8 @@ class LPEpisodeFeature:
     gas_native_fee_wei: int | None
     gas_native_fee: Decimal | None
     native_token_usd: Decimal | None
+    native_price_source: str
+    native_price_max_age_ms: int | None
     gas_cost_usd: Decimal | None
     net_pnl_after_gas: Decimal | None
     net_return_on_capital: Decimal | None
@@ -57,6 +60,7 @@ class LPEpisodeFeature:
 
 @dataclass(frozen=True)
 class _ReceiptGas:
+    chain: str
     tx_hash: str
     native_fee_wei: int
 
@@ -67,12 +71,86 @@ class _EpisodeTxCandidates:
     close_rows: list[LPLedgerRow]
 
 
+@dataclass(frozen=True)
+class _GasTxEvent:
+    tx_hash: str
+    timestamp_ms: int
+
+
+@dataclass(frozen=True)
+class _ResolvedEpisodeTxs:
+    open_tx_hash: str
+    close_tx_hash: str
+    gas_tx_events: list[_GasTxEvent]
+
+
+@dataclass(frozen=True)
+class _NativePrice:
+    chain: str
+    timestamp_ms: int
+    native_token_usd: Decimal
+    source: str
+
+
+@dataclass(frozen=True)
+class _NativePriceMatch:
+    price: _NativePrice
+    age_ms: int
+
+
+@dataclass(frozen=True)
+class _NativePriceLookup:
+    prices_by_chain: dict[str, list[_NativePrice]]
+    timestamps_by_chain: dict[str, list[int]]
+    max_age_ms: int
+
+    def previous_or_equal(self, chain: str, timestamp_ms: int) -> _NativePriceMatch:
+        prices = self.prices_by_chain.get(chain)
+        timestamps = self.timestamps_by_chain.get(chain)
+        if prices is None or timestamps is None:
+            raise ValueError(
+                f"missing native price for chain={chain} "
+                f"timestamp_ms={timestamp_ms} max_age_ms={self.max_age_ms}"
+            )
+        index = bisect_right(timestamps, timestamp_ms) - 1
+        if index < 0:
+            raise ValueError(
+                f"missing native price for chain={chain} "
+                f"timestamp_ms={timestamp_ms} max_age_ms={self.max_age_ms}"
+            )
+        price = prices[index]
+        age_ms = timestamp_ms - price.timestamp_ms
+        if age_ms > self.max_age_ms:
+            raise ValueError(
+                f"missing native price for chain={chain} "
+                f"timestamp_ms={timestamp_ms} max_age_ms={self.max_age_ms}"
+            )
+        return _NativePriceMatch(price=price, age_ms=age_ms)
+
+
+@dataclass(frozen=True)
+class _GasPricing:
+    gas_native_fee_wei: int | None
+    gas_native_fee: Decimal | None
+    native_token_usd: Decimal | None
+    native_price_source: str
+    native_price_max_age_ms: int | None
+    gas_cost_usd: Decimal | None
+
+
 def build_lp_episode_features(
     ledger_rows: Sequence[LPLedgerRow],
     receipt_rows: Sequence[dict[str, str]],
     *,
     native_token_usd: Decimal | None = None,
+    native_price_rows: Sequence[dict[str, str]] | None = None,
+    native_price_max_age_ms: int | None = None,
 ) -> list[LPEpisodeFeature]:
+    native_price_lookup = _native_price_lookup(
+        native_token_usd=native_token_usd,
+        native_price_rows=native_price_rows,
+        native_price_max_age_ms=native_price_max_age_ms,
+    )
     episodes = reconstruct_paper_episodes(ledger_rows)
     receipt_by_tx = _receipt_gas_by_tx(receipt_rows)
     matches = _episode_tx_matches(ledger_rows)
@@ -82,6 +160,7 @@ def build_lp_episode_features(
             matches.get(_episode_match_key(episode)),
             receipt_by_tx,
             native_token_usd,
+            native_price_lookup,
         )
         for episode in episodes
     ]
@@ -92,6 +171,7 @@ def _episode_feature(
     tx_candidates: _EpisodeTxCandidates | None,
     receipt_by_tx: dict[str, _ReceiptGas],
     native_token_usd: Decimal | None,
+    native_price_lookup: _NativePriceLookup | None,
 ) -> LPEpisodeFeature:
     gross_return = _return_on_capital(episode.opening_capital, episode.pnl)
     tx_match = _resolve_tx_match(episode, tx_candidates)
@@ -101,20 +181,17 @@ def _episode_feature(
             open_tx_hash="",
             close_tx_hash="",
             gas_tx_hashes=[],
-            gas_native_fee_wei=None,
-            native_token_usd=native_token_usd,
+            gas_pricing=_unavailable_gas_pricing(native_token_usd),
             gas_attribution_status="ambiguous_ledger_match",
             gross_return_on_capital=gross_return,
         )
 
-    open_tx_hash, close_tx_hash = tx_match
-    gas_tx_hashes = _unique_tx_hashes([open_tx_hash, close_tx_hash])
-    gas_native_fee_wei = 0
-    for tx_hash in gas_tx_hashes:
-        receipt = receipt_by_tx.get(tx_hash.lower())
-        if receipt is None:
-            raise ValueError(f"missing receipt for episode gas tx_hash={tx_hash}")
-        gas_native_fee_wei += receipt.native_fee_wei
+    gas_pricing = _price_gas_events(
+        tx_match.gas_tx_events,
+        receipt_by_tx,
+        native_token_usd=native_token_usd,
+        native_price_lookup=native_price_lookup,
+    )
 
     gas_status = "exact_open_close"
     if episode.close_attribution_status in {
@@ -125,11 +202,10 @@ def _episode_feature(
 
     return _feature_with_gas(
         episode,
-        open_tx_hash=open_tx_hash,
-        close_tx_hash=close_tx_hash,
-        gas_tx_hashes=gas_tx_hashes,
-        gas_native_fee_wei=gas_native_fee_wei,
-        native_token_usd=native_token_usd,
+        open_tx_hash=tx_match.open_tx_hash,
+        close_tx_hash=tx_match.close_tx_hash,
+        gas_tx_hashes=[event.tx_hash for event in tx_match.gas_tx_events],
+        gas_pricing=gas_pricing,
         gas_attribution_status=gas_status,
         gross_return_on_capital=gross_return,
     )
@@ -141,25 +217,17 @@ def _feature_with_gas(
     open_tx_hash: str,
     close_tx_hash: str,
     gas_tx_hashes: Sequence[str],
-    gas_native_fee_wei: int | None,
-    native_token_usd: Decimal | None,
+    gas_pricing: _GasPricing,
     gas_attribution_status: str,
     gross_return_on_capital: Decimal | None,
 ) -> LPEpisodeFeature:
-    gas_native_fee = (
-        None
-        if gas_native_fee_wei is None
-        else Decimal(gas_native_fee_wei) / _WEI_PER_NATIVE
-    )
-    gas_cost_usd = None
     net_pnl = None
     net_return = None
     net_status = "native_price_missing"
-    if gas_native_fee is None:
+    if gas_pricing.gas_native_fee is None:
         net_status = "gas_attribution_unavailable"
-    elif native_token_usd is not None:
-        gas_cost_usd = gas_native_fee * native_token_usd
-        net_pnl = episode.pnl - gas_cost_usd
+    elif gas_pricing.gas_cost_usd is not None:
+        net_pnl = episode.pnl - gas_pricing.gas_cost_usd
         net_return = _return_on_capital(episode.opening_capital, net_pnl)
         net_status = "net_usd_available"
 
@@ -187,10 +255,12 @@ def _feature_with_gas(
         open_tx_hash=open_tx_hash,
         close_tx_hash=close_tx_hash,
         gas_tx_hashes="|".join(gas_tx_hashes),
-        gas_native_fee_wei=gas_native_fee_wei,
-        gas_native_fee=gas_native_fee,
-        native_token_usd=native_token_usd,
-        gas_cost_usd=gas_cost_usd,
+        gas_native_fee_wei=gas_pricing.gas_native_fee_wei,
+        gas_native_fee=gas_pricing.gas_native_fee,
+        native_token_usd=gas_pricing.native_token_usd,
+        native_price_source=gas_pricing.native_price_source,
+        native_price_max_age_ms=gas_pricing.native_price_max_age_ms,
+        gas_cost_usd=gas_pricing.gas_cost_usd,
         net_pnl_after_gas=net_pnl,
         net_return_on_capital=net_return,
         gas_attribution_status=gas_attribution_status,
@@ -242,7 +312,7 @@ def _episode_tx_matches(
 def _resolve_tx_match(
     episode: PaperLPEpisode,
     candidates: _EpisodeTxCandidates | None,
-) -> tuple[str, str] | None:
+) -> _ResolvedEpisodeTxs | None:
     if candidates is None or len(candidates.open_rows) != 1:
         return None
     close_rows = candidates.close_rows
@@ -254,7 +324,18 @@ def _resolve_tx_match(
         ]
     if len(close_rows) != 1:
         return None
-    return candidates.open_rows[0].tx_hash, close_rows[0].tx_hash
+    open_row = candidates.open_rows[0]
+    close_row = close_rows[0]
+    return _ResolvedEpisodeTxs(
+        open_tx_hash=open_row.tx_hash,
+        close_tx_hash=close_row.tx_hash,
+        gas_tx_events=_unique_gas_tx_events(
+            [
+                _GasTxEvent(open_row.tx_hash, open_row.timestamp_ms),
+                _GasTxEvent(close_row.tx_hash, close_row.timestamp_ms),
+            ]
+        ),
+    )
 
 
 def _episode_match_key(episode: PaperLPEpisode) -> tuple[str, str, int, int, int, int]:
@@ -275,21 +356,28 @@ def _receipt_gas_by_tx(receipt_rows: Sequence[dict[str, str]]) -> dict[str, _Rec
         if tx_hash in receipts:
             raise ValueError(f"duplicate receipt tx_hash={row['tx_hash']}")
         receipts[tx_hash] = _ReceiptGas(
+            chain=row["chain"].strip(),
             tx_hash=row["tx_hash"].strip(),
             native_fee_wei=int(row["native_fee_wei"]),
         )
     return receipts
 
 
-def _unique_tx_hashes(tx_hashes: Sequence[str]) -> list[str]:
-    unique: list[str] = []
+def _unique_gas_tx_events(events: Sequence[_GasTxEvent]) -> list[_GasTxEvent]:
+    unique: list[_GasTxEvent] = []
+    timestamps_by_tx: dict[str, int] = {}
     seen: set[str] = set()
-    for tx_hash in tx_hashes:
-        normalized = tx_hash.lower()
+    for event in events:
+        normalized = event.tx_hash.lower()
         if normalized in seen:
+            if timestamps_by_tx[normalized] != event.timestamp_ms:
+                raise ValueError(
+                    f"same tx_hash matched multiple timestamps tx_hash={event.tx_hash}"
+                )
             continue
         seen.add(normalized)
-        unique.append(tx_hash)
+        timestamps_by_tx[normalized] = event.timestamp_ms
+        unique.append(event)
     return unique
 
 
@@ -297,3 +385,147 @@ def _return_on_capital(opening_capital: Decimal, pnl: Decimal) -> Decimal | None
     if opening_capital == 0:
         return None
     return pnl / opening_capital
+
+
+def _native_price_lookup(
+    *,
+    native_token_usd: Decimal | None,
+    native_price_rows: Sequence[dict[str, str]] | None,
+    native_price_max_age_ms: int | None,
+) -> _NativePriceLookup | None:
+    if native_token_usd is not None and native_price_rows is not None:
+        raise ValueError("native_token_usd and native_price_rows are mutually exclusive")
+    if native_price_rows is None:
+        if native_price_max_age_ms is not None:
+            raise ValueError("native_price_max_age_ms requires native_price_rows")
+        return None
+    if native_price_max_age_ms is None:
+        raise ValueError("native_price_rows requires native_price_max_age_ms")
+    if native_price_max_age_ms < 0:
+        raise ValueError("native_price_max_age_ms must be non-negative")
+
+    prices_by_chain: dict[str, list[_NativePrice]] = defaultdict(list)
+    seen_keys: set[tuple[str, int]] = set()
+    for row in native_price_rows:
+        chain = row["chain"].strip()
+        timestamp_ms = int(row["timestamp_ms"])
+        key = (chain, timestamp_ms)
+        if key in seen_keys:
+            raise ValueError(f"duplicate native price chain={chain} timestamp_ms={timestamp_ms}")
+        seen_keys.add(key)
+        price = Decimal(row["native_token_usd"])
+        if price <= 0:
+            raise ValueError(
+                f"native_token_usd must be positive chain={chain} timestamp_ms={timestamp_ms}"
+            )
+        source = row["source"].strip()
+        if not source:
+            raise ValueError(f"blank native price source chain={chain} timestamp_ms={timestamp_ms}")
+        prices_by_chain[chain].append(
+            _NativePrice(
+                chain=chain,
+                timestamp_ms=timestamp_ms,
+                native_token_usd=price,
+                source=source,
+            )
+        )
+
+    if not prices_by_chain:
+        raise ValueError("empty native_price_rows")
+
+    sorted_prices_by_chain = {
+        chain: sorted(rows, key=lambda price: price.timestamp_ms)
+        for chain, rows in prices_by_chain.items()
+    }
+    timestamps_by_chain = {
+        chain: [price.timestamp_ms for price in rows]
+        for chain, rows in sorted_prices_by_chain.items()
+    }
+    return _NativePriceLookup(
+        prices_by_chain=sorted_prices_by_chain,
+        timestamps_by_chain=timestamps_by_chain,
+        max_age_ms=native_price_max_age_ms,
+    )
+
+
+def _price_gas_events(
+    gas_tx_events: Sequence[_GasTxEvent],
+    receipt_by_tx: dict[str, _ReceiptGas],
+    *,
+    native_token_usd: Decimal | None,
+    native_price_lookup: _NativePriceLookup | None,
+) -> _GasPricing:
+    gas_native_fee_wei = 0
+    gas_cost_usd = Decimal("0") if (
+        native_token_usd is not None or native_price_lookup is not None
+    ) else None
+    max_price_age_ms: int | None = None
+    price_sources: list[str] = []
+
+    for event in gas_tx_events:
+        receipt = receipt_by_tx.get(event.tx_hash.lower())
+        if receipt is None:
+            raise ValueError(f"missing receipt for episode gas tx_hash={event.tx_hash}")
+        gas_native_fee_wei += receipt.native_fee_wei
+        gas_native_fee = Decimal(receipt.native_fee_wei) / _WEI_PER_NATIVE
+        if native_token_usd is not None:
+            gas_cost_usd = _add_gas_cost(gas_cost_usd, gas_native_fee * native_token_usd)
+            price_sources.append("manual_constant")
+        elif native_price_lookup is not None:
+            price_match = native_price_lookup.previous_or_equal(receipt.chain, event.timestamp_ms)
+            gas_cost_usd = _add_gas_cost(
+                gas_cost_usd,
+                gas_native_fee * price_match.price.native_token_usd,
+            )
+            max_price_age_ms = (
+                price_match.age_ms
+                if max_price_age_ms is None
+                else max(max_price_age_ms, price_match.age_ms)
+            )
+            price_sources.append(price_match.price.source)
+
+    total_gas_native_fee = Decimal(gas_native_fee_wei) / _WEI_PER_NATIVE
+    weighted_native_price = None
+    if gas_cost_usd is not None:
+        weighted_native_price = (
+            gas_cost_usd / total_gas_native_fee
+            if total_gas_native_fee != 0
+            else native_token_usd
+        )
+
+    return _GasPricing(
+        gas_native_fee_wei=gas_native_fee_wei,
+        gas_native_fee=total_gas_native_fee,
+        native_token_usd=weighted_native_price,
+        native_price_source="|".join(_unique_strings(price_sources)),
+        native_price_max_age_ms=max_price_age_ms,
+        gas_cost_usd=gas_cost_usd,
+    )
+
+
+def _unavailable_gas_pricing(native_token_usd: Decimal | None) -> _GasPricing:
+    return _GasPricing(
+        gas_native_fee_wei=None,
+        gas_native_fee=None,
+        native_token_usd=native_token_usd,
+        native_price_source="manual_constant" if native_token_usd is not None else "",
+        native_price_max_age_ms=None,
+        gas_cost_usd=None,
+    )
+
+
+def _add_gas_cost(existing: Decimal | None, increment: Decimal) -> Decimal:
+    if existing is None:
+        raise ValueError("gas_cost_usd accumulator is unavailable")
+    return existing + increment
+
+
+def _unique_strings(values: Sequence[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique

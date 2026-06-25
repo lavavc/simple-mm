@@ -214,11 +214,17 @@ writes rows sorted by `block_number,tx_hash`.
 episode feature layer. The exporter reconstructs paper episodes from the LP
 ledger, matches each episode to its exact opening and closing transaction,
 joins receipt sidecars, and emits gross PnL, native gas fees, and optional
-net-of-gas USD fields. Net USD fields are populated only when an explicit
-native-token USD price is supplied for the run; otherwise the artifact retains
-native gas amounts and marks `net_pnl_status=native_price_missing`. Episodes
-with interim collect attribution are marked as open/close-gas-only because
-interim collect gas is not yet split across open lots.
+net-of-gas USD fields. Net USD fields are populated only from an explicit
+native-token price source: either a single manual `--native-token-usd` value
+for a controlled run, or a local `--native-price-csv` sidecar with
+`chain,timestamp_ms,native_token_usd,source` and an explicit
+`--native-price-max-age-ms`. The sidecar join is previous-or-equal at each gas
+transaction timestamp, records the maximum price age used in
+`native_price_max_age_ms`, and fails if the price source is missing or stale.
+Without either price source, the artifact retains native gas amounts and marks
+`net_pnl_status=native_price_missing`. Episodes with interim collect
+attribution are marked as open/close-gas-only because interim collect gas is
+not yet split across open lots.
 
 ### 7. Causal Cone and Stress Feature Tables
 
