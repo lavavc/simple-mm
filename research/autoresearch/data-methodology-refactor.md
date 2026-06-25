@@ -7,6 +7,14 @@ Build a data methodology that can support both:
 - DEX LP strategy hypothesis tests using venue-local Uniswap V4 pool history.
 - Fair Value markout tests using CEX executable labels with DEX pool context as explanatory features.
 
+Current execution scope is DEX-only. We do not yet have enough historical
+Quidax data to support CEX-label or DEX-premium hypotheses rigorously, so
+Quidax-dependent labels, DEX premium cones, and Fair Value markout refactors are
+parked until a historical Quidax sample exists. Near-term work should optimize
+the LP strategy from venue-local DEX features only: realized volatility, active
+liquidity/share, swap-flow imbalance, fee intensity, volume, exact LP ledger
+episodes, and gas/cost sidecars.
+
 The refactor must preserve the architecture boundary: LP research may consume market-layer fair-price outputs, but LP decisions and LP research features must not depend on arb route state or execution internals.
 
 The research framing should separate parameter stress from strategy performance. Grid winners are not the primary object. The primary object is whether a market parameter is stressed, economically meaningful, tradable at our size, stable enough to estimate, and robust after costs.
@@ -19,7 +27,8 @@ Every derived dataset must satisfy these rules:
 - Keep `uni-base` and `uni-bsc` raw data separate.
 - Store raw on-chain facts before derived features.
 - Recompute derived features causally from raw facts.
-- Treat DEX pool price as a feature or control, never as the Fair Value label.
+- Treat DEX pool price as a DEX-side state variable. Do not use it as a Fair
+  Value label.
 - Preserve enough identifiers to audit every research row back to chain data.
 - Report as-of join age for every CEX, DEX, and pool-data feature.
 - Treat opportunity screens separately from full costed backtests.
@@ -53,7 +62,9 @@ Required refinements:
 
 Rolling imbalance windows should be produced in a derived feature artifact, not stored as raw CSV columns.
 
-### 2. Pool Snapshot Bridge for Fair Value Research
+### 2. Deferred Pool Snapshot Bridge for Fair Value Research
+
+This section is deferred until historical Quidax data exists.
 
 Fair Value markouts expect previous-or-equal DEX context rows in `price_snapshots` with these sources:
 
@@ -245,6 +256,10 @@ Required cone features:
 - fee APR cone percentile
 - volume cone percentile
 
+Current DEX-only hypothesis tests should exclude DEX premium cone fields because
+they require a CEX reference. Keep those columns in derived artifacts when
+present, but treat them as unavailable rather than backfilled.
+
 Cone features must be causal:
 
 - no future samples in percentile calculations
@@ -292,15 +307,18 @@ After this refactor, we can test:
 - whether profitable exits occur after small range traversal
 - whether centered in-range positions dominate for our pools
 - whether Base and BSC need different width/exit/sizing regimes
-- whether DEX premium and venue-local flow imbalance explain LP outcomes
 - whether paper-style LP metrics transfer from real LP behavior to our virtual strategy simulations
 - whether volatility-cone selected ranges beat fixed EWMA widths
-- whether LP sizing should shrink under active-share, liquidity, or DEX-premium stress
+- whether venue-local flow imbalance explains LP outcomes
+- whether LP sizing should shrink under active-share, liquidity, volatility, fee-intensity, or volume stress
 - whether rebalance and defend policies help only in high-stress buckets rather than globally
 
 ## What This Does Not Claim
 
 This refactor does not make DEX prices Fair Value labels.
+
+It also does not claim that Quidax or DEX-premium hypotheses are currently
+testable. Those are deferred until historical Quidax coverage is available.
 
 It also does not prove that real LP population behavior transfers to our strategy. The paper-faithful ledger supports that hypothesis test; it does not assume the answer.
 
@@ -310,13 +328,17 @@ It also does not prove that real LP population behavior transfers to our strateg
 2. Snapshot `research/data/uni_base_pool_history.csv` and `research/data/uni_bsc_pool_history.csv` into `research/data/snapshots/`.
 3. Run pool-history quality reports on those snapshots.
 4. Build replay-corrected pool histories under `research/data/derived/`.
-5. Import replayed DEX pool snapshots into `price_snapshots`.
-6. Build causal pool feature tables for Base and BSC.
-7. Build calendar stress-slice reports from pool feature tables.
-8. Export Fair Value markouts with pool feature CSVs joined as previous-or-equal context.
-9. Run regime-stability diagnostics on walk-forward outputs and feature tables.
-10. Export LP lifecycle ledgers once decoded PositionManager action inputs are available.
-11. Reconstruct paper LP episodes from ledger rows and join receipt sidecars for gas-adjusted views.
+5. Build causal DEX-only pool feature tables for Base and BSC.
+6. Build calendar stress-slice reports from DEX-only pool feature fields.
+7. Export LP lifecycle ledgers once decoded PositionManager action inputs are available.
+8. Reconstruct paper LP episodes from ledger rows and join receipt sidecars for gas-adjusted views.
+9. Re-run walk-forward and paper-style LP studies with DEX-only regime fields.
+
+Deferred until historical Quidax data exists:
+
+- import replayed DEX pool snapshots into `price_snapshots`
+- export Fair Value markouts with CEX labels
+- test DEX premium or DEX-vs-CEX stress hypotheses
 
 Exact commands live in `dashboard/docs/lp/pool-history-operations.md` under
 `Research Methodology Guardrails`.
@@ -324,12 +346,11 @@ Exact commands live in `dashboard/docs/lp/pool-history-operations.md` under
 ## Implementation Order
 
 1. Add pool-history validation and canonical swap-flow fields.
-2. Add the pool snapshot bridge into `price_snapshots`.
-3. Add event-time price replay for pool history rows.
-4. Add the LP lifecycle ledger with token id and owner tracking.
-5. Add burn+collect matching and FIFO episode reconstruction.
-6. Add receipt/gas sidecar joins for net-of-cost reporting.
-7. Add causal cone and stress feature tables.
-8. Add opportunity-screen versus full-costed-backtest reporting.
-9. Add parameter stability diagnostics and stress-slice reports.
-10. Re-run walk-forward and paper-style studies only after coverage reports pass.
+2. Add event-time price replay for pool history rows.
+3. Add the LP lifecycle ledger with token id and owner tracking.
+4. Add burn+collect matching and FIFO episode reconstruction.
+5. Add receipt/gas sidecar joins for net-of-cost reporting.
+6. Add causal DEX-only cone and stress feature tables.
+7. Add opportunity-screen versus full-costed-backtest reporting.
+8. Add parameter stability diagnostics and stress-slice reports.
+9. Re-run walk-forward and paper-style studies only after coverage reports pass.

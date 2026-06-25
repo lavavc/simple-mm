@@ -74,17 +74,20 @@ Pool CSV updates must remain append-only and auditable. Derived research data
 should be built from the CSVs or a sidecar ledger rather than replacing raw
 rows in place.
 
-Before serious LP or Fair Value runs, verify:
+Before serious DEX-only LP runs, verify:
 
 - each pool has expected token order and cNGN/USD inversion
 - `sqrt_price_x96` is the canonical marginal pool price source
 - raw CSV `cngn_usd_price` is classified as `sqrt_mid`, `swap_amount_ratio`, or `unexplained`
 - `unexplained` stored-price rows are zero before derived imports or backtests
 - swap rows have canonical signed cNGN flow fields
-- `price_snapshots` contains `uni-base_pool` and `uni-bsc_pool` rows for DEX premium features
 - liquidity-operation `sqrt_price_x96`, `tick`, and `cngn_usd_price` are reconstructed by event order, not block-end state
 - causal cone feature tables report as-of source ages and missingness
 - calendar stress slices are available alongside swap-count walk-forward windows
+
+For deferred Fair Value or DEX-premium runs, additionally verify that
+historical Quidax coverage exists and that `price_snapshots` contains
+`uni-base_pool` and `uni-bsc_pool` context rows.
 
 ### Non-Destructive Research Runbook
 
@@ -128,20 +131,9 @@ python3 research/scripts/replay_pool_history_prices.py \
   --pool uni-bsc
 ```
 
-Import DEX pool context into `price_snapshots` and build causal pool feature
-tables:
+Build causal pool feature tables directly from replayed pool history:
 
 ```bash
-python3 research/scripts/import_pool_snapshots.py \
-  --db data/cngn.db \
-  --csv research/data/derived/uni_base_pool_history_replay.csv \
-  --pool uni-base
-
-python3 research/scripts/import_pool_snapshots.py \
-  --db data/cngn.db \
-  --csv research/data/derived/uni_bsc_pool_history_replay.csv \
-  --pool uni-bsc
-
 python3 research/scripts/build_pool_feature_table.py \
   --pool uni-base \
   --csv research/data/derived/uni_base_pool_history_replay.csv \
@@ -157,6 +149,11 @@ python3 research/scripts/build_pool_feature_table.py \
   --cone-lookback-seconds 3600,86400,604800
 ```
 
+The `price_snapshots` import and Fair Value markout steps are deferred for
+active LP research until historical Quidax data exists. The pool feature tables
+remain useful for DEX-only LP tests; Quidax-dependent DEX-premium columns should
+be treated as unavailable.
+
 Build calendar stress slices from the same causal feature tables. These reports
 are diagnostics for regime tests; they are not a replacement for swap-count
 walk-forward selection.
@@ -165,16 +162,16 @@ walk-forward selection.
 python3 research/scripts/report_pool_feature_stress_slices.py \
   --features research/data/derived/uni_base_pool_features.csv \
   --out research/data/quality/uni_base_pool_feature_stress_slices.md \
-  --fields realized_volatility_cone_pct_1h,dex_premium_cone_pct_1h,active_liquidity_cone_pct_1h,active_liquidity_running_max_share_cone_pct_1h,swap_flow_imbalance_cone_pct_1h,fee_intensity_proxy_cone_pct_1h,volume_cone_pct_1h
+  --fields realized_volatility_cone_pct_1h,active_liquidity_cone_pct_1h,active_liquidity_running_max_share_cone_pct_1h,swap_flow_imbalance_cone_pct_1h,fee_intensity_proxy_cone_pct_1h,volume_cone_pct_1h
 
 python3 research/scripts/report_pool_feature_stress_slices.py \
   --features research/data/derived/uni_bsc_pool_features.csv \
   --out research/data/quality/uni_bsc_pool_feature_stress_slices.md \
-  --fields realized_volatility_cone_pct_1h,dex_premium_cone_pct_1h,active_liquidity_cone_pct_1h,active_liquidity_running_max_share_cone_pct_1h,swap_flow_imbalance_cone_pct_1h,fee_intensity_proxy_cone_pct_1h,volume_cone_pct_1h
+  --fields realized_volatility_cone_pct_1h,active_liquidity_cone_pct_1h,active_liquidity_running_max_share_cone_pct_1h,swap_flow_imbalance_cone_pct_1h,fee_intensity_proxy_cone_pct_1h,volume_cone_pct_1h
 ```
 
 Export Fair Value markouts with pool features and then run regime-stability
-diagnostics:
+diagnostics. This step is parked until historical Quidax coverage exists:
 
 ```bash
 python3 research/scripts/export_fair_price_markouts.py \

@@ -12,6 +12,12 @@ The live engine has three pricing layers in `engine/market/fair_price.py`:
 
 The research pipeline tests candidate estimators before any live behavior changes.
 
+Current status: Fair Price/Quidax hypothesis testing is paused for LP strategy
+work because we do not yet have a historical Quidax sample. Existing collectors
+and markout scripts remain plumbing, not evidence. Until historical Quidax
+coverage exists, LP autoresearch should focus on DEX-only pool-history,
+ledger, and stress-feature tests.
+
 ## Current Status
 
 Implemented:
@@ -25,7 +31,9 @@ Implemented:
 - DEX context features: previous-or-equal `uni-base_pool` / `uni-bsc_pool` premium versus Quidax executable mid.
 - Walk-forward probability buckets for midpoint and side-specific adverse movement.
 
-Current data caveat: existing Quidax captures have mostly flat prices. They validate plumbing and feed quality, not estimator quality.
+Current data caveat: existing Quidax captures do not provide historical coverage
+for rigorous estimator or DEX-premium tests. They validate plumbing and feed
+quality, not strategy hypotheses.
 
 DEX context caveat: the markout exporter expects previous-or-equal `uni-base_pool` and `uni-bsc_pool` rows in `price_snapshots`. Those rows must come from the pool-history bridge described in `research/autoresearch/data-methodology-refactor.md`; Quidax and Bybit capture jobs do not create them.
 
@@ -39,7 +47,7 @@ Use future CEX executable value, currently Quidax depth-walk value at the tested
 
 Do not label against DEX mid, blended price, Bybit P2P, or Blockradar.
 
-## Hypotheses
+## Deferred Hypotheses
 
 1. Quidax depth-adjusted executable price beats ticker mid for 10-120s horizons.
 2. P2P feeds improve slow anchoring at 300-600s, not fast markouts.
@@ -50,7 +58,13 @@ Do not label against DEX mid, blended price, Bybit P2P, or Blockradar.
 7. DEX premium cone percentiles explain LP outcomes conditionally, but should not improve CEX executable-label prediction enough to become a label proxy.
 8. Fair Value estimator improvements should be stress-conditioned; improvements that appear only through unstable global parameter jumps should not be promoted.
 
+These hypotheses are deferred until a historical Quidax sample exists.
+
 ## DEX Pool Context Requirements
+
+This bridge is deferred for active LP work. DEX-only LP research can use
+pool-history replay and causal pool feature tables directly without importing
+DEX context into `price_snapshots`.
 
 Before testing DEX premium hypotheses, import pool-history swap prices into `price_snapshots` as:
 

@@ -4,6 +4,12 @@
 
 Improve Uniswap V4 LP range, sizing, and rebalance policy while preserving package boundaries: LP decisions are venue-local and must not depend on arb internals.
 
+Current research scope is DEX-only. Historical Quidax coverage is not yet
+sufficient for CEX-label, DEX-premium, or Fair Value hypotheses, so those are
+parked until the data exists. Near-term LP optimization should use only
+venue-local pool history, LP ledger episodes, receipt/gas sidecars, and DEX-only
+cone/stress features.
+
 ## Current Live Design
 
 The live engine uses:
@@ -58,13 +64,15 @@ Known limitations:
 
 ## LP Markout Features
 
-Fair-price research now exports features that can be joined into LP rebalance markouts:
+Active LP markout and regime tests should use DEX-side features only:
 
-- Quidax executable midpoint and side-specific labels.
-- Quidax imbalance, OWA, microprice, and cNGN/USD pressure buckets.
-- Previous-or-equal `uni-base_pool` and `uni-bsc_pool` premiums versus Quidax executable mid.
+- realized volatility cone percentiles
+- active-liquidity and active-share cone percentiles
+- venue-local swap-flow imbalance cone percentiles
+- fee-intensity and volume cone percentiles
 
-For LP policy research, use DEX premium and venue-local swap-flow imbalance as explanatory variables. Do not use arb route state as an LP input.
+Do not use arb route state as an LP input. Do not test DEX premium until a
+historical Quidax reference sample exists.
 
 ## Data Methodology Refactor
 
@@ -82,7 +90,6 @@ Do not treat the current paper-style backtester as a full replication of Urusov 
 LP research should add causal parameter-cone features before promoting dynamic policies:
 
 - realized volatility cone percentile
-- DEX premium cone percentile
 - active-liquidity and active-share cone percentiles
 - swap-flow imbalance cone percentile
 - fee APR and volume cone percentiles
@@ -90,8 +97,7 @@ LP research should add causal parameter-cone features before promoting dynamic p
 Stress-conditioned hypotheses to test:
 
 - ranges selected from volatility-cone percentiles beat fixed EWMA widths after costs
-- sizing shrinks under extreme active-share, thin-liquidity, or DEX-premium stress
-- DEX premium explains LP outcomes conditionally, but never becomes a Fair Value label
+- sizing shrinks under extreme active-share, thin-liquidity, volatility, fee-intensity, or volume stress
 - rebalance and defend policies improve high-stress buckets without degrading normal buckets
 
 Keep swap-count walk-forward windows for primary selection. Add calendar stress slices only as diagnostics for regime behavior and failure modes.
