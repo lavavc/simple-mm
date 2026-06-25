@@ -6,8 +6,6 @@ __pycache__/
 .DS_Store
 *.Rhistory
 tmp/
-research/literature/03_Backtesting_Basics.pdf
-research/literature/04-Parameter_Reversion_And_Cones.pdf
 /data/
 /logs/
 /research/logs/
