@@ -11,7 +11,7 @@ checkpoint, retries transient RPC failures, and validates each CSV before
 moving to the next pool.
 
 The active research data model is broader than the raw pool CSVs. See
-`autoresearch/data-methodology-refactor.md` for the planned DEX pool snapshot
+`research/autoresearch/data-methodology-refactor.md` for the planned DEX pool snapshot
 bridge, paper-faithful LP lifecycle ledger, event-time price reconstruction,
 and derived episode features.
 
@@ -31,7 +31,7 @@ python scripts/update_v4_pool_history.py \
   --bsc-end-block 103315324
 ```
 
-Checkpoints are stored in `data/checkpoints/`. The updater lock in the same
+Checkpoints are stored in `research/data/checkpoints/`. The updater lock in the same
 directory prevents manual and scheduled runs from overlapping. Do not delete a
 checkpoint unless the corresponding CSV is also being rebuilt deliberately.
 
@@ -92,39 +92,39 @@ Do not run these commands against a CSV while an updater is appending to it.
 Use completed snapshots or make fresh snapshots first:
 
 ```bash
-mkdir -p data/snapshots data/quality data/derived
+mkdir -p research/data/snapshots research/data/quality research/data/derived
 
-cp data/uni_base_pool_history.csv \
-  data/snapshots/uni_base_pool_history_pre_replay_refactor.csv
-cp data/uni_bsc_pool_history.csv \
-  data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv
+cp research/data/uni_base_pool_history.csv \
+  research/data/snapshots/uni_base_pool_history_pre_replay_refactor.csv
+cp research/data/uni_bsc_pool_history.csv \
+  research/data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv
 ```
 
 Run pool quality reports on the snapshots:
 
 ```bash
-python3 scripts/report_pool_history_quality.py \
-  --csv data/snapshots/uni_base_pool_history_pre_replay_refactor.csv \
+python3 research/scripts/report_pool_history_quality.py \
+  --csv research/data/snapshots/uni_base_pool_history_pre_replay_refactor.csv \
   --pool uni-base \
-  --out data/quality/uni_base_pool_history_pre_replay_refactor.md
+  --out research/data/quality/uni_base_pool_history_pre_replay_refactor.md
 
-python3 scripts/report_pool_history_quality.py \
-  --csv data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv \
+python3 research/scripts/report_pool_history_quality.py \
+  --csv research/data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv \
   --pool uni-bsc \
-  --out data/quality/uni_bsc_pool_history_pre_replay_refactor.md
+  --out research/data/quality/uni_bsc_pool_history_pre_replay_refactor.md
 ```
 
 Build replay-corrected pool histories from the snapshots:
 
 ```bash
-python3 scripts/replay_pool_history_prices.py \
-  --input data/snapshots/uni_base_pool_history_pre_replay_refactor.csv \
-  --output data/derived/uni_base_pool_history_replay.csv \
+python3 research/scripts/replay_pool_history_prices.py \
+  --input research/data/snapshots/uni_base_pool_history_pre_replay_refactor.csv \
+  --output research/data/derived/uni_base_pool_history_replay.csv \
   --pool uni-base
 
-python3 scripts/replay_pool_history_prices.py \
-  --input data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv \
-  --output data/derived/uni_bsc_pool_history_replay.csv \
+python3 research/scripts/replay_pool_history_prices.py \
+  --input research/data/snapshots/uni_bsc_pool_history_pre_replay_refactor.csv \
+  --output research/data/derived/uni_bsc_pool_history_replay.csv \
   --pool uni-bsc
 ```
 
@@ -132,113 +132,113 @@ Import DEX pool context into `price_snapshots` and build causal pool feature
 tables:
 
 ```bash
-python3 scripts/import_pool_snapshots.py \
+python3 research/scripts/import_pool_snapshots.py \
   --db data/cngn.db \
-  --csv data/derived/uni_base_pool_history_replay.csv \
+  --csv research/data/derived/uni_base_pool_history_replay.csv \
   --pool uni-base
 
-python3 scripts/import_pool_snapshots.py \
+python3 research/scripts/import_pool_snapshots.py \
   --db data/cngn.db \
-  --csv data/derived/uni_bsc_pool_history_replay.csv \
+  --csv research/data/derived/uni_bsc_pool_history_replay.csv \
   --pool uni-bsc
 
-python3 scripts/build_pool_feature_table.py \
+python3 research/scripts/build_pool_feature_table.py \
   --pool uni-base \
-  --csv data/derived/uni_base_pool_history_replay.csv \
+  --csv research/data/derived/uni_base_pool_history_replay.csv \
   --db data/cngn.db \
-  --out data/derived/uni_base_pool_features.csv
+  --out research/data/derived/uni_base_pool_features.csv
 
-python3 scripts/build_pool_feature_table.py \
+python3 research/scripts/build_pool_feature_table.py \
   --pool uni-bsc \
-  --csv data/derived/uni_bsc_pool_history_replay.csv \
+  --csv research/data/derived/uni_bsc_pool_history_replay.csv \
   --db data/cngn.db \
-  --out data/derived/uni_bsc_pool_features.csv
+  --out research/data/derived/uni_bsc_pool_features.csv
 ```
 
 Export Fair Value markouts with pool features and then run regime-stability
 diagnostics:
 
 ```bash
-python3 scripts/export_fair_price_markouts.py \
+python3 research/scripts/export_fair_price_markouts.py \
   --db data/cngn.db \
-  --out data/derived/fair_price_markouts_with_pool_features.csv \
-  --pool-feature-csv uni-base=data/derived/uni_base_pool_features.csv \
-  --pool-feature-csv uni-bsc=data/derived/uni_bsc_pool_features.csv \
-  --quality-out data/quality/fair_price_markouts_with_pool_features.json
+  --out research/data/derived/fair_price_markouts_with_pool_features.csv \
+  --pool-feature-csv uni-base=research/data/derived/uni_base_pool_features.csv \
+  --pool-feature-csv uni-bsc=research/data/derived/uni_bsc_pool_features.csv \
+  --quality-out research/data/quality/fair_price_markouts_with_pool_features.json
 
-python3 scripts/report_backtest_regime_stability.py \
-  --windows data/derived/backtest_walk_forward_windows.csv \
-  --features data/derived/uni_base_pool_features.csv \
-  --out data/quality/backtest_regime_stability.md
+python3 research/scripts/report_backtest_regime_stability.py \
+  --windows research/data/derived/backtest_walk_forward_windows.csv \
+  --features research/data/derived/uni_base_pool_features.csv \
+  --out research/data/quality/backtest_regime_stability.md
 ```
 
 The LP lifecycle ledger exporter now has an RPC path for PositionManager
 `modifyLiquidities` transactions:
 
 ```bash
-python3 scripts/export_v4_lp_ledger.py \
+python3 research/scripts/export_v4_lp_ledger.py \
   --pool uni-base \
   --start-block 42926879 \
   --end-block 47130126 \
-  --out data/derived/uni_base_lp_ledger.csv
+  --out research/data/derived/uni_base_lp_ledger.csv
 
-python3 scripts/export_v4_lp_ledger.py \
+python3 research/scripts/export_v4_lp_ledger.py \
   --pool uni-bsc \
   --start-block 84655203 \
   --end-block 103315324 \
-  --out data/derived/uni_bsc_lp_ledger.csv
+  --out research/data/derived/uni_bsc_lp_ledger.csv
 ```
 
 Use the fixture path for deterministic decoder tests or hand-built fixtures:
 
 ```bash
-python3 scripts/export_v4_lp_ledger.py \
+python3 research/scripts/export_v4_lp_ledger.py \
   --pool uni-base \
   --start-block 42926879 \
   --end-block 47130126 \
-  --decoded-actions data/derived/uni_base_decoded_actions.json \
-  --ownership-events data/derived/uni_base_ownership_events.json \
-  --price-events data/derived/uni_base_price_events.json \
-  --out data/derived/uni_base_lp_ledger.csv
+  --decoded-actions research/data/derived/uni_base_decoded_actions.json \
+  --ownership-events research/data/derived/uni_base_ownership_events.json \
+  --price-events research/data/derived/uni_base_price_events.json \
+  --out research/data/derived/uni_base_lp_ledger.csv
 
-python3 scripts/export_v4_lp_ledger.py \
+python3 research/scripts/export_v4_lp_ledger.py \
   --pool uni-bsc \
   --start-block 84655203 \
   --end-block 103315324 \
-  --decoded-actions data/derived/uni_bsc_decoded_actions.json \
-  --ownership-events data/derived/uni_bsc_ownership_events.json \
-  --price-events data/derived/uni_bsc_price_events.json \
-  --out data/derived/uni_bsc_lp_ledger.csv
+  --decoded-actions research/data/derived/uni_bsc_decoded_actions.json \
+  --ownership-events research/data/derived/uni_bsc_ownership_events.json \
+  --price-events research/data/derived/uni_bsc_price_events.json \
+  --out research/data/derived/uni_bsc_lp_ledger.csv
 ```
 
 After LP ledgers exist, run attribution QA before exact-PnL reconstruction:
 
 ```bash
-python3 scripts/report_lp_ledger_attribution.py \
-  --ledger uni-base=data/derived/uni_base_lp_ledger.csv \
-  --ledger uni-bsc=data/derived/uni_bsc_lp_ledger.csv \
-  --out data/quality/lp_ledger_attribution.md
+python3 research/scripts/report_lp_ledger_attribution.py \
+  --ledger uni-base=research/data/derived/uni_base_lp_ledger.csv \
+  --ledger uni-bsc=research/data/derived/uni_bsc_lp_ledger.csv \
+  --out research/data/quality/lp_ledger_attribution.md
 ```
 
 Then rebuild paper LP episodes from exact-attributed ledgers:
 
 ```bash
-python3 scripts/export_lp_paper_episodes.py \
-  --ledger data/derived/uni_base_lp_ledger.csv \
-  --out data/derived/uni_base_paper_episodes.csv
+python3 research/scripts/export_lp_paper_episodes.py \
+  --ledger research/data/derived/uni_base_lp_ledger.csv \
+  --out research/data/derived/uni_base_paper_episodes.csv
 
-python3 scripts/export_lp_paper_episodes.py \
-  --ledger data/derived/uni_bsc_lp_ledger.csv \
-  --out data/derived/uni_bsc_paper_episodes.csv
+python3 research/scripts/export_lp_paper_episodes.py \
+  --ledger research/data/derived/uni_bsc_lp_ledger.csv \
+  --out research/data/derived/uni_bsc_paper_episodes.csv
 ```
 
 Run close-side attribution QA after rebuilding episodes:
 
 ```bash
-python3 scripts/report_lp_paper_episode_attribution.py \
-  --ledger uni-base=data/derived/uni_base_lp_ledger.csv \
-  --ledger uni-bsc=data/derived/uni_bsc_lp_ledger.csv \
-  --out data/quality/lp_paper_episode_attribution.md
+python3 research/scripts/report_lp_paper_episode_attribution.py \
+  --ledger uni-base=research/data/derived/uni_base_lp_ledger.csv \
+  --ledger uni-bsc=research/data/derived/uni_bsc_lp_ledger.csv \
+  --out research/data/quality/lp_paper_episode_attribution.md
 ```
 
 Paper episode reconstruction opens lots only from exact-attributed mint/increase
@@ -273,29 +273,29 @@ sample.
 After LP ledgers exist, export gas sidecars:
 
 ```bash
-python3 scripts/export_tx_receipts.py \
+python3 research/scripts/export_tx_receipts.py \
   --chain base \
-  --tx-csv data/derived/uni_base_lp_ledger.csv \
-  --out data/derived/uni_base_tx_receipts.csv
+  --tx-csv research/data/derived/uni_base_lp_ledger.csv \
+  --out research/data/derived/uni_base_tx_receipts.csv
 
-python3 scripts/export_tx_receipts.py \
+python3 research/scripts/export_tx_receipts.py \
   --chain bsc \
-  --tx-csv data/derived/uni_bsc_lp_ledger.csv \
-  --out data/derived/uni_bsc_tx_receipts.csv
+  --tx-csv research/data/derived/uni_bsc_lp_ledger.csv \
+  --out research/data/derived/uni_bsc_tx_receipts.csv
 ```
 
 Then join paper episodes to receipt sidecars for gas-aware episode features:
 
 ```bash
-python3 scripts/export_lp_episode_features.py \
-  --ledger data/derived/uni_base_lp_ledger.csv \
-  --receipts data/derived/uni_base_tx_receipts.csv \
-  --out data/derived/uni_base_lp_episode_features.csv
+python3 research/scripts/export_lp_episode_features.py \
+  --ledger research/data/derived/uni_base_lp_ledger.csv \
+  --receipts research/data/derived/uni_base_tx_receipts.csv \
+  --out research/data/derived/uni_base_lp_episode_features.csv
 
-python3 scripts/export_lp_episode_features.py \
-  --ledger data/derived/uni_bsc_lp_ledger.csv \
-  --receipts data/derived/uni_bsc_tx_receipts.csv \
-  --out data/derived/uni_bsc_lp_episode_features.csv
+python3 research/scripts/export_lp_episode_features.py \
+  --ledger research/data/derived/uni_bsc_lp_ledger.csv \
+  --receipts research/data/derived/uni_bsc_tx_receipts.csv \
+  --out research/data/derived/uni_bsc_lp_episode_features.csv
 ```
 
 `export_lp_episode_features.py` always reports native-token gas fees in wei and
@@ -316,29 +316,29 @@ To rebuild corrected research histories from already completed raw CSVs without
 new RPC calls:
 
 ```bash
-PYTHONPATH=. python3 scripts/replay_pool_history_prices.py \
-  --input data/uni_base_pool_history.csv \
-  --output data/derived/uni_base_pool_history_replay.csv \
+PYTHONPATH=. python3 research/scripts/replay_pool_history_prices.py \
+  --input research/data/uni_base_pool_history.csv \
+  --output research/data/derived/uni_base_pool_history_replay.csv \
   --pool uni-base
 
-PYTHONPATH=. python3 scripts/replay_pool_history_prices.py \
-  --input data/uni_bsc_pool_history.csv \
-  --output data/derived/uni_bsc_pool_history_replay.csv \
+PYTHONPATH=. python3 research/scripts/replay_pool_history_prices.py \
+  --input research/data/uni_bsc_pool_history.csv \
+  --output research/data/derived/uni_bsc_pool_history_replay.csv \
   --pool uni-bsc
 ```
 
 Then validate:
 
 ```bash
-PYTHONPATH=. python3 scripts/report_pool_history_quality.py \
-  --csv data/derived/uni_base_pool_history_replay.csv \
+PYTHONPATH=. python3 research/scripts/report_pool_history_quality.py \
+  --csv research/data/derived/uni_base_pool_history_replay.csv \
   --pool uni-base \
-  --out data/quality/uni_base_pool_history_replay.md
+  --out research/data/quality/uni_base_pool_history_replay.md
 
-PYTHONPATH=. python3 scripts/report_pool_history_quality.py \
-  --csv data/derived/uni_bsc_pool_history_replay.csv \
+PYTHONPATH=. python3 research/scripts/report_pool_history_quality.py \
+  --csv research/data/derived/uni_bsc_pool_history_replay.csv \
   --pool uni-bsc \
-  --out data/quality/uni_bsc_pool_history_replay.md
+  --out research/data/quality/uni_bsc_pool_history_replay.md
 ```
 
 Do not use a full from-genesis RPC export as the default replay rebuild path

@@ -1,6 +1,6 @@
 """Helpers for Anvil fork tests — wallet funding, donor finding, impersonation.
 
-Extracted from scripts/simulate_lp_flow.py so the fork test (test_dex_fork.py
+Extracted from research/scripts/simulate_lp_flow.py so the fork test (test_dex_fork.py
 Section C) and the developer script share the same infrastructure without
 maintaining two copies.
 

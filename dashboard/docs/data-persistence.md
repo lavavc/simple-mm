@@ -42,9 +42,9 @@ capture run:
 sqlite3 -header -column data/cngn.db \
   "select source, count(*) as rows, datetime(min(timestamp_ms)/1000,'unixepoch') as first_utc, datetime(max(timestamp_ms)/1000,'unixepoch') as last_utc from price_snapshots group by source order by source;"
 
-python scripts/report_fair_price_feed_quality.py \
+python research/scripts/report_fair_price_feed_quality.py \
   --db data/cngn.db \
-  --out data/fair_price_feed_quality_current.md
+  --out research/data/fair_price_feed_quality_current.md
 ```
 
 This DB is the canonical local source for historical Quidax values. The public

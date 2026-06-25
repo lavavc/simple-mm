@@ -8,10 +8,11 @@ Automated CNGN market-data, concentrated-liquidity, and arbitrage engine across 
 |---|---|
 | `engine/` | Production FastAPI service, scheduler, market data, LP management, arbitrage, venues, accounts, and persistence. |
 | `dashboard/` | Next.js dashboard and active implementation docs under `dashboard/docs/`. |
-| `autoresearch/` | Active research workflows for fair price, DEX LP policy, and Quidax latency. Historical notes live in `autoresearch/archive/`. |
-| `literature/` | Consolidated finance, order-book, Kelly sizing, CLMM, and fair-price PDF references. |
-| `backtester/` | LP backtesting framework and historical result artifacts. |
-| `scripts/` | Capture, export, analysis, pool-history, manual execution, and ops helper scripts. |
+| `research/autoresearch/` | Active research workflows for fair price, DEX LP policy, and Quidax latency. Historical notes live in `research/autoresearch/archive/`. |
+| `research/literature/` | Consolidated finance, order-book, Kelly sizing, CLMM, and fair-price PDF references. |
+| `research/backtester/` | LP backtesting framework and historical result artifacts. |
+| `research/scripts/` | Research capture, export, analysis, and backtest helper scripts. |
+| `scripts/` | Operational helpers for manual execution, accounts, and scheduled pool-history updates. |
 
 ## Setup
 
@@ -61,11 +62,11 @@ Active engine design and implementation docs live in `dashboard/docs/`:
 
 Research docs are intentionally outside the dashboard docs:
 
-- `autoresearch/fair-price.md`
-- `autoresearch/lp.md`
-- `autoresearch/quidax-latency.md`
-- `autoresearch/archive/`
-- `literature/README.md`
+- `research/autoresearch/fair-price.md`
+- `research/autoresearch/lp.md`
+- `research/autoresearch/quidax-latency.md`
+- `research/autoresearch/archive/`
+- `research/literature/README.md`
 
 ## Verification
 

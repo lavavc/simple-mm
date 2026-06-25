@@ -26,8 +26,8 @@ The engine manages CNGN market operations across:
 
 ## What Belongs Elsewhere
 
-- Active research workflows live in `autoresearch/`.
-- Historical research notes live in `autoresearch/archive/`.
-- PDFs and papers live in `literature/`.
+- Active research workflows live in `research/autoresearch/`.
+- Historical research notes live in `research/autoresearch/archive/`.
+- PDFs and papers live in `research/literature/`.
 
 Docs in `dashboard/docs/` should describe the current engine design and operator workflow. Research ideas should be promoted here only after they become live design.

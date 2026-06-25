@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backtester.v4_export import POOL_CONFIGS, _read_export_checkpoint
+from research.backtester.v4_export import POOL_CONFIGS, _read_export_checkpoint
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class PoolUpdateJob:
 def build_export_command(job: PoolUpdateJob) -> list[str]:
     command = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "export_v4_pool_history.py"),
+        str(REPO_ROOT / "research" / "scripts" / "export_v4_pool_history.py"),
         "--pool",
         job.pool,
         "--output",
@@ -146,7 +146,7 @@ def update_pool_history(
 
 
 def _jobs(args: argparse.Namespace) -> list[PoolUpdateJob]:
-    data_dir = REPO_ROOT / "data"
+    data_dir = REPO_ROOT / "research" / "data"
     requested = args.pool or list(POOL_CONFIGS)
     end_blocks = {
         "uni-base": args.base_end_block,
@@ -175,7 +175,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lock-file",
         type=Path,
-        default=REPO_ROOT / "data" / "checkpoints" / "pool-history-update.lock",
+        default=REPO_ROOT / "research" / "data" / "checkpoints" / "pool-history-update.lock",
     )
     return parser
 

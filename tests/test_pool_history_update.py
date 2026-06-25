@@ -33,6 +33,7 @@ def test_build_export_command_always_resumes_with_checkpoint(tmp_path):
 
     command = build_export_command(job)
 
+    assert command[1].endswith("research/scripts/export_v4_pool_history.py")
     assert "--resume" in command
     assert command[command.index("--checkpoint-file") + 1] == str(job.checkpoint_path)
     assert command[command.index("--end-block") + 1] == "456"
