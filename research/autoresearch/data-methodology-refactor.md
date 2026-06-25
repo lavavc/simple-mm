@@ -138,8 +138,8 @@ FIFO when fully consumed, carries partial-removal proceeds forward until the lot
 is closed, caps over-burns to observed liquidity, values capital using each
 pool's cNGN/stable token orientation, uses the exact `amount*_actual` opening
 fields, skips non-exact opening rows for exact-PnL reconstruction, and exposes
-the initial position-type and paper win-score helpers. Full 15-type paper
-taxonomy expansion remains pending.
+the paper Figure 3 15-type position taxonomy plus the Appendix A cumulative
+realized-PnL path win-score helper.
 
 ### 4. Event-Time Price Reconstruction
 
@@ -317,9 +317,8 @@ Exact commands live in `dashboard/docs/lp/pool-history-operations.md` under
 3. Add event-time price replay for pool history rows.
 4. Add the LP lifecycle ledger with token id and owner tracking.
 5. Add burn+collect matching and FIFO episode reconstruction.
-6. Add the full position taxonomy and exact realized-PnL win-score.
-7. Add receipt/gas sidecar joins for net-of-cost reporting.
-8. Add causal cone and stress feature tables.
-9. Add opportunity-screen versus full-costed-backtest reporting.
-10. Add parameter stability diagnostics and stress-slice reports.
-11. Re-run walk-forward and paper-style studies only after coverage reports pass.
+6. Add receipt/gas sidecar joins for net-of-cost reporting.
+7. Add causal cone and stress feature tables.
+8. Add opportunity-screen versus full-costed-backtest reporting.
+9. Add parameter stability diagnostics and stress-slice reports.
+10. Re-run walk-forward and paper-style studies only after coverage reports pass.

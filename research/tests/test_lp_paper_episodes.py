@@ -361,15 +361,100 @@ def test_unmatched_collect_rows_are_reported() -> None:
     assert attribution.unmatched_collect_capital == Decimal("30")
 
 
-def test_position_taxonomy_and_duration_weighted_win_score() -> None:
-    assert classify_position_type(
-        Decimal("0.9"),
-        Decimal("1.1"),
-        Decimal("1.0"),
-        Decimal("1.2"),
-        Decimal("1"),
-    ) == 3
-    winning_episode = PaperLPEpisode(
+def test_position_taxonomy_matches_paper_figure_three() -> None:
+    lower = Decimal("1.0")
+    upper = Decimal("2.0")
+    cases = [
+        (Decimal("0.5"), Decimal("0.8"), 1),
+        (Decimal("0.8"), Decimal("0.5"), 2),
+        (Decimal("0.5"), Decimal("1.5"), 3),
+        (Decimal("1.5"), Decimal("0.5"), 4),
+        (Decimal("1.2"), Decimal("1.8"), 5),
+        (Decimal("1.8"), Decimal("1.2"), 6),
+        (Decimal("1.5"), Decimal("2.5"), 7),
+        (Decimal("2.5"), Decimal("1.5"), 8),
+        (Decimal("0.5"), Decimal("2.5"), 9),
+        (Decimal("2.5"), Decimal("0.5"), 10),
+        (Decimal("2.2"), Decimal("2.5"), 11),
+        (Decimal("2.5"), Decimal("2.2"), 12),
+        (Decimal("1.5"), Decimal("1.5"), 13),
+        (Decimal("0.5"), Decimal("0.5"), 14),
+        (Decimal("2.5"), Decimal("2.5"), 15),
+    ]
+
+    for start_price, end_price, expected_type in cases:
+        assert classify_position_type(
+            start_price,
+            end_price,
+            lower,
+            upper,
+            Decimal("0"),
+        ) == expected_type
+
+
+def test_paper_win_score_integrates_realized_cumulative_pnl_path() -> None:
+    episodes = [
+        PaperLPEpisode(
+            "uni-base",
+            "0xlp",
+            -100,
+            100,
+            0,
+            2_500,
+            Decimal("100"),
+            Decimal("110"),
+            Decimal("10"),
+            Decimal("1"),
+            Decimal("1.1"),
+            Decimal("0.9"),
+            Decimal("1.2"),
+            Decimal("100"),
+            5,
+            Decimal("0.1"),
+        ),
+        PaperLPEpisode(
+            "uni-base",
+            "0xlp",
+            -100,
+            100,
+            0,
+            5_000,
+            Decimal("100"),
+            Decimal("90"),
+            Decimal("-20"),
+            Decimal("1"),
+            Decimal("0.9"),
+            Decimal("0.9"),
+            Decimal("1.2"),
+            Decimal("100"),
+            6,
+            Decimal("-0.1"),
+        ),
+        PaperLPEpisode(
+            "uni-base",
+            "0xlp",
+            -100,
+            100,
+            0,
+            7_500,
+            Decimal("100"),
+            Decimal("120"),
+            Decimal("20"),
+            Decimal("1"),
+            Decimal("1.2"),
+            Decimal("0.9"),
+            Decimal("1.2"),
+            Decimal("100"),
+            5,
+            Decimal("0.2"),
+        ),
+    ]
+
+    assert paper_win_score(episodes, 0, 10_000) == Decimal("0.6666666666666666666666666667")
+
+
+def test_paper_win_score_returns_neutral_when_cumulative_path_has_no_excursion() -> None:
+    flat_episode = PaperLPEpisode(
         "uni-base",
         "0xlp",
         -100,
@@ -377,33 +462,15 @@ def test_position_taxonomy_and_duration_weighted_win_score() -> None:
         0,
         5_000,
         Decimal("100"),
-        Decimal("110"),
-        Decimal("10"),
+        Decimal("100"),
+        Decimal("0"),
         Decimal("1"),
         Decimal("1.1"),
         Decimal("0.9"),
         Decimal("1.2"),
         Decimal("100"),
-        5,
-        Decimal("0.1"),
-    )
-    losing_episode = PaperLPEpisode(
-        "uni-base",
-        "0xlp",
-        -100,
-        100,
-        5_000,
-        10_000,
-        Decimal("100"),
-        Decimal("90"),
-        Decimal("-10"),
-        Decimal("1"),
-        Decimal("0.9"),
-        Decimal("0.9"),
-        Decimal("1.2"),
-        Decimal("100"),
-        6,
-        Decimal("-0.1"),
+        13,
+        Decimal("0"),
     )
 
-    assert paper_win_score([winning_episode, losing_episode], 0, 10_000) == Decimal("0.5")
+    assert paper_win_score([flat_episode], 0, 10_000) == Decimal("0.5")

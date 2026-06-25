@@ -13,6 +13,7 @@ from research.backtester.lp_paper_episodes import (
     CLOSE_ATTRIBUTION_MIXED,
     PaperLPEpisode,
     _pool_name,
+    paper_win_score,
     reconstruct_paper_episodes,
 )
 from research.backtester.v4_lp_ledger import OPENING_ATTRIBUTION_EXACT, LPLedgerRow
@@ -56,6 +57,11 @@ class LPEpisodeFeature:
     net_return_on_capital: Decimal | None
     gas_attribution_status: str
     net_pnl_status: str
+    lp_realized_episode_count: int
+    lp_realized_terminal_pnl: Decimal
+    lp_realized_win_score: Decimal
+    lp_observation_start_ms: int
+    lp_observation_end_ms: int
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,15 @@ class _GasPricing:
     gas_cost_usd: Decimal | None
 
 
+@dataclass(frozen=True)
+class _LPRealizedSummary:
+    episode_count: int
+    terminal_pnl: Decimal
+    win_score: Decimal
+    observation_start_ms: int
+    observation_end_ms: int
+
+
 @dataclass
 class _OpenGasLot:
     pool: str
@@ -173,6 +188,7 @@ def build_lp_episode_features(
         native_price_max_age_ms=native_price_max_age_ms,
     )
     episodes = reconstruct_paper_episodes(ledger_rows)
+    lp_realized_summaries = _lp_realized_summaries(episodes, ledger_rows)
     receipt_by_tx = _receipt_gas_by_tx(receipt_rows)
     matches = _episode_tx_matches(ledger_rows)
     interim_collect_gas_events = _interim_collect_gas_events_by_open_key(ledger_rows)
@@ -181,6 +197,7 @@ def build_lp_episode_features(
             episode,
             matches.get(_episode_match_key(episode)),
             interim_collect_gas_events.get(_episode_open_key(episode), []),
+            lp_realized_summaries[_lp_key(episode.pool, episode.lp_owner)],
             receipt_by_tx,
             native_token_usd,
             native_price_lookup,
@@ -193,6 +210,7 @@ def _episode_feature(
     episode: PaperLPEpisode,
     tx_candidates: _EpisodeTxCandidates | None,
     interim_collect_gas_events: Sequence[_GasTxEvent],
+    lp_realized_summary: _LPRealizedSummary,
     receipt_by_tx: dict[str, _ReceiptGas],
     native_token_usd: Decimal | None,
     native_price_lookup: _NativePriceLookup | None,
@@ -208,6 +226,7 @@ def _episode_feature(
             gas_pricing=_unavailable_gas_pricing(native_token_usd),
             gas_attribution_status="ambiguous_ledger_match",
             gross_return_on_capital=gross_return,
+            lp_realized_summary=lp_realized_summary,
         )
 
     gas_pricing = _price_gas_events(
@@ -236,6 +255,7 @@ def _episode_feature(
         gas_pricing=gas_pricing,
         gas_attribution_status=gas_status,
         gross_return_on_capital=gross_return,
+        lp_realized_summary=lp_realized_summary,
     )
 
 
@@ -248,6 +268,7 @@ def _feature_with_gas(
     gas_pricing: _GasPricing,
     gas_attribution_status: str,
     gross_return_on_capital: Decimal | None,
+    lp_realized_summary: _LPRealizedSummary,
 ) -> LPEpisodeFeature:
     net_pnl = None
     net_return = None
@@ -293,6 +314,11 @@ def _feature_with_gas(
         net_return_on_capital=net_return,
         gas_attribution_status=gas_attribution_status,
         net_pnl_status=net_status,
+        lp_realized_episode_count=lp_realized_summary.episode_count,
+        lp_realized_terminal_pnl=lp_realized_summary.terminal_pnl,
+        lp_realized_win_score=lp_realized_summary.win_score,
+        lp_observation_start_ms=lp_realized_summary.observation_start_ms,
+        lp_observation_end_ms=lp_realized_summary.observation_end_ms,
     )
 
 
@@ -386,6 +412,64 @@ def _episode_open_key(episode: PaperLPEpisode) -> tuple[str, str, int, int, int]
         episode.tick_lower,
         episode.tick_upper,
         episode.open_ms,
+    )
+
+
+def _lp_key(pool: str, owner: str) -> tuple[str, str]:
+    return pool, owner
+
+
+def _lp_realized_summaries(
+    episodes: Sequence[PaperLPEpisode],
+    ledger_rows: Sequence[LPLedgerRow],
+) -> dict[tuple[str, str], _LPRealizedSummary]:
+    episodes_by_lp: dict[tuple[str, str], list[PaperLPEpisode]] = defaultdict(list)
+    for episode in episodes:
+        episodes_by_lp[_lp_key(episode.pool, episode.lp_owner)].append(episode)
+
+    bounds_by_lp = _lp_observation_bounds(ledger_rows)
+    summaries: dict[tuple[str, str], _LPRealizedSummary] = {}
+    for key, lp_episodes in episodes_by_lp.items():
+        observation_start_ms, observation_end_ms = bounds_by_lp.get(
+            key,
+            _episode_observation_bounds(lp_episodes),
+        )
+        if observation_end_ms <= observation_start_ms:
+            win_score = Decimal("0.5")
+        else:
+            win_score = paper_win_score(
+                lp_episodes,
+                observation_start_ms,
+                observation_end_ms,
+            )
+        summaries[key] = _LPRealizedSummary(
+            episode_count=len(lp_episodes),
+            terminal_pnl=sum((episode.pnl for episode in lp_episodes), Decimal("0")),
+            win_score=win_score,
+            observation_start_ms=observation_start_ms,
+            observation_end_ms=observation_end_ms,
+        )
+    return summaries
+
+
+def _lp_observation_bounds(
+    ledger_rows: Sequence[LPLedgerRow],
+) -> dict[tuple[str, str], tuple[int, int]]:
+    timestamps_by_lp: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for row in ledger_rows:
+        if row.lp_owner is None:
+            continue
+        timestamps_by_lp[_lp_key(_pool_name(row), row.lp_owner)].append(row.timestamp_ms)
+    return {
+        key: (min(timestamps), max(timestamps))
+        for key, timestamps in timestamps_by_lp.items()
+    }
+
+
+def _episode_observation_bounds(episodes: Sequence[PaperLPEpisode]) -> tuple[int, int]:
+    return (
+        min(episode.open_ms for episode in episodes),
+        max(episode.close_ms for episode in episodes),
     )
 
 

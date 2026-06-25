@@ -203,17 +203,45 @@ def classify_position_type(
     upper: Decimal,
     pnl: Decimal,
 ) -> int:
-    start_bucket = _range_bucket(start_price, lower, upper)
-    end_bucket = _range_bucket(end_price, lower, upper)
-    if start_bucket != 1 and end_bucket == 1:
-        return 3
-    if start_bucket == 1 and end_bucket != 1:
-        return 4
-    if start_bucket == 1 and end_bucket == 1:
-        return 5 if pnl >= 0 else 6
-    if start_bucket == end_bucket:
-        return 1 if start_bucket < 1 else 2
-    return 7
+    if start_price == end_price:
+        if start_price < lower:
+            return 14
+        if start_price > upper:
+            return 15
+        return 13
+
+    if start_price < end_price:
+        if end_price <= lower:
+            return 1
+        if start_price < lower and end_price <= upper:
+            return 3
+        if lower <= start_price and end_price <= upper:
+            return 5
+        if lower <= start_price < upper < end_price:
+            return 7
+        if start_price < lower and upper < end_price:
+            return 9
+        if upper <= start_price:
+            return 11
+
+    if end_price < start_price:
+        if start_price <= lower:
+            return 2
+        if end_price < lower and start_price <= upper:
+            return 4
+        if lower <= end_price and start_price <= upper:
+            return 6
+        if lower <= end_price < upper < start_price:
+            return 8
+        if end_price < lower and upper < start_price:
+            return 10
+        if upper <= end_price:
+            return 12
+
+    raise ValueError(
+        "could not classify paper position type "
+        f"start_price={start_price} end_price={end_price} lower={lower} upper={upper}"
+    )
 
 
 def paper_win_score(
@@ -223,16 +251,43 @@ def paper_win_score(
 ) -> Decimal:
     if end_ms <= start_ms:
         raise ValueError("end_ms must be greater than start_ms")
-    total_ms = Decimal(str(end_ms - start_ms))
-    winning_ms = Decimal("0")
+
+    deltas_by_time: dict[int, Decimal] = defaultdict(Decimal)
     for episode in episodes:
-        overlap_start = max(start_ms, episode.open_ms)
-        overlap_end = min(end_ms, episode.close_ms)
-        if overlap_end <= overlap_start:
-            continue
-        if episode.pnl > 0:
-            winning_ms += Decimal(str(overlap_end - overlap_start))
-    return winning_ms / total_ms
+        deltas_by_time[episode.close_ms] += episode.pnl
+
+    cumulative_pnl = sum(
+        (pnl for close_ms, pnl in deltas_by_time.items() if close_ms <= start_ms),
+        Decimal("0"),
+    )
+    states = [cumulative_pnl]
+    intervals: list[tuple[int, Decimal]] = []
+    previous_ms = start_ms
+    for close_ms in sorted(time for time in deltas_by_time if start_ms < time < end_ms):
+        intervals.append((close_ms - previous_ms, cumulative_pnl))
+        cumulative_pnl += deltas_by_time[close_ms]
+        states.append(cumulative_pnl)
+        previous_ms = close_ms
+    intervals.append((end_ms - previous_ms, cumulative_pnl))
+
+    max_positive = max((max(state, Decimal("0")) for state in states), default=Decimal("0"))
+    max_negative = max((-min(state, Decimal("0")) for state in states), default=Decimal("0"))
+    normalizer = max(max_positive, max_negative)
+    if normalizer == 0:
+        return Decimal("0.5")
+
+    positive_area = Decimal("0")
+    negative_area = Decimal("0")
+    for duration_ms, state in intervals:
+        duration = Decimal(str(duration_ms))
+        if state > 0:
+            positive_area += duration * state / normalizer
+        elif state < 0:
+            negative_area += duration * (-state) / normalizer
+    total_area = positive_area + negative_area
+    if total_area == 0:
+        return Decimal("0.5")
+    return positive_area / total_area
 
 
 def _open_lot(

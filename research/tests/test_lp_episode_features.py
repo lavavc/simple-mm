@@ -93,6 +93,7 @@ def test_episode_features_join_open_close_receipts_and_compute_net_pnl() -> None
             collect_amount0=Decimal("16"),
             collect_amount1=Decimal("16"),
         ),
+        ledger_row("collect", "0xccc", 0, 4_000),
     ]
 
     features = build_lp_episode_features(
@@ -116,6 +117,9 @@ def test_episode_features_join_open_close_receipts_and_compute_net_pnl() -> None
     assert feature.net_return_on_capital == Decimal("0.100")
     assert feature.gas_attribution_status == "exact_open_close"
     assert feature.net_pnl_status == "net_usd_available"
+    assert feature.lp_realized_episode_count == 1
+    assert feature.lp_realized_terminal_pnl == Decimal("12")
+    assert feature.lp_realized_win_score == Decimal("1")
 
 
 def test_episode_features_join_as_of_native_prices_per_gas_transaction() -> None:

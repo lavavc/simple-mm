@@ -270,6 +270,11 @@ stress/sensitivity view, not the default optimization target. The
 `zero_collect_excluded` row reports unresolved capital removed from the default
 sample.
 
+Paper episode exports use the paper Figure 3 15-type position taxonomy.
+Gas-aware episode feature exports also attach LP-level realized terminal PnL,
+episode count, and the Appendix A cumulative realized-PnL path win-score over
+the observed ledger window for that pool/owner.
+
 After LP ledgers exist, export gas sidecars:
 
 ```bash

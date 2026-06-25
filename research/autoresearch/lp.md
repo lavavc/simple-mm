@@ -27,8 +27,8 @@ Implemented:
 - persisted LP snapshots with range, price, fraction, and active-share fields
 - DB helpers for LP action and position snapshot reconstruction
 - episode reconstruction from snapshots and confirmed removal actions
-- simplified position taxonomy by start/end bucket
-- win-score approximation
+- paper Figure 3 15-type position taxonomy for paper episodes
+- Appendix A realized cumulative-PnL path win-score for LP episode features
 - finite-state policy scaffold: enter, hold, harvest, reset, defend
 - CLI analysis through `research/scripts/analyze_lp_strategy.py`
 - backtester research log and capacity/sizing experiments archived for traceability
@@ -103,11 +103,10 @@ Keep swap-count walk-forward windows for primary selection. Add calendar stress 
 5. Add burn+collect matching and FIFO transaction-native episode accounting.
 6. Add causal cone and stress feature tables.
 7. Split interim-collect gas across the affected open lots in `lp_episode_features`.
-8. Add the full paper position taxonomy and exact realized-PnL win-score.
-9. Add opportunity-screen versus full-costed-backtest reporting.
-10. Add parameter stability diagnostics across walk-forward windows.
-11. Expose LP research summaries through API/dashboard views.
-12. Make policy thresholds configurable per venue.
+8. Add opportunity-screen versus full-costed-backtest reporting.
+9. Add parameter stability diagnostics across walk-forward windows.
+10. Expose LP research summaries through API/dashboard views.
+11. Make policy thresholds configurable per venue.
 13. Integrate the policy scaffold into the backtester.
 14. Re-run walk-forward studies after enough extended pool history is available.
 
