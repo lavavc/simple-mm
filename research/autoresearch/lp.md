@@ -30,6 +30,8 @@ Implemented:
 - paper Figure 3 15-type position taxonomy for paper episodes
 - Appendix A realized cumulative-PnL path win-score for LP episode features
 - finite-state policy scaffold: enter, hold, harvest, reset, defend
+- causal pool feature tables with lifetime and finite-lookback cone percentiles
+- UTC calendar stress-slice reports over selected cone fields
 - CLI analysis through `research/scripts/analyze_lp_strategy.py`
 - backtester research log and capacity/sizing experiments archived for traceability
 - paper LP episode feature export with receipt-backed native gas fields
@@ -96,19 +98,10 @@ Keep swap-count walk-forward windows for primary selection. Add calendar stress 
 
 ## Next Implementation Candidates
 
-1. Add canonical swap-flow fields and pool-history validation reports.
-2. Add `uni-base_pool` and `uni-bsc_pool` snapshot import into `price_snapshots`.
-3. Reconstruct event-time liquidity-operation prices without block-end lookahead.
-4. Add the LP lifecycle ledger with token id and LP owner tracking.
-5. Add burn+collect matching and FIFO transaction-native episode accounting.
-6. Add causal cone and stress feature tables.
-7. Split interim-collect gas across the affected open lots in `lp_episode_features`.
-8. Add opportunity-screen versus full-costed-backtest reporting.
-9. Add parameter stability diagnostics across walk-forward windows.
-10. Expose LP research summaries through API/dashboard views.
-11. Make policy thresholds configurable per venue.
-13. Integrate the policy scaffold into the backtester.
-14. Re-run walk-forward studies after enough extended pool history is available.
+1. Re-run walk-forward and paper-style studies after coverage reports pass.
+2. Expose LP research summaries through API/dashboard views.
+3. Make policy thresholds configurable per venue.
+4. Integrate the policy scaffold into the backtester.
 
 Archive detail:
 

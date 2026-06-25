@@ -146,13 +146,31 @@ python3 research/scripts/build_pool_feature_table.py \
   --pool uni-base \
   --csv research/data/derived/uni_base_pool_history_replay.csv \
   --db data/cngn.db \
-  --out research/data/derived/uni_base_pool_features.csv
+  --out research/data/derived/uni_base_pool_features.csv \
+  --cone-lookback-seconds 3600,86400,604800
 
 python3 research/scripts/build_pool_feature_table.py \
   --pool uni-bsc \
   --csv research/data/derived/uni_bsc_pool_history_replay.csv \
   --db data/cngn.db \
-  --out research/data/derived/uni_bsc_pool_features.csv
+  --out research/data/derived/uni_bsc_pool_features.csv \
+  --cone-lookback-seconds 3600,86400,604800
+```
+
+Build calendar stress slices from the same causal feature tables. These reports
+are diagnostics for regime tests; they are not a replacement for swap-count
+walk-forward selection.
+
+```bash
+python3 research/scripts/report_pool_feature_stress_slices.py \
+  --features research/data/derived/uni_base_pool_features.csv \
+  --out research/data/quality/uni_base_pool_feature_stress_slices.md \
+  --fields realized_volatility_cone_pct_1h,dex_premium_cone_pct_1h,active_liquidity_cone_pct_1h,active_liquidity_running_max_share_cone_pct_1h,swap_flow_imbalance_cone_pct_1h,fee_intensity_proxy_cone_pct_1h,volume_cone_pct_1h
+
+python3 research/scripts/report_pool_feature_stress_slices.py \
+  --features research/data/derived/uni_bsc_pool_features.csv \
+  --out research/data/quality/uni_bsc_pool_feature_stress_slices.md \
+  --fields realized_volatility_cone_pct_1h,dex_premium_cone_pct_1h,active_liquidity_cone_pct_1h,active_liquidity_running_max_share_cone_pct_1h,swap_flow_imbalance_cone_pct_1h,fee_intensity_proxy_cone_pct_1h,volume_cone_pct_1h
 ```
 
 Export Fair Value markouts with pool features and then run regime-stability

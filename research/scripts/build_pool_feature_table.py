@@ -11,23 +11,25 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import cast
+from typing import Sequence, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.backtester.cone_features import TimestampedValue, causal_percentile
-from research.backtester.cone_features import previous_or_equal_with_age
-from research.backtester.pool_features import derive_swap_flow
-from research.backtester.pool_price_semantics import (
+from research.backtester.cone_features import (  # noqa: E402
+    TimestampedValue,
+    causal_percentile,
+    previous_or_equal_with_age,
+)
+from research.backtester.pool_features import derive_swap_flow  # noqa: E402
+from research.backtester.pool_price_semantics import (  # noqa: E402
     classify_pool_price_row,
     fee_adjusted_bid_ask,
 )
 
-
 FAIR_PRICE_SOURCE = "quidax"
-OUTPUT_FIELDS = [
+BASE_OUTPUT_FIELDS = [
     "timestamp_ms",
     "pool",
     "block_number",
@@ -54,9 +56,43 @@ OUTPUT_FIELDS = [
     "volume_cone_pct",
     "source_age_ms",
 ]
+HISTORY_NAMES = (
+    "realized_volatility",
+    "dex_premium_bps",
+    "active_liquidity",
+    "active_liquidity_running_max_share",
+    "swap_flow_imbalance",
+    "fee_intensity_proxy",
+    "volume",
+)
+CONE_FIELD_BY_HISTORY = {
+    "realized_volatility": "realized_volatility_cone_pct",
+    "dex_premium_bps": "dex_premium_cone_pct",
+    "active_liquidity": "active_liquidity_cone_pct",
+    "active_liquidity_running_max_share": (
+        "active_liquidity_running_max_share_cone_pct"
+    ),
+    "swap_flow_imbalance": "swap_flow_imbalance_cone_pct",
+    "fee_intensity_proxy": "fee_intensity_proxy_cone_pct",
+    "volume": "volume_cone_pct",
+}
 SUPPORTED_POOLS = ("uni-base", "uni-bsc")
 SECONDS_PER_YEAR = Decimal("31536000")
 FEE_INTENSITY_PROXY_MODEL = "fee_rate_volume_over_active_liquidity_annualized_proxy"
+
+
+def output_fields(cone_lookback_seconds: Sequence[int]) -> list[str]:
+    fields = list(BASE_OUTPUT_FIELDS)
+    for seconds in _normalize_lookback_seconds(cone_lookback_seconds):
+        suffix = _lookback_suffix(seconds)
+        fields.extend(
+            f"{CONE_FIELD_BY_HISTORY[history_name]}_{suffix}"
+            for history_name in HISTORY_NAMES
+        )
+    return fields
+
+
+OUTPUT_FIELDS = list(BASE_OUTPUT_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -72,24 +108,18 @@ def build_pool_feature_table(
     csv_path: Path,
     pool: str,
     out_path: Path,
+    cone_lookback_seconds: Sequence[int] = (),
 ) -> FeatureBuildSummary:
     if pool not in SUPPORTED_POOLS:
         raise ValueError(f"Unsupported pool {pool!r}")
     if not db_path.exists():
         raise FileNotFoundError(db_path)
 
+    normalized_lookbacks = _normalize_lookback_seconds(cone_lookback_seconds)
     fair_values = _load_fair_values(db_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    histories: dict[str, list[Decimal]] = {
-        "realized_volatility": [],
-        "dex_premium_bps": [],
-        "active_liquidity": [],
-        "active_liquidity_running_max_share": [],
-        "swap_flow_imbalance": [],
-        "fee_intensity_proxy": [],
-        "volume": [],
-    }
+    histories: dict[str, list[TimestampedValue]] = {name: [] for name in HISTORY_NAMES}
     last_swap_price: Decimal | None = None
     last_swap_timestamp_ms: int | None = None
     max_active_liquidity: Decimal | None = None
@@ -103,7 +133,10 @@ def build_pool_feature_table(
         newline="",
     ) as output_file:
         reader = csv.DictReader(input_file)
-        writer = csv.DictWriter(output_file, fieldnames=OUTPUT_FIELDS)
+        writer = csv.DictWriter(
+            output_file,
+            fieldnames=output_fields(normalized_lookbacks),
+        )
         writer.writeheader()
 
         for row in reader:
@@ -120,6 +153,7 @@ def build_pool_feature_table(
                 last_swap_price=last_swap_price,
                 last_swap_timestamp_ms=last_swap_timestamp_ms,
                 max_active_liquidity=max_active_liquidity,
+                cone_lookback_seconds=normalized_lookbacks,
             )
             writer.writerow(feature_row.output)
 
@@ -133,7 +167,9 @@ def build_pool_feature_table(
 
             for history_name, value in feature_row.history_values.items():
                 if value is not None:
-                    histories[history_name].append(value)
+                    histories[history_name].append(
+                        TimestampedValue(timestamp_ms=timestamp_ms, value=value),
+                    )
 
             rows_written += 1
             if first_timestamp_ms is None:
@@ -162,10 +198,11 @@ def _build_feature_row(
     pool: str,
     timestamp_ms: int,
     fair_values: list[TimestampedValue],
-    histories: dict[str, list[Decimal]],
+    histories: dict[str, list[TimestampedValue]],
     last_swap_price: Decimal | None,
     last_swap_timestamp_ms: int | None,
     max_active_liquidity: Decimal | None,
+    cone_lookback_seconds: Sequence[int],
 ) -> BuiltFeatureRow:
     price_semantics = classify_pool_price_row(row)
     raw_sqrt_mid = price_semantics.raw_sqrt_mid
@@ -210,9 +247,17 @@ def _build_feature_row(
         "volume": volume,
     }
     cone_percentiles = {
-        name: causal_percentile(histories[name], value) if value is not None else None
+        name: causal_percentile(_history_decimal_values(histories[name]), value)
+        if value is not None
+        else None
         for name, value in history_values.items()
     }
+    lookback_cone_percentiles = _lookback_cone_percentiles(
+        histories=histories,
+        history_values=history_values,
+        timestamp_ms=timestamp_ms,
+        cone_lookback_seconds=cone_lookback_seconds,
+    )
 
     return BuiltFeatureRow(
         output={
@@ -259,11 +304,59 @@ def _build_feature_row(
             "fee_intensity_proxy_model": FEE_INTENSITY_PROXY_MODEL,
             "volume_cone_pct": _format_optional_decimal(cone_percentiles["volume"]),
             "source_age_ms": str(fair_value.age_ms) if fair_value is not None else "",
+            **lookback_cone_percentiles,
         },
         raw_sqrt_mid=raw_sqrt_mid,
         active_liquidity=active_liquidity,
         history_values=history_values,
     )
+
+
+def _lookback_cone_percentiles(
+    *,
+    histories: dict[str, list[TimestampedValue]],
+    history_values: dict[str, Decimal | None],
+    timestamp_ms: int,
+    cone_lookback_seconds: Sequence[int],
+) -> dict[str, str]:
+    output: dict[str, str] = {}
+    for seconds in cone_lookback_seconds:
+        lookback_ms = seconds * 1000
+        suffix = _lookback_suffix(seconds)
+        for history_name, value in history_values.items():
+            field = f"{CONE_FIELD_BY_HISTORY[history_name]}_{suffix}"
+            percentile = (
+                causal_percentile(
+                    _history_decimal_values_for_lookback(
+                        histories[history_name],
+                        timestamp_ms=timestamp_ms,
+                        lookback_ms=lookback_ms,
+                    ),
+                    value,
+                )
+                if value is not None
+                else None
+            )
+            output[field] = _format_optional_decimal(percentile)
+    return output
+
+
+def _history_decimal_values(rows: Sequence[TimestampedValue]) -> list[Decimal]:
+    return [cast(Decimal, row.value) for row in rows]
+
+
+def _history_decimal_values_for_lookback(
+    rows: Sequence[TimestampedValue],
+    *,
+    timestamp_ms: int,
+    lookback_ms: int,
+) -> list[Decimal]:
+    lower_bound_ms = timestamp_ms - lookback_ms
+    return [
+        cast(Decimal, row.value)
+        for row in rows
+        if lower_bound_ms <= row.timestamp_ms < timestamp_ms
+    ]
 
 
 def _load_fair_values(db_path: Path) -> list[TimestampedValue]:
@@ -396,12 +489,44 @@ def _format_optional_decimal(value: Decimal | None) -> str:
     return _format_decimal(value)
 
 
+def _normalize_lookback_seconds(values: Sequence[int]) -> tuple[int, ...]:
+    normalized = sorted(set(values))
+    for value in normalized:
+        if value <= 0:
+            raise ValueError("cone lookback seconds must be positive")
+    return tuple(normalized)
+
+
+def _lookback_suffix(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def _parse_cone_lookback_seconds(value: str) -> tuple[int, ...]:
+    cleaned = value.strip()
+    if cleaned == "":
+        return ()
+    return _normalize_lookback_seconds(
+        [int(part.strip()) for part in cleaned.split(",") if part.strip()],
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool", required=True, choices=SUPPORTED_POOLS)
     parser.add_argument("--csv", required=True, type=Path)
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--cone-lookback-seconds",
+        default="",
+        help="Comma-separated positive lookback windows for additional cone columns.",
+    )
     args = parser.parse_args()
 
     summary = build_pool_feature_table(
@@ -409,6 +534,9 @@ def main() -> int:
         csv_path=args.csv,
         pool=args.pool,
         out_path=args.out,
+        cone_lookback_seconds=_parse_cone_lookback_seconds(
+            args.cone_lookback_seconds,
+        ),
     )
     print(json.dumps(asdict(summary), sort_keys=True))
     return 0

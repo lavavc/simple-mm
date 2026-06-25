@@ -10,7 +10,6 @@ import pytest
 
 from engine.db.migrations.schema import SCHEMA_SQL
 
-
 EXPECTED_FIELDS = [
     "timestamp_ms",
     "pool",
@@ -149,6 +148,49 @@ def test_build_pool_feature_table_blanks_asof_fields_when_no_fair_source(
     assert rows[0]["source_age_ms"] == ""
 
 
+def test_build_pool_feature_table_adds_causal_lookback_cones(tmp_path: Path) -> None:
+    db_path = tmp_path / "cngn.db"
+    _write_price_snapshot_db(db_path)
+    csv_path = tmp_path / "pool.csv"
+    out_path = tmp_path / "derived" / "features.csv"
+    _write_windowed_pool_csv(csv_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parents[2]
+                / "research/scripts/build_pool_feature_table.py",
+            ),
+            "--pool",
+            "uni-base",
+            "--csv",
+            str(csv_path),
+            "--db",
+            str(db_path),
+            "--out",
+            str(out_path),
+            "--cone-lookback-seconds",
+            "3600",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    with out_path.open(newline="") as output_file:
+        reader = csv.DictReader(output_file)
+        rows = list(reader)
+
+    assert "active_liquidity_cone_pct_1h" in reader.fieldnames
+    assert "volume_cone_pct_1h" in reader.fieldnames
+    assert rows[2]["active_liquidity_cone_pct"] == "0.5000000000"
+    assert rows[2]["active_liquidity_cone_pct_1h"] == "1.0000000000"
+    assert rows[2]["volume_cone_pct"] == "0.5000000000"
+    assert rows[2]["volume_cone_pct_1h"] == "1.0000000000"
+
+
 def _write_price_snapshot_db(db_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
@@ -179,4 +221,21 @@ def _write_pool_csv(csv_path: Path) -> None:
         "2026-01-01T00:00:02+00:00,base,0xpool,swap,0x2,9,12,"
         "158456325028528675187087900672,0,50,0.0015,100,-200,"
         "200,4,cNGN,USDC\n"
+    )
+
+
+def _write_windowed_pool_csv(csv_path: Path) -> None:
+    csv_path.write_text(
+        "block_time,chain,pool_id,event_type,tx_hash,log_index,block_number,"
+        "sqrt_price_x96,tick,active_liquidity,fee_rate,amount0,amount1,"
+        "amount_usd,cngn_usd_price,token0_symbol,token1_symbol\n"
+        "2026-01-01T00:00:01+00:00,base,0xpool,swap,0x1,7,10,"
+        "79228162514264337593543950336,0,100,0.0015,-1000,998.5,"
+        "998.5,0.9985,cNGN,USDC\n"
+        "2026-01-01T00:00:02+00:00,base,0xpool,swap,0x2,9,12,"
+        "158456325028528675187087900672,0,50,0.0015,100,-200,"
+        "200,4,cNGN,USDC\n"
+        "2026-01-01T01:00:01.500000+00:00,base,0xpool,swap,0x3,10,13,"
+        "158456325028528675187087900672,0,75,0.0015,-100,100,"
+        "250,4,cNGN,USDC\n"
     )
