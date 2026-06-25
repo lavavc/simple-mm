@@ -221,10 +221,13 @@ for a controlled run, or a local `--native-price-csv` sidecar with
 `--native-price-max-age-ms`. The sidecar join is previous-or-equal at each gas
 transaction timestamp, records the maximum price age used in
 `native_price_max_age_ms`, and fails if the price source is missing or stale.
+`research/scripts/build_native_token_price_sidecar.py` builds the current
+sidecar from CoinGecko into `research/data/derived/native_token_usd_prices.csv`;
+after that cache exists, LP episode export is offline and deterministic.
 Without either price source, the artifact retains native gas amounts and marks
-`net_pnl_status=native_price_missing`. Episodes with interim collect
-attribution are marked as open/close-gas-only because interim collect gas is
-not yet split across open lots.
+`net_pnl_status=native_price_missing`. Episodes with interim collect attribution
+are marked as open/close-gas-only because interim collect gas is not yet split
+across open lots.
 
 ### 7. Causal Cone and Stress Feature Tables
 

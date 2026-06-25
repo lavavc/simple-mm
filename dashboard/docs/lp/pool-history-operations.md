@@ -286,6 +286,19 @@ python3 research/scripts/export_tx_receipts.py \
 
 Then join paper episodes to receipt sidecars for gas-aware episode features:
 
+Build or refresh the local native gas-token USD sidecar first when net-of-gas
+USD accounting is required. This is the only internet-dependent step in the
+episode-feature flow; once `native_token_usd_prices.csv` exists, the episode
+exports below can run offline.
+
+```bash
+python3 research/scripts/build_native_token_price_sidecar.py \
+  --ledger base=research/data/derived/uni_base_lp_ledger.csv \
+  --ledger bsc=research/data/derived/uni_bsc_lp_ledger.csv \
+  --padding-hours 24 \
+  --out research/data/derived/native_token_usd_prices.csv
+```
+
 ```bash
 python3 research/scripts/export_lp_episode_features.py \
   --ledger research/data/derived/uni_base_lp_ledger.csv \
