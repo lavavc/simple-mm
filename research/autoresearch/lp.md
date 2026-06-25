@@ -104,10 +104,18 @@ Keep swap-count walk-forward windows for primary selection. Add calendar stress 
 
 ## Next Implementation Candidates
 
-1. Re-run walk-forward and paper-style studies after coverage reports pass.
-2. Expose LP research summaries through API/dashboard views.
-3. Make policy thresholds configurable per venue.
-4. Integrate the policy scaffold into the backtester.
+Latest DEX-only rerun status is tracked in
+`research/autoresearch/dex-only-rerun-status.md`.
+
+1. Run the full DEX-only extended walk-forward without `MAX_WINDOWS`, with H12
+   still disabled until the winner set is re-frozen or rejected.
+2. Re-freeze or reject the four candidate winner configurations using
+   full-history PBO, selected-window economics, and DEX-only regime stability.
+3. Run H12 capacity curves only on the accepted frozen configs.
+4. Test dynamic sizing against the best constant-capital policy out of sample.
+5. Expose LP research summaries through API/dashboard views.
+6. Make policy thresholds configurable per venue.
+7. Integrate the policy scaffold into the backtester.
 
 Archive detail:
 
