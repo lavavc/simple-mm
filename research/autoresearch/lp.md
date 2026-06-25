@@ -108,14 +108,20 @@ Latest DEX-only rerun status is tracked in
 `research/autoresearch/dex-only-rerun-status.md`.
 
 1. Run the full DEX-only extended walk-forward without `MAX_WINDOWS`, with H12
-   still disabled until the winner set is re-frozen or rejected.
-2. Re-freeze or reject the four candidate winner configurations using
-   full-history PBO, selected-window economics, and DEX-only regime stability.
-3. Run H12 capacity curves only on the accepted frozen configs.
-4. Test dynamic sizing against the best constant-capital policy out of sample.
-5. Expose LP research summaries through API/dashboard views.
-6. Make policy thresholds configurable per venue.
-7. Integrate the policy scaffold into the backtester.
+   still disabled until the winner set is re-frozen or rejected. Completed
+   2026-06-25; none of the four full-grid rank-1 streams is deployable after
+   full-history PBO and costed validation.
+2. Collapse the search into reduced hypotheses: shared paper-style exit
+   discipline with pool-specific width, and EWMA only where DEX-only stress
+   features explain parameter movement ex ante.
+3. Re-run reduced-grid or frozen-family validation with cost decomposition and
+   stress buckets.
+4. Run H12 capacity curves only on accepted frozen configs, or explicitly label
+   them diagnostic if run before acceptance.
+5. Test dynamic sizing against the best constant-capital policy out of sample.
+6. Expose LP research summaries through API/dashboard views.
+7. Make policy thresholds configurable per venue.
+8. Integrate the policy scaffold into the backtester.
 
 Archive detail:
 
