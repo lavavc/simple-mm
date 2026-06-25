@@ -337,8 +337,11 @@ exporter prices each open/close gas transaction at the latest prior native
 price for that chain, records `native_price_max_age_ms`, and fails if the
 source is missing or stale. Without either price source, gas USD and net-PnL
 USD fields stay blank and `net_pnl_status` records `native_price_missing`.
-Episodes with interim collect attribution report open/close transaction gas
-only and mark `gas_attribution_status` accordingly.
+Episodes with interim collect attribution include allocated interim-collect
+transaction gas. If multiple exact open lots are active for the same owner/range
+at the collect timestamp, the exporter splits collect gas by remaining active
+liquidity share and records
+`gas_attribution_status=open_close_with_interim_collect_allocated`.
 
 The V4 exporter applies event-time price replay after decoding a chunk and
 before writing CSV rows. Swap and initialize rows keep their event-native pool

@@ -46,7 +46,7 @@ class LPEpisodeFeature:
     open_tx_hash: str
     close_tx_hash: str
     gas_tx_hashes: str
-    gas_native_fee_wei: int | None
+    gas_native_fee_wei: Decimal | None
     gas_native_fee: Decimal | None
     native_token_usd: Decimal | None
     native_price_source: str
@@ -75,6 +75,7 @@ class _EpisodeTxCandidates:
 class _GasTxEvent:
     tx_hash: str
     timestamp_ms: int
+    fee_fraction: Decimal = Decimal("1")
 
 
 @dataclass(frozen=True)
@@ -130,12 +131,32 @@ class _NativePriceLookup:
 
 @dataclass(frozen=True)
 class _GasPricing:
-    gas_native_fee_wei: int | None
+    gas_native_fee_wei: Decimal | None
     gas_native_fee: Decimal | None
     native_token_usd: Decimal | None
     native_price_source: str
     native_price_max_age_ms: int | None
     gas_cost_usd: Decimal | None
+
+
+@dataclass
+class _OpenGasLot:
+    pool: str
+    lp_owner: str
+    tick_lower: int
+    tick_upper: int
+    open_ms: int
+    remaining_liquidity: Decimal
+
+    @property
+    def open_key(self) -> tuple[str, str, int, int, int]:
+        return (
+            self.pool,
+            self.lp_owner,
+            self.tick_lower,
+            self.tick_upper,
+            self.open_ms,
+        )
 
 
 def build_lp_episode_features(
@@ -154,10 +175,12 @@ def build_lp_episode_features(
     episodes = reconstruct_paper_episodes(ledger_rows)
     receipt_by_tx = _receipt_gas_by_tx(receipt_rows)
     matches = _episode_tx_matches(ledger_rows)
+    interim_collect_gas_events = _interim_collect_gas_events_by_open_key(ledger_rows)
     return [
         _episode_feature(
             episode,
             matches.get(_episode_match_key(episode)),
+            interim_collect_gas_events.get(_episode_open_key(episode), []),
             receipt_by_tx,
             native_token_usd,
             native_price_lookup,
@@ -169,12 +192,13 @@ def build_lp_episode_features(
 def _episode_feature(
     episode: PaperLPEpisode,
     tx_candidates: _EpisodeTxCandidates | None,
+    interim_collect_gas_events: Sequence[_GasTxEvent],
     receipt_by_tx: dict[str, _ReceiptGas],
     native_token_usd: Decimal | None,
     native_price_lookup: _NativePriceLookup | None,
 ) -> LPEpisodeFeature:
     gross_return = _return_on_capital(episode.opening_capital, episode.pnl)
-    tx_match = _resolve_tx_match(episode, tx_candidates)
+    tx_match = _resolve_tx_match(episode, tx_candidates, interim_collect_gas_events)
     if tx_match is None:
         return _feature_with_gas(
             episode,
@@ -198,7 +222,11 @@ def _episode_feature(
         CLOSE_ATTRIBUTION_INTERIM_COLLECT,
         CLOSE_ATTRIBUTION_MIXED,
     }:
-        gas_status = "open_close_only_interim_collect_excluded"
+        gas_status = (
+            "open_close_with_interim_collect_allocated"
+            if interim_collect_gas_events
+            else "open_close_only_interim_collect_excluded"
+        )
 
     return _feature_with_gas(
         episode,
@@ -312,6 +340,7 @@ def _episode_tx_matches(
 def _resolve_tx_match(
     episode: PaperLPEpisode,
     candidates: _EpisodeTxCandidates | None,
+    interim_collect_gas_events: Sequence[_GasTxEvent],
 ) -> _ResolvedEpisodeTxs | None:
     if candidates is None or len(candidates.open_rows) != 1:
         return None
@@ -332,6 +361,7 @@ def _resolve_tx_match(
         gas_tx_events=_unique_gas_tx_events(
             [
                 _GasTxEvent(open_row.tx_hash, open_row.timestamp_ms),
+                *interim_collect_gas_events,
                 _GasTxEvent(close_row.tx_hash, close_row.timestamp_ms),
             ]
         ),
@@ -346,6 +376,16 @@ def _episode_match_key(episode: PaperLPEpisode) -> tuple[str, str, int, int, int
         episode.tick_upper,
         episode.open_ms,
         episode.close_ms,
+    )
+
+
+def _episode_open_key(episode: PaperLPEpisode) -> tuple[str, str, int, int, int]:
+    return (
+        episode.pool,
+        episode.lp_owner,
+        episode.tick_lower,
+        episode.tick_upper,
+        episode.open_ms,
     )
 
 
@@ -364,21 +404,128 @@ def _receipt_gas_by_tx(receipt_rows: Sequence[dict[str, str]]) -> dict[str, _Rec
 
 
 def _unique_gas_tx_events(events: Sequence[_GasTxEvent]) -> list[_GasTxEvent]:
-    unique: list[_GasTxEvent] = []
-    timestamps_by_tx: dict[str, int] = {}
-    seen: set[str] = set()
+    merged: dict[str, _GasTxEvent] = {}
+    order: list[str] = []
     for event in events:
         normalized = event.tx_hash.lower()
-        if normalized in seen:
-            if timestamps_by_tx[normalized] != event.timestamp_ms:
+        existing = merged.get(normalized)
+        if existing is not None:
+            if existing.timestamp_ms != event.timestamp_ms:
                 raise ValueError(
                     f"same tx_hash matched multiple timestamps tx_hash={event.tx_hash}"
                 )
+            merged[normalized] = _GasTxEvent(
+                tx_hash=existing.tx_hash,
+                timestamp_ms=existing.timestamp_ms,
+                fee_fraction=existing.fee_fraction + event.fee_fraction,
+            )
             continue
-        seen.add(normalized)
-        timestamps_by_tx[normalized] = event.timestamp_ms
-        unique.append(event)
-    return unique
+        order.append(normalized)
+        merged[normalized] = event
+    return [merged[normalized] for normalized in order]
+
+
+def _interim_collect_gas_events_by_open_key(
+    ledger_rows: Sequence[LPLedgerRow],
+) -> dict[tuple[str, str, int, int, int], list[_GasTxEvent]]:
+    same_tx_close_keys = _same_tx_close_position_keys(ledger_rows)
+    open_lots: dict[tuple[str, str, int, int], list[_OpenGasLot]] = defaultdict(list)
+    events_by_open_key: dict[tuple[str, str, int, int, int], list[_GasTxEvent]] = defaultdict(list)
+    for row in sorted(ledger_rows, key=_row_sort_key):
+        if row.lp_owner is None or row.tick_lower is None or row.tick_upper is None:
+            continue
+        pool = _pool_name(row)
+        owner = row.lp_owner
+        tick_lower = row.tick_lower
+        tick_upper = row.tick_upper
+        position_key = (pool, owner, tick_lower, tick_upper)
+        if row.liquidity_delta > 0:
+            if row.amount_attribution_status not in _EXACT_OPENING_ATTRIBUTION_STATUSES:
+                continue
+            open_lots[position_key].append(
+                _OpenGasLot(
+                    pool=pool,
+                    lp_owner=owner,
+                    tick_lower=tick_lower,
+                    tick_upper=tick_upper,
+                    open_ms=row.timestamp_ms,
+                    remaining_liquidity=Decimal(str(row.liquidity_delta)),
+                )
+            )
+            continue
+        if row.liquidity_delta == 0:
+            if row.collect_amount0 == 0 and row.collect_amount1 == 0:
+                continue
+            if _tx_position_key(row) in same_tx_close_keys:
+                continue
+            lots = open_lots.get(position_key)
+            if not lots:
+                continue
+            observed_liquidity = sum(
+                (lot.remaining_liquidity for lot in lots),
+                Decimal("0"),
+            )
+            if observed_liquidity <= 0:
+                raise ValueError(
+                    f"non-positive observed liquidity for collect token_id={row.token_id}"
+                )
+            for lot in lots:
+                events_by_open_key[lot.open_key].append(
+                    _GasTxEvent(
+                        tx_hash=row.tx_hash,
+                        timestamp_ms=row.timestamp_ms,
+                        fee_fraction=lot.remaining_liquidity / observed_liquidity,
+                    )
+                )
+            continue
+
+        lots = open_lots.get(position_key)
+        if not lots:
+            continue
+        observed_liquidity = sum((lot.remaining_liquidity for lot in lots), Decimal("0"))
+        liquidity_to_close = min(Decimal(str(abs(row.liquidity_delta))), observed_liquidity)
+        if liquidity_to_close <= 0:
+            continue
+        remaining_to_close = liquidity_to_close
+        while lots and remaining_to_close > 0:
+            lot = lots[0]
+            closed_liquidity = min(lot.remaining_liquidity, remaining_to_close)
+            lot.remaining_liquidity -= closed_liquidity
+            remaining_to_close -= closed_liquidity
+            if lot.remaining_liquidity == 0:
+                lots.pop(0)
+        if not lots:
+            del open_lots[position_key]
+    return dict(events_by_open_key)
+
+
+def _same_tx_close_position_keys(
+    rows: Sequence[LPLedgerRow],
+) -> set[tuple[str, str, int, int, str]]:
+    keys: set[tuple[str, str, int, int, str]] = set()
+    for row in rows:
+        if row.liquidity_delta >= 0:
+            continue
+        if row.lp_owner is None or row.tick_lower is None or row.tick_upper is None:
+            continue
+        keys.add(_tx_position_key(row))
+    return keys
+
+
+def _tx_position_key(row: LPLedgerRow) -> tuple[str, str, int, int, str]:
+    if row.lp_owner is None or row.tick_lower is None or row.tick_upper is None:
+        raise ValueError(f"missing LP position key fields for token_id={row.token_id}")
+    return (
+        _pool_name(row),
+        row.lp_owner,
+        row.tick_lower,
+        row.tick_upper,
+        row.tx_hash.lower(),
+    )
+
+
+def _row_sort_key(row: LPLedgerRow) -> tuple[int, int, int, int]:
+    return row.timestamp_ms, row.block_number, row.log_index, row.event_order
 
 
 def _return_on_capital(opening_capital: Decimal, pnl: Decimal) -> Decimal | None:
@@ -455,7 +602,7 @@ def _price_gas_events(
     native_token_usd: Decimal | None,
     native_price_lookup: _NativePriceLookup | None,
 ) -> _GasPricing:
-    gas_native_fee_wei = 0
+    gas_native_fee_wei = Decimal("0")
     gas_cost_usd = Decimal("0") if (
         native_token_usd is not None or native_price_lookup is not None
     ) else None
@@ -466,8 +613,9 @@ def _price_gas_events(
         receipt = receipt_by_tx.get(event.tx_hash.lower())
         if receipt is None:
             raise ValueError(f"missing receipt for episode gas tx_hash={event.tx_hash}")
-        gas_native_fee_wei += receipt.native_fee_wei
-        gas_native_fee = Decimal(receipt.native_fee_wei) / _WEI_PER_NATIVE
+        allocated_native_fee_wei = Decimal(receipt.native_fee_wei) * event.fee_fraction
+        gas_native_fee_wei += allocated_native_fee_wei
+        gas_native_fee = allocated_native_fee_wei / _WEI_PER_NATIVE
         if native_token_usd is not None:
             gas_cost_usd = _add_gas_cost(gas_cost_usd, gas_native_fee * native_token_usd)
             price_sources.append("manual_constant")

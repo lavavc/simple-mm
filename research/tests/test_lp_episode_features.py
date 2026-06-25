@@ -296,3 +296,117 @@ def test_episode_features_resolve_same_timestamp_closes_by_closed_liquidity() ->
         "exact_open_close",
         "exact_open_close",
     ]
+
+
+def test_episode_features_include_interim_collect_gas_for_single_active_lot() -> None:
+    rows = [
+        ledger_row("mint", "0xopen", 100, 1_000, amount0=Decimal("10"), amount1=Decimal("10")),
+        ledger_row(
+            "collect",
+            "0xcollect",
+            0,
+            2_000,
+            collect_amount0=Decimal("1"),
+            collect_amount1=Decimal("1"),
+        ),
+        ledger_row(
+            "burn_collect",
+            "0xclose",
+            -100,
+            3_000,
+            collect_amount0=Decimal("16"),
+            collect_amount1=Decimal("16"),
+        ),
+    ]
+
+    feature = build_lp_episode_features(
+        rows,
+        [
+            receipt("0xopen", 1_000_000_000_000_000_000),
+            receipt("0xcollect", 2_000_000_000_000_000_000),
+            receipt("0xclose", 3_000_000_000_000_000_000),
+        ],
+        native_token_usd=Decimal("2000"),
+    )[0]
+
+    assert feature.close_attribution_status == "mixed_collect"
+    assert feature.gas_tx_hashes == "0xopen|0xcollect|0xclose"
+    assert feature.gas_native_fee_wei == Decimal("6000000000000000000")
+    assert feature.gas_native_fee == Decimal("6")
+    assert feature.gas_cost_usd == Decimal("12000")
+    assert feature.gas_attribution_status == "open_close_with_interim_collect_allocated"
+
+
+def test_episode_features_split_interim_collect_gas_by_active_liquidity() -> None:
+    rows = [
+        ledger_row(
+            "mint",
+            "0xopen1",
+            100,
+            1_000,
+            amount0=Decimal("10"),
+            amount1=Decimal("10"),
+        ),
+        ledger_row(
+            "mint",
+            "0xopen2",
+            300,
+            1_500,
+            amount0=Decimal("30"),
+            amount1=Decimal("30"),
+        ),
+        ledger_row(
+            "collect",
+            "0xcollect",
+            0,
+            2_000,
+            collect_amount0=Decimal("4"),
+            collect_amount1=Decimal("4"),
+        ),
+        ledger_row(
+            "burn_collect",
+            "0xclose1",
+            -100,
+            3_000,
+            collect_amount0=Decimal("11"),
+            collect_amount1=Decimal("11"),
+        ),
+        ledger_row(
+            "burn_collect",
+            "0xclose2",
+            -300,
+            4_000,
+            collect_amount0=Decimal("33"),
+            collect_amount1=Decimal("33"),
+        ),
+    ]
+
+    features = build_lp_episode_features(
+        rows,
+        [
+            receipt("0xopen1", 1_000_000_000_000_000_000),
+            receipt("0xopen2", 1_000_000_000_000_000_000),
+            receipt("0xcollect", 4_000_000_000_000_000_000),
+            receipt("0xclose1", 1_000_000_000_000_000_000),
+            receipt("0xclose2", 1_000_000_000_000_000_000),
+        ],
+        native_token_usd=Decimal("2000"),
+    )
+
+    assert [feature.open_tx_hash for feature in features] == ["0xopen1", "0xopen2"]
+    assert [feature.gas_tx_hashes for feature in features] == [
+        "0xopen1|0xcollect|0xclose1",
+        "0xopen2|0xcollect|0xclose2",
+    ]
+    assert [feature.gas_native_fee_wei for feature in features] == [
+        Decimal("3000000000000000000"),
+        Decimal("5000000000000000000"),
+    ]
+    assert [feature.gas_native_fee for feature in features] == [
+        Decimal("3"),
+        Decimal("5"),
+    ]
+    assert [feature.gas_attribution_status for feature in features] == [
+        "open_close_with_interim_collect_allocated",
+        "open_close_with_interim_collect_allocated",
+    ]

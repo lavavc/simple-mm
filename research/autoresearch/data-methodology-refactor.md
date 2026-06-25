@@ -226,8 +226,10 @@ sidecar from CoinGecko into `research/data/derived/native_token_usd_prices.csv`;
 after that cache exists, LP episode export is offline and deterministic.
 Without either price source, the artifact retains native gas amounts and marks
 `net_pnl_status=native_price_missing`. Episodes with interim collect attribution
-are marked as open/close-gas-only because interim collect gas is not yet split
-across open lots.
+include allocated interim-collect transaction gas. When more than one exact
+open lot is active for the same owner/range at the interim collect timestamp,
+the collect transaction gas is split by remaining active liquidity share and
+the feature row records `gas_attribution_status=open_close_with_interim_collect_allocated`.
 
 ### 7. Causal Cone and Stress Feature Tables
 

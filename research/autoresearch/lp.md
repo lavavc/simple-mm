@@ -43,7 +43,6 @@ Known limitations:
 - liquidity-operation prices must be reconstructed by event order, not block-end state
 - policy thresholds are not yet venue-configurable
 - gas-adjusted paper episode USD PnL requires an explicit native-token USD price input
-- interim collect gas is not yet split across open lots
 
 ## Research Discipline
 
