@@ -36,6 +36,7 @@ class VenuePriceSource(ABC):
     name: str
     pair: str  # e.g. "USDT/NGN", "cNGN/USDC"
     volume_24h_usd: Optional[Decimal] = None  # Set during fetch_price(); used for VWAP weighting
+    latest_metadata: dict[str, Any] | None = None
 
     @abstractmethod
     async def fetch_price(self) -> Optional[PriceQuote]:
@@ -485,6 +486,7 @@ class VenuePrice:
     error: Optional[str] = None
     fetched_at: float = field(default_factory=time.time)
     volume_24h_usd: Optional[Decimal] = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -548,6 +550,7 @@ class VenuePriceAggregator:
                 quote=quote,
                 error=None if quote else "No price returned",
                 volume_24h_usd=source.volume_24h_usd,
+                metadata=source.latest_metadata,
             )
         except Exception as e:
             return VenuePrice(

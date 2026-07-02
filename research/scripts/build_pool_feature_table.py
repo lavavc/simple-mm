@@ -1,0 +1,546 @@
+"""Build causal swap-level pool feature tables from exported V4 history."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sqlite3
+import sys
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from decimal import Decimal, localcontext
+from pathlib import Path
+from typing import Sequence, cast
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from research.backtester.cone_features import (  # noqa: E402
+    TimestampedValue,
+    causal_percentile,
+    previous_or_equal_with_age,
+)
+from research.backtester.pool_features import derive_swap_flow  # noqa: E402
+from research.backtester.pool_price_semantics import (  # noqa: E402
+    classify_pool_price_row,
+    fee_adjusted_bid_ask,
+)
+
+FAIR_PRICE_SOURCE = "quidax"
+BASE_OUTPUT_FIELDS = [
+    "timestamp_ms",
+    "pool",
+    "block_number",
+    "tx_hash",
+    "log_index",
+    "raw_sqrt_mid",
+    "fee_adjusted_bid",
+    "fee_adjusted_ask",
+    "stored_cngn_usd_price",
+    "stored_price_model",
+    "realized_volatility",
+    "realized_volatility_cone_pct",
+    "dex_premium_bps",
+    "dex_premium_cone_pct",
+    "active_liquidity_cone_pct",
+    "active_liquidity_running_max_share",
+    "active_liquidity_running_max_share_cone_pct",
+    "active_liquidity_running_max_denominator",
+    "swap_flow_imbalance",
+    "swap_flow_imbalance_cone_pct",
+    "fee_intensity_proxy",
+    "fee_intensity_proxy_cone_pct",
+    "fee_intensity_proxy_model",
+    "volume_cone_pct",
+    "source_age_ms",
+]
+HISTORY_NAMES = (
+    "realized_volatility",
+    "dex_premium_bps",
+    "active_liquidity",
+    "active_liquidity_running_max_share",
+    "swap_flow_imbalance",
+    "fee_intensity_proxy",
+    "volume",
+)
+CONE_FIELD_BY_HISTORY = {
+    "realized_volatility": "realized_volatility_cone_pct",
+    "dex_premium_bps": "dex_premium_cone_pct",
+    "active_liquidity": "active_liquidity_cone_pct",
+    "active_liquidity_running_max_share": (
+        "active_liquidity_running_max_share_cone_pct"
+    ),
+    "swap_flow_imbalance": "swap_flow_imbalance_cone_pct",
+    "fee_intensity_proxy": "fee_intensity_proxy_cone_pct",
+    "volume": "volume_cone_pct",
+}
+SUPPORTED_POOLS = ("uni-base", "uni-bsc")
+SECONDS_PER_YEAR = Decimal("31536000")
+FEE_INTENSITY_PROXY_MODEL = "fee_rate_volume_over_active_liquidity_annualized_proxy"
+
+
+def output_fields(cone_lookback_seconds: Sequence[int]) -> list[str]:
+    fields = list(BASE_OUTPUT_FIELDS)
+    for seconds in _normalize_lookback_seconds(cone_lookback_seconds):
+        suffix = _lookback_suffix(seconds)
+        fields.extend(
+            f"{CONE_FIELD_BY_HISTORY[history_name]}_{suffix}"
+            for history_name in HISTORY_NAMES
+        )
+    return fields
+
+
+OUTPUT_FIELDS = list(BASE_OUTPUT_FIELDS)
+
+
+@dataclass(frozen=True)
+class FeatureBuildSummary:
+    pool: str
+    rows_written: int
+    first_timestamp_ms: int | None
+    last_timestamp_ms: int | None
+
+
+def build_pool_feature_table(
+    db_path: Path,
+    csv_path: Path,
+    pool: str,
+    out_path: Path,
+    cone_lookback_seconds: Sequence[int] = (),
+) -> FeatureBuildSummary:
+    if pool not in SUPPORTED_POOLS:
+        raise ValueError(f"Unsupported pool {pool!r}")
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+
+    normalized_lookbacks = _normalize_lookback_seconds(cone_lookback_seconds)
+    fair_values = _load_fair_values(db_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    histories: dict[str, list[TimestampedValue]] = {name: [] for name in HISTORY_NAMES}
+    last_swap_price: Decimal | None = None
+    last_swap_timestamp_ms: int | None = None
+    max_active_liquidity: Decimal | None = None
+    source_second_counts: dict[int, int] = {}
+    rows_written = 0
+    first_timestamp_ms: int | None = None
+    last_timestamp_ms: int | None = None
+
+    with csv_path.open(newline="") as input_file, out_path.open(
+        "w",
+        newline="",
+    ) as output_file:
+        reader = csv.DictReader(input_file)
+        writer = csv.DictWriter(
+            output_file,
+            fieldnames=output_fields(normalized_lookbacks),
+        )
+        writer.writeheader()
+
+        for row in reader:
+            timestamp_ms = _sequenced_timestamp_ms(row, source_second_counts)
+            if row["event_type"] != "swap":
+                continue
+
+            feature_row = _build_feature_row(
+                row=row,
+                pool=pool,
+                timestamp_ms=timestamp_ms,
+                fair_values=fair_values,
+                histories=histories,
+                last_swap_price=last_swap_price,
+                last_swap_timestamp_ms=last_swap_timestamp_ms,
+                max_active_liquidity=max_active_liquidity,
+                cone_lookback_seconds=normalized_lookbacks,
+            )
+            writer.writerow(feature_row.output)
+
+            last_swap_price = feature_row.raw_sqrt_mid
+            last_swap_timestamp_ms = timestamp_ms
+            if (
+                max_active_liquidity is None
+                or feature_row.active_liquidity > max_active_liquidity
+            ):
+                max_active_liquidity = feature_row.active_liquidity
+
+            for history_name, value in feature_row.history_values.items():
+                if value is not None:
+                    histories[history_name].append(
+                        TimestampedValue(timestamp_ms=timestamp_ms, value=value),
+                    )
+
+            rows_written += 1
+            if first_timestamp_ms is None:
+                first_timestamp_ms = timestamp_ms
+            last_timestamp_ms = timestamp_ms
+
+    return FeatureBuildSummary(
+        pool=pool,
+        rows_written=rows_written,
+        first_timestamp_ms=first_timestamp_ms,
+        last_timestamp_ms=last_timestamp_ms,
+    )
+
+
+@dataclass(frozen=True)
+class BuiltFeatureRow:
+    output: dict[str, str]
+    raw_sqrt_mid: Decimal
+    active_liquidity: Decimal
+    history_values: dict[str, Decimal | None]
+
+
+def _build_feature_row(
+    *,
+    row: dict[str, str],
+    pool: str,
+    timestamp_ms: int,
+    fair_values: list[TimestampedValue],
+    histories: dict[str, list[TimestampedValue]],
+    last_swap_price: Decimal | None,
+    last_swap_timestamp_ms: int | None,
+    max_active_liquidity: Decimal | None,
+    cone_lookback_seconds: Sequence[int],
+) -> BuiltFeatureRow:
+    price_semantics = classify_pool_price_row(row)
+    raw_sqrt_mid = price_semantics.raw_sqrt_mid
+    fee_rate = Decimal(str(row["fee_rate"]))
+    fee_adjusted_bid, fee_adjusted_ask = fee_adjusted_bid_ask(raw_sqrt_mid, fee_rate)
+    fair_value = previous_or_equal_with_age(fair_values, timestamp_ms, None)
+    fair_mid = cast(Decimal, fair_value.value) if fair_value is not None else None
+    dex_premium_bps = _dex_premium_bps(raw_sqrt_mid, fair_mid)
+
+    realized_volatility = (
+        _absolute_log_return(last_swap_price, raw_sqrt_mid)
+        if last_swap_price is not None
+        else None
+    )
+    active_liquidity = Decimal(str(row["active_liquidity"]))
+    active_liquidity_running_max_denominator = _active_liquidity_running_max_denominator(
+        active_liquidity,
+        max_active_liquidity,
+    )
+    active_liquidity_running_max_share = _active_liquidity_running_max_share(
+        active_liquidity,
+        active_liquidity_running_max_denominator,
+    )
+    swap_flow = derive_swap_flow(row)
+    swap_flow_imbalance = _swap_flow_imbalance(swap_flow.signed_usd_notional)
+    volume = Decimal(str(row["amount_usd"])).copy_abs()
+    fee_intensity_proxy = _fee_intensity_proxy(
+        fee_rate=fee_rate,
+        volume=volume,
+        active_liquidity=active_liquidity,
+        last_swap_timestamp_ms=last_swap_timestamp_ms,
+        timestamp_ms=timestamp_ms,
+    )
+
+    history_values = {
+        "realized_volatility": realized_volatility,
+        "dex_premium_bps": dex_premium_bps,
+        "active_liquidity": active_liquidity,
+        "active_liquidity_running_max_share": active_liquidity_running_max_share,
+        "swap_flow_imbalance": swap_flow_imbalance,
+        "fee_intensity_proxy": fee_intensity_proxy,
+        "volume": volume,
+    }
+    cone_percentiles = {
+        name: causal_percentile(_history_decimal_values(histories[name]), value)
+        if value is not None
+        else None
+        for name, value in history_values.items()
+    }
+    lookback_cone_percentiles = _lookback_cone_percentiles(
+        histories=histories,
+        history_values=history_values,
+        timestamp_ms=timestamp_ms,
+        cone_lookback_seconds=cone_lookback_seconds,
+    )
+
+    return BuiltFeatureRow(
+        output={
+            "timestamp_ms": str(timestamp_ms),
+            "pool": pool,
+            "block_number": row["block_number"],
+            "tx_hash": row["tx_hash"],
+            "log_index": row["log_index"],
+            "raw_sqrt_mid": _format_decimal(raw_sqrt_mid),
+            "fee_adjusted_bid": _format_decimal(fee_adjusted_bid),
+            "fee_adjusted_ask": _format_decimal(fee_adjusted_ask),
+            "stored_cngn_usd_price": _format_decimal(
+                price_semantics.stored_cngn_usd_price,
+            ),
+            "stored_price_model": price_semantics.stored_price_model,
+            "realized_volatility": _format_optional_decimal(realized_volatility),
+            "realized_volatility_cone_pct": _format_optional_decimal(
+                cone_percentiles["realized_volatility"],
+            ),
+            "dex_premium_bps": _format_optional_decimal(dex_premium_bps),
+            "dex_premium_cone_pct": _format_optional_decimal(
+                cone_percentiles["dex_premium_bps"],
+            ),
+            "active_liquidity_cone_pct": _format_optional_decimal(
+                cone_percentiles["active_liquidity"],
+            ),
+            "active_liquidity_running_max_share": _format_optional_decimal(
+                active_liquidity_running_max_share,
+            ),
+            "active_liquidity_running_max_share_cone_pct": _format_optional_decimal(
+                cone_percentiles["active_liquidity_running_max_share"],
+            ),
+            "active_liquidity_running_max_denominator": _format_optional_decimal(
+                active_liquidity_running_max_denominator,
+            ),
+            "swap_flow_imbalance": _format_decimal(swap_flow_imbalance),
+            "swap_flow_imbalance_cone_pct": _format_optional_decimal(
+                cone_percentiles["swap_flow_imbalance"],
+            ),
+            "fee_intensity_proxy": _format_optional_decimal(fee_intensity_proxy),
+            "fee_intensity_proxy_cone_pct": _format_optional_decimal(
+                cone_percentiles["fee_intensity_proxy"],
+            ),
+            "fee_intensity_proxy_model": FEE_INTENSITY_PROXY_MODEL,
+            "volume_cone_pct": _format_optional_decimal(cone_percentiles["volume"]),
+            "source_age_ms": str(fair_value.age_ms) if fair_value is not None else "",
+            **lookback_cone_percentiles,
+        },
+        raw_sqrt_mid=raw_sqrt_mid,
+        active_liquidity=active_liquidity,
+        history_values=history_values,
+    )
+
+
+def _lookback_cone_percentiles(
+    *,
+    histories: dict[str, list[TimestampedValue]],
+    history_values: dict[str, Decimal | None],
+    timestamp_ms: int,
+    cone_lookback_seconds: Sequence[int],
+) -> dict[str, str]:
+    output: dict[str, str] = {}
+    for seconds in cone_lookback_seconds:
+        lookback_ms = seconds * 1000
+        suffix = _lookback_suffix(seconds)
+        for history_name, value in history_values.items():
+            field = f"{CONE_FIELD_BY_HISTORY[history_name]}_{suffix}"
+            percentile = (
+                causal_percentile(
+                    _history_decimal_values_for_lookback(
+                        histories[history_name],
+                        timestamp_ms=timestamp_ms,
+                        lookback_ms=lookback_ms,
+                    ),
+                    value,
+                )
+                if value is not None
+                else None
+            )
+            output[field] = _format_optional_decimal(percentile)
+    return output
+
+
+def _history_decimal_values(rows: Sequence[TimestampedValue]) -> list[Decimal]:
+    return [cast(Decimal, row.value) for row in rows]
+
+
+def _history_decimal_values_for_lookback(
+    rows: Sequence[TimestampedValue],
+    *,
+    timestamp_ms: int,
+    lookback_ms: int,
+) -> list[Decimal]:
+    lower_bound_ms = timestamp_ms - lookback_ms
+    return [
+        cast(Decimal, row.value)
+        for row in rows
+        if lower_bound_ms <= row.timestamp_ms < timestamp_ms
+    ]
+
+
+def _load_fair_values(db_path: Path) -> list[TimestampedValue]:
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT timestamp_ms, mid
+            FROM price_snapshots
+            WHERE source = ?
+            ORDER BY timestamp_ms ASC
+            """,
+            (FAIR_PRICE_SOURCE,),
+        ).fetchall()
+
+    fair_values: list[TimestampedValue] = []
+    for timestamp_ms, mid in rows:
+        fair_mid = Decimal(str(mid))
+        if fair_mid <= 0:
+            raise ValueError("fair price snapshot mid must be positive")
+        fair_values.append(
+            TimestampedValue(timestamp_ms=int(timestamp_ms), value=fair_mid),
+        )
+    return fair_values
+
+
+def _sequenced_timestamp_ms(
+    row: dict[str, str],
+    source_second_counts: dict[int, int],
+) -> int:
+    block_time_ms = _block_time_ms(row["block_time"])
+    source_second = block_time_ms // 1000
+    sequence = source_second_counts.get(source_second, 0)
+    if sequence >= 1000:
+        raise ValueError("more than 1000 rows share the same source second")
+    source_second_counts[source_second] = sequence + 1
+    return block_time_ms + sequence
+
+
+def _block_time_ms(value: str) -> int:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("block_time must include a timezone")
+    return int(parsed.timestamp() * 1000)
+
+
+def _absolute_log_return(previous: Decimal, current: Decimal) -> Decimal:
+    if previous <= 0 or current <= 0:
+        raise ValueError("swap prices must be positive")
+    with localcontext() as context:
+        context.prec = 60
+        return (current / previous).ln().copy_abs()
+
+
+def _dex_premium_bps(pool_mid: Decimal, fair_mid: Decimal | None) -> Decimal | None:
+    if fair_mid is None:
+        return None
+    if fair_mid <= 0:
+        raise ValueError("fair mid must be positive")
+    with localcontext() as context:
+        context.prec = 60
+        return ((pool_mid / fair_mid) - Decimal("1")) * Decimal("10000")
+
+
+def _active_liquidity_running_max_denominator(
+    active_liquidity: Decimal,
+    max_active_liquidity: Decimal | None,
+) -> Decimal | None:
+    if active_liquidity < 0:
+        raise ValueError("active_liquidity must not be negative")
+    denominator = active_liquidity
+    if max_active_liquidity is not None and max_active_liquidity > denominator:
+        denominator = max_active_liquidity
+    if denominator <= 0:
+        return None
+    return denominator
+
+
+def _active_liquidity_running_max_share(
+    active_liquidity: Decimal,
+    denominator: Decimal | None,
+) -> Decimal | None:
+    if active_liquidity < 0:
+        raise ValueError("active_liquidity must not be negative")
+    if denominator is None:
+        return None
+    with localcontext() as context:
+        context.prec = 60
+        return active_liquidity / denominator
+
+
+def _swap_flow_imbalance(signed_usd_notional: Decimal) -> Decimal:
+    volume = signed_usd_notional.copy_abs()
+    if volume == 0:
+        return Decimal("0")
+    return signed_usd_notional / volume
+
+
+def _fee_intensity_proxy(
+    *,
+    fee_rate: Decimal,
+    volume: Decimal,
+    active_liquidity: Decimal,
+    last_swap_timestamp_ms: int | None,
+    timestamp_ms: int,
+) -> Decimal | None:
+    if active_liquidity < 0:
+        raise ValueError("active_liquidity must not be negative")
+    if active_liquidity == 0 or last_swap_timestamp_ms is None:
+        return None
+
+    elapsed_ms = timestamp_ms - last_swap_timestamp_ms
+    if elapsed_ms <= 0:
+        return None
+
+    with localcontext() as context:
+        context.prec = 60
+        elapsed_seconds = Decimal(elapsed_ms) / Decimal("1000")
+        return (fee_rate * volume / active_liquidity) * (
+            SECONDS_PER_YEAR / elapsed_seconds
+        )
+
+
+def _format_decimal(value: Decimal) -> str:
+    return format(value, "f")
+
+
+def _format_optional_decimal(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    return _format_decimal(value)
+
+
+def _normalize_lookback_seconds(values: Sequence[int]) -> tuple[int, ...]:
+    normalized = sorted(set(values))
+    for value in normalized:
+        if value <= 0:
+            raise ValueError("cone lookback seconds must be positive")
+    return tuple(normalized)
+
+
+def _lookback_suffix(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def _parse_cone_lookback_seconds(value: str) -> tuple[int, ...]:
+    cleaned = value.strip()
+    if cleaned == "":
+        return ()
+    return _normalize_lookback_seconds(
+        [int(part.strip()) for part in cleaned.split(",") if part.strip()],
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pool", required=True, choices=SUPPORTED_POOLS)
+    parser.add_argument("--csv", required=True, type=Path)
+    parser.add_argument("--db", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--cone-lookback-seconds",
+        default="",
+        help="Comma-separated positive lookback windows for additional cone columns.",
+    )
+    args = parser.parse_args()
+
+    summary = build_pool_feature_table(
+        db_path=args.db,
+        csv_path=args.csv,
+        pool=args.pool,
+        out_path=args.out,
+        cone_lookback_seconds=_parse_cone_lookback_seconds(
+            args.cone_lookback_seconds,
+        ),
+    )
+    print(json.dumps(asdict(summary), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

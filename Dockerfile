@@ -10,10 +10,10 @@ RUN npm run build
 FROM python:3.11-slim AS base
 WORKDIR /app
 COPY pyproject.toml ./
-# Stub engine package so pip caches deps independently of source changes
-RUN mkdir engine && touch engine/__init__.py && \
+# Stub packages so pip caches deps independently of source changes
+RUN mkdir engine research && touch engine/__init__.py research/__init__.py && \
     pip install --no-cache-dir . && \
-    rm -rf engine
+    rm -rf engine research
 
 # ---- Stage 3: Type checker (CI only, not shipped) ----
 FROM base AS typecheck
@@ -26,6 +26,7 @@ RUN python -m mypy engine --no-error-summary
 FROM base AS test
 RUN pip install --no-cache-dir ".[dev]"
 COPY engine/ ./engine/
+COPY research/ ./research/
 COPY tests/ ./tests/
 ENV PYTHONPATH=/app \
     USE_TEST_ACCOUNTS=true \
@@ -35,6 +36,7 @@ RUN pytest -x -q --ignore=tests/test_dex_fork.py
 # ---- Stage 5: Production image ----
 FROM base AS production
 COPY engine/ ./engine/
+COPY research/ ./research/
 COPY scripts/ ./scripts/
 COPY --from=dashboard /dashboard/out ./dashboard/out
 RUN mkdir -p data
