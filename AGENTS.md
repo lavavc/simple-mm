@@ -6,6 +6,8 @@ Code and typed contracts → tests pinning non-obvious behavior → docs in dash
 
 Docs must not overrule working code. If docs and code disagree, fix the docs in the same change unless the code is deliberately being corrected.
 
+DO NOT REMOVE ANYTHING FROM .gitignore UNLESS EXPLICITLY TOLD TO DO SO!
+
 Authoritative typed sources:
 
 engine/types.py — all shared domain types

@@ -816,6 +816,23 @@ class TestPaperStyleSimulation:
         assert sim.total_transaction_cost == pytest.approx(sum(episode.total_transaction_cost for episode in sim.episodes))
         assert first.inventory_pnl == pytest.approx(first.exit_value - first.fees_earned - first.entry_value)
 
+    def test_static_strategy_marks_open_position_without_rebalancing(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 1_000)]
+        params = self._params(
+            strategy_mode="static",
+            fixed_tick_width=100,
+            harvest_upward_range_fraction=None,
+            profit_take_return=None,
+            stop_loss_return=None,
+            out_of_range_overshoot_fraction=None,
+        )
+
+        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert sim.rebalance_count == 0
+        assert len(sim.episodes) == 1
+        assert sim.episodes[0].exit_reason == "end_of_data"
+
     def test_deploy_full_wallet_is_the_status_quo(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
         legacy = simulate_pool(events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0)

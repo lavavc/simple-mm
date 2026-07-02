@@ -41,6 +41,8 @@ Implemented:
 - CLI analysis through `research/scripts/analyze_lp_strategy.py`
 - backtester research log and capacity/sizing experiments archived for traceability
 - paper LP episode feature export with receipt-backed native gas fields
+- frozen-family flow-gated LP harness with no-position, static LP, and
+  hold-cNGN baselines
 
 Known limitations:
 
@@ -51,6 +53,9 @@ Known limitations:
 - liquidity-operation prices must be reconstructed by event order, not block-end state
 - policy thresholds are not yet venue-configurable
 - gas-adjusted paper episode USD PnL requires an explicit native-token USD price input
+- frozen-family hold-cNGN is currently a no-transaction-cost pool-price mark,
+  and passive static LP is mark-at-window-end rather than explicit close/unwind
+  accounting
 
 ## Research Discipline
 
@@ -113,15 +118,22 @@ Latest DEX-only rerun status is tracked in
    full-history PBO and costed validation.
 2. Collapse the search into reduced hypotheses: shared paper-style exit
    discipline with pool-specific width, and EWMA only where DEX-only stress
-   features explain parameter movement ex ante.
-3. Re-run reduced-grid or frozen-family validation with cost decomposition and
-   stress buckets.
-4. Run H12 capacity curves only on accepted frozen configs, or explicitly label
+   features explain parameter movement ex ante. Completed as a first frozen
+   family pass in `research/autoresearch/flow-gated-cngn-lp-plan.md`; Base is
+   conditionally positive, but not promotable because static LP and hold-cNGN
+   baselines explain too much of the result.
+3. Improve baseline accounting before any H12 promotion: explicit
+   end-of-window static LP close/unwind costs, realistic hold-cNGN route costs,
+   and route-specific cNGN inventory assumptions.
+4. Explain why the strict Base gate should choose LP exposure over cNGN
+   inventory exposure; QTS overlays remain diagnostic until they beat the
+   strict gate and the hold baseline after costs.
+5. Run H12 capacity curves only on accepted frozen configs, or explicitly label
    them diagnostic if run before acceptance.
-5. Test dynamic sizing against the best constant-capital policy out of sample.
-6. Expose LP research summaries through API/dashboard views.
-7. Make policy thresholds configurable per venue.
-8. Integrate the policy scaffold into the backtester.
+6. Test dynamic sizing against the best constant-capital policy out of sample.
+7. Expose LP research summaries through API/dashboard views.
+8. Make policy thresholds configurable per venue.
+9. Integrate the policy scaffold into the backtester.
 
 Archive detail:
 

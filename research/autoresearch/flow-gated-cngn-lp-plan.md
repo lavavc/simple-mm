@@ -385,3 +385,79 @@ variants:
 Promotion should require beating the strict sign-cone gate after no-position,
 static LP, and hold-cNGN baselines are available. Until then, QTS features are
 diagnostic evidence, not a deployable selector.
+
+## Task 3 Frozen-Family Baseline Result
+
+Status: completed 2026-07-02.
+
+Implemented:
+
+- `research/scripts/evaluate_frozen_family_lp.py`
+- `research/tests/test_evaluate_frozen_family_lp.py`
+- `strategy_mode="static"` support in the research backtester, for passive
+  mark-at-window-end LP baselines.
+
+Generated outputs:
+
+- `research/results/flow_gated_lp/uni_base/frozen_family_window_results.csv`
+- `research/results/flow_gated_lp/uni_base/frozen_family_gate_summary.csv`
+- `research/results/flow_gated_lp/uni_base/frozen_family_report.md`
+- `research/results/flow_gated_lp/uni_bsc/frozen_family_window_results.csv`
+- `research/results/flow_gated_lp/uni_bsc/frozen_family_gate_summary.csv`
+- `research/results/flow_gated_lp/uni_bsc/frozen_family_report.md`
+
+The harness evaluates the frozen paper family from Task 3, passive static LP
+widths, no-position, and hold-cNGN under five causal gate variants:
+
+1. no gate
+2. strict sign-cone gate
+3. train flat/down plus `predicted_markout_20_25 > 0`
+4. strict sign-cone plus `predicted_markout_20_25 > 0`
+5. strict sign-cone plus `predicted_markout_100_25 > 0`
+
+Base summary:
+
+| Gate | Active windows | Best frozen paper sum | Best static LP sum | Hold-cNGN sum | Frozen worst | Frozen leave-one-out min | Interpretation |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| no gate | 26 | +0.469% | +0.877% | +1.643% | -0.401% | +0.084% | LP does not beat hold-cNGN. |
+| strict sign-cone | 5 | +0.829% | +0.829% | +0.822% | +0.044% | +0.450% | Positive and robust, but edge over hold is only +0.0065 percentage points. |
+| train flat + QTS 20/25 | 7 | +0.922% | +0.922% | +1.248% | -0.019% | +0.558% | More total LP return than strict, but worse than hold and admits one negative LP window. |
+| strict + QTS 20/25 | 4 | +0.796% | +0.796% | +0.811% | +0.027% | +0.432% | Cleaner active windows, but lower total and slightly below hold. |
+| strict + QTS 100/25 | 3 | +0.662% | +0.662% | +0.494% | +0.027% | +0.298% | Beats hold on active return, but is too sparse and lower total than the strict gate. |
+
+BSC summary:
+
+| Gate | Active windows | Best frozen paper sum | Best static LP sum | Hold-cNGN sum | Frozen worst | Frozen leave-one-out min | Interpretation |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| no gate | 37 | -2.933% | -0.948% | +0.897% | -1.328% | -3.178% | Frozen paper is rejected. |
+| strict sign-cone | 10 | -1.183% | +0.339% | +1.888% | -1.328% | -1.428% | Hold dominates; paper remains negative. |
+| train flat + QTS 20/25 | 11 | -1.635% | +0.093% | +0.050% | -1.391% | -1.783% | Static barely positive; paper rejected. |
+| strict + QTS 20/25 | 7 | -1.304% | +0.400% | +0.330% | -1.328% | -1.412% | Static beats hold by a small amount, but paper is still negative. |
+| strict + QTS 100/25 | 6 | -1.283% | +0.072% | +1.521% | -1.328% | -1.528% | Hold dominates. |
+
+Interpretation:
+
+- Base still has a conditional opportunity set, but the current frozen-family
+  result is not a deployable LP policy. The best Base gated frozen-paper rows
+  equal the passive static LP rows, which means the tested exit discipline is
+  not adding value in those active windows.
+- The strict Base gate remains the best simple LP gate by total active return
+  and leave-one-active-window-out robustness. The QTS filters can improve
+  selectivity, but they either lose total return or fail to beat hold-cNGN.
+- Hold-cNGN is now a hard baseline. On Base, no-gate hold-cNGN beats all LP
+  families; under the strict gate, frozen LP beats hold by only 0.0065
+  percentage points across five active windows.
+- BSC remains diagnostic. Frozen paper is negative under every gate; occasional
+  static-LP positives do not support promoting a paper-style strategy.
+
+Current blocker:
+
+The static LP baseline is mark-at-window-end and the hold-cNGN baseline is a
+no-transaction-cost pool-price mark. Before promotion, add explicit end-of-window
+close or unwind accounting and compare against a realistic cNGN inventory route.
+
+Updated next step:
+
+Do not run H12 as a promotion step. Next work should either improve baseline
+accounting or explain why the strict Base gate should choose LP exposure instead
+of simpler cNGN inventory exposure. Dynamic sizing is still premature.

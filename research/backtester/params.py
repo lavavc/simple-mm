@@ -29,7 +29,7 @@ class TransactionCostModel:
 
 @dataclass
 class BacktestParams:
-    strategy_mode: Literal["ewma", "paper"] = "ewma"
+    strategy_mode: Literal["ewma", "paper", "static"] = "ewma"
     range_mode: Literal["volatility", "fixed_pct_width", "fixed_tick_width"] = "volatility"
     center_mode: Literal["spot", "fair_price", "ewma"] = "ewma"
     sd_multiplier: float = 1.5

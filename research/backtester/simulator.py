@@ -1547,6 +1547,8 @@ def simulate_pool(
                     pending_defensive_exit_first_time = None
                     pending_defensive_exit_count = 0
                 should_rebalance = exit_reason is not None
+            elif params.strategy_mode == "static":
+                should_rebalance = False
             else:
                 tick_range = position.tick_upper - position.tick_lower
                 if not position.is_in_range(current_tick):

@@ -766,7 +766,7 @@ def main() -> None:
     parser.add_argument("--dataset-format", choices=["legacy", "v4"], default="legacy")
     parser.add_argument("--pool", required=True)
     parser.add_argument("--output", default="backtest_results.csv")
-    parser.add_argument("--strategy-mode", choices=["ewma", "paper"], default="ewma")
+    parser.add_argument("--strategy-mode", choices=["ewma", "paper", "static"], default="ewma")
     parser.add_argument("--walkforward", action="store_true")
     parser.add_argument("--window-mode", choices=["time", "swap_count"], default="time")
     parser.add_argument("--top-n", type=int, default=20)
@@ -815,6 +815,18 @@ def main() -> None:
     initial_capital = args.initial_capital_usd if args.initial_capital_usd is not None else default_capital
     if args.strategy_mode == "paper":
         grid = generate_paper_grid(gas_cost_usd=gas_cost, initial_capital_usd=initial_capital)
+    elif args.strategy_mode == "static":
+        grid = [
+            replace(
+                params,
+                strategy_mode="static",
+                harvest_upward_range_fraction=None,
+                profit_take_return=None,
+                stop_loss_return=None,
+                out_of_range_overshoot_fraction=None,
+            )
+            for params in generate_paper_grid(gas_cost_usd=gas_cost, initial_capital_usd=initial_capital)
+        ]
     else:
         grid = generate_grid(gas_cost_usd=gas_cost, initial_capital_usd=initial_capital)
     mint_gas_usd, remove_gas_usd = resolve_gas_costs(args.pool, args.mint_gas_usd, args.remove_gas_usd)

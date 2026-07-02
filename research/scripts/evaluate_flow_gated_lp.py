@@ -20,6 +20,14 @@ ENTRY_FEATURE_FIELDS = (
     "volume_cone_pct_1h",
 )
 
+DEFAULT_GATE_FIELDS = (
+    "gate_no_gate",
+    "gate_strict_sign_cone",
+    "gate_train_flat_qts_20_25",
+    "gate_strict_qts_20_25",
+    "gate_strict_qts_100_25",
+)
+
 DEFAULT_PARAMETER_FIELDS = (
     "center_mode",
     "fixed_width_pct",
@@ -38,6 +46,7 @@ DEFAULT_PARAMETER_FIELDS = (
 def build_entry_states(
     feature_rows: Sequence[dict[str, str]],
     *,
+    qts_rows: Sequence[dict[str, str]] | None = None,
     train_swaps: int,
     val_swaps: int,
     stride_swaps: int,
@@ -48,6 +57,7 @@ def build_entry_states(
     if train_swaps <= 0 or val_swaps <= 0 or stride_swaps <= 0:
         raise ValueError("swap counts must be positive")
 
+    qts_by_key = _rows_by_key(qts_rows) if qts_rows is not None else {}
     required = train_swaps + val_swaps
     rows: list[dict[str, str]] = []
     cursor = 0
@@ -61,11 +71,17 @@ def build_entry_states(
         train_price_return = _price_return(train_start, entry)
         validation_price_return = _price_return(validation_start, validation_end)
         entry_flow_pct = _optional_decimal(entry["swap_flow_imbalance_cone_pct_1h"])
-        gate_active = (
+        strict_gate_active = (
             entry_flow_pct is not None
             and entry_flow_pct >= flow_threshold
             and train_price_return <= train_return_max
         )
+        qts_entry = qts_by_key.get(_row_key(entry), {})
+        predicted_20_25 = _optional_decimal(qts_entry.get("predicted_markout_20_25", ""))
+        predicted_100_25 = _optional_decimal(qts_entry.get("predicted_markout_100_25", ""))
+        qts_20_25_positive = predicted_20_25 is not None and predicted_20_25 > 0
+        qts_100_25_positive = predicted_100_25 is not None and predicted_100_25 > 0
+        train_flat = train_price_return <= train_return_max
 
         row = {
             "window_index": str(window_index),
@@ -75,7 +91,14 @@ def build_entry_states(
             "validation_end_timestamp_ms": _required_clean(validation_end, "timestamp_ms"),
             "train_price_return": _format_decimal(train_price_return),
             "validation_price_return": _format_decimal(validation_price_return),
-            "gate_active": "1" if gate_active else "0",
+            "gate_active": "1" if strict_gate_active else "0",
+            "gate_no_gate": "1",
+            "gate_strict_sign_cone": "1" if strict_gate_active else "0",
+            "gate_train_flat_qts_20_25": "1" if train_flat and qts_20_25_positive else "0",
+            "gate_strict_qts_20_25": "1" if strict_gate_active and qts_20_25_positive else "0",
+            "gate_strict_qts_100_25": "1" if strict_gate_active and qts_100_25_positive else "0",
+            "entry_predicted_markout_20_25": _clean(qts_entry.get("predicted_markout_20_25", "")),
+            "entry_predicted_markout_100_25": _clean(qts_entry.get("predicted_markout_100_25", "")),
         }
         for field in ENTRY_FEATURE_FIELDS:
             row[f"entry_{field}"] = _clean(entry.get(field, ""))
@@ -88,6 +111,60 @@ def build_entry_states(
             break
         cursor += stride_swaps
     return rows
+
+
+def build_gate_summary_rows(
+    result_rows: Sequence[dict[str, str]],
+    entry_states: Sequence[dict[str, str]],
+    *,
+    gate_fields: Sequence[str],
+    identity_fields: Sequence[str],
+) -> list[dict[str, str]]:
+    state_by_window = _entry_state_by_window(entry_states)
+    total_window_count = len(state_by_window)
+    grouped: dict[tuple[str, tuple[str, ...]], list[dict[str, str]]] = defaultdict(list)
+    inactive_returns: dict[tuple[str, tuple[str, ...]], Decimal] = defaultdict(lambda: Decimal("0"))
+    hold_returns: dict[tuple[str, tuple[str, ...]], Decimal] = defaultdict(lambda: Decimal("0"))
+
+    for row in result_rows:
+        window_index = _required_clean(row, "window_index")
+        state = _require_entry_state(state_by_window, window_index)
+        identity_key = tuple(_clean(row.get(field, "")) for field in identity_fields)
+        for gate_field in gate_fields:
+            gate_key = (gate_field, identity_key)
+            if _clean(state.get(gate_field, "")) == "1":
+                grouped[gate_key].append(row)
+                hold_returns[gate_key] += _required_decimal(state, "validation_price_return")
+            else:
+                inactive_returns[gate_key] += _required_decimal(row, "validation_net_return")
+
+    summaries: list[dict[str, str]] = []
+    for gate_key, rows in grouped.items():
+        gate_field, identity_key = gate_key
+        summary = _summary_for_rows(rows, all_window_count=total_window_count)
+        inactive_return = inactive_returns[gate_key]
+        hold_return = hold_returns[gate_key]
+        active_return = _sort_decimal(summary["sum_active_return"])
+        summaries.append(
+            {
+                "gate": gate_field,
+                **{field: identity_key[index] for index, field in enumerate(identity_fields)},
+                **summary,
+                "inactive_window_return": _format_fixed(inactive_return),
+                "hold_cngn_active_return": _format_fixed(hold_return),
+                "active_minus_hold_cngn": _format_fixed(active_return - hold_return),
+            }
+        )
+
+    summaries.sort(
+        key=lambda row: (
+            row["gate"],
+            _sort_decimal(row["sum_active_return"]),
+            _sort_decimal(row["worst_active_return"]),
+        ),
+        reverse=True,
+    )
+    return summaries
 
 
 def summarize_selected_rank1(
@@ -217,12 +294,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     feature_rows = _read_csv(Path(args.features))
+    qts_rows = _read_csv(Path(args.qts_features)) if args.qts_features else None
     window_rows = _read_csv(Path(args.windows))
     matrix_rows = _read_csv(Path(args.matrix))
     parameter_fields = tuple(_split_fields(args.parameter_fields))
 
     entry_states = build_entry_states(
         feature_rows,
+        qts_rows=qts_rows,
         train_swaps=args.train_swaps,
         val_swaps=args.val_swaps,
         stride_swaps=args.stride_swaps,
@@ -308,6 +387,7 @@ def _summary_for_rows(rows: Sequence[dict[str, str]], *, all_window_count: int) 
         ),
         "total_rebalances": _format_fixed(total_rebalances),
         "worst_drawdown": _format_fixed(max(drawdowns) if drawdowns else None),
+        "leave_one_active_window_out_min_return": _format_fixed(_leave_one_out_min(returns)),
     }
 
 
@@ -349,6 +429,21 @@ def _require_entry_state(
     if state is None:
         raise ValueError(f"missing entry state for window {window_index}")
     return state
+
+
+def _rows_by_key(rows: Sequence[dict[str, str]]) -> dict[tuple[str, str, str], dict[str, str]]:
+    keyed = {_row_key(row): row for row in rows}
+    if len(keyed) != len(rows):
+        raise ValueError("duplicate row key")
+    return keyed
+
+
+def _row_key(row: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        _required_clean(row, "tx_hash"),
+        _required_clean(row, "log_index"),
+        _required_clean(row, "block_number"),
+    )
 
 
 def _price_return(start_row: dict[str, str], end_row: dict[str, str]) -> Decimal:
@@ -430,6 +525,13 @@ def _positive_rate(values: Sequence[Decimal]) -> Decimal | None:
     return Decimal(sum(1 for value in values if value > 0)) / Decimal(len(values))
 
 
+def _leave_one_out_min(values: Sequence[Decimal]) -> Decimal | None:
+    if len(values) < 2:
+        return None
+    total = sum(values, Decimal("0"))
+    return min(total - value for value in values)
+
+
 def _format_decimal(value: Decimal) -> str:
     if value == 0:
         return "0"
@@ -453,6 +555,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--windows", required=True)
     parser.add_argument("--matrix", required=True)
     parser.add_argument("--features", required=True)
+    parser.add_argument("--qts-features")
     parser.add_argument("--pool", required=True)
     parser.add_argument("--train-swaps", required=True, type=int)
     parser.add_argument("--val-swaps", required=True, type=int)

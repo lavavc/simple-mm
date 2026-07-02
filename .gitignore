@@ -28,3 +28,4 @@ engine_full.log
 .pytest_cache/
 .mypy_cache/
 docs/superpowers/
+.Rhistory

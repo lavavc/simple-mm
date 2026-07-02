@@ -33,6 +33,45 @@ Generated artifacts from the latest flow-gate pass are ignored by `.gitignore`
 under `research/data/**` and `research/results/**`. Regenerate them from the
 scripts instead of trying to commit them.
 
+## Continuation Update
+
+Status: frozen-family harness completed after this handoff.
+
+New source files:
+
+- `research/scripts/evaluate_frozen_family_lp.py`
+- `research/tests/test_evaluate_frozen_family_lp.py`
+
+Changed research support:
+
+- `research/backtester/params.py`
+- `research/backtester/run.py`
+- `research/backtester/simulator.py`
+- `research/scripts/evaluate_flow_gated_lp.py`
+
+The frozen-family pass writes:
+
+- `frozen_family_window_results.csv`
+- `frozen_family_gate_summary.csv`
+- `frozen_family_report.md`
+
+Current read:
+
+- Base strict sign-cone gate is still the best simple LP gate by total active
+  return and leave-one-active-window-out robustness.
+- The best Base strict-gated frozen-paper rows equal passive static LP and beat
+  hold-cNGN by only `0.0065` percentage points across five active windows.
+- QTS overlays are still diagnostic. They improve selectivity in some subsets
+  but do not dominate the strict sign-cone gate plus hold-cNGN baseline.
+- BSC frozen paper is negative under every tested gate and remains diagnostic.
+
+Next live question:
+
+Do not run H12 as a promotion step yet. Improve baseline accounting first:
+explicit static LP close or unwind costs, realistic hold-cNGN route costs, and a
+clear explanation for why Base should choose LP exposure rather than simpler
+cNGN inventory exposure.
+
 ## Implemented Since Full Rerun
 
 New source files:
@@ -41,6 +80,8 @@ New source files:
 - `research/tests/test_evaluate_flow_gated_lp.py`
 - `research/scripts/build_flow_markout_features.py`
 - `research/tests/test_build_flow_markout_features.py`
+- `research/scripts/evaluate_frozen_family_lp.py`
+- `research/tests/test_evaluate_frozen_family_lp.py`
 
 The flow-gate audit script writes:
 
@@ -355,9 +396,19 @@ Interpretation:
 
 ## Next Steps
 
-### 1. Build the frozen-family experiment harness
+### 1. Improve frozen-family baseline accounting
 
-Use the flow-gate and QTS outputs to run a small, explicit comparison set.
+The frozen-family experiment harness now exists. The next step is to make the
+baseline comparators realistic enough for promotion decisions.
+
+Needed improvements:
+
+- explicit static LP close or unwind costs at window end
+- realistic hold-cNGN route costs
+- route-specific cNGN inventory assumptions
+- LP-versus-cNGN attribution for the strict Base gate
+
+The tested comparison set was:
 
 Frozen paper family:
 
@@ -378,28 +429,19 @@ Gate variants:
 4. strict sign-cone gate plus `predicted_markout_20_25 > 0`
 5. strict sign-cone gate plus `predicted_markout_100_25 > 0`
 
-### 2. Add missing baselines before promotion
+### 2. Harden baselines before promotion
 
-Needed baselines:
+Current baselines:
 
 - no-position
-- passive static LP
-- hold-cNGN inventory
+- passive static LP, mark-at-window-end
+- hold-cNGN inventory, no-transaction-cost pool-price mark
 
-Explorer finding:
+Remaining blocker:
 
-- no-position is only indirectly expressible today through zero deployment
-- passive static LP is not currently a first-class strategy mode
-- hold-cNGN is not first-class because the simulator initializes with stable
-  cash only
-
-Suggested implementation:
-
-- add a small baseline abstraction separate from `BacktestParams`
-- add configurable initial wallet composition for hold-cNGN
-- add a static LP path: mint once at first eligible/gated event, accrue fees,
-  no rebalance, close or mark at window end
-- model the experiment runner after `research/scripts/h12_capital_sweep.py`
+The baselines are now first-pass comparators, not yet promotion-grade
+accounting. Static LP needs explicit close or unwind accounting. Hold-cNGN needs
+route-cost and inventory-route assumptions.
 
 ### 3. Decide whether QTS gates are useful
 
