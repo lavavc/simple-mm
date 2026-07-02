@@ -420,7 +420,7 @@ Base summary:
 | Gate | Active windows | Best frozen paper sum | Best static LP sum | Hold-cNGN sum | Frozen worst | Frozen leave-one-out min | Interpretation |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | no gate | 26 | +0.469% | +0.877% | +1.643% | -0.401% | +0.084% | LP does not beat hold-cNGN. |
-| strict sign-cone | 5 | +0.829% | +0.829% | +0.822% | +0.044% | +0.450% | Positive and robust, but edge over hold is only +0.0065 percentage points. |
+| strict sign-cone | 5 | +0.829% | +0.829% | +0.822% | +0.044% | +0.450% | Positive and robust, but edge over hold is only +0.0066 percentage points. |
 | train flat + QTS 20/25 | 7 | +0.922% | +0.922% | +1.248% | -0.019% | +0.558% | More total LP return than strict, but worse than hold and admits one negative LP window. |
 | strict + QTS 20/25 | 4 | +0.796% | +0.796% | +0.811% | +0.027% | +0.432% | Cleaner active windows, but lower total and slightly below hold. |
 | strict + QTS 100/25 | 3 | +0.662% | +0.662% | +0.494% | +0.027% | +0.298% | Beats hold on active return, but is too sparse and lower total than the strict gate. |
@@ -445,22 +445,25 @@ Interpretation:
   and leave-one-active-window-out robustness. The QTS filters can improve
   selectivity, but they either lose total return or fail to beat hold-cNGN.
 - Hold-cNGN is now a hard baseline. On Base, no-gate hold-cNGN beats all LP
-  families; under the strict gate, frozen LP beats hold by only 0.0065
-  percentage points across five active windows.
+  families; under the strict gate, frozen LP beats pool-mark hold by only
+  0.0066 percentage points across five active windows.
 - BSC remains diagnostic. Frozen paper is negative under every gate; occasional
   static-LP positives do not support promoting a paper-style strategy.
 
 Current blocker:
 
-The static LP baseline is mark-at-window-end and the hold-cNGN baseline is a
-no-transaction-cost pool-price mark. Before promotion, add explicit end-of-window
-close or unwind accounting and compare against a realistic cNGN inventory route.
+First-pass close/unwind accounting and the harsh pool-routed cNGN comparator are
+implemented. Active-window attribution now shows that the strict Base frozen
+paper row adds no value over mark-only static LP (`lp_minus_static_mark = 0` in
+all five active windows), while the total mark edge over pool-mark hold is only
+`0.000066` return. Promotion still needs either a paper-exit policy that beats
+static LP or a realistic non-pool cNGN inventory baseline.
 
 Updated next step:
 
-Do not run H12 as a promotion step. Next work should either improve baseline
-accounting or explain why the strict Base gate should choose LP exposure instead
-of simpler cNGN inventory exposure. Dynamic sizing is still premature.
+Do not run H12 as a promotion step. Next work should explain why the strict Base
+gate should choose LP exposure instead of simpler cNGN inventory exposure under
+a realistic non-pool route. Dynamic sizing is still premature.
 
 ## Task 3 Baseline-Hardening Follow-Up
 
@@ -495,12 +498,60 @@ Interpretation:
   as a harsh DEX-only inventory route, not as a realistic CEX or external
   inventory route.
 - The promotion blocker has narrowed: the strict Base gate beats no-position
-  and a pool-routed hold path, but it still needs either a reason to prefer
-  active paper exits over static LP or an execution-costed non-pool cNGN
-  inventory baseline.
+  and a pool-routed hold path, but the tested active paper exits do not beat
+  static LP. Promotion now needs an execution-costed non-pool cNGN inventory
+  baseline.
 
 Updated next step:
 
-Add LP-versus-inventory attribution for the strict Base active windows. The key
-question is now whether the edge comes from LP fee capture/range shape or simply
-from avoiding a bad DEX inventory route.
+The next baseline is a realistic non-pool cNGN inventory route. The pool-routed
+hold comparator is useful as a harsh lower bound, but it is too expensive to be
+the deployment alternative.
+
+## Task 4 LP-Versus-Inventory Attribution Follow-Up
+
+Status: completed 2026-07-02.
+
+Implemented:
+
+- `lp_inventory_attribution.csv` in the frozen-family harness
+- a Markdown attribution section in `frozen_family_report.md`
+- strict active-window tests for comparator selection, delta calculation, and
+  missing comparator failures
+
+Base strict-gate attribution:
+
+| Measure | Sum over five active windows |
+| --- | ---: |
+| best frozen paper net return | +0.829% |
+| best passive static LP, mark-only | +0.829% |
+| best passive static LP, closed/unwound | +0.579% |
+| hold-cNGN, pool mark | +0.822% |
+| hold-cNGN, pool routed | -1.169% |
+| frozen paper minus mark-only static LP | 0.000 percentage points |
+| frozen paper minus pool-mark hold | +0.0066 percentage points |
+| closed static LP minus pool-mark hold | -0.243 percentage points |
+| closed static LP minus pool-routed hold | +1.748 percentage points |
+| frozen paper fee net component | +0.419% |
+| frozen paper range/inventory residual | +0.410% |
+
+Interpretation:
+
+- The tested active paper exits still do not add value. The best frozen-paper
+  row and the best mark-only static row are identical in every strict Base
+  active window.
+- The tiny mark edge over hold-cNGN is not a robust LP-specific edge. Pool-mark
+  hold outperforms LP in two positive-price windows, while LP wins mainly by
+  avoiding one negative hold window.
+- Closed/unwound static LP remains positive but no longer beats pool-mark hold.
+  It only beats routed hold because the same-pool inventory route is punitive.
+- The fee/range split is balanced, not decisive: roughly half the mark-only LP
+  return is fee net of transaction costs and half is residual range/inventory
+  exposure.
+
+Updated next step:
+
+Build or source a non-pool cNGN inventory comparator, then rerun the same
+strict active-window attribution. Do not promote H12 or dynamic sizing until LP
+beats that comparator or the strategy is explicitly reframed as a pool-route
+execution hedge rather than an LP alpha.

@@ -37,6 +37,10 @@ from research.backtester.simulator import (
 )
 from research.scripts.evaluate_flow_gated_lp import (
     DEFAULT_GATE_FIELDS,
+    _clean,
+    _format_fixed,
+    _required_clean,
+    _required_decimal,
     build_entry_states,
     build_gate_summary_rows,
 )
@@ -60,6 +64,16 @@ RESULT_FIELDS = (
     "validation_max_drawdown",
     "validation_final_value",
     "validation_fee_to_transaction_cost_ratio",
+)
+
+ATTRIBUTION_GATE = "gate_strict_sign_cone"
+ATTRIBUTION_COMPARATOR_STRATEGIES = (
+    "frozen_paper",
+    "passive_static_lp",
+    "passive_static_lp_closed",
+    "hold_cngn",
+    "hold_cngn_routed",
+    "no_position",
 )
 
 
@@ -291,6 +305,142 @@ def routed_hold_cngn_rows(
     return rows
 
 
+def build_lp_inventory_attribution_rows(
+    result_rows: Sequence[dict[str, str]],
+    entry_states: Sequence[dict[str, str]],
+    summary_rows: Sequence[dict[str, str]],
+    *,
+    gate_field: str,
+    initial_capital_usd: float,
+) -> list[dict[str, str]]:
+    selected_configs = _selected_attribution_configs(summary_rows, gate_field)
+    result_by_identity = _result_rows_by_identity(result_rows)
+    rows: list[dict[str, str]] = []
+
+    for state in entry_states:
+        if _clean(state.get(gate_field, "")) != "1":
+            continue
+        window_index = _required_clean(state, "window_index")
+        lp = _require_result_row(
+            result_by_identity,
+            window_index,
+            "frozen_paper",
+            selected_configs["frozen_paper"],
+        )
+        static_mark = _require_result_row(
+            result_by_identity,
+            window_index,
+            "passive_static_lp",
+            selected_configs["passive_static_lp"],
+        )
+        static_closed = _require_result_row(
+            result_by_identity,
+            window_index,
+            "passive_static_lp_closed",
+            selected_configs["passive_static_lp_closed"],
+        )
+        hold_mark = _require_result_row(
+            result_by_identity,
+            window_index,
+            "hold_cngn",
+            selected_configs["hold_cngn"],
+        )
+        hold_routed = _require_result_row(
+            result_by_identity,
+            window_index,
+            "hold_cngn_routed",
+            selected_configs["hold_cngn_routed"],
+        )
+        no_position = _require_result_row(
+            result_by_identity,
+            window_index,
+            "no_position",
+            selected_configs["no_position"],
+        )
+
+        lp_return = _required_decimal(lp, "validation_net_return")
+        static_mark_return = _required_decimal(static_mark, "validation_net_return")
+        static_closed_return = _required_decimal(static_closed, "validation_net_return")
+        hold_mark_return = _required_decimal(hold_mark, "validation_net_return")
+        hold_routed_return = _required_decimal(hold_routed, "validation_net_return")
+        no_position_return = _required_decimal(no_position, "validation_net_return")
+        lp_fees = _required_decimal(lp, "validation_total_fees")
+        lp_tx_cost = _required_decimal(lp, "validation_total_transaction_cost")
+        static_closed_fees = _required_decimal(static_closed, "validation_total_fees")
+        static_closed_tx_cost = _required_decimal(
+            static_closed,
+            "validation_total_transaction_cost",
+        )
+        lp_fee_component = _return_component(lp_fees - lp_tx_cost, initial_capital_usd)
+        static_closed_fee_component = _return_component(
+            static_closed_fees - static_closed_tx_cost,
+            initial_capital_usd,
+        )
+
+        rows.append(
+            {
+                "gate": gate_field,
+                "window_index": window_index,
+                "window_start": _clean(
+                    state.get("validation_start_timestamp_ms", lp.get("window_start", ""))
+                ),
+                "window_end": _clean(
+                    state.get("validation_end_timestamp_ms", lp.get("window_end", ""))
+                ),
+                "entry_flow_pct": _clean(state.get("entry_flow_pct", "")),
+                "entry_flow_raw": _clean(state.get("entry_flow_raw", "")),
+                "train_price_return": _clean(state.get("train_price_return", "")),
+                "validation_price_return": _clean(state.get("validation_price_return", "")),
+                "entry_predicted_markout_20_25": _clean(
+                    state.get("entry_predicted_markout_20_25", "")
+                ),
+                "entry_predicted_markout_100_25": _clean(
+                    state.get("entry_predicted_markout_100_25", "")
+                ),
+                "lp_strategy": "frozen_paper",
+                "lp_config": selected_configs["frozen_paper"],
+                "static_mark_config": selected_configs["passive_static_lp"],
+                "static_closed_config": selected_configs["passive_static_lp_closed"],
+                "lp_net_return": _format_fixed(lp_return),
+                "static_mark_net_return": _format_fixed(static_mark_return),
+                "static_closed_net_return": _format_fixed(static_closed_return),
+                "hold_mark_return": _format_fixed(hold_mark_return),
+                "hold_routed_return": _format_fixed(hold_routed_return),
+                "no_position_return": _format_fixed(no_position_return),
+                "lp_minus_hold_mark": _format_fixed(lp_return - hold_mark_return),
+                "static_mark_minus_hold_mark": _format_fixed(
+                    static_mark_return - hold_mark_return
+                ),
+                "static_closed_minus_hold_mark": _format_fixed(
+                    static_closed_return - hold_mark_return
+                ),
+                "lp_minus_static_mark": _format_fixed(lp_return - static_mark_return),
+                "lp_minus_static_closed": _format_fixed(lp_return - static_closed_return),
+                "static_closed_minus_hold_routed": _format_fixed(
+                    static_closed_return - hold_routed_return
+                ),
+                "lp_total_fees_usd": _format_fixed(lp_fees),
+                "lp_total_transaction_cost_usd": _format_fixed(lp_tx_cost),
+                "lp_fee_net_return_component": _format_fixed(lp_fee_component),
+                "lp_range_inventory_return_component": _format_fixed(
+                    lp_return - lp_fee_component
+                ),
+                "static_closed_total_fees_usd": _format_fixed(static_closed_fees),
+                "static_closed_total_transaction_cost_usd": _format_fixed(
+                    static_closed_tx_cost
+                ),
+                "static_closed_fee_net_return_component": _format_fixed(
+                    static_closed_fee_component
+                ),
+                "static_closed_range_inventory_return_component": _format_fixed(
+                    static_closed_return - static_closed_fee_component
+                ),
+            }
+        )
+
+    return rows
+
+
 def evaluate_pool(
     experiment: PoolExperiment,
     *,
@@ -379,13 +529,30 @@ def evaluate_pool(
         identity_fields=("strategy", "config"),
     )
     _write_csv(out_dir / "frozen_family_gate_summary.csv", summary_rows)
+    attribution_rows = build_lp_inventory_attribution_rows(
+        result_rows,
+        entry_states,
+        summary_rows,
+        gate_field=ATTRIBUTION_GATE,
+        initial_capital_usd=experiment.initial_capital_usd,
+    )
+    _write_csv(out_dir / "lp_inventory_attribution.csv", attribution_rows)
     (out_dir / "frozen_family_report.md").write_text(
-        render_markdown(pool=experiment.pool, summary_rows=summary_rows)
+        render_markdown(
+            pool=experiment.pool,
+            summary_rows=summary_rows,
+            attribution_rows=attribution_rows,
+        )
     )
     print(f"{experiment.pool}: wrote {out_dir}")
 
 
-def render_markdown(*, pool: str, summary_rows: Sequence[dict[str, str]]) -> str:
+def render_markdown(
+    *,
+    pool: str,
+    summary_rows: Sequence[dict[str, str]],
+    attribution_rows: Sequence[dict[str, str]] = (),
+) -> str:
     lines = [
         f"# Frozen-Family LP Gate Report: {pool}",
         "",
@@ -406,6 +573,31 @@ def render_markdown(*, pool: str, summary_rows: Sequence[dict[str, str]]) -> str
                 "",
             ]
         )
+    if attribution_rows:
+        fields = [
+            "window_index",
+            "lp_net_return",
+            "hold_mark_return",
+            "lp_minus_hold_mark",
+            "static_closed_net_return",
+            "static_closed_minus_hold_mark",
+            "hold_routed_return",
+            "static_closed_minus_hold_routed",
+            "lp_minus_static_mark",
+            "lp_fee_net_return_component",
+            "lp_range_inventory_return_component",
+        ]
+        lines.extend(
+            [
+                "## LP-Versus-Inventory Attribution",
+                "",
+                "| " + " | ".join(fields) + " |",
+                "| " + " | ".join("---" for _field in fields) + " |",
+            ]
+        )
+        for row in attribution_rows:
+            lines.append("| " + " | ".join(row.get(field, "") for field in fields) + " |")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -503,6 +695,73 @@ def _baseline_row(
         "validation_final_value": "",
         "validation_fee_to_transaction_cost_ratio": "0",
     }
+
+
+def _selected_attribution_configs(
+    summary_rows: Sequence[dict[str, str]],
+    gate_field: str,
+) -> dict[str, str]:
+    selected: dict[str, str] = {}
+    for strategy in ATTRIBUTION_COMPARATOR_STRATEGIES:
+        candidates = [
+            row
+            for row in summary_rows
+            if _clean(row.get("gate", "")) == gate_field
+            and _clean(row.get("strategy", "")) == strategy
+        ]
+        if not candidates:
+            raise ValueError(f"missing attribution comparator {strategy} for {gate_field}")
+        best = max(
+            candidates,
+            key=lambda row: (
+                _required_decimal(row, "sum_active_return"),
+                _required_decimal(row, "worst_active_return"),
+            ),
+        )
+        selected[strategy] = _required_clean(best, "config")
+    return selected
+
+
+def _result_rows_by_identity(
+    result_rows: Sequence[dict[str, str]],
+) -> dict[tuple[str, str, str], dict[str, str]]:
+    rows: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in result_rows:
+        key = (
+            _required_clean(row, "window_index"),
+            _required_clean(row, "strategy"),
+            _required_clean(row, "config"),
+        )
+        if key in rows:
+            window_index, strategy, config = key
+            raise ValueError(
+                "duplicate result row for "
+                f"window={window_index} strategy={strategy} config={config}"
+            )
+        rows[key] = row
+    return rows
+
+
+def _require_result_row(
+    rows: dict[tuple[str, str, str], dict[str, str]],
+    window_index: str,
+    strategy: str,
+    config: str,
+) -> dict[str, str]:
+    row = rows.get((window_index, strategy, config))
+    if row is None:
+        raise ValueError(
+            "missing result row for "
+            f"window={window_index} strategy={strategy} config={config}"
+        )
+    return row
+
+
+def _return_component(amount_usd: Decimal, initial_capital_usd: float) -> Decimal:
+    capital = Decimal(str(initial_capital_usd))
+    if capital <= 0:
+        raise ValueError("initial_capital_usd must be positive")
+    return amount_usd / capital
 
 
 def _summary_table(rows: Sequence[dict[str, str]]) -> str:

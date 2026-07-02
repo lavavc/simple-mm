@@ -54,30 +54,36 @@ The frozen-family pass writes:
 
 - `frozen_family_window_results.csv`
 - `frozen_family_gate_summary.csv`
+- `lp_inventory_attribution.csv`
 - `frozen_family_report.md`
 
 Current read:
 
 - Base strict sign-cone gate is still the best simple LP gate by total active
   return and leave-one-active-window-out robustness.
-- The best Base strict-gated frozen-paper rows equal passive static LP and beat
-  hold-cNGN by only `0.0065` percentage points across five active windows.
+- The best Base strict-gated frozen-paper rows equal passive static LP in every
+  active window and beat pool-mark hold-cNGN by only `0.0066` percentage points
+  across five active windows.
 - After terminal close/unwind costs, the best Base strict-gated closed static LP
   row falls to `+0.579%` across five active windows, with `-0.044%` worst
   active window.
 - The pool-routed hold-cNGN comparator is negative under the strict Base gate
   (`-1.169%`) because the DEX pool route is expensive. Treat this as a harsh
   DEX-only path, not as a realistic external inventory route.
+- LP-versus-inventory attribution is implemented. Closed/unwound static LP no
+  longer beats pool-mark hold (`-0.243` percentage points), and the closed static
+  edge over routed hold (`+1.748` percentage points) is mostly evidence that the
+  same-pool inventory route is punitive.
 - QTS overlays are still diagnostic. They improve selectivity in some subsets
   but do not dominate the strict sign-cone gate plus hold-cNGN baseline.
 - BSC frozen paper is negative under every tested gate and remains diagnostic.
 
 Next live question:
 
-Do not run H12 as a promotion step yet. First-pass baseline hardening now exists.
-The next question is attribution: why should Base choose active paper LP exits
-over passive static LP, and why should it choose LP exposure over a non-pool
-cNGN inventory route?
+Do not run H12 as a promotion step yet. First-pass baseline hardening and strict
+Base active-window attribution now exist. The remaining question is a realistic
+non-pool cNGN inventory route; the tested active paper exits do not beat static
+LP.
 
 ## Implemented Since Full Rerun
 

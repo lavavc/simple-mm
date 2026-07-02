@@ -122,14 +122,13 @@ Latest DEX-only rerun status is tracked in
    family pass in `research/autoresearch/flow-gated-cngn-lp-plan.md`; Base is
    conditionally positive, but not promotable because static LP and hold-cNGN
    baselines explain too much of the result.
-3. Continue baseline attribution before any H12 promotion. First-pass
-   end-of-window static LP close/unwind costs and pool-routed hold-cNGN costs
-   are implemented, but the strict Base result still needs LP-versus-inventory
-   attribution by active window.
-4. Explain why the strict Base gate should choose active paper LP exits over
-   passive static LP, and why it should choose LP exposure over non-pool cNGN
-   inventory exposure. QTS overlays remain diagnostic until they beat the strict
-   gate and the relevant hold baseline after costs.
+3. Keep H12 blocked. First-pass end-of-window static LP close/unwind costs,
+   pool-routed hold-cNGN costs, and strict Base active-window attribution are
+   implemented. The attribution shows no active paper-exit edge over static LP
+   and only a 0.0066 percentage point mark edge over pool-mark hold.
+4. Add a realistic non-pool cNGN inventory comparator, then rerun the same
+   strict active-window attribution. QTS overlays remain diagnostic until they
+   beat the strict gate and the relevant hold baseline after costs.
 5. Run H12 capacity curves only on accepted frozen configs, or explicitly label
    them diagnostic if run before acceptance.
 6. Test dynamic sizing against the best constant-capital policy out of sample.
