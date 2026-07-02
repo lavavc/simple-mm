@@ -833,6 +833,35 @@ class TestPaperStyleSimulation:
         assert len(sim.episodes) == 1
         assert sim.episodes[0].exit_reason == "end_of_data"
 
+    def test_static_strategy_can_charge_terminal_close_cost(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
+        base_params = self._params(
+            strategy_mode="static",
+            fixed_tick_width=100,
+            harvest_upward_range_fraction=None,
+            profit_take_return=None,
+            stop_loss_return=None,
+            out_of_range_overshoot_fraction=None,
+            transaction_costs=TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0),
+        )
+        closed_params = replace(
+            base_params,
+            transaction_costs=TransactionCostModel(
+                mint_gas_usd=0.0,
+                remove_gas_usd=1.0,
+                close_position_on_end=True,
+            ),
+        )
+
+        marked = simulate_pool(events, base_params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        closed = simulate_pool(events, closed_params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+
+        assert closed.rebalance_count == 0
+        assert closed.episodes[0].exit_reason == "end_of_data_close"
+        assert closed.episodes[0].exit_transaction_cost == pytest.approx(1.0)
+        assert closed.total_transaction_cost == pytest.approx(marked.total_transaction_cost + 1.0)
+        assert closed.final_value == pytest.approx(marked.final_value - 1.0)
+
     def test_deploy_full_wallet_is_the_status_quo(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
         legacy = simulate_pool(events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0)

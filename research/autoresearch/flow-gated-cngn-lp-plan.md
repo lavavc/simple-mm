@@ -461,3 +461,46 @@ Updated next step:
 Do not run H12 as a promotion step. Next work should either improve baseline
 accounting or explain why the strict Base gate should choose LP exposure instead
 of simpler cNGN inventory exposure. Dynamic sizing is still premature.
+
+## Task 3 Baseline-Hardening Follow-Up
+
+Status: first pass completed 2026-07-02.
+
+Implemented:
+
+- `TransactionCostModel.close_position_on_end`
+- terminal static-LP close/unwind accounting in the simulator
+- `passive_static_lp_closed` rows in the frozen-family harness
+- `hold_cngn_routed` rows that buy cNGN at validation entry and sell it at
+  validation exit through the same pool-cost model
+
+Base strict-gate result after adding the harder baseline rows:
+
+| Comparator | Active windows | Sum return | Worst return | Leave-one-out min | Transaction cost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| best frozen paper | 5 | +0.829% | +0.044% | +0.450% | $5.79 |
+| best passive static LP, mark-only | 5 | +0.829% | +0.044% | +0.450% | $5.79 |
+| best passive static LP, closed/unwound | 5 | +0.579% | -0.044% | +0.253% | $8.76 |
+| hold-cNGN, pool mark | 5 | +0.822% | -0.390% | +0.136% | $0.00 |
+| hold-cNGN, pool routed | 5 | -1.169% | -0.810% | -1.461% | $23.88 |
+| no-position | 5 | 0.000% | 0.000% | 0.000% | $0.00 |
+
+Interpretation:
+
+- Terminal close/unwind costs do not erase the strict Base LP signal, but they
+  do reduce the more realistic static baseline from +0.829% to +0.579%.
+- The current frozen-paper strategy still does not add visible value over
+  passive static LP in the active strict-gate windows.
+- The pool-routed hold-cNGN comparator is very expensive and should be treated
+  as a harsh DEX-only inventory route, not as a realistic CEX or external
+  inventory route.
+- The promotion blocker has narrowed: the strict Base gate beats no-position
+  and a pool-routed hold path, but it still needs either a reason to prefer
+  active paper exits over static LP or an execution-costed non-pool cNGN
+  inventory baseline.
+
+Updated next step:
+
+Add LP-versus-inventory attribution for the strict Base active windows. The key
+question is now whether the edge comes from LP fee capture/range shape or simply
+from avoiding a bad DEX inventory route.

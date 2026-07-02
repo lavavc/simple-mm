@@ -514,6 +514,7 @@ ESSENTIAL_PARAM_FIELDS = [
     "mint_gas_usd",
     "remove_gas_usd",
     "unwind_to_cash_on_exit",
+    "close_position_on_end",
 ]
 
 
@@ -566,6 +567,7 @@ def _full_params_row(params: BacktestParams) -> dict:
         "failed_tx_gas_usd": params.transaction_costs.failed_tx_gas_usd,
         "fallback_price_impact_bps": params.transaction_costs.fallback_price_impact_bps,
         "unwind_to_cash_on_exit": params.transaction_costs.unwind_to_cash_on_exit,
+        "close_position_on_end": params.transaction_costs.close_position_on_end,
     }
 
 
@@ -795,6 +797,7 @@ def main() -> None:
     parser.add_argument("--fallback-price-impact-bps", type=float, default=200.0)
     parser.add_argument("--unwind-to-cash-on-exit", dest="unwind_to_cash_on_exit", action="store_true")
     parser.add_argument("--no-unwind-to-cash-on-exit", dest="unwind_to_cash_on_exit", action="store_false")
+    parser.add_argument("--close-position-on-end", action="store_true")
     parser.add_argument("--initial-capital-usd", type=float)
     parser.add_argument("--min-exit-swap-volume-usd", type=float)
     parser.add_argument("--exit-confirmation-swaps", type=int)
@@ -841,6 +844,7 @@ def main() -> None:
             failed_tx_gas_usd=args.failed_tx_gas_usd,
             fallback_price_impact_bps=args.fallback_price_impact_bps,
             unwind_to_cash_on_exit=args.unwind_to_cash_on_exit,
+            close_position_on_end=args.close_position_on_end,
         ),
     )
     grid = _with_exit_controls(

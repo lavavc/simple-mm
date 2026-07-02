@@ -48,6 +48,7 @@ Changed research support:
 - `research/backtester/run.py`
 - `research/backtester/simulator.py`
 - `research/scripts/evaluate_flow_gated_lp.py`
+- `TransactionCostModel.close_position_on_end`
 
 The frozen-family pass writes:
 
@@ -61,16 +62,22 @@ Current read:
   return and leave-one-active-window-out robustness.
 - The best Base strict-gated frozen-paper rows equal passive static LP and beat
   hold-cNGN by only `0.0065` percentage points across five active windows.
+- After terminal close/unwind costs, the best Base strict-gated closed static LP
+  row falls to `+0.579%` across five active windows, with `-0.044%` worst
+  active window.
+- The pool-routed hold-cNGN comparator is negative under the strict Base gate
+  (`-1.169%`) because the DEX pool route is expensive. Treat this as a harsh
+  DEX-only path, not as a realistic external inventory route.
 - QTS overlays are still diagnostic. They improve selectivity in some subsets
   but do not dominate the strict sign-cone gate plus hold-cNGN baseline.
 - BSC frozen paper is negative under every tested gate and remains diagnostic.
 
 Next live question:
 
-Do not run H12 as a promotion step yet. Improve baseline accounting first:
-explicit static LP close or unwind costs, realistic hold-cNGN route costs, and a
-clear explanation for why Base should choose LP exposure rather than simpler
-cNGN inventory exposure.
+Do not run H12 as a promotion step yet. First-pass baseline hardening now exists.
+The next question is attribution: why should Base choose active paper LP exits
+over passive static LP, and why should it choose LP exposure over a non-pool
+cNGN inventory route?
 
 ## Implemented Since Full Rerun
 
@@ -296,13 +303,14 @@ against baselines:
 - **Passive static LP:** mint once at first eligible/gated event, no active
   rebalance, accrue fees, close or mark at window end.
 - **Hold-cNGN:** convert starting capital into cNGN exposure at entry and mark
-  it at window end.
+  it at window end. The current harness includes both a no-cost pool mark and a
+  harsh DEX-pool routed entry/exit path.
 - **Existing active LP:** the selected EWMA/paper streams from the current
   backtester.
 
-No-position is easy to express conceptually. Passive static LP and hold-cNGN
-are not first-class backtester baselines yet, which is why they are blockers for
-promotion.
+No-position is easy to express conceptually. Passive static LP and hold-cNGN now
+exist as first-pass harness baselines, but promotion still needs route-specific
+non-pool inventory assumptions and LP-versus-inventory attribution.
 
 ## Research Findings
 

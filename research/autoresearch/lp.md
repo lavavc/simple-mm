@@ -53,9 +53,9 @@ Known limitations:
 - liquidity-operation prices must be reconstructed by event order, not block-end state
 - policy thresholds are not yet venue-configurable
 - gas-adjusted paper episode USD PnL requires an explicit native-token USD price input
-- frozen-family hold-cNGN is currently a no-transaction-cost pool-price mark,
-  and passive static LP is mark-at-window-end rather than explicit close/unwind
-  accounting
+- frozen-family hold-cNGN now has both pool-mark and pool-routed variants, but
+  the routed variant is a harsh DEX-only path rather than a realistic CEX or
+  external inventory route
 
 ## Research Discipline
 
@@ -122,12 +122,14 @@ Latest DEX-only rerun status is tracked in
    family pass in `research/autoresearch/flow-gated-cngn-lp-plan.md`; Base is
    conditionally positive, but not promotable because static LP and hold-cNGN
    baselines explain too much of the result.
-3. Improve baseline accounting before any H12 promotion: explicit
-   end-of-window static LP close/unwind costs, realistic hold-cNGN route costs,
-   and route-specific cNGN inventory assumptions.
-4. Explain why the strict Base gate should choose LP exposure over cNGN
-   inventory exposure; QTS overlays remain diagnostic until they beat the
-   strict gate and the hold baseline after costs.
+3. Continue baseline attribution before any H12 promotion. First-pass
+   end-of-window static LP close/unwind costs and pool-routed hold-cNGN costs
+   are implemented, but the strict Base result still needs LP-versus-inventory
+   attribution by active window.
+4. Explain why the strict Base gate should choose active paper LP exits over
+   passive static LP, and why it should choose LP exposure over non-pool cNGN
+   inventory exposure. QTS overlays remain diagnostic until they beat the strict
+   gate and the relevant hold baseline after costs.
 5. Run H12 capacity curves only on accepted frozen configs, or explicitly label
    them diagnostic if run before acceptance.
 6. Test dynamic sizing against the best constant-capital policy out of sample.

@@ -25,6 +25,7 @@ class TransactionCostModel:
     failed_tx_gas_usd: float | None = None
     fallback_price_impact_bps: float = 200.0
     unwind_to_cash_on_exit: bool = False
+    close_position_on_end: bool = False
 
 
 @dataclass

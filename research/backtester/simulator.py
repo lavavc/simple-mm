@@ -1403,6 +1403,7 @@ def simulate_pool(
     current_price = 0.0
     current_tick = 0
     current_sqrt_price_x96 = tick_to_sqrt_price_x96(0)
+    current_active_liquidity = 0
     day_start_value = initial_capital_usd
     current_day: date | None = None
     validation_start: PortfolioComposition | None = None
@@ -1445,6 +1446,7 @@ def simulate_pool(
         )
         current_sqrt_price_x96 = _event_sqrt_price_x96(event, current_tick)
         active_liquidity = _event_liquidity(event, pool_state, current_tick)
+        current_active_liquidity = active_liquidity
         if _event_swap_volume_usd(event) >= params.exit_price_min_swap_volume_usd:
             qualified_price_observations.append((event.block_time, current_price))
 
@@ -1713,24 +1715,63 @@ def simulate_pool(
         )
         previous_swap_time = event.block_time
 
-    result.final_value = _portfolio_value(
-        position,
-        wallet,
-        current_price,
-        current_tick,
-        current_sqrt_price_x96,
-        pool_config,
-    )
     if position is not None and result.end_time is not None:
+        terminal_position = position
+        terminal_exit_reason = "end_of_data"
+        terminal_exit_cost = TransactionCostBreakdown("end_of_data")
+        terminal_exit_value = terminal_position.value_at_sqrt_price_x96(
+            current_sqrt_price_x96,
+            current_price,
+            pool_config,
+        )
+        if params.transaction_costs.close_position_on_end:
+            terminal_exit_reason = "end_of_data_close"
+            terminal_exit_cost = _exit_cost_breakdown(
+                terminal_position,
+                current_tick,
+                current_sqrt_price_x96,
+                current_price,
+                current_active_liquidity,
+                pool_config.fee_rate,
+                pool_config,
+                params,
+            )
+            wallet = _wallet_with_position_removed(
+                wallet,
+                terminal_position,
+                current_tick,
+                current_sqrt_price_x96,
+                current_price,
+                pool_config,
+            )
+            wallet = _pay_or_unwind_exit_cost(wallet, terminal_exit_cost, current_price)
+            position = None
+        result.final_value = _portfolio_value(
+            position,
+            wallet,
+            current_price,
+            current_tick,
+            current_sqrt_price_x96,
+            pool_config,
+        )
         _record_episode(
             result,
-            position,
-            "end_of_data",
+            terminal_position,
+            terminal_exit_reason,
             result.end_time,
             current_price,
             current_tick,
-            position.value_at_sqrt_price_x96(current_sqrt_price_x96, current_price, pool_config),
-            TransactionCostBreakdown("end_of_data"),
+            terminal_exit_value,
+            terminal_exit_cost,
+            pool_config,
+        )
+    else:
+        result.final_value = _portfolio_value(
+            position,
+            wallet,
+            current_price,
+            current_tick,
+            current_sqrt_price_x96,
             pool_config,
         )
     if day_start_value > 0 and result.final_value > 0:

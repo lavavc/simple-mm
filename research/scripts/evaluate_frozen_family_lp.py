@@ -28,6 +28,11 @@ from research.backtester.simulator import (
     UNISWAP_BASE_POOL,
     UNISWAP_BSC_POOL,
     PoolConfig,
+    _event_cngn_price,
+    _event_liquidity,
+    _event_pool_fee_rate,
+    _event_sqrt_price_x96,
+    _swap_cost_breakdown,
     simulate_pool,
 )
 from research.scripts.evaluate_flow_gated_lp import (
@@ -163,6 +168,40 @@ def static_lp_configs(
     ]
 
 
+def static_lp_closed_configs(
+    *,
+    initial_capital_usd: float,
+    mint_gas_usd: float | None,
+    remove_gas_usd: float | None,
+) -> list[tuple[str, BacktestParams]]:
+    costs = TransactionCostModel(
+        mint_gas_usd=mint_gas_usd,
+        remove_gas_usd=remove_gas_usd,
+        unwind_to_cash_on_exit=True,
+        close_position_on_end=True,
+    )
+    return [
+        (
+            f"static_closed_cash_spot_w{_bps_label(width)}",
+            BacktestParams(
+                strategy_mode="static",
+                range_mode="fixed_pct_width",
+                center_mode="spot",
+                fixed_width_pct=width,
+                harvest_upward_range_fraction=None,
+                profit_take_return=None,
+                stop_loss_return=None,
+                out_of_range_overshoot_fraction=None,
+                transaction_costs=costs,
+                initial_capital_usd=initial_capital_usd,
+                min_tick_width=50,
+                max_tick_width=FROZEN_MAX_TICK_WIDTH,
+            ),
+        )
+        for width in FROZEN_WIDTHS
+    ]
+
+
 def no_position_rows(entry_states: Sequence[dict[str, str]]) -> list[dict[str, str]]:
     return [
         _baseline_row(state, strategy="no_position", config="idle_cash", net_return="0")
@@ -180,6 +219,76 @@ def hold_cngn_rows(entry_states: Sequence[dict[str, str]]) -> list[dict[str, str
         )
         for state in entry_states
     ]
+
+
+def routed_hold_cngn_rows(
+    events: list[Event],
+    pool_config: PoolConfig,
+    spec: WindowSpec,
+    *,
+    initial_capital_usd: float,
+    gas_cost_usd: float,
+    max_windows: int | None,
+) -> list[dict[str, str]]:
+    params = BacktestParams(
+        transaction_costs=TransactionCostModel(
+            mint_gas_usd=gas_cost_usd,
+            remove_gas_usd=gas_cost_usd,
+        ),
+        gas_cost_usd=gas_cost_usd,
+        initial_capital_usd=initial_capital_usd,
+    )
+    rows: list[dict[str, str]] = []
+    for window_slice in _iter_window_slices(events, spec, max_windows=max_windows):
+        if window_slice.skipped_reason is not None:
+            continue
+        val_swaps = [event for event in window_slice.val_events if _is_swap_event(event)]
+        if not val_swaps:
+            continue
+        entry_event = val_swaps[0]
+        exit_event = val_swaps[-1]
+        entry_price = _event_cngn_price(entry_event, pool_config)
+        exit_price = _event_cngn_price(exit_event, pool_config)
+        if entry_price <= 0 or exit_price <= 0:
+            raise ValueError("hold-cNGN route requires positive entry and exit prices")
+        entry_cost = _route_cost(
+            event=entry_event,
+            pool_config=pool_config,
+            params=params,
+            notional_usd=initial_capital_usd,
+            action="enter",
+            direction="stable_to_cngn",
+        )
+        cngn_amount = max(initial_capital_usd - entry_cost.total, 0.0) / entry_price
+        exit_notional = cngn_amount * exit_price
+        exit_cost = _route_cost(
+            event=exit_event,
+            pool_config=pool_config,
+            params=params,
+            notional_usd=exit_notional,
+            action="exit",
+            direction="cngn_to_stable",
+        )
+        final_value = max(exit_notional - exit_cost.total, 0.0)
+        net_return = final_value / initial_capital_usd - 1.0
+        total_cost = entry_cost.total + exit_cost.total
+        rows.append(
+            {
+                "window_index": str(window_slice.window.index),
+                "window_start": window_slice.window.val_start.isoformat(),
+                "window_end": window_slice.window.val_end.isoformat(),
+                "strategy": "hold_cngn_routed",
+                "config": "entry_exit_pool_route",
+                "validation_net_return": str(net_return),
+                "validation_total_fees": "0",
+                "validation_total_transaction_cost": str(total_cost),
+                "validation_rebalance_count": "0",
+                "validation_max_drawdown": str(max(-net_return, 0.0)),
+                "validation_final_value": str(final_value),
+                "validation_fee_to_transaction_cost_ratio": "0",
+            }
+        )
+    return rows
 
 
 def evaluate_pool(
@@ -234,10 +343,26 @@ def evaluate_pool(
                 remove_gas_usd=remove_gas_usd,
             )
         ),
+        *(
+            ("passive_static_lp_closed", name, params)
+            for name, params in static_lp_closed_configs(
+                initial_capital_usd=experiment.initial_capital_usd,
+                mint_gas_usd=mint_gas_usd,
+                remove_gas_usd=remove_gas_usd,
+            )
+        ),
     ]
     result_rows = [
         *no_position_rows(entry_states),
         *hold_cngn_rows(entry_states),
+        *routed_hold_cngn_rows(
+            events,
+            experiment.pool_config,
+            spec,
+            initial_capital_usd=experiment.initial_capital_usd,
+            gas_cost_usd=max(mint_gas_usd or 0.0, remove_gas_usd or 0.0),
+            max_windows=max_windows,
+        ),
         *_simulate_config_rows(
             events,
             experiment.pool_config,
@@ -325,6 +450,36 @@ def _simulate_config_rows(
                 }
             )
     return rows
+
+
+def _route_cost(
+    *,
+    event: Event,
+    pool_config: PoolConfig,
+    params: BacktestParams,
+    notional_usd: float,
+    action: str,
+    direction: str,
+) -> object:
+    current_price = _event_cngn_price(event, pool_config)
+    current_tick = getattr(event, "tick", 0)
+    return _swap_cost_breakdown(
+        action,
+        notional_usd,
+        _event_liquidity(event, _build_pool_state([]), current_tick),
+        _event_pool_fee_rate(event, pool_config),
+        current_tick,
+        params,
+        direction=direction,
+        current_price=current_price,
+        current_sqrt_price_x96=_event_sqrt_price_x96(event, current_tick),
+        pool_config=pool_config,
+        exact_output=False,
+    )
+
+
+def _is_swap_event(event: Event) -> bool:
+    return getattr(event, "event_type", "swap") == "swap"
 
 
 def _baseline_row(
