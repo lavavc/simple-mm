@@ -5,8 +5,16 @@ from datetime import datetime, timedelta
 from research.backtester.clmm_math import tick_to_sqrt_price_x96
 from research.backtester.data import Event, V4Event
 from research.backtester.params import BacktestParams, TransactionCostModel
-from research.backtester.position_runtime import create_sleeve_runtime
-from research.backtester.simulator import UNISWAP_BASE_POOL, simulate_pool
+from research.backtester.position_runtime import (
+    SleeveSettlement,
+    create_sleeve_runtime,
+)
+from research.backtester.simulator import (
+    UNISWAP_BASE_POOL,
+    PortfolioComposition,
+    TransactionCostBreakdown,
+    simulate_pool,
+)
 
 
 def _swap(*, minute: int, tick: int, amount0: float, amount1: float) -> V4Event:
@@ -129,3 +137,127 @@ def test_exit_decision_does_not_mutate_wallet_or_position() -> None:
     assert exit_cost.action == "exit"
     assert runtime.wallet == wallet_before
     assert runtime.position == position_before
+
+
+def _runtime_ready_to_enter():
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+    for event in events[:3]:
+        assert isinstance(event, V4Event)
+        active_liquidity, price_is_valid = runtime._observe_swap(event)
+        assert price_is_valid
+        if runtime.ewma.ready:
+            return runtime, event, active_liquidity
+        runtime.previous_swap_time = event.block_time
+    raise AssertionError("fixture did not make EWMA ready")
+
+
+def _runtime_ready_to_exit():
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+    runtime.run(events[:3])
+    exit_event = events[3]
+    assert isinstance(exit_event, V4Event)
+    active_liquidity, price_is_valid = runtime._observe_swap(exit_event)
+    assert price_is_valid
+    runtime._accrue_position_fee(exit_event, active_liquidity)
+    return runtime, exit_event, active_liquidity
+
+
+def test_entry_proposal_is_pure_and_application_mutates_runtime() -> None:
+    runtime, event, active_liquidity = _runtime_ready_to_enter()
+    wallet_before = deepcopy(runtime.wallet)
+
+    action = runtime.propose_entry(event, active_liquidity)
+
+    assert action is not None
+    assert action.kind == "enter"
+    assert runtime.wallet == wallet_before
+    assert runtime.position is None
+
+    runtime.apply_action(action)
+
+    assert runtime.wallet == action.wallet_after
+    assert runtime.position == action.position_after
+    assert runtime.position is not None
+
+
+def test_exit_proposal_is_pure_and_application_records_episode_once() -> None:
+    runtime, event, active_liquidity = _runtime_ready_to_exit()
+    wallet_before = deepcopy(runtime.wallet)
+    position_before = deepcopy(runtime.position)
+    episode_count = len(runtime.result.episodes)
+
+    action = runtime.propose_exit(event, active_liquidity)
+
+    assert action is not None
+    assert action.kind == "exit"
+    assert runtime.wallet == wallet_before
+    assert runtime.position == position_before
+
+    runtime.apply_action(action)
+
+    assert runtime.wallet == action.wallet_after
+    assert runtime.position is None
+    assert len(runtime.result.episodes) == episode_count + 1
+
+
+def test_applying_stale_action_after_wallet_mutation_fails_loudly() -> None:
+    runtime, event, active_liquidity = _runtime_ready_to_enter()
+    action = runtime.propose_entry(event, active_liquidity)
+    assert action is not None
+    runtime.wallet = replace(runtime.wallet, stable_usd=runtime.wallet.stable_usd - 1.0)
+
+    try:
+        runtime.apply_action(action)
+    except ValueError as exc:
+        assert "wallet" in str(exc)
+    else:
+        raise AssertionError("stale action was applied")
+
+
+def test_applying_action_for_another_sleeve_fails_loudly() -> None:
+    runtime, event, active_liquidity = _runtime_ready_to_enter()
+    action = runtime.propose_entry(event, active_liquidity)
+    assert action is not None
+    other = create_sleeve_runtime(
+        sleeve_id="other",
+        params=runtime.params,
+        pool_config=runtime.pool_config,
+        capital_usd=500.0,
+    )
+
+    try:
+        other.apply_action(action)
+    except ValueError as exc:
+        assert "sleeve" in str(exc)
+    else:
+        raise AssertionError("foreign action was applied")
+
+
+def test_supplied_settlement_replaces_wallet_and_exit_cost_only() -> None:
+    runtime, event, active_liquidity = _runtime_ready_to_exit()
+    action = runtime.propose_exit(event, active_liquidity)
+    assert action is not None
+    settlement = SleeveSettlement(
+        wallet_after=PortfolioComposition(stable_usd=321.0, cngn_amount=4.0),
+        transaction_cost=TransactionCostBreakdown("exit", gas_cost=7.0),
+    )
+
+    runtime.apply_action(action, settlement)
+
+    assert runtime.wallet == settlement.wallet_after
+    assert runtime.position == action.position_after
+    assert runtime.result.episodes[-1].exit_reason == action.reason
+    assert runtime.result.total_rebalance_cost == settlement.transaction_cost.total
+    assert runtime.result.rebalance_count == 1

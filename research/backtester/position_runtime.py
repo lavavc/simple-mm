@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import Literal
 
 from research.backtester.clmm_math import tick_to_sqrt_price_x96
 from research.backtester.data import BurnEvent, Event, MintEvent, SwapEvent, V4Event
@@ -41,6 +43,27 @@ from research.backtester.simulator import (
 )
 from research.backtester.sizing import DeployFullWallet, EntryContext, SizingPolicy
 from research.backtester.strategy import EWMACalculator
+
+
+@dataclass(frozen=True)
+class SleeveAction:
+    sleeve_id: str
+    kind: Literal["enter", "exit"]
+    event: Event
+    active_liquidity: int
+    cngn_usd_price: float
+    wallet_before: PortfolioComposition
+    wallet_after: PortfolioComposition
+    position_before: VirtualPosition | None
+    position_after: VirtualPosition | None
+    transaction_cost: TransactionCostBreakdown
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class SleeveSettlement:
+    wallet_after: PortfolioComposition
+    transaction_cost: TransactionCostBreakdown
 
 
 @dataclass
@@ -271,25 +294,20 @@ class SleeveRuntime:
         exit_reason: str | None,
         exit_cost: TransactionCostBreakdown,
     ) -> None:
+        action = self._build_exit_action(event, active_liquidity, exit_reason, exit_cost)
+        if action is not None:
+            self.apply_action(action)
+
+    def _build_exit_action(
+        self,
+        event: SwapEvent | V4Event,
+        active_liquidity: int,
+        exit_reason: str | None,
+        exit_cost: TransactionCostBreakdown,
+    ) -> SleeveAction | None:
         if self.position is None or exit_reason is None:
-            return
-        position_value = self.position.value_at_sqrt_price_x96(
-            self.current_sqrt_price_x96,
-            self.current_price,
-            self.pool_config,
-        )
-        _record_episode(
-            self.result,
-            self.position,
-            exit_reason or "rebalance",
-            event.block_time,
-            self.current_price,
-            self.current_tick,
-            position_value,
-            exit_cost,
-            self.pool_config,
-        )
-        self.wallet = _wallet_with_position_removed(
+            return None
+        wallet_after = _wallet_with_position_removed(
             self.wallet,
             self.position,
             self.current_tick,
@@ -297,23 +315,85 @@ class SleeveRuntime:
             self.current_price,
             self.pool_config,
         )
-        self.wallet = _pay_or_unwind_exit_cost(self.wallet, exit_cost, self.current_price)
-        self.result.total_rebalance_cost += exit_cost.total
-        self.result.rebalance_count += 1
-        if self.params.cooldown_minutes > 0:
-            self.cooldown_until_time = event.block_time + timedelta(
-                minutes=self.params.cooldown_minutes
-            )
-        if self.params.cooldown_blocks > 0 and _event_block_number(event) is not None:
-            self.cooldown_until_block = (
-                _event_block_number(event) or 0
-            ) + self.params.cooldown_blocks
-        self.position = None
-        self.pending_defensive_exit_reason = None
-        self.pending_defensive_exit_first_time = None
-        self.pending_defensive_exit_count = 0
+        wallet_after = _pay_or_unwind_exit_cost(wallet_after, exit_cost, self.current_price)
+        return SleeveAction(
+            sleeve_id=self.sleeve_id,
+            kind="exit",
+            event=event,
+            active_liquidity=active_liquidity,
+            cngn_usd_price=self.current_price,
+            wallet_before=deepcopy(self.wallet),
+            wallet_after=wallet_after,
+            position_before=deepcopy(self.position),
+            position_after=None,
+            transaction_cost=exit_cost,
+            reason=exit_reason,
+        )
 
-    def _maybe_enter(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:
+    def propose_exit(
+        self, event: SwapEvent | V4Event, active_liquidity: int
+    ) -> SleeveAction | None:
+        exit_reason, exit_cost = self._exit_decision(event, active_liquidity)
+        return self._build_exit_action(event, active_liquidity, exit_reason, exit_cost)
+
+    def apply_action(
+        self, action: SleeveAction, settlement: SleeveSettlement | None = None
+    ) -> None:
+        if action.sleeve_id != self.sleeve_id:
+            raise ValueError(
+                f"action sleeve {action.sleeve_id!r} does not match runtime sleeve {self.sleeve_id!r}"
+            )
+        if self.wallet != action.wallet_before:
+            raise ValueError("runtime wallet does not match action wallet snapshot")
+        if self.position != action.position_before:
+            raise ValueError("runtime position does not match action position snapshot")
+
+        wallet_after = settlement.wallet_after if settlement is not None else action.wallet_after
+        transaction_cost = (
+            settlement.transaction_cost if settlement is not None else action.transaction_cost
+        )
+        if action.kind == "exit":
+            if action.position_before is None or action.reason is None:
+                raise ValueError("exit action requires a position and reason")
+            position_value = action.position_before.value_at_sqrt_price_x96(
+                self.current_sqrt_price_x96,
+                action.cngn_usd_price,
+                self.pool_config,
+            )
+            _record_episode(
+                self.result,
+                action.position_before,
+                action.reason,
+                action.event.block_time,
+                action.cngn_usd_price,
+                self.current_tick,
+                position_value,
+                transaction_cost,
+                self.pool_config,
+            )
+            self.result.total_rebalance_cost += transaction_cost.total
+            self.result.rebalance_count += 1
+            if self.params.cooldown_minutes > 0:
+                self.cooldown_until_time = action.event.block_time + timedelta(
+                    minutes=self.params.cooldown_minutes
+                )
+            if (
+                self.params.cooldown_blocks > 0
+                and _event_block_number(action.event) is not None
+            ):
+                self.cooldown_until_block = (
+                    _event_block_number(action.event) or 0
+                ) + self.params.cooldown_blocks
+            self.pending_defensive_exit_reason = None
+            self.pending_defensive_exit_first_time = None
+            self.pending_defensive_exit_count = 0
+
+        self.wallet = deepcopy(wallet_after)
+        self.position = deepcopy(action.position_after)
+
+    def propose_entry(
+        self, event: SwapEvent | V4Event, active_liquidity: int
+    ) -> SleeveAction | None:
         in_time_cooldown = (
             self.cooldown_until_time is not None and event.block_time < self.cooldown_until_time
         )
@@ -338,7 +418,7 @@ class SleeveRuntime:
                 self.pool_config,
             )
         ):
-            return
+            return None
         wallet_value = self.wallet.value_usd(self.current_price)
         deploy_target = self.sizing.deployed_capital_usd(
             EntryContext(
@@ -351,7 +431,7 @@ class SleeveRuntime:
         )
         deploy_fraction = min(deploy_target / wallet_value, 1.0) if wallet_value > 0 else 0.0
         if deploy_fraction <= 0:
-            return
+            return None
         deploy_wallet = PortfolioComposition(
             stable_usd=self.wallet.stable_usd * deploy_fraction,
             cngn_amount=self.wallet.cngn_amount * deploy_fraction,
@@ -380,7 +460,7 @@ class SleeveRuntime:
             self.pool_config,
             self.params,
         )
-        if liquidity > 0 and _expected_fee_apr_passes(
+        if liquidity <= 0 or not _expected_fee_apr_passes(
             event,
             self.params,
             liquidity,
@@ -389,22 +469,41 @@ class SleeveRuntime:
             self.previous_swap_time,
             self.pool_config,
         ):
-            self.position = VirtualPosition(
-                tick_lower=tick_lower,
-                tick_upper=tick_upper,
-                liquidity_L=liquidity,
-                entry_price=self.current_price,
-                entry_value=deployed_capital,
-                entry_time=event.block_time,
-                entry_tick=self.current_tick,
-                entry_active_liquidity=active_liquidity,
-                deployed_capital=deployed_capital,
-                entry_transaction_cost=entry_cost,
-            )
-            self.wallet = PortfolioComposition(
-                stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
-                cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
-            )
+            return None
+        position_after = VirtualPosition(
+            tick_lower=tick_lower,
+            tick_upper=tick_upper,
+            liquidity_L=liquidity,
+            entry_price=self.current_price,
+            entry_value=deployed_capital,
+            entry_time=event.block_time,
+            entry_tick=self.current_tick,
+            entry_active_liquidity=active_liquidity,
+            deployed_capital=deployed_capital,
+            entry_transaction_cost=entry_cost,
+        )
+        wallet_after = PortfolioComposition(
+            stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
+            cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
+        )
+        return SleeveAction(
+            sleeve_id=self.sleeve_id,
+            kind="enter",
+            event=event,
+            active_liquidity=active_liquidity,
+            cngn_usd_price=self.current_price,
+            wallet_before=deepcopy(self.wallet),
+            wallet_after=wallet_after,
+            position_before=None,
+            position_after=position_after,
+            transaction_cost=entry_cost,
+            reason=None,
+        )
+
+    def _maybe_enter(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:
+        action = self.propose_entry(event, active_liquidity)
+        if action is not None:
+            self.apply_action(action)
 
     def _record_event_value(self, event: SwapEvent | V4Event) -> None:
         self.result.value_samples.append(
@@ -508,9 +607,12 @@ class SleeveRuntime:
                 continue
             self._roll_daily_return(event)
             self._accrue_position_fee(event, active_liquidity)
-            exit_reason, exit_cost = self._exit_decision(event, active_liquidity)
-            self._apply_exit(event, active_liquidity, exit_reason, exit_cost)
-            self._maybe_enter(event, active_liquidity)
+            exit_action = self.propose_exit(event, active_liquidity)
+            if exit_action is not None:
+                self.apply_action(exit_action)
+            entry_action = self.propose_entry(event, active_liquidity)
+            if entry_action is not None:
+                self.apply_action(entry_action)
             if self.idle_apr > 0 and self.previous_swap_time is not None:
                 elapsed_years = (event.block_time - self.previous_swap_time).total_seconds() / (
                     365.25 * 86400
