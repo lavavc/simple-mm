@@ -59,6 +59,7 @@ class SleeveAction:
     position_after: VirtualPosition | None
     transaction_cost: TransactionCostBreakdown
     reason: str | None
+    variable_cost_asset: Literal["stable", "cngn"] | None
     inventory_swap_direction: Literal["stable_to_cngn", "cngn_to_stable"] | None = None
     inventory_swap_notional_usd: float = 0.0
 
@@ -335,6 +336,7 @@ class SleeveRuntime:
                 "cngn_to_stable" if exit_cost.swap_notional_usd > 0 else None
             ),
             inventory_swap_notional_usd=exit_cost.swap_notional_usd,
+            variable_cost_asset="stable" if exit_cost.swap_notional_usd > 0 else None,
         )
 
     def propose_exit(
@@ -496,6 +498,17 @@ class SleeveRuntime:
             stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
             cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
         )
+        required_cngn_usd = _cngn_notional_usd(
+            *position_after.amounts_at_sqrt_price_x96(self.current_sqrt_price_x96),
+            self.current_price,
+            self.pool_config,
+        )
+        inventory_direction: Literal["stable_to_cngn", "cngn_to_stable"] | None = (
+            "stable_to_cngn"
+            if entry_cost.swap_notional_usd > 0
+            and deploy_wallet.cngn_amount * self.current_price < required_cngn_usd
+            else "cngn_to_stable" if entry_cost.swap_notional_usd > 0 else None
+        )
         return SleeveAction(
             sleeve_id=self.sleeve_id,
             kind="enter",
@@ -508,18 +521,13 @@ class SleeveRuntime:
             position_after=position_after,
             transaction_cost=entry_cost,
             reason=None,
-            inventory_swap_direction=(
-                "stable_to_cngn"
-                if entry_cost.swap_notional_usd > 0
-                and deploy_wallet.cngn_amount * self.current_price
-                < _cngn_notional_usd(
-                    *position_after.amounts_at_sqrt_price_x96(self.current_sqrt_price_x96),
-                    self.current_price,
-                    self.pool_config,
-                )
-                else "cngn_to_stable" if entry_cost.swap_notional_usd > 0 else None
-            ),
+            inventory_swap_direction=inventory_direction,
             inventory_swap_notional_usd=entry_cost.swap_notional_usd,
+            variable_cost_asset=(
+                "stable"
+                if inventory_direction == "stable_to_cngn"
+                else "cngn" if inventory_direction == "cngn_to_stable" else None
+            ),
         )
 
     def _maybe_enter(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:

@@ -167,6 +167,26 @@ def _allocated_cost(
     )
 
 
+def _refund_variable_cost(
+    wallet: PortfolioComposition,
+    action: SleeveAction,
+    refund_usd: float,
+) -> PortfolioComposition:
+    if refund_usd <= 0:
+        return wallet
+    if action.variable_cost_asset == "stable":
+        return PortfolioComposition(
+            stable_usd=wallet.stable_usd + refund_usd,
+            cngn_amount=wallet.cngn_amount,
+        )
+    if action.variable_cost_asset == "cngn":
+        return PortfolioComposition(
+            stable_usd=wallet.stable_usd,
+            cngn_amount=wallet.cngn_amount + refund_usd / action.cngn_usd_price,
+        )
+    raise ValueError("variable cost refund requires an explicit payment asset")
+
+
 def _settle_actions(
     actions: Sequence[SleeveAction],
     runtimes: Mapping[str, SleeveRuntime],
@@ -213,10 +233,22 @@ def _settle_actions(
             else 0.0
         )
         cost = _allocated_cost(action, aggregate, fraction)
-        cost_refund = action.transaction_cost.total - cost.total
-        wallet_after = PortfolioComposition(
-            stable_usd=action.wallet_after.stable_usd + cost_refund,
-            cngn_amount=action.wallet_after.cngn_amount,
+        original_variable_cost = (
+            action.transaction_cost.swap_fee_cost
+            + action.transaction_cost.price_impact_cost
+            + action.transaction_cost.slippage_cost
+            + action.transaction_cost.latency_slippage_cost
+        )
+        allocated_variable_cost = (
+            cost.swap_fee_cost
+            + cost.price_impact_cost
+            + cost.slippage_cost
+            + cost.latency_slippage_cost
+        )
+        wallet_after = _refund_variable_cost(
+            action.wallet_after,
+            action,
+            original_variable_cost - allocated_variable_cost,
         )
         runtimes[action.sleeve_id].apply_action(
             action, SleeveSettlement(wallet_after=wallet_after, transaction_cost=cost)
