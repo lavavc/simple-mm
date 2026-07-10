@@ -18,6 +18,7 @@ from research.backtester.simulator import (
     TransactionCostBreakdown,
     VirtualPosition,
     _calculate_entry_range,
+    _cngn_notional_usd,
     _cngn_to_native_price,
     _defensive_exit_mark,
     _defensive_exit_quality_passes,
@@ -58,6 +59,8 @@ class SleeveAction:
     position_after: VirtualPosition | None
     transaction_cost: TransactionCostBreakdown
     reason: str | None
+    inventory_swap_direction: Literal["stable_to_cngn", "cngn_to_stable"] | None = None
+    inventory_swap_notional_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -328,6 +331,10 @@ class SleeveRuntime:
             position_after=None,
             transaction_cost=exit_cost,
             reason=exit_reason,
+            inventory_swap_direction=(
+                "cngn_to_stable" if exit_cost.swap_notional_usd > 0 else None
+            ),
+            inventory_swap_notional_usd=exit_cost.swap_notional_usd,
         )
 
     def propose_exit(
@@ -341,7 +348,8 @@ class SleeveRuntime:
     ) -> None:
         if action.sleeve_id != self.sleeve_id:
             raise ValueError(
-                f"action sleeve {action.sleeve_id!r} does not match runtime sleeve {self.sleeve_id!r}"
+                f"action sleeve {action.sleeve_id!r} does not match runtime sleeve "
+                f"{self.sleeve_id!r}"
             )
         if self.wallet != action.wallet_before:
             raise ValueError("runtime wallet does not match action wallet snapshot")
@@ -390,6 +398,8 @@ class SleeveRuntime:
 
         self.wallet = deepcopy(wallet_after)
         self.position = deepcopy(action.position_after)
+        if settlement is not None and action.kind == "enter" and self.position is not None:
+            self.position.entry_transaction_cost = transaction_cost
 
     def propose_entry(
         self, event: SwapEvent | V4Event, active_liquidity: int
@@ -498,6 +508,18 @@ class SleeveRuntime:
             position_after=position_after,
             transaction_cost=entry_cost,
             reason=None,
+            inventory_swap_direction=(
+                "stable_to_cngn"
+                if entry_cost.swap_notional_usd > 0
+                and deploy_wallet.cngn_amount * self.current_price
+                < _cngn_notional_usd(
+                    *position_after.amounts_at_sqrt_price_x96(self.current_sqrt_price_x96),
+                    self.current_price,
+                    self.pool_config,
+                )
+                else "cngn_to_stable" if entry_cost.swap_notional_usd > 0 else None
+            ),
+            inventory_swap_notional_usd=entry_cost.swap_notional_usd,
         )
 
     def _maybe_enter(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:
