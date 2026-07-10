@@ -1,5 +1,9 @@
 # The Open-Source Market Maker for African Stablecoins
 
+Archived source outline. This is not part of the July 2026 two-article sequence.
+Keep it as source material for a later systems article after repo cleanup and
+live-execution evidence are ready.
+
 ## Working Title
 
 The Open-Source Market Maker for African Stablecoins
@@ -93,6 +97,14 @@ The article should encourage:
 - standardizing markout labels for local stablecoin markets
 - treating failed hypotheses as useful public infrastructure
 
+Use the live LP EDA as the concrete proof of why this discipline matters. The
+same V4 pools can look healthy in aggregate while our own LP addresses end close
+to flat or slightly negative. Owner-level accounting changes the story: Base had
+8 owners in the exported ledger, BSC had only 2, and the apparent aggregate BSC
+profit came from another large owner rather than our in-house address. That is
+exactly the kind of distinction open-source market-making infrastructure should
+make legible.
+
 ### 8. Results slot for the finished article
 
 When live or simulated execution evidence is ready, add:
@@ -103,6 +115,8 @@ When live or simulated execution evidence is ready, add:
 - half-open/recovery incident count and examples
 - realized versus expected profit by route family
 - gas and rebalancing penalty contribution to route selection
+- live LP owner-level accounting: aggregate pool ledger versus in-house LP
+  addresses, average/median owner PnL, and tail outcomes
 
 ## Likely Structure
 
@@ -112,7 +126,8 @@ When live or simulated execution evidence is ready, add:
 4. Inventory is local, not wishful.
 5. Execution is where stale assumptions go to die.
 6. Recovery is part of the product.
-7. Why this should be open-source.
+7. Accounting is part of the product.
+8. Why this should be open-source.
 
 ## Evidence And Repo Anchors
 
@@ -126,6 +141,7 @@ When live or simulated execution evidence is ready, add:
 - `engine/arb/execution/preflight.py`
 - `engine/arb/execution/recovery.py`
 - `engine/arb/risk/inventory.py`
+- `research/articles/archive/dex-lp-live-equity-curves-notes.md`
 - `tests/test_router.py`
 - `tests/test_cex_dex_execution.py`
 - `tests/test_dex_dex_execution.py`
@@ -137,4 +153,5 @@ When live or simulated execution evidence is ready, add:
 - Do not imply bridge-based DEX-DEX execution; the current DEX-DEX model is delta-balance with existing venue inventory.
 - Do not hide the operational risk around API latency, bank-hour redemption, gas, inventory drift, or half-open trades.
 - Do not present open-sourcing as sufficient by itself; the useful artifact is code plus methodology plus data discipline.
-
+- Do not present aggregate pool PnL as our own LP performance without
+  owner-level attribution.
