@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from types import MappingProxyType
 from typing import Literal, Mapping
 
-from research.backtester.params import BacktestParams
+from research.backtester.params import BacktestParams, EntryFilters, TransactionCostModel
 
 FamilyName = Literal["ewma", "paper", "static", "frozen", "directional"]
 
@@ -17,9 +18,17 @@ class SleeveDefinition:
     sleeve_id: str
     family: FamilyName
     config_name: str
-    params: BacktestParams
+    parameter_payload: str
     parameter_fingerprint: str
     source_constructor: str
+
+    @property
+    def params(self) -> BacktestParams:
+        """Materialize an independent mutable parameter object for simulation."""
+        payload = json.loads(self.parameter_payload)
+        payload["entry_filters"] = EntryFilters(**payload["entry_filters"])
+        payload["transaction_costs"] = TransactionCostModel(**payload["transaction_costs"])
+        return BacktestParams(**payload)
 
 
 @dataclass(frozen=True)
@@ -27,7 +36,11 @@ class DirectionalPolicyDefinition:
     sleeve_id: str
     family: Literal["directional"]
     profile: str
-    archetypes: Mapping[str, SleeveDefinition]
+    archetype_membership: tuple[tuple[str, SleeveDefinition], ...]
+
+    @property
+    def archetypes(self) -> Mapping[str, SleeveDefinition]:
+        return MappingProxyType(dict(self.archetype_membership))
 
 
 @dataclass(frozen=True)
@@ -45,17 +58,28 @@ class PortfolioCatalog:
 
     @property
     def family_names(self) -> tuple[str, ...]:
-        return tuple(sorted({sleeve.family for sleeve in self.sleeves}))
+        return tuple(sorted({unit.family for unit in self.allocation_units}))
+
+    @property
+    def allocation_units(
+        self,
+    ) -> tuple[SleeveDefinition | DirectionalPolicyDefinition, ...]:
+        """Return the complete and exclusive set of allocator-facing units."""
+        return self.sleeves + self.directional_policies
 
 
-def parameter_fingerprint(params: BacktestParams) -> str:
-    """Return a stable SHA-256 identity for the complete parameter contract."""
-    serialized = json.dumps(
+def _canonical_parameter_payload(params: BacktestParams) -> str:
+    return json.dumps(
         asdict(params),
         allow_nan=False,
         separators=(",", ":"),
         sort_keys=True,
-    ).encode("utf-8")
+    )
+
+
+def parameter_fingerprint(params: BacktestParams) -> str:
+    """Return a stable SHA-256 identity for the complete parameter contract."""
+    serialized = _canonical_parameter_payload(params).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
 
 
@@ -81,7 +105,8 @@ def build_portfolio_catalog(pool: str, bankroll_usd: float) -> PortfolioCatalog:
         params: BacktestParams,
         source_constructor: str,
     ) -> SleeveDefinition:
-        fingerprint = parameter_fingerprint(params)
+        parameter_payload = _canonical_parameter_payload(params)
+        fingerprint = hashlib.sha256(parameter_payload.encode("utf-8")).hexdigest()
         key = (family, fingerprint)
         existing = by_family_fingerprint.get(key)
         if existing is not None:
@@ -90,12 +115,13 @@ def build_portfolio_catalog(pool: str, bankroll_usd: float) -> PortfolioCatalog:
             sleeve_id=f"{family}:{fingerprint}",
             family=family,
             config_name=config_name,
-            params=params,
+            parameter_payload=parameter_payload,
             parameter_fingerprint=fingerprint,
             source_constructor=source_constructor,
         )
         by_family_fingerprint[key] = sleeve
-        sleeves.append(sleeve)
+        if family != "directional":
+            sleeves.append(sleeve)
         return sleeve
 
     for index, params in enumerate(generate_grid(initial_capital_usd=bankroll_usd)):
@@ -130,21 +156,24 @@ def build_portfolio_catalog(pool: str, bankroll_usd: float) -> PortfolioCatalog:
     profiles = directional_policy_profiles(directional_configs)
     directional_policies: list[DirectionalPolicyDefinition] = []
     for profile, archetype_configs in profiles.items():
-        archetypes = {
-            archetype: add_sleeve(
-                "directional",
-                config.name,
-                config.params,
-                "directional_archetype_configs",
+        archetype_membership = tuple(
+            (
+                archetype,
+                add_sleeve(
+                    "directional",
+                    config.name,
+                    config.params,
+                    "directional_archetype_configs",
+                ),
             )
             for archetype, config in archetype_configs.items()
-        }
+        )
         directional_policies.append(
             DirectionalPolicyDefinition(
-                sleeve_id=f"directional-policy:{profile}",
+                sleeve_id=f"directional:{profile}",
                 family="directional",
                 profile=profile,
-                archetypes=archetypes,
+                archetype_membership=archetype_membership,
             )
         )
 
