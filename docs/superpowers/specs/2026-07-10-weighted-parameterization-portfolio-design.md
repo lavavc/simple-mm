@@ -143,11 +143,11 @@ For each valid pool-local walk-forward window:
 2. Simulate every unique sleeve on the training interval.
 3. Apply eligibility using training data only.
 4. Freeze weights before the validation interval begins.
-5. Simulate each eligible sleeve once on the validation interval from the same
-   causal boundary state.
-6. Preserve each sleeve's costed value or return path, not only its terminal
-   summary metrics.
-7. Aggregate the frozen sleeve paths into family and portfolio paths.
+5. Simulate each allocation rule as one joint multi-position portfolio on the
+   validation interval from the same causal boundary state.
+6. Preserve each sleeve's attributed value or return path inside that joint
+   simulation, not only its terminal summary metrics.
+7. Aggregate the attributed sleeve paths into family and portfolio paths.
 8. Report sleeve, family, portfolio, and comparator results for the same
    validation interval.
 
@@ -156,21 +156,45 @@ or shrinkage constants in that window.
 
 ## Capital Accounting
 
-Each pool has one fixed total bankroll. A sleeve with weight `w` is simulated
-with `w * bankroll`, and its transaction costs, price impact, gas, slippage, and
-failed-transaction assumptions are applied to that sleeve's actual allocated
-capital.
+Each pool has one fixed total bankroll and one portfolio wallet. A sleeve with
+weight `w` receives a capital budget of `w * bankroll`, but all sleeves in an
+allocation rule are simulated together. The joint simulator supports multiple
+simultaneous virtual positions and retains sleeve-level attribution for capital,
+inventory, liquidity, fees, costs, and PnL.
 
 Portfolio value is the sum of sleeve values plus cash. Reported portfolio
 returns must never be computed by averaging independently simulated full-bankroll
 returns when fixed dollar costs or nonlinear price impact make that operation
 invalid.
 
-The initial experiment treats sleeves as virtual independent positions sharing
-a bankroll but not changing the historical pool state. It must disclose this
-partial-equilibrium assumption. Aggregate active-liquidity share is checked
-against existing per-position limits; a window fails closed if simultaneous
-virtual sleeves would violate a declared aggregate limit.
+At every historical swap, the joint simulator finds every synthetic position
+whose range is active. If historical active liquidity is `L_h` and the active
+synthetic positions sum to `L_p`, sleeve `i` receives fee share
+`L_i / (L_h + L_p)`. Total synthetic fee share is therefore
+`L_p / (L_h + L_p)` and cannot exceed 100%. The denominator includes every
+simultaneously active portfolio position, regardless of family or address-level
+attribution.
+
+Portfolio entry, exit, and rebalance inventory swaps are also joint. Actions at
+the same timestamp are netted by token direction before execution so two sleeves
+do not pay simulated spread and impact by trading against each other. The net
+external inventory swap is costed against historical active liquidity plus
+synthetic liquidity already active at that timestamp. Gas and other
+position-specific costs remain attributed to the actions that caused them.
+
+The historical swap stream and observed sqrt-price path remain exogenous. The
+experiment does not rewrite historical user swaps or claim that the market would
+have followed the same price path after adding our liquidity. This is a
+small-participant, partial-equilibrium assumption. It is acceptable only while
+aggregate synthetic active-liquidity share remains below a prespecified cap. The
+cap applies to `L_p / (L_h + L_p)`, not separately to each position, and the
+window fails closed when it is breached.
+
+A fully endogenous counterfactual would need to replay raw signed order flow
+through a pool containing the synthetic positions, model arbitrage that restores
+the external price, and allow subsequent order flow to respond to changed
+execution. That experiment is outside this branch and cannot be recovered by
+simply mutating the recorded pool state.
 
 Reallocation occurs only at walk-forward boundaries. When weights change, the
 experiment records the cost of closing the old sleeve allocation and opening the
@@ -319,8 +343,8 @@ The implementation should keep four responsibilities separate:
 
 1. A catalog module builds stable sleeve identities from existing constructors.
 2. An allocation module implements pure eligibility and frozen-weight rules.
-3. A portfolio evaluator composes costed sleeve paths under shared-bankroll
-   accounting.
+3. A joint portfolio evaluator owns the shared wallet, simultaneous positions,
+   fee dilution, net inventory execution, and sleeve-level attribution.
 4. A CLI orchestrates pool runs and writes reports.
 
 Pure allocation logic must not import `engine/api/`, concrete venue adapters, or
@@ -339,6 +363,13 @@ Tests must cover:
 - 35% family and 10% sleeve caps with residual cash;
 - 100% cash when no sleeve qualifies;
 - shared-bankroll arithmetic with fixed dollar costs;
+- overlapping positions divide one historical fee pool using
+  `L_i / (L_h + sum(L_active))`;
+- simultaneous opposing inventory requirements are netted before external
+  execution;
+- portfolio execution impact includes already-active synthetic liquidity;
+- aggregate synthetic liquidity share fails closed above its cap even when each
+  individual sleeve is below its own cap;
 - boundary reallocation costs;
 - aggregate liquidity-limit failure;
 - Optional zero values preserved as meaningful values;
