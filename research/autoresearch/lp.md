@@ -4,11 +4,12 @@
 
 Improve Uniswap V4 LP range, sizing, and rebalance policy while preserving package boundaries: LP decisions are venue-local and must not depend on arb internals.
 
-Current research scope is DEX-only. Historical Quidax coverage is not yet
-sufficient for CEX-label, DEX-premium, or Fair Value hypotheses, so those are
-parked until the data exists. Near-term LP optimization should use only
-venue-local pool history, LP ledger episodes, receipt/gas sidecars, and DEX-only
-cone/stress features.
+Current research scope is closed as diagnostic DEX-only evidence. Historical
+Quidax coverage is top-book only, Binance `USDTNGN` does not overlap the 2026
+pool windows, and the one-pass Bybit P2P check did not produce historical
+coverage for the relevant validation edges. The current LP branch should
+therefore preserve its Base/BSC diagnostic findings without promoting live LP
+behavior.
 
 ## Current Live Design
 
@@ -43,6 +44,10 @@ Implemented:
 - paper LP episode feature export with receipt-backed native gas fields
 - frozen-family flow-gated LP harness with no-position, static LP, and
   hold-cNGN baselines
+- directional paper LP harness with route-aware profiles, strict QTS gates, and
+  LP-versus-static-versus-hold attribution
+- fail-closed external-reference cNGN inventory comparator hooks in the
+  directional LP harness
 
 Known limitations:
 
@@ -56,6 +61,13 @@ Known limitations:
 - frozen-family hold-cNGN now has both pool-mark and pool-routed variants, but
   the routed variant is a harsh DEX-only path rather than a realistic CEX or
   external inventory route
+- Binance `USDTNGN` spot data does not overlap the 2026 Uniswap v4 pool window,
+  so the external-reference comparator is implemented but not yet populated with
+  a usable non-pool mark series
+- local Bybit P2P coverage is too short for the strict Base validation edges:
+  171 rows from `2026-06-19T12:26:49.707000+00:00` through
+  `2026-06-20T01:09:16.620000+00:00`, covering `0/8` required strict
+  start/end marks within 3600 seconds
 
 ## Research Discipline
 
@@ -107,10 +119,34 @@ Stress-conditioned hypotheses to test:
 
 Keep swap-count walk-forward windows for primary selection. Add calendar stress slices only as diagnostics for regime behavior and failure modes.
 
-## Next Implementation Candidates
+## Research Closeout
 
 Latest DEX-only rerun status is tracked in
 `research/autoresearch/dex-only-rerun-status.md`.
+
+Closeout decision: DEX LP remains diagnostic, not deployable.
+
+What survives:
+
+- Base has a sparse pool-internal directional regime worth preserving:
+  `upside_tight_v1` under `gate_strict_qts_20_25` returns +1.039% across four
+  active windows, worst +0.118%, 100.0% positive, and +0.228 percentage points
+  versus pool-mark hold.
+- BSC rejects cross-pool generalization: the same strict QTS 20/25 gate returns
+  -1.272% across seven windows, worst -0.842%, 14.3% positive, and -1.602
+  percentage points versus hold.
+- The external-reference comparator is implemented and fail-closed. It should be
+  reused when genuinely new timestamped non-pool cNGN marks exist.
+
+What does not survive:
+
+- No full-grid rank-1 DEX LP stream is deployable after costed validation.
+- H12 capacity curves and dynamic sizing are not final experiments until an
+  accepted non-pool comparator exists.
+- The Base slice is not live LP alpha. It is a useful market-structure
+  diagnostic and a test harness for future data.
+
+Completed path:
 
 1. Run the full DEX-only extended walk-forward without `MAX_WINDOWS`, with H12
    still disabled until the winner set is re-frozen or rejected. Completed
@@ -122,19 +158,28 @@ Latest DEX-only rerun status is tracked in
    family pass in `research/autoresearch/flow-gated-cngn-lp-plan.md`; Base is
    conditionally positive, but not promotable because static LP and hold-cNGN
    baselines explain too much of the result.
-3. Keep H12 blocked. First-pass end-of-window static LP close/unwind costs,
-   pool-routed hold-cNGN costs, and strict Base active-window attribution are
-   implemented. The attribution shows no active paper-exit edge over static LP
-   and only a 0.0066 percentage point mark edge over pool-mark hold.
-4. Add a realistic non-pool cNGN inventory comparator, then rerun the same
-   strict active-window attribution. QTS overlays remain diagnostic until they
-   beat the strict gate and the relevant hold baseline after costs.
-5. Run H12 capacity curves only on accepted frozen configs, or explicitly label
+3. Keep H12 blocked. Directional paper LP now has one Base-only DEX-internal
+   slice worth preserving: `upside_tight_v1` under `gate_strict_qts_20_25`
+   returns +1.039% across four active windows, worst +0.118%, and +0.228
+   percentage points versus pool-mark hold. This is still too sparse and too
+   internally marked for promotion. The same strict QTS gates reject BSC.
+4. Source a realistic non-pool cNGN inventory comparator, then rerun strict
+   active-window attribution through the implemented external-reference hooks.
+   Completed 2026-07-10 as a rejection: Binance has no overlap; Bybit current
+   ads are reachable but not historical; local Bybit covers `0/8` strict Base
+   edge marks within the max-age rule.
+5. Close the current DEX LP branch as a diagnostic result: Base has a promising
+   pool-internal regime slice, but the evidence is insufficient for live LP
+   promotion.
+
+Deferred until new comparator data exists:
+
+1. Run H12 capacity curves only on accepted frozen configs, or explicitly label
    them diagnostic if run before acceptance.
-6. Test dynamic sizing against the best constant-capital policy out of sample.
-7. Expose LP research summaries through API/dashboard views.
-8. Make policy thresholds configurable per venue.
-9. Integrate the policy scaffold into the backtester.
+2. Test dynamic sizing against the best constant-capital policy out of sample.
+3. Expose LP research summaries through API/dashboard views.
+4. Make policy thresholds configurable per venue.
+5. Integrate the policy scaffold into the backtester.
 
 Archive detail:
 

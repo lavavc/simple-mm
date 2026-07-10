@@ -12,11 +12,16 @@ The live engine has three pricing layers in `engine/market/fair_price.py`:
 
 The research pipeline tests candidate estimators before any live behavior changes.
 
-Current status: Fair Price/Quidax hypothesis testing is paused for LP strategy
-work because we do not yet have a historical Quidax sample. Existing collectors
-and markout scripts remain plumbing, not evidence. Until historical Quidax
-coverage exists, LP autoresearch should focus on DEX-only pool-history,
-ledger, and stress-feature tests.
+Current status: Fair Price/Quidax hypothesis testing is closed as diagnostic
+research. We have historical Quidax top-of-book snapshots, but no additional
+Quidax depth, trade, fill, or order-book history is expected. Binance `USDTNGN`
+does not overlap the 2026 Quidax or Uniswap v4 windows, and the one-pass Bybit
+P2P check did not produce historical coverage for the relevant timestamps.
+
+Fair Price research should therefore stop waiting for a promotion-grade label.
+The result is feed-quality and market-structure evidence: Quidax can be studied
+as a manually managed top-book quote surface, but not as a depth-executable
+fair-value target.
 
 ## Current Status
 
@@ -27,19 +32,22 @@ Implemented:
 - Markout export: `research/scripts/export_fair_price_markouts.py`.
 - Feed quality report: `research/scripts/report_fair_price_feed_quality.py`.
 - Markout analyzer: `research/scripts/analyze_fair_price_markouts.py`.
+- Binance/Quidax policy analyzer: `research/scripts/analyze_binance_fair_price.py`.
 - Quidax book features: top-1/top-N imbalance, cNGN/USD pressure, OWA, microprice.
 - DEX context features: previous-or-equal `uni-base_pool` / `uni-bsc_pool` premium versus Quidax executable mid.
 - Walk-forward probability buckets for midpoint and side-specific adverse movement.
 
-Current data caveat: existing Quidax captures do not provide historical coverage
-for rigorous estimator or DEX-premium tests. They validate plumbing and feed
-quality, not strategy hypotheses.
+Current data caveat: existing Quidax captures are top-of-book only. They can
+support quote-cadence, spread, quote-state markout, and managed-surface
+diagnostics. They cannot support depth-walk execution, OWA, microprice,
+imbalance, fill-probability, or realized CEX PnL tests.
 
 DEX context caveat: the markout exporter expects previous-or-equal `uni-base_pool` and `uni-bsc_pool` rows in `price_snapshots`. Those rows must come from the pool-history bridge described in `research/autoresearch/data-methodology-refactor.md`; Quidax and Bybit capture jobs do not create them.
 
 ## Primary Label
 
-Use future CEX executable value, currently Quidax depth-walk value at the tested size:
+The old target was future CEX executable value, ideally Quidax depth-walk value
+at the tested size:
 
 - midpoint label: future executable midpoint
 - buy label: future cost to buy cNGN
@@ -47,18 +55,241 @@ Use future CEX executable value, currently Quidax depth-walk value at the tested
 
 Do not label against DEX mid, blended price, Bybit P2P, or Blockradar.
 
+With no more Quidax depth history and no accepted overlapping external
+reference, split the labels:
+
+- `ExternalReferencePrice`: independent timestamped reference for cNGN/USD or
+  native NGN/USDT, if a future source exists.
+- `QuidaxManagedTopBook`: observed managed bid, ask, and midpoint.
+- `TopBookExecutableProxy`: side-specific top-of-book bid/ask proxy, explicitly
+  size-free and not depth-walk executable.
+
+Promotion claims must use the label name. The current dataset supports
+`QuidaxManagedTopBook` diagnostics only. It must not be described as a
+depth-executable or independent fair-value model.
+
 ## Deferred Hypotheses
 
-1. Quidax depth-adjusted executable price beats ticker mid for 10-120s horizons.
-2. P2P feeds improve slow anchoring at 300-600s, not fast markouts.
-3. DEX divergence is a control feature, not truth.
-4. Side-specific labels beat a symmetric midpoint for rebalancing.
-5. Book imbalance, OWA, and microprice improve short-run direction hit rate.
-6. DEX premium explains LP rebalance outcomes but must not replace CEX labels.
-7. DEX premium cone percentiles explain LP outcomes conditionally, but should not improve CEX executable-label prediction enough to become a label proxy.
-8. Fair Value estimator improvements should be stress-conditioned; improvements that appear only through unstable global parameter jumps should not be promoted.
+No longer testable without Quidax depth:
 
-These hypotheses are deferred until a historical Quidax sample exists.
+- Quidax depth-adjusted executable price beats ticker mid.
+- Book imbalance, OWA, and microprice improve short-run direction hit rate.
+- Side-specific depth-walk labels beat a symmetric midpoint.
+
+No longer testable with currently available data:
+
+1. Quidax top-of-book midpoint is a lagged, manually managed transform of an
+   external Binance or Bybit reference.
+2. Quidax spread width and update latency widen during external-reference moves.
+3. A freshness-aware external anchor explains future Quidax midpoint better than
+   stale Quidax midpoint at 60-600s horizons.
+4. DEX premium versus an external reference explains LP stress and inventory
+   markout better than DEX premium versus Quidax midpoint.
+
+Still defensible as diagnostics:
+
+1. Quidax quote cadence, spread, and top-book markout against its own future
+   managed midpoint.
+2. Quidax/Uniswap v4 overlap as a DEX-context sanity check.
+3. Source-availability and label-discipline reporting for future data
+   collection.
+
+These diagnostics are not realized CEX execution tests.
+
+## Binance Source Check
+
+Status: checked 2026-07-10 after routing traffic through Switzerland.
+
+Binance spot market data is reachable from that network path, and
+`USDTNGN` exists on Binance spot. Current `exchangeInfo` reports:
+
+- symbol: `USDTNGN`
+- base: `USDT`
+- quote: `NGN`
+- status: `BREAK`
+
+The most recent available Binance `USDTNGN` klines are:
+
+- `1m`: last open `2024-03-07T02:59:00+00:00`, close `1518.40000000`
+- `1h`: last open `2024-03-07T02:00:00+00:00`, close `1518.40000000`
+
+This does not line up with the local Uniswap v4 cNGN pool launch. The local
+pool-history replay starts much later:
+
+- Base initialize/swap: `2026-03-04T16:51:45+00:00`
+- BSC initialize: `2026-03-04T16:15:30+00:00`
+- BSC first swap: `2026-03-04T16:24:35+00:00`
+
+So Binance `USDTNGN` was already inactive by almost two years before the local
+Uniswap v4 pools in this dataset. It cannot explain, validate, or replace the
+April-July 2026 Quidax top-book sample.
+
+Implemented source artifacts:
+
+- `research/scripts/fetch_binance_reference.py`
+- `research/data/binance_usdtngn_1m_reference.csv`
+- `research/data/binance_usdtngn_1m_reference_metadata.json`
+- `research/data/binance_fair_price_policy_rows.csv`
+- `research/data/binance_fair_price_report.md`
+
+The overlap fetch for `2026-04-08T11:33:53.112000+00:00` through
+`2026-07-03T08:27:23.088000+00:00` wrote zero Binance reference rows. The
+policy report therefore has 255,846 Quidax rows and 0 Binance-reference
+observations. This is a useful coverage result, not estimator evidence.
+
+## External Anchor Choice
+
+For Fair Price research, prefer Bybit P2P over Uniswap v4 as the external anchor
+when both are available.
+
+Reasoning:
+
+- Uniswap v4 cNGN pools are the DEX surfaces whose stress, premium, LP exposure,
+  and inventory effects we are trying to explain. Using them as the Fair Price
+  truth label would validate against the same market being studied and would
+  make DEX premium circular.
+- Bybit P2P is external to the DEX pools and remains closer to the intended CEX
+  or off-chain USDT/NGN reference role, even though it is an advert-based P2P
+  surface rather than firm executable depth.
+- The local `data/cngn.db` overlap is small: Bybit has 171 rows from
+  `2026-06-19T12:26:49+00:00` to `2026-06-20T01:09:16+00:00`. Joined to Quidax
+  within 15 minutes, there are 1,088 overlapping rows, with median Bybit age
+  about 65.7 seconds and max age about 581 seconds.
+- In that overlap, Quidax cNGN/USD is approximately 16-78 bps above inverse
+  Bybit USDT/NGN, with a median offset around 31 bps.
+
+Conclusion:
+
+- Use Bybit P2P as the external fair-price sanity check and forward-collection
+  anchor.
+- Use Uniswap v4 only as DEX context: premium, pool stress, LP inventory mark,
+  and route-specific comparator.
+- Do not use Uniswap v4 as the primary Fair Price label.
+- Do not treat the current Bybit sample as promotion-grade. It is too short and
+  should be expanded with forward capture before estimator promotion.
+
+## Quidax And Uniswap v4 Overlap Check
+
+Status: checked 2026-07-10.
+
+Artifact:
+
+- `research/data/quidax_uniswap_v4_overlap_report.md`
+- `research/data/quidax_uniswap_v4_overlap_rows.csv`
+
+Method:
+
+- Use the dense `quidax_cngn_usdt.json` top-book series.
+- Match each Uniswap v4 pool feature row to the previous-or-equal Quidax row.
+- Require Quidax source age no greater than 15 minutes.
+- Normalize both prices to `cNGN per USDT`:
+  - Quidax JSON is already in this convention.
+  - Uniswap `raw_sqrt_mid` is inverted as `1 / raw_sqrt_mid`.
+
+Overlap result:
+
+| Pool | Calendar-overlap pool rows | Joined rows <=15m | Median DEX-Quidax bps | p10 bps | p90 bps | Median abs bps | Within 50 bps | Within 100 bps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Base | 718 | 714 | -10.7 | -48.3 | +51.3 | 25.7 | 80.4% | 95.7% |
+| BSC | 2,934 | 2,934 | -7.7 | -40.0 | +49.2 | 21.1 | 88.3% | 99.4% |
+
+Sign convention: negative `DEX-Quidax bps` means Uniswap implies fewer cNGN per
+USDT than Quidax, equivalent to a higher USD-per-cNGN price on Uniswap.
+
+Interpretation:
+
+- Quidax and Uniswap v4 are broadly in line over their overlapping timestamps.
+  Typical gaps are tens of basis points, not percentage points.
+- BSC is slightly tighter than Base in this event-anchored comparison.
+- The tails are still material: observed dislocations reach roughly 160-174 bps
+  in absolute value.
+- This supports using Uniswap v4 as DEX context and LP inventory mark.
+- It still does not make Uniswap v4 a clean Fair Price label, because that would
+  validate the estimator against the same DEX surface whose stress and LP
+  economics are being studied.
+
+## Research Closeout
+
+Closeout decision: Fair Price is a diagnostic result, not a promoted estimator.
+
+The one-pass external reference attempt rejected all currently available
+promotion paths:
+
+- Binance `USDTNGN` is reachable but in `BREAK`; the latest 1m kline opens at
+  `2024-03-07T02:59:00+00:00`, while the local Quidax JSON window is
+  `2026-04-08T11:33:53.112000+00:00` through
+  `2026-07-03T08:27:23.088000+00:00`.
+- The Binance overlap fetch wrote zero reference rows for the 255,846-row
+  Quidax sample.
+- Official Bybit P2P docs expose an online-ad endpoint, not a historical archive.
+- The legacy public Bybit endpoint is reachable for current ads, but local
+  Bybit rows cover only 171 snapshots from
+  `2026-06-19T12:26:49.707000+00:00` through
+  `2026-06-20T01:09:16.620000+00:00`.
+- Bank, CBN, FMDQ/NAFEM, and fintech quote APIs are useful for slower context,
+  but not for 60-600 second fair-price labels or LP edge marks.
+
+Allowed conclusion:
+
+- Quidax top-book data is useful for quote-cadence, spread, self-markout, and
+  managed-surface analysis.
+- Quidax top-book data is not enough for depth-walk execution, fill-probability,
+  or realized CEX PnL claims.
+- Uniswap v4 remains DEX context and LP inventory mark, not Fair Price truth.
+- Bybit P2P remains the best forward external anchor, but only if a new capture
+  produces dense, timestamped overlap.
+
+Rejected conclusion:
+
+- Do not claim Fair Price is solved.
+- Do not claim Binance, Bybit, Quidax, or Uniswap supplies an accepted
+  promotion-grade label for the current historical windows.
+- Do not promote `ExecutableFairPrice` from this dataset.
+
+Implementation status:
+
+- `research/scripts/analyze_binance_fair_price.py` now builds the
+  Quidax/Binance as-of table and policy report from files.
+- The Quidax input is the existing top-of-book JSON shape with `ts`, `bid`,
+  `ask`, `mid`, and optional `spread_bps`.
+- The Binance/reference input can be JSON or CSV. It needs `timestamp_ms` or
+  `ts`, plus one of `reference_price`, `price`, `mid`, `binance_reference`,
+  `ngn_per_usdt`, or `usdt_ngn`.
+- The report labels future Quidax managed top-of-book midpoint only. It does
+  not test Quidax depth-walk execution.
+
+Historical command if a future timestamped external reference file becomes
+available:
+
+```bash
+python3 research/scripts/analyze_binance_fair_price.py \
+  --quidax-json quidax_cngn_usdt.json \
+  --binance-reference research/data/binance_reference.csv \
+  --out-csv research/data/binance_fair_price_policy_rows.csv \
+  --out-report research/data/binance_fair_price_report.md \
+  --horizons 60,120,300,600 \
+  --max-reference-age-seconds 3600 \
+  --max-label-lag-seconds 60
+```
+
+Historical readout if a future overlapping external reference is supplied:
+
+- If `reference_price` has lower short-horizon error than `current_quidax_mid`,
+  the external source is a better anchor for quote freshness.
+- If the edge appears only when reference age is large or labels are sparse,
+  keep the result as feed-quality evidence rather than estimator evidence.
+- If Quidax offsets and spread widen after external-reference moves, treat
+  Quidax as a managed quote surface and avoid using it as the Fair Price truth
+  label.
+
+Rejected paths:
+
+- Do not wait for Quidax depth history.
+- Do not infer depth-walk execution from top-of-book rows.
+- Do not use future Quidax midpoint alone as market truth, because Quidax is a
+  manually managed quote surface tied to Binance.
+- Do not promote DEX premium as the Fair Price label. DEX remains explanatory
+  context and LP stress context.
 
 ## DEX Pool Context Requirements
 

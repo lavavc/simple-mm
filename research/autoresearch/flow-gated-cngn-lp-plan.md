@@ -555,3 +555,346 @@ Build or source a non-pool cNGN inventory comparator, then rerun the same
 strict active-window attribution. Do not promote H12 or dynamic sizing until LP
 beats that comparator or the strategy is explicitly reframed as a pool-route
 execution hedge rather than an LP alpha.
+
+## Task 5 Directional-Paper LP Follow-Up
+
+Status: first pass completed 2026-07-02.
+
+Implemented:
+
+- `research/scripts/evaluate_directional_paper_lp.py`
+- `research/tests/test_evaluate_directional_paper_lp.py`
+- reduced directional archetype configs for `upside_capture`,
+  `dip_accumulator`, and `fee_box`
+- causal routing rules over entry-state, flow-cone, fee/volume-cone, and QTS
+  markout fields
+- routed-policy, component-archetype, static LP, hold-mark, and no-position
+  rows in one window-result table
+- directional attribution rows with down-window deltas and missing-comparator
+  failures
+
+Generated outputs:
+
+- `research/results/flow_gated_lp/uni_base/directional_paper_window_results.csv`
+- `research/results/flow_gated_lp/uni_base/directional_paper_gate_summary.csv`
+- `research/results/flow_gated_lp/uni_base/directional_paper_attribution.csv`
+- `research/results/flow_gated_lp/uni_base/directional_paper_report.md`
+- `research/results/flow_gated_lp/uni_bsc/directional_paper_window_results.csv`
+- `research/results/flow_gated_lp/uni_bsc/directional_paper_gate_summary.csv`
+- `research/results/flow_gated_lp/uni_bsc/directional_paper_attribution.csv`
+- `research/results/flow_gated_lp/uni_bsc/directional_paper_report.md`
+
+Run command:
+
+```bash
+python3 research/scripts/evaluate_directional_paper_lp.py --pool all
+```
+
+Verification:
+
+```bash
+pytest research/tests/test_evaluate_directional_paper_lp.py research/tests/test_evaluate_flow_gated_lp.py research/tests/test_evaluate_frozen_family_lp.py -q
+python3 -m ruff check research/scripts/evaluate_directional_paper_lp.py research/tests/test_evaluate_directional_paper_lp.py
+python3 -m py_compile research/scripts/evaluate_directional_paper_lp.py
+python3 research/scripts/evaluate_directional_paper_lp.py --pool all
+```
+
+Result: 19 focused tests passed; ruff passed; py_compile passed; the full
+directional harness wrote Base and BSC outputs.
+
+Base route summary:
+
+| Archetype | Windows |
+| --- | ---: |
+| `upside_capture` | 4 |
+| `dip_accumulator` | 1 |
+| `fee_box` | 1 |
+| `no_position` | 20 |
+
+Base directional-active result:
+
+| Comparator | Active windows | Sum return | Worst return | Leave-one-out min | Fee/cost ratio | Active minus hold |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| best static LP | 6 | +1.002% | +0.027% | +0.638% | 2.304 | +0.069 percentage points |
+| directional routed policy | 6 | +0.940% | -0.009% | +0.536% | 1.299 | +0.0068 percentage points |
+| hold-cNGN, pool mark | 6 | +0.933% | -0.390% | +0.247% | n/a | baseline |
+| no-position | 6 | 0.000% | 0.000% | 0.000% | n/a | -0.933 percentage points |
+
+BSC directional-active result:
+
+| Comparator | Active windows | Sum return | Worst return | Leave-one-out min | Fee/cost ratio | Active minus hold |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hold-cNGN, pool mark | 11 | +1.857% | -0.303% | +1.601% | n/a | baseline |
+| directional routed policy | 11 | -0.897% | -0.842% | -1.682% | 0.430 | -2.754 percentage points |
+| no-position | 11 | 0.000% | 0.000% | 0.000% | n/a | -1.857 percentage points |
+
+Interpretation:
+
+- The reduced directional family is now reproducible and causal, but it is not
+  promotable. Base directional routing beats no-position and barely beats
+  pool-mark hold on the six routed windows, but it loses to the best static LP
+  comparator and has one negative active window.
+- The strict sign-cone view is slightly cleaner for Base: routed directional LP
+  sums to +0.951% across five active windows, versus +0.829% for the best
+  static LP and +0.822% for hold. That result is still too thin for promotion
+  because the full directional route admits an extra weak window and the edge is
+  small.
+- BSC remains a falsification pool. Directional routing is negative under the
+  active route and strict sign-cone gates while hold-cNGN is positive, so the
+  Base result should not be generalized cross-pool.
+- The down-window attribution is useful but not yet decisive. Base routed LP
+  avoids some hold-mark downside in negative price windows, but the fee/range
+  split is inconsistent and the static LP comparator is still competitive.
+
+Updated next step:
+
+Keep H12 blocked. The next useful research branch is either a stricter Base
+directional route that refuses the extra weak directional-active window, or a
+realistic non-pool cNGN inventory comparator that tests whether LP exposure is
+better than simply owning cNGN when the causal signal is active.
+
+## Task 6 Directional Fixed-Family Expansion
+
+Status: first pass completed 2026-07-02.
+
+Implemented:
+
+- five route-aware policy profiles in `directional_archetype_configs()`
+- 15 total directional shapes: one `upside_capture`, `dip_accumulator`, and
+  `fee_box` shape per profile
+- routed-policy rows for each profile, so the gate summary compares complete
+  predeclared route policies rather than validation-oracle per-window choices
+- component rows for all 15 shapes, so shape failures can be inspected
+  separately from routing failures
+
+Policy profiles:
+
+- `balanced_v1`
+- `upside_wide_v1`
+- `upside_tight_v1`
+- `dip_wide_v1`
+- `fee_tight_v1`
+
+Expanded Base directional-active result:
+
+| Comparator | Active windows | Sum return | Worst return | Leave-one-out min | Fee/cost ratio | Active minus hold |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `upside_tight_v1` routed policy | 6 | +1.028% | -0.009% | +0.620% | 1.622 | +0.095 percentage points |
+| best static LP | 6 | +1.002% | +0.027% | +0.638% | 2.304 | +0.069 percentage points |
+| hold-cNGN, pool mark | 6 | +0.933% | -0.390% | +0.247% | n/a | baseline |
+| no-position | 6 | 0.000% | 0.000% | 0.000% | n/a | -0.933 percentage points |
+
+Expanded Base strict sign-cone result:
+
+| Comparator | Active windows | Sum return | Worst return | Leave-one-out min | Fee/cost ratio | Active minus hold |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `upside_tight_v1` routed policy | 5 | +1.039% | 0.000% | +0.631% | 1.471 | +0.217 percentage points |
+| best static LP | 5 | +0.829% | +0.044% | +0.450% | 1.868 | +0.0065 percentage points |
+| hold-cNGN, pool mark | 5 | +0.822% | -0.390% | +0.136% | n/a | baseline |
+| no-position | 5 | 0.000% | 0.000% | 0.000% | n/a | -0.822 percentage points |
+
+Expanded BSC directional-active result:
+
+| Comparator | Active windows | Sum return | Worst return | Leave-one-out min | Fee/cost ratio | Active minus hold |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hold-cNGN, pool mark | 11 | +1.857% | -0.253% | +0.155% | n/a | baseline |
+| best static LP | 11 | +0.264% | -0.186% | +0.0004% | 1.303 | -1.592 percentage points |
+| `fee_tight_v1` routed policy | 11 | -0.876% | -0.842% | -1.661% | 0.432 | -2.733 percentage points |
+| no-position | 11 | 0.000% | 0.000% | 0.000% | n/a | -1.857 percentage points |
+
+Profile ranking on Base directional-active windows:
+
+| Profile | Sum return | Worst return | Positive window rate | Fee/cost ratio | Active minus hold |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `upside_tight_v1` | +1.028% | -0.009% | 66.7% | 1.622 | +0.095 percentage points |
+| `dip_wide_v1` | +0.943% | -0.006% | 66.7% | 1.314 | +0.0098 percentage points |
+| `balanced_v1` | +0.940% | -0.009% | 66.7% | 1.299 | +0.0068 percentage points |
+| `upside_wide_v1` | +0.757% | -0.129% | 50.0% | 0.898 | -0.176 percentage points |
+| `fee_tight_v1` | +0.684% | -0.257% | 66.7% | 1.153 | -0.249 percentage points |
+
+Interpretation:
+
+- The fixed-family expansion improved Base enough to justify one more
+  targeted pass. `upside_tight_v1` is the first route-aware directional policy
+  that beats both best static LP and pool-mark hold on the directional-active
+  and strict sign-cone summaries.
+- The result is still not promotable. The edge is small, the directional-active
+  route still has one slightly negative routed window, and hold-cNGN still wins
+  over all no-gate windows.
+- The failure mode is clearer: wide upside ranges underperform, while a tighter
+  upside range captures enough fee/range PnL to improve the strict Base slice.
+  The next pass should focus on route selectivity around the weak windows rather
+  than expanding shape count further.
+- BSC remains a useful falsification pool. The best routed policy is still
+  negative and far below hold-cNGN, so the Base result should remain explicitly
+  pool-specific.
+
+Updated next step:
+
+Do not broaden the shape family again yet. Test whether the Base router can
+reject the weak `fee_box` and `dip_accumulator` windows while preserving the
+strict sign-cone upside windows, then compare the resulting route against
+pool-mark hold and a non-pool cNGN inventory route.
+
+## Task 7 Strict Upside Router Check
+
+Status: fresh check completed 2026-07-10.
+
+Run command:
+
+```bash
+python3 research/scripts/evaluate_directional_paper_lp.py --pool all
+```
+
+The existing `gate_strict_qts_20_25` slice is the stricter Base router check:
+it keeps the strict sign-cone + positive QTS upside windows and rejects the
+extra `fee_box` and `dip_accumulator` windows admitted by
+`gate_directional_active`.
+
+Base result:
+
+| Gate | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gate_directional_active` | 6 | +1.028% | -0.009% | 66.7% | +0.095 pp | +1.002% |
+| `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |
+| `gate_strict_qts_100_25` | 3 | +0.854% | +0.118% | 100.0% | +0.360 pp | +0.662% |
+
+BSC under the same strict QTS gates remains rejected:
+
+| Gate | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
+| `gate_strict_qts_100_25` | 6 | -0.583% | -0.842% | 33.3% | -2.105 pp | +0.072% |
+
+Interpretation:
+
+- The strict Base upside router passes the next narrow diagnostic: removing
+  `fee_box` and `dip_accumulator` improves worst-window behavior and produces a
+  cleaner edge versus both pool-mark hold and static LP on the active slice.
+- The active slice is still only four windows, so this is not promotion
+  evidence. It is evidence that the next comparator should be stronger, not that
+  the route family should expand again.
+- BSC falsifies cross-pool generalization. The same strict QTS gates make
+  directional LP materially worse than hold-cNGN and static LP there.
+
+Historical next-step proposal, now superseded by Tasks 8 and 9:
+
+Keep H12 blocked. If a non-pool cNGN inventory comparator becomes available,
+compare the strict Base upside router against:
+
+1. no position,
+2. best static LP,
+3. pool-mark hold-cNGN,
+4. external-reference hold-cNGN,
+5. pool-routed hold-cNGN where available.
+
+Only after the strict Base router beats the external-reference hold comparator
+should capacity curves or dynamic sizing become final experiments.
+
+Note: Task 8 supersedes this Binance-specific next step. Binance `USDTNGN`
+does not overlap the 2026 pool window, so the external comparator now needs a
+different non-pool reference series.
+
+## Task 8 External Reference Comparator Implementation
+
+Status: implementation completed 2026-07-10; Binance spot source checked and
+not usable for the active overlap.
+
+Implemented in `research/scripts/evaluate_directional_paper_lp.py`:
+
+- `ReferencePricePoint` for external cNGN reference marks.
+- `load_reference_price_csv()` for Binance/reference CSVs.
+- `external_reference_hold_cngn_rows()` as a non-pool cNGN inventory comparator.
+- Optional CLI flags:
+  - `--external-reference-csv`
+  - `--external-reference-source`
+  - `--external-reference-max-age-seconds`
+- Attribution columns:
+  - `hold_external_config`
+  - `hold_external_return`
+  - `directional_minus_hold_external`
+
+Reference CSV input accepts either `timestamp_ms` or `ts`, plus one of:
+
+- `reference_price`
+- `price`
+- `mid`
+- `binance_reference`
+- `ngn_per_usdt`
+- `usdt_ngn`
+
+The comparator is intentionally fail-closed. If the supplied reference file does
+not have a previous-or-equal price for every validation start and end timestamp
+within the max age, the run raises instead of silently falling back to the pool
+mark.
+
+Fresh no-reference run:
+
+```bash
+python3 research/scripts/evaluate_directional_paper_lp.py --pool all
+```
+
+Result: the Base and BSC conclusions from Task 7 still hold. The new external
+attribution columns are present but blank because no Binance reference file is
+available in the checkout.
+
+Historical run form if a future external reference file exists:
+
+```bash
+python3 research/scripts/evaluate_directional_paper_lp.py \
+  --pool uni-base \
+  --external-reference-csv research/data/<source>_reference.csv \
+  --external-reference-source <source_name> \
+  --external-reference-max-age-seconds 3600
+```
+
+Binance source result:
+
+- `USDTNGN` exists on Binance spot, but current `exchangeInfo` reports status
+  `BREAK`.
+- The most recent available `USDTNGN` 1m kline opens at
+  `2024-03-07T02:59:00+00:00`.
+- The local Base v4 pool initialize/first-swap timestamp is
+  `2026-03-04T16:51:45+00:00`; the BSC v4 pool initialize timestamp is
+  `2026-03-04T16:15:30+00:00`.
+- The Binance break therefore predates the local cNGN Uniswap v4 pools by almost
+  two years and does not line up with their release.
+- Fetching `USDTNGN` 1m klines over the Quidax JSON window wrote zero rows to
+  `research/data/binance_usdtngn_1m_reference.csv`.
+- Running the strict Base router with that sourced reference fails closed with:
+  `missing external reference price for window=0 edge=start`.
+
+Promotion remains blocked. For the LP-specific non-pool inventory comparator,
+the next external anchor should be Bybit P2P once there is enough overlapping
+forward data. Until then, keep the Base directional result framed as a
+DEX-internal diagnostic, not a deployable LP alpha.
+
+## Task 9 External Reference Attempt And Closeout
+
+Status: completed 2026-07-10; comparator rejected and LP research closed as a
+diagnostic result.
+
+One-pass external reference result:
+
+- Official Bybit P2P documentation exposes `POST /v5/p2p/item/online` as an
+  online-ad endpoint. It is useful for current ads, not a historical archive.
+- The legacy public Bybit endpoint is reachable for current `USDT`/`NGN` ads,
+  but it cannot backfill March-June 2026 validation edges.
+- Local `bybit_p2p` rows in `data/cngn.db` cover 171 snapshots from
+  `2026-06-19T12:26:49.707000+00:00` through
+  `2026-06-20T01:09:16.620000+00:00`.
+- The Base strict-sign-cone-positive-QTS slice needs eight start/end marks from
+  `2026-03-12T15:00:55+00:00` through
+  `2026-06-09T16:39:09+00:00`.
+- Bybit covers `0/8` of those strict edge marks within the 3600-second max-age
+  rule.
+
+Closeout conclusion:
+
+- The non-pool comparator cannot be populated from currently available data.
+- Fair Price is closed as feed-quality and managed-surface evidence.
+- DEX LP is closed as diagnostic market-structure evidence: Base has a
+  sparse pool-internal directional slice, BSC falsifies transferability, and no
+  live LP promotion is justified.
+- H12 capacity, dynamic sizing, and live policy integration remain blocked until
+  genuinely new timestamped external data arrives.
