@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta
 
@@ -75,3 +76,56 @@ def test_runtime_matches_simulate_pool_for_complete_lifecycle() -> None:
     actual = runtime.run(events)
 
     assert actual == expected
+
+
+def test_runtime_exposes_ordered_phases_and_preserves_complete_lifecycle() -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    params = _paper_params_with_zero_gas()
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=params,
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+
+    for method_name in (
+        "_apply_liquidity_event",
+        "_observe_swap",
+        "_roll_daily_return",
+        "_accrue_position_fee",
+        "_exit_decision",
+        "_apply_exit",
+        "_maybe_enter",
+        "_record_event_value",
+        "finalize",
+    ):
+        assert callable(getattr(runtime, method_name, None)), method_name
+
+    assert runtime.run(events) == simulate_pool(events, params, UNISWAP_BASE_POOL, 500.0)
+
+
+def test_exit_decision_does_not_mutate_wallet_or_position() -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    params = _paper_params_with_zero_gas()
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=params,
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+    runtime.run(events[:3])
+    assert runtime.position is not None
+
+    exit_event = events[3]
+    assert isinstance(exit_event, V4Event)
+    active_liquidity, price_is_valid = runtime._observe_swap(exit_event)
+    assert price_is_valid
+    wallet_before = deepcopy(runtime.wallet)
+    position_before = deepcopy(runtime.position)
+
+    exit_reason, exit_cost = runtime._exit_decision(exit_event, active_liquidity)
+
+    assert exit_reason is not None
+    assert exit_cost.action == "exit"
+    assert runtime.wallet == wallet_before
+    assert runtime.position == position_before

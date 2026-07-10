@@ -76,367 +76,352 @@ class SleeveRuntime:
         self.wallet = PortfolioComposition(stable_usd=self.capital_usd, cngn_amount=0.0)
         self.day_start_value = self.capital_usd
 
-    def run(self, events: list[Event], initial_pool_state: PoolState | None = None) -> SimResult:
-        if initial_pool_state is not None:
-            self.pool_state = initial_pool_state.copy()
-        for event in events:
-            if isinstance(event, MintEvent):
-                self.pool_state.apply_mint(
-                    event.tick_lower, event.tick_upper, event.liquidity_delta
-                )
-                continue
-            if isinstance(event, BurnEvent):
-                self.pool_state.apply_burn(
-                    event.tick_lower, event.tick_upper, event.liquidity_delta
-                )
-                continue
-            if isinstance(event, V4Event) and event.event_type == "mint":
-                if (
-                    event.tick_lower is not None
-                    and event.tick_upper is not None
-                    and event.liquidity_delta is not None
-                ):
-                    self.pool_state.apply_mint(
-                        event.tick_lower, event.tick_upper, abs(event.liquidity_delta)
-                    )
-                continue
-            if isinstance(event, V4Event) and event.event_type == "burn":
-                if (
-                    event.tick_lower is not None
-                    and event.tick_upper is not None
-                    and event.liquidity_delta is not None
-                ):
-                    self.pool_state.apply_burn(
-                        event.tick_lower, event.tick_upper, abs(event.liquidity_delta)
-                    )
-                continue
-
-            assert isinstance(event, (SwapEvent, V4Event))
-            self.result.total_swaps += 1
-            self.result.start_time = self.result.start_time or event.block_time
-            self.result.end_time = event.block_time
-            self.current_price = _event_cngn_price(event, self.pool_config)
-            if self.current_price <= 0:
-                continue
-
-            native_price = _cngn_to_native_price(self.current_price, self.pool_config)
-            self.ewma.update(native_price)
-            self.current_tick = (
-                event.tick
-                if isinstance(event, V4Event)
-                else _fast_price_to_tick(
-                    native_price, self.pool_config.token0_decimals, self.pool_config.token1_decimals
-                )
-            )
-            self.current_sqrt_price_x96 = _event_sqrt_price_x96(event, self.current_tick)
-            active_liquidity = _event_liquidity(event, self.pool_state, self.current_tick)
-            self.current_active_liquidity = active_liquidity
-            if _event_swap_volume_usd(event) >= self.params.exit_price_min_swap_volume_usd:
-                self.qualified_price_observations.append((event.block_time, self.current_price))
-
-            if self.validation_start is None:
-                self.validation_start = _snapshot_composition(
-                    self.position,
-                    self.wallet,
-                    self.current_tick,
-                    self.current_sqrt_price_x96,
-                    self.current_price,
-                    self.pool_config,
-                )
-
-            event_day = event.block_time.date()
-            if self.current_day is not None and event_day != self.current_day:
-                current_val = _portfolio_value(
-                    self.position,
-                    self.wallet,
-                    self.current_price,
-                    self.current_tick,
-                    self.current_sqrt_price_x96,
-                    self.pool_config,
-                )
-                if self.day_start_value > 0:
-                    self.result.daily_returns.append(current_val / self.day_start_value - 1.0)
-                self.day_start_value = current_val
-            self.current_day = event_day
-
-            if self.position is not None:
-                self.position.observed_swaps += 1
-                if self.position.is_in_range(self.current_tick):
-                    self.result.in_range_swaps += 1
-                    self.position.in_range_swaps += 1
-                    if active_liquidity > 0:
-                        # Recorded active_liquidity is the real pool's depth; our
-                        # virtual position competes against it, so it joins the
-                        # denominator. Without this, fee share is overstated
-                        # exactly where positions are large relative to the pool.
-                        liquidity_share = self.position.liquidity_L / (
-                            active_liquidity + self.position.liquidity_L
-                        )
-                        fee_wallet = _event_fee_wallet(
-                            event,
-                            _event_pool_fee_rate(event, self.pool_config),
-                            liquidity_share,
-                            self.current_price,
-                            self.pool_config,
-                        )
-                        self.position.accrued_fee_stable += fee_wallet.stable_usd
-                        self.position.accrued_fee_cngn += fee_wallet.cngn_amount
-                        self.result.total_fees += fee_wallet.value_usd(self.current_price)
-                        self.result.total_fee_stable += fee_wallet.stable_usd
-                        self.result.total_fee_cngn += fee_wallet.cngn_amount
-
-                should_rebalance = False
-                exit_reason: str | None = None
-                exit_cost = TransactionCostBreakdown("exit")
-                if self.params.strategy_mode == "paper":
-                    defensive_price, defensive_tick = _defensive_exit_mark(
-                        event,
-                        self.current_price,
-                        self.current_tick,
-                        self.pool_config,
-                        self.params,
-                        self.qualified_price_observations,
-                    )
-                    exit_reason, exit_cost = _paper_exit_reason(
-                        self.position,
-                        event,
-                        self.current_tick,
-                        self.current_sqrt_price_x96,
-                        self.current_price,
-                        defensive_tick,
-                        defensive_price,
-                        active_liquidity,
-                        self.pool_config,
-                        self.params,
-                    )
-                    if _is_defensive_exit(exit_reason):
-                        if not _defensive_exit_quality_passes(event, self.params):
-                            exit_reason = None
-                            exit_cost = TransactionCostBreakdown("exit")
-                        else:
-                            if self.pending_defensive_exit_reason == exit_reason:
-                                self.pending_defensive_exit_count += 1
-                            else:
-                                self.pending_defensive_exit_reason = exit_reason
-                                self.pending_defensive_exit_first_time = event.block_time
-                                self.pending_defensive_exit_count = 1
-                            required_swaps = max(self.params.exit_confirmation_swaps, 1)
-                            required_minutes = max(self.params.exit_confirmation_minutes, 0.0)
-                            elapsed_minutes = (
-                                (
-                                    event.block_time - self.pending_defensive_exit_first_time
-                                ).total_seconds()
-                                / 60
-                                if self.pending_defensive_exit_first_time is not None
-                                else 0.0
-                            )
-                            if (
-                                self.pending_defensive_exit_count < required_swaps
-                                or elapsed_minutes < required_minutes
-                            ):
-                                exit_reason = None
-                                exit_cost = TransactionCostBreakdown("exit")
-                    else:
-                        self.pending_defensive_exit_reason = None
-                        self.pending_defensive_exit_first_time = None
-                        self.pending_defensive_exit_count = 0
-                    should_rebalance = exit_reason is not None
-                elif self.params.strategy_mode == "static":
-                    should_rebalance = False
-                else:
-                    tick_range = self.position.tick_upper - self.position.tick_lower
-                    if not self.position.is_in_range(self.current_tick):
-                        distance = (
-                            self.position.tick_lower - self.current_tick
-                            if self.current_tick < self.position.tick_lower
-                            else self.current_tick - self.position.tick_upper
-                        )
-                        if (
-                            tick_range > 0
-                            and (distance / tick_range * 100) >= self.params.rebalance_threshold_pct
-                        ):
-                            should_rebalance = True
-                            exit_reason = "ewma_out_of_range"
-                    elif self.params.preemptive_rebalance:
-                        margin = tick_range * self.params.rebalance_threshold_pct / 100
-                        if (
-                            self.current_tick - self.position.tick_lower < margin
-                            or self.position.tick_upper - self.current_tick < margin
-                        ):
-                            should_rebalance = True
-                            exit_reason = "ewma_preemptive"
-
-                if should_rebalance and self.ewma.ready:
-                    position_value = self.position.value_at_sqrt_price_x96(
-                        self.current_sqrt_price_x96,
-                        self.current_price,
-                        self.pool_config,
-                    )
-                    if exit_cost.total == 0.0:
-                        exit_cost = _exit_cost_breakdown(
-                            self.position,
-                            self.current_tick,
-                            self.current_sqrt_price_x96,
-                            self.current_price,
-                            active_liquidity,
-                            _event_pool_fee_rate(event, self.pool_config),
-                            self.pool_config,
-                            self.params,
-                        )
-                    _record_episode(
-                        self.result,
-                        self.position,
-                        exit_reason or "rebalance",
-                        event.block_time,
-                        self.current_price,
-                        self.current_tick,
-                        position_value,
-                        exit_cost,
-                        self.pool_config,
-                    )
-                    self.wallet = _wallet_with_position_removed(
-                        self.wallet,
-                        self.position,
-                        self.current_tick,
-                        self.current_sqrt_price_x96,
-                        self.current_price,
-                        self.pool_config,
-                    )
-                    self.wallet = _pay_or_unwind_exit_cost(
-                        self.wallet, exit_cost, self.current_price
-                    )
-                    self.result.total_rebalance_cost += exit_cost.total
-                    self.result.rebalance_count += 1
-                    if self.params.cooldown_minutes > 0:
-                        self.cooldown_until_time = event.block_time + timedelta(
-                            minutes=self.params.cooldown_minutes
-                        )
-                    if self.params.cooldown_blocks > 0 and _event_block_number(event) is not None:
-                        self.cooldown_until_block = (
-                            _event_block_number(event) or 0
-                        ) + self.params.cooldown_blocks
-                    self.position = None
-                    self.pending_defensive_exit_reason = None
-                    self.pending_defensive_exit_first_time = None
-                    self.pending_defensive_exit_count = 0
-
-            in_time_cooldown = (
-                self.cooldown_until_time is not None and event.block_time < self.cooldown_until_time
-            )
-            event_block = _event_block_number(event)
-            in_block_cooldown = (
-                self.cooldown_until_block is not None
-                and event_block is not None
-                and event_block < self.cooldown_until_block
-            )
+    def _apply_liquidity_event(self, event: Event) -> bool:
+        if isinstance(event, MintEvent):
+            self.pool_state.apply_mint(event.tick_lower, event.tick_upper, event.liquidity_delta)
+            return True
+        if isinstance(event, BurnEvent):
+            self.pool_state.apply_burn(event.tick_lower, event.tick_upper, event.liquidity_delta)
+            return True
+        if isinstance(event, V4Event) and event.event_type in ("mint", "burn"):
             if (
-                self.position is None
-                and self.ewma.ready
-                and self.wallet.value_usd(self.current_price) > self.params.gas_cost_usd
-                and not in_time_cooldown
-                and not in_block_cooldown
-                and _entry_filters_pass(
-                    event,
-                    self.params,
-                    self.ewma,
-                    self.current_price,
-                    active_liquidity,
-                    self.pool_config,
-                )
+                event.tick_lower is not None
+                and event.tick_upper is not None
+                and event.liquidity_delta is not None
             ):
-                wallet_value = self.wallet.value_usd(self.current_price)
-                deploy_target = self.sizing.deployed_capital_usd(
-                    EntryContext(
-                        block_time=event.block_time,
-                        wallet_value_usd=wallet_value,
-                        current_price=self.current_price,
-                        current_tick=self.current_tick,
-                        active_liquidity=active_liquidity,
-                    )
-                )
-                deploy_fraction = (
-                    min(deploy_target / wallet_value, 1.0) if wallet_value > 0 else 0.0
-                )
-                if deploy_fraction > 0:
-                    deploy_wallet = PortfolioComposition(
-                        stable_usd=self.wallet.stable_usd * deploy_fraction,
-                        cngn_amount=self.wallet.cngn_amount * deploy_fraction,
-                    )
-                    idle_wallet = PortfolioComposition(
-                        stable_usd=self.wallet.stable_usd * (1.0 - deploy_fraction),
-                        cngn_amount=self.wallet.cngn_amount * (1.0 - deploy_fraction),
-                    )
-                    tick_lower, tick_upper = _calculate_entry_range(
-                        event,
-                        self.params,
-                        self.ewma,
-                        self.current_price,
-                        self.current_tick,
-                        self.pool_config,
-                    )
-                    liquidity, deployed_capital, entry_cost, next_wallet = (
-                        _route_wallet_to_position(
-                            deploy_wallet,
-                            tick_lower,
-                            tick_upper,
-                            self.current_tick,
-                            self.current_sqrt_price_x96,
-                            self.current_price,
-                            active_liquidity,
-                            _event_pool_fee_rate(event, self.pool_config),
-                            self.pool_config,
-                            self.params,
-                        )
-                    )
-                    if liquidity > 0 and _expected_fee_apr_passes(
-                        event,
-                        self.params,
-                        liquidity,
-                        deployed_capital,
-                        active_liquidity,
-                        self.previous_swap_time,
-                        self.pool_config,
-                    ):
-                        self.position = VirtualPosition(
-                            tick_lower=tick_lower,
-                            tick_upper=tick_upper,
-                            liquidity_L=liquidity,
-                            entry_price=self.current_price,
-                            entry_value=deployed_capital,
-                            entry_time=event.block_time,
-                            entry_tick=self.current_tick,
-                            entry_active_liquidity=active_liquidity,
-                            deployed_capital=deployed_capital,
-                            entry_transaction_cost=entry_cost,
-                        )
-                        self.wallet = PortfolioComposition(
-                            stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
-                            cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
-                        )
+                liquidity_delta = abs(event.liquidity_delta)
+                if event.event_type == "mint":
+                    self.pool_state.apply_mint(event.tick_lower, event.tick_upper, liquidity_delta)
+                else:
+                    self.pool_state.apply_burn(event.tick_lower, event.tick_upper, liquidity_delta)
+            return True
+        return False
 
-            if self.idle_apr > 0 and self.previous_swap_time is not None:
-                elapsed_years = (event.block_time - self.previous_swap_time).total_seconds() / (
-                    365.25 * 86400
-                )
-                if elapsed_years > 0:
-                    self.result.idle_hurdle_credit += (
-                        self.wallet.value_usd(self.current_price) * self.idle_apr * elapsed_years
-                    )
-            self.result.value_samples.append(
-                (
-                    event.block_time,
-                    _portfolio_value(
-                        self.position,
-                        self.wallet,
-                        self.current_price,
-                        self.current_tick,
-                        self.current_sqrt_price_x96,
-                        self.pool_config,
-                    ),
-                )
+    def _observe_swap(self, event: SwapEvent | V4Event) -> tuple[int, bool]:
+        self.result.total_swaps += 1
+        self.result.start_time = self.result.start_time or event.block_time
+        self.result.end_time = event.block_time
+        self.current_price = _event_cngn_price(event, self.pool_config)
+        if self.current_price <= 0:
+            return 0, False
+
+        native_price = _cngn_to_native_price(self.current_price, self.pool_config)
+        self.ewma.update(native_price)
+        self.current_tick = (
+            event.tick
+            if isinstance(event, V4Event)
+            else _fast_price_to_tick(
+                native_price, self.pool_config.token0_decimals, self.pool_config.token1_decimals
             )
-            self.previous_swap_time = event.block_time
+        )
+        self.current_sqrt_price_x96 = _event_sqrt_price_x96(event, self.current_tick)
+        active_liquidity = _event_liquidity(event, self.pool_state, self.current_tick)
+        self.current_active_liquidity = active_liquidity
+        if _event_swap_volume_usd(event) >= self.params.exit_price_min_swap_volume_usd:
+            self.qualified_price_observations.append((event.block_time, self.current_price))
 
+        if self.validation_start is None:
+            self.validation_start = _snapshot_composition(
+                self.position,
+                self.wallet,
+                self.current_tick,
+                self.current_sqrt_price_x96,
+                self.current_price,
+                self.pool_config,
+            )
+        return active_liquidity, True
+
+    def _roll_daily_return(self, event: SwapEvent | V4Event) -> None:
+        event_day = event.block_time.date()
+        if self.current_day is not None and event_day != self.current_day:
+            current_val = _portfolio_value(
+                self.position,
+                self.wallet,
+                self.current_price,
+                self.current_tick,
+                self.current_sqrt_price_x96,
+                self.pool_config,
+            )
+            if self.day_start_value > 0:
+                self.result.daily_returns.append(current_val / self.day_start_value - 1.0)
+            self.day_start_value = current_val
+        self.current_day = event_day
+
+    def _accrue_position_fee(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:
+        if self.position is None:
+            return
+        self.position.observed_swaps += 1
+        if not self.position.is_in_range(self.current_tick):
+            return
+        self.result.in_range_swaps += 1
+        self.position.in_range_swaps += 1
+        if active_liquidity <= 0:
+            return
+        # Recorded active_liquidity is the real pool's depth; our virtual
+        # position competes against it, so it joins the denominator.
+        liquidity_share = self.position.liquidity_L / (active_liquidity + self.position.liquidity_L)
+        fee_wallet = _event_fee_wallet(
+            event,
+            _event_pool_fee_rate(event, self.pool_config),
+            liquidity_share,
+            self.current_price,
+            self.pool_config,
+        )
+        self.position.accrued_fee_stable += fee_wallet.stable_usd
+        self.position.accrued_fee_cngn += fee_wallet.cngn_amount
+        self.result.total_fees += fee_wallet.value_usd(self.current_price)
+        self.result.total_fee_stable += fee_wallet.stable_usd
+        self.result.total_fee_cngn += fee_wallet.cngn_amount
+
+    def _exit_decision(
+        self, event: SwapEvent | V4Event, active_liquidity: int
+    ) -> tuple[str | None, TransactionCostBreakdown]:
+        exit_reason: str | None = None
+        exit_cost = TransactionCostBreakdown("exit")
+        if self.position is None:
+            return exit_reason, exit_cost
+        if self.params.strategy_mode == "paper":
+            defensive_price, defensive_tick = _defensive_exit_mark(
+                event,
+                self.current_price,
+                self.current_tick,
+                self.pool_config,
+                self.params,
+                self.qualified_price_observations,
+            )
+            exit_reason, exit_cost = _paper_exit_reason(
+                self.position,
+                event,
+                self.current_tick,
+                self.current_sqrt_price_x96,
+                self.current_price,
+                defensive_tick,
+                defensive_price,
+                active_liquidity,
+                self.pool_config,
+                self.params,
+            )
+            if _is_defensive_exit(exit_reason):
+                if not _defensive_exit_quality_passes(event, self.params):
+                    exit_reason = None
+                    exit_cost = TransactionCostBreakdown("exit")
+                else:
+                    if self.pending_defensive_exit_reason == exit_reason:
+                        self.pending_defensive_exit_count += 1
+                    else:
+                        self.pending_defensive_exit_reason = exit_reason
+                        self.pending_defensive_exit_first_time = event.block_time
+                        self.pending_defensive_exit_count = 1
+                    required_swaps = max(self.params.exit_confirmation_swaps, 1)
+                    required_minutes = max(self.params.exit_confirmation_minutes, 0.0)
+                    elapsed_minutes = (
+                        (event.block_time - self.pending_defensive_exit_first_time).total_seconds()
+                        / 60
+                        if self.pending_defensive_exit_first_time is not None
+                        else 0.0
+                    )
+                    if (
+                        self.pending_defensive_exit_count < required_swaps
+                        or elapsed_minutes < required_minutes
+                    ):
+                        exit_reason = None
+                        exit_cost = TransactionCostBreakdown("exit")
+            else:
+                self.pending_defensive_exit_reason = None
+                self.pending_defensive_exit_first_time = None
+                self.pending_defensive_exit_count = 0
+        elif self.params.strategy_mode != "static":
+            tick_range = self.position.tick_upper - self.position.tick_lower
+            if not self.position.is_in_range(self.current_tick):
+                distance = (
+                    self.position.tick_lower - self.current_tick
+                    if self.current_tick < self.position.tick_lower
+                    else self.current_tick - self.position.tick_upper
+                )
+                if (
+                    tick_range > 0
+                    and (distance / tick_range * 100) >= self.params.rebalance_threshold_pct
+                ):
+                    exit_reason = "ewma_out_of_range"
+            elif self.params.preemptive_rebalance:
+                margin = tick_range * self.params.rebalance_threshold_pct / 100
+                if (
+                    self.current_tick - self.position.tick_lower < margin
+                    or self.position.tick_upper - self.current_tick < margin
+                ):
+                    exit_reason = "ewma_preemptive"
+
+        if exit_reason is not None and self.ewma.ready and exit_cost.total == 0.0:
+            exit_cost = _exit_cost_breakdown(
+                self.position,
+                self.current_tick,
+                self.current_sqrt_price_x96,
+                self.current_price,
+                active_liquidity,
+                _event_pool_fee_rate(event, self.pool_config),
+                self.pool_config,
+                self.params,
+            )
+        return (exit_reason if self.ewma.ready else None), exit_cost
+
+    def _apply_exit(
+        self,
+        event: SwapEvent | V4Event,
+        active_liquidity: int,
+        exit_reason: str | None,
+        exit_cost: TransactionCostBreakdown,
+    ) -> None:
+        if self.position is None or exit_reason is None:
+            return
+        position_value = self.position.value_at_sqrt_price_x96(
+            self.current_sqrt_price_x96,
+            self.current_price,
+            self.pool_config,
+        )
+        _record_episode(
+            self.result,
+            self.position,
+            exit_reason or "rebalance",
+            event.block_time,
+            self.current_price,
+            self.current_tick,
+            position_value,
+            exit_cost,
+            self.pool_config,
+        )
+        self.wallet = _wallet_with_position_removed(
+            self.wallet,
+            self.position,
+            self.current_tick,
+            self.current_sqrt_price_x96,
+            self.current_price,
+            self.pool_config,
+        )
+        self.wallet = _pay_or_unwind_exit_cost(self.wallet, exit_cost, self.current_price)
+        self.result.total_rebalance_cost += exit_cost.total
+        self.result.rebalance_count += 1
+        if self.params.cooldown_minutes > 0:
+            self.cooldown_until_time = event.block_time + timedelta(
+                minutes=self.params.cooldown_minutes
+            )
+        if self.params.cooldown_blocks > 0 and _event_block_number(event) is not None:
+            self.cooldown_until_block = (
+                _event_block_number(event) or 0
+            ) + self.params.cooldown_blocks
+        self.position = None
+        self.pending_defensive_exit_reason = None
+        self.pending_defensive_exit_first_time = None
+        self.pending_defensive_exit_count = 0
+
+    def _maybe_enter(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:
+        in_time_cooldown = (
+            self.cooldown_until_time is not None and event.block_time < self.cooldown_until_time
+        )
+        event_block = _event_block_number(event)
+        in_block_cooldown = (
+            self.cooldown_until_block is not None
+            and event_block is not None
+            and event_block < self.cooldown_until_block
+        )
+        if not (
+            self.position is None
+            and self.ewma.ready
+            and self.wallet.value_usd(self.current_price) > self.params.gas_cost_usd
+            and not in_time_cooldown
+            and not in_block_cooldown
+            and _entry_filters_pass(
+                event,
+                self.params,
+                self.ewma,
+                self.current_price,
+                active_liquidity,
+                self.pool_config,
+            )
+        ):
+            return
+        wallet_value = self.wallet.value_usd(self.current_price)
+        deploy_target = self.sizing.deployed_capital_usd(
+            EntryContext(
+                block_time=event.block_time,
+                wallet_value_usd=wallet_value,
+                current_price=self.current_price,
+                current_tick=self.current_tick,
+                active_liquidity=active_liquidity,
+            )
+        )
+        deploy_fraction = min(deploy_target / wallet_value, 1.0) if wallet_value > 0 else 0.0
+        if deploy_fraction <= 0:
+            return
+        deploy_wallet = PortfolioComposition(
+            stable_usd=self.wallet.stable_usd * deploy_fraction,
+            cngn_amount=self.wallet.cngn_amount * deploy_fraction,
+        )
+        idle_wallet = PortfolioComposition(
+            stable_usd=self.wallet.stable_usd * (1.0 - deploy_fraction),
+            cngn_amount=self.wallet.cngn_amount * (1.0 - deploy_fraction),
+        )
+        tick_lower, tick_upper = _calculate_entry_range(
+            event,
+            self.params,
+            self.ewma,
+            self.current_price,
+            self.current_tick,
+            self.pool_config,
+        )
+        liquidity, deployed_capital, entry_cost, next_wallet = _route_wallet_to_position(
+            deploy_wallet,
+            tick_lower,
+            tick_upper,
+            self.current_tick,
+            self.current_sqrt_price_x96,
+            self.current_price,
+            active_liquidity,
+            _event_pool_fee_rate(event, self.pool_config),
+            self.pool_config,
+            self.params,
+        )
+        if liquidity > 0 and _expected_fee_apr_passes(
+            event,
+            self.params,
+            liquidity,
+            deployed_capital,
+            active_liquidity,
+            self.previous_swap_time,
+            self.pool_config,
+        ):
+            self.position = VirtualPosition(
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                liquidity_L=liquidity,
+                entry_price=self.current_price,
+                entry_value=deployed_capital,
+                entry_time=event.block_time,
+                entry_tick=self.current_tick,
+                entry_active_liquidity=active_liquidity,
+                deployed_capital=deployed_capital,
+                entry_transaction_cost=entry_cost,
+            )
+            self.wallet = PortfolioComposition(
+                stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
+                cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
+            )
+
+    def _record_event_value(self, event: SwapEvent | V4Event) -> None:
+        self.result.value_samples.append(
+            (
+                event.block_time,
+                _portfolio_value(
+                    self.position,
+                    self.wallet,
+                    self.current_price,
+                    self.current_tick,
+                    self.current_sqrt_price_x96,
+                    self.pool_config,
+                ),
+            )
+        )
+
+    def finalize(self) -> SimResult:
         if self.position is not None and self.result.end_time is not None:
             terminal_position = self.position
             terminal_exit_reason = "end_of_data"
@@ -510,6 +495,33 @@ class SleeveRuntime:
             (self.result.final_value / hodl_end_value - 1.0) if hodl_end_value > 0 else 0.0
         )
         return self.result
+
+    def run(self, events: list[Event], initial_pool_state: PoolState | None = None) -> SimResult:
+        if initial_pool_state is not None:
+            self.pool_state = initial_pool_state.copy()
+        for event in events:
+            if self._apply_liquidity_event(event):
+                continue
+            assert isinstance(event, (SwapEvent, V4Event))
+            active_liquidity, price_is_valid = self._observe_swap(event)
+            if not price_is_valid:
+                continue
+            self._roll_daily_return(event)
+            self._accrue_position_fee(event, active_liquidity)
+            exit_reason, exit_cost = self._exit_decision(event, active_liquidity)
+            self._apply_exit(event, active_liquidity, exit_reason, exit_cost)
+            self._maybe_enter(event, active_liquidity)
+            if self.idle_apr > 0 and self.previous_swap_time is not None:
+                elapsed_years = (event.block_time - self.previous_swap_time).total_seconds() / (
+                    365.25 * 86400
+                )
+                if elapsed_years > 0:
+                    self.result.idle_hurdle_credit += (
+                        self.wallet.value_usd(self.current_price) * self.idle_apr * elapsed_years
+                    )
+            self._record_event_value(event)
+            self.previous_swap_time = event.block_time
+        return self.finalize()
 
 
 def create_sleeve_runtime(
