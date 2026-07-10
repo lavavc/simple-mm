@@ -25,6 +25,7 @@ from research.backtester.simulator import (
     TransactionCostBreakdown,
     _portfolio_value,
     _raw_amounts_to_wallet,
+    _swap_cost_breakdown,
 )
 
 
@@ -136,23 +137,39 @@ def test_opposing_inventory_actions_are_netted() -> None:
     assert execution.internal_notional_usd == pytest.approx(60.0)
     assert execution.direction == "stable_to_cngn"
 
+    with pytest.raises(ValueError, match="one action kind"):
+        _settle_actions(
+            [actions[0], replace(actions[1], kind="exit")],
+            {},
+            event.active_liquidity,
+            UNISWAP_BASE_POOL,
+        )
+
 
 def test_real_opposing_entries_settle_without_changing_refund_denomination() -> None:
-    event0 = _swap(0)
-    event1 = _swap(1)
+    event0 = replace(
+        _swap(0, liquidity=10**12),
+        tick=100,
+        sqrt_price_x96=tick_to_sqrt_price_x96(100),
+    )
+    event1 = replace(
+        _swap(1, liquidity=10**12),
+        tick=100,
+        sqrt_price_x96=tick_to_sqrt_price_x96(100),
+    )
     buy = create_sleeve_runtime(
         sleeve_id="buy",
         params=_params(),
         pool_config=UNISWAP_BASE_POOL,
-        capital_usd=100.0,
+        capital_usd=1_000.0,
     )
     sell = create_sleeve_runtime(
         sleeve_id="sell",
         params=_params(),
         pool_config=UNISWAP_BASE_POOL,
-        capital_usd=100.0,
+        capital_usd=1_500.0,
     )
-    sell.wallet = PortfolioComposition(stable_usd=0.0, cngn_amount=100.0)
+    sell.wallet = PortfolioComposition(stable_usd=0.0, cngn_amount=1_500.0)
     for runtime in (buy, sell):
         runtime._observe_swap(event0)
         runtime.previous_swap_time = event0.block_time
@@ -165,8 +182,36 @@ def test_real_opposing_entries_settle_without_changing_refund_denomination() -> 
     assert sell_action.inventory_swap_direction == "cngn_to_stable"
     gross_buy = buy_action.inventory_swap_notional_usd
     gross_sell = sell_action.inventory_swap_notional_usd
+    assert gross_sell > gross_buy
     original_sell_stable = sell_action.wallet_after.stable_usd
     original_sell_cngn = sell_action.wallet_after.cngn_amount
+    residual = gross_sell - gross_buy
+    expected_exact_output = _swap_cost_breakdown(
+        "enter",
+        residual,
+        event1.active_liquidity,
+        event1.fee_rate,
+        sell.current_tick,
+        sell.params,
+        direction="cngn_to_stable",
+        current_price=sell.current_price,
+        current_sqrt_price_x96=sell.current_sqrt_price_x96,
+        pool_config=UNISWAP_BASE_POOL,
+        exact_output=True,
+    )
+    wrong_exact_input = _swap_cost_breakdown(
+        "enter",
+        residual,
+        event1.active_liquidity,
+        event1.fee_rate,
+        sell.current_tick,
+        sell.params,
+        direction="cngn_to_stable",
+        current_price=sell.current_price,
+        current_sqrt_price_x96=sell.current_sqrt_price_x96,
+        pool_config=UNISWAP_BASE_POOL,
+        exact_output=False,
+    )
 
     external, internal, settlements = _settle_actions(
         [buy_action, sell_action],
@@ -181,6 +226,20 @@ def test_real_opposing_entries_settle_without_changing_refund_denomination() -> 
     assert sell.wallet.stable_usd == pytest.approx(original_sell_stable)
     assert sell.wallet.cngn_amount > original_sell_cngn
     assert sum(cost.swap_notional_usd for _, cost in settlements) == pytest.approx(external)
+    joint_swap_fee = sum(cost.swap_fee_cost for _, cost in settlements)
+    joint_price_impact = sum(cost.price_impact_cost for _, cost in settlements)
+    assert joint_swap_fee == pytest.approx(
+        expected_exact_output.swap_fee_cost, rel=1e-12, abs=1e-12
+    )
+    assert joint_price_impact == pytest.approx(
+        expected_exact_output.price_impact_cost, rel=1e-12, abs=1e-12
+    )
+    assert joint_swap_fee != pytest.approx(
+        wrong_exact_input.swap_fee_cost, rel=1e-12, abs=1e-12
+    )
+    assert joint_price_impact != pytest.approx(
+        wrong_exact_input.price_impact_cost, rel=1e-12, abs=1e-12
+    )
     total_cost = sum(cost.total for _, cost in settlements)
     holdings = []
     for runtime in (buy, sell):
@@ -197,7 +256,11 @@ def test_real_opposing_entries_settle_without_changing_refund_denomination() -> 
                 cngn_amount=runtime.wallet.cngn_amount + position_wallet.cngn_amount,
             )
         )
-    assert sum(item.value_usd(1.0) for item in holdings) == pytest.approx(200.0 - total_cost)
+    same_mark = sell.current_price
+    initial_value = 1_000.0 + 1_500.0 * same_mark
+    assert sum(item.value_usd(same_mark) for item in holdings) == pytest.approx(
+        initial_value - total_cost
+    )
 
     later_price = 1.20
     independently_marked = sum(

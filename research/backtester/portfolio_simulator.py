@@ -195,6 +195,9 @@ def _settle_actions(
 ) -> tuple[float, float, list[tuple[str, TransactionCostBreakdown]]]:
     if not actions:
         return 0.0, 0.0, []
+    action_kind = actions[0].kind
+    if any(action.kind != action_kind for action in actions[1:]):
+        raise ValueError("settlement action batch must have one action kind")
     execution = _net_actions(actions)
     residual_actions = [
         action
@@ -219,7 +222,7 @@ def _settle_actions(
         current_price=runtime.current_price,
         current_sqrt_price_x96=runtime.current_sqrt_price_x96,
         pool_config=pool_config,
-        exact_output=execution.direction == "stable_to_cngn",
+        exact_output=action_kind == "enter",
     )
     residual_total = sum(
         abs(execution.signed_notional_by_sleeve[action.sleeve_id])
