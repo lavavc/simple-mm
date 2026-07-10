@@ -88,20 +88,20 @@ def test_equal_family_weights_ignore_family_grid_size() -> None:
 
     allocation = equal_family_weights(sleeves, metrics)
 
-    assert allocation.weights["a"] == pytest.approx(0.175)
-    assert allocation.weights["b"] == pytest.approx(0.175)
-    assert allocation.weights["c"] == pytest.approx(0.35)
-    assert allocation.cash_weight == pytest.approx(0.30)
+    assert allocation.weights["a"] == pytest.approx(0.10)
+    assert allocation.weights["b"] == pytest.approx(0.10)
+    assert allocation.weights["c"] == pytest.approx(0.10)
+    assert allocation.cash_weight == pytest.approx(0.70)
 
 
-def test_equal_family_weights_leave_only_family_cap_residual_as_cash() -> None:
+def test_equal_family_weights_leave_sleeve_cap_residual_as_cash() -> None:
     sleeves = [sleeve("a", "ewma"), sleeve("b", "paper")]
     metrics = {item.sleeve_id: passing_metrics() for item in sleeves}
 
     allocation = equal_family_weights(sleeves, metrics)
 
-    assert allocation.weights == pytest.approx({"a": 0.35, "b": 0.35})
-    assert allocation.cash_weight == pytest.approx(0.30)
+    assert allocation.weights == pytest.approx({"a": 0.10, "b": 0.10})
+    assert allocation.cash_weight == pytest.approx(0.80)
 
 
 def test_no_eligible_sleeves_holds_cash() -> None:

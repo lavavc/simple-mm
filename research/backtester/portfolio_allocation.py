@@ -85,7 +85,9 @@ def equal_family_weights(
     eligible = eligible_sleeves(sleeves, metrics)
     if not eligible:
         return _allocation("equal_family", {})
-    return _allocation("equal_family", _family_base(eligible))
+    return _allocation(
+        "equal_family", _apply_caps(eligible, _family_base(eligible))
+    )
 
 
 def shrinkage_weights(
