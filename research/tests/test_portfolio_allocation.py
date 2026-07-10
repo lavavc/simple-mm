@@ -114,10 +114,15 @@ def test_no_eligible_sleeves_holds_cash() -> None:
 
 
 def test_shrinkage_is_deterministic_and_clips_risk_score() -> None:
-    sleeves = [sleeve("high", "ewma"), sleeve("low", "ewma")]
+    sleeve_ids = ("clipped", "boundary", "one", "half", "tenth", "hundredth")
+    sleeves = [sleeve(sleeve_id, "ewma") for sleeve_id in sleeve_ids]
     metrics = {
-        "high": passing_metrics(net_return=10.0, max_drawdown=-0.01),
-        "low": passing_metrics(net_return=0.01, max_drawdown=-1.0),
+        "clipped": passing_metrics(net_return=10.0, max_drawdown=-0.01),
+        "boundary": passing_metrics(net_return=2.0, max_drawdown=-1.0),
+        "one": passing_metrics(net_return=1.0, max_drawdown=-1.0),
+        "half": passing_metrics(net_return=0.5, max_drawdown=-1.0),
+        "tenth": passing_metrics(net_return=0.1, max_drawdown=-1.0),
+        "hundredth": passing_metrics(net_return=0.01, max_drawdown=-1.0),
     }
 
     first = shrinkage_weights(sleeves, metrics)
@@ -125,8 +130,20 @@ def test_shrinkage_is_deterministic_and_clips_risk_score() -> None:
 
     assert first == second
     assert first.rule == "shrinkage"
-    assert first.weights == pytest.approx({"high": 0.10, "low": 0.10})
-    assert first.cash_weight == pytest.approx(0.80)
+    assert first.weights == pytest.approx(
+        {
+            "clipped": 0.06656401528465063,
+            "boundary": 0.06656401528465063,
+            "one": 0.057587399741293246,
+            "half": 0.05452657775419123,
+            "tenth": 0.05257311562029242,
+            "hundredth": 0.05218487631492184,
+        }
+    )
+    assert first.weights["clipped"] == pytest.approx(first.weights["boundary"])
+    assert first.weights["clipped"] != pytest.approx(first.weights["hundredth"])
+    assert all(weight < SLEEVE_CAP for weight in first.weights.values())
+    assert first.cash_weight == pytest.approx(0.65)
 
 
 def test_shrinkage_rejects_non_finite_drawdown() -> None:
