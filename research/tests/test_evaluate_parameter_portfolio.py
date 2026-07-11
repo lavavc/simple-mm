@@ -20,6 +20,7 @@ from research.backtester.run import Window, WindowCounts, WindowSlice
 from research.backtester.simulator import UNISWAP_BASE_POOL
 from research.scripts.evaluate_parameter_portfolio import (
     ARTIFACT_NAMES,
+    WindowEvaluation,
     build_parser,
     compute_matrix_pbo,
     remove_sleeve_from_allocation,
@@ -168,3 +169,119 @@ def test_artifact_contract_is_complete() -> None:
         "pbo_allocation_rules.json",
         "summary.md",
     )
+
+
+def _portfolio_result(net_return: float) -> PortfolioResult:
+    return PortfolioResult(
+        bankroll_usd=100.0,
+        final_value=100.0 * (1.0 + net_return),
+        cash_value=100.0,
+        total_fees=0.0,
+        total_transaction_cost=0.0,
+        total_price_impact_cost=0.0,
+        external_swap_notional_usd=0.0,
+        internal_netting_notional_usd=0.0,
+        max_aggregate_liquidity_share=0.0,
+        value_samples=[],
+        attribution={},
+    )
+
+
+def _artifact_evaluation(
+    catalog: PortfolioCatalog,
+    *,
+    window_index: int,
+    comparator_metrics: dict[str, dict[str, float]],
+    routed_catalog: PortfolioCatalog,
+) -> WindowEvaluation:
+    allocations = {
+        rule: Allocation(rule, {}, 1.0)
+        for rule in ("equal_config", "equal_family", "shrinkage")
+    }
+    return WindowEvaluation(
+        pool=catalog.pool,
+        window_index=window_index,
+        window_start=f"2026-01-0{window_index + 1}",
+        window_end=f"2026-01-0{window_index + 2}",
+        training_metrics={},
+        allocations=allocations,
+        portfolio_results={rule: _portfolio_result(0.0) for rule in allocations},
+        comparator_metrics=comparator_metrics,
+        routed_catalog=routed_catalog,
+    )
+
+
+def _artifact_slices() -> dict[int, WindowSlice]:
+    now = datetime.now(UTC)
+    counts = WindowCounts(1, 1, 0)
+    return {
+        index: WindowSlice(
+            Window(index, now, now, now, now), [], [], counts, counts, None
+        )
+        for index in (0, 1)
+    }
+
+
+def test_directional_no_position_materializes_complete_zero_return_series(
+    monkeypatch: pytest.MonkeyPatch, catalog: PortfolioCatalog
+) -> None:
+    policy_id = catalog.directional_policies[0].sleeve_id
+    active = route_directional_catalog(
+        catalog,
+        {"gate_strict_sign_cone": "1", "entry_predicted_markout_20_25": "0.01"},
+    )
+    cash = route_directional_catalog(catalog, {})
+    evaluations = (
+        _artifact_evaluation(
+            catalog,
+            window_index=0,
+            comparator_metrics={
+                "static:a": {"net_return": -0.02},
+                policy_id: {"net_return": 0.10},
+            },
+            routed_catalog=active,
+        ),
+        _artifact_evaluation(
+            catalog,
+            window_index=1,
+            comparator_metrics={"static:a": {"net_return": -0.02}},
+            routed_catalog=cash,
+        ),
+    )
+    monkeypatch.setattr(orchestration, "simulate_portfolio", lambda **kwargs: _portfolio_result(0))
+    monkeypatch.setattr(orchestration, "_build_pool_state", lambda events: None)
+    rows, _ = orchestration._artifact_rows(
+        catalog, evaluations, _artifact_slices(), UNISWAP_BASE_POOL, 100.0
+    )
+    policy_rows = [
+        row for row in rows["sleeve_validation_matrix.csv"] if row["sleeve_id"] == policy_id
+    ]
+    assert [row["net_return"] for row in policy_rows] == [0.10, 0.0]
+    assert policy_rows[1]["episode_count"] == 0
+    assert {
+        row["best_sleeve_removed"] for row in rows["concentration_and_contribution.csv"]
+    } == {policy_id}
+
+
+def test_artifact_path_rejects_missing_non_directional_window(
+    catalog: PortfolioCatalog,
+) -> None:
+    routed = route_directional_catalog(catalog, {})
+    evaluations = (
+        _artifact_evaluation(
+            catalog,
+            window_index=0,
+            comparator_metrics={"static:a": {"net_return": 0.01}},
+            routed_catalog=routed,
+        ),
+        _artifact_evaluation(
+            catalog,
+            window_index=1,
+            comparator_metrics={},
+            routed_catalog=routed,
+        ),
+    )
+    with pytest.raises(ValueError, match="ragged sleeve matrix.*static:a"):
+        orchestration._artifact_rows(
+            catalog, evaluations, {}, UNISWAP_BASE_POOL, 100.0
+        )

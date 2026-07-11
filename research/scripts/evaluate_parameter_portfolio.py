@@ -57,6 +57,7 @@ ARTIFACT_NAMES = (
     "pbo_allocation_rules.json",
     "summary.md",
 )
+ALLOCATION_RULE_NAMES = ("equal_config", "equal_family", "shrinkage")
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,39 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in reader]
 
 
+def _cash_comparator_metrics(bankroll_usd: float) -> dict[str, float]:
+    return {
+        "composite": 0.0,
+        "net_return": 0.0,
+        "apy": 0.0,
+        "win_score": 0.0,
+        "max_drawdown": 0.0,
+        "time_in_range": 0.0,
+        "episode_count": 0.0,
+        "rebalance_count": 0.0,
+        "total_fees": 0.0,
+        "total_transaction_cost": 0.0,
+        "fee_to_transaction_cost_ratio": 0.0,
+        "total_price_impact_cost": 0.0,
+        "final_value": bankroll_usd,
+        "divergent_loss": 0.0,
+    }
+
+
+def _require_complete_matrix(
+    matrix: Mapping[str, Mapping[int, float]],
+    expected_rows: Sequence[str],
+    completed_windows: set[int],
+    *,
+    label: str,
+) -> None:
+    for identity in expected_rows:
+        observed = set(matrix.get(identity, {}))
+        if observed != completed_windows:
+            missing = sorted(completed_windows - observed)
+            raise ValueError(f"ragged {label} matrix: {identity} missing windows {missing}")
+
+
 def _artifact_rows(
     catalog: PortfolioCatalog,
     evaluations: Sequence[WindowEvaluation],
@@ -297,12 +331,22 @@ def _artifact_rows(
                     }
                 )
         family_values: defaultdict[str, list[float]] = defaultdict(list)
-        for sleeve_id, metrics in evaluation.comparator_metrics.items():
-            sleeve = routed_by_id[sleeve_id]
+        units_by_id = {unit.sleeve_id: unit for unit in catalog.allocation_units}
+        for sleeve_id, unit in units_by_id.items():
+            metrics = evaluation.comparator_metrics.get(sleeve_id)
+            sleeve = routed_by_id.get(sleeve_id)
+            if metrics is None:
+                if unit.family != "directional" or sleeve is not None:
+                    continue
+                metrics = _cash_comparator_metrics(bankroll_usd)
+            elif sleeve is None:
+                raise ValueError(
+                    f"comparator {sleeve_id} has metrics without a routed sleeve"
+                )
             value = metrics["net_return"]
             sleeve_matrix[sleeve_id][evaluation.window_index] = value
-            family_values[sleeve.family].append(value)
-            row = {**common, "sleeve_id": sleeve_id, "family": sleeve.family, **metrics}
+            family_values[unit.family].append(value)
+            row = {**common, "sleeve_id": sleeve_id, "family": unit.family, **metrics}
             rows["sleeve_validation_matrix.csv"].append(row)
             rows["comparators.csv"].append(row)
         for family, values in family_values.items():
@@ -328,12 +372,20 @@ def _artifact_rows(
             )
 
     completed = {evaluation.window_index for evaluation in evaluations}
-    if any(set(values) != completed for values in portfolio_matrix.values()):
-        raise ValueError("ragged portfolio matrix: allocation rules cover different windows")
+    _require_complete_matrix(
+        sleeve_matrix,
+        [unit.sleeve_id for unit in catalog.allocation_units],
+        completed,
+        label="sleeve",
+    )
+    _require_complete_matrix(
+        family_matrix, catalog.family_names, completed, label="family"
+    )
+    _require_complete_matrix(
+        portfolio_matrix, ALLOCATION_RULE_NAMES, completed, label="portfolio"
+    )
     sleeve_means = {
-        key: sum(values.values()) / len(values)
-        for key, values in sleeve_matrix.items()
-        if set(values) == completed
+        key: sum(values.values()) / len(values) for key, values in sleeve_matrix.items()
     }
     best_sleeve = (
         max(sleeve_means, key=lambda sleeve_id: sleeve_means[sleeve_id]) if sleeve_means else None
@@ -379,9 +431,8 @@ def _artifact_rows(
         "allocation_rules": portfolio_matrix,
     }
     for name, matrix in matrices.items():
-        complete = {key: values for key, values in matrix.items() if set(values) == completed}
-        if len(complete) >= 2 and len(completed) >= 2:
-            pbo_payload[name] = asdict(compute_matrix_pbo(complete))
+        if len(matrix) >= 2 and len(completed) >= 2:
+            pbo_payload[name] = asdict(compute_matrix_pbo(matrix))
         else:
             pbo_payload[name] = {"status": "insufficient_complete_matrix"}
     return rows, pbo_payload
