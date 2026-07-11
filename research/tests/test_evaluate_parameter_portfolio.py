@@ -172,7 +172,7 @@ def test_artifact_contract_is_complete() -> None:
 
 
 def test_portfolio_validation_rows_include_accounting_fields(
-    catalog: PortfolioCatalog,
+    monkeypatch: pytest.MonkeyPatch, catalog: PortfolioCatalog,
 ) -> None:
     evaluation = _artifact_evaluation(
         catalog,
@@ -180,15 +180,31 @@ def test_portfolio_validation_rows_include_accounting_fields(
         comparator_metrics={"static:a": {"net_return": 0.01}},
         routed_catalog=route_directional_catalog(catalog, {}),
     )
+    weights = {
+        "static:a": 0.2,
+        "directional:upside_tight_v1": 0.55,
+    }
+    allocation = Allocation("test", weights, 0.25)
+    portfolio_result = replace(
+        _portfolio_result(0.0), max_aggregate_liquidity_share=0.073
+    )
+    evaluation = replace(
+        evaluation,
+        allocations={rule: replace(allocation, rule=rule) for rule in evaluation.allocations},
+        portfolio_results={rule: portfolio_result for rule in evaluation.portfolio_results},
+    )
+    monkeypatch.setattr(orchestration, "simulate_portfolio", lambda **kwargs: portfolio_result)
 
     rows, _ = orchestration._artifact_rows(
         catalog, (evaluation,), {0: _artifact_slices()[0]}, UNISWAP_BASE_POOL, 100.0
     )
 
     for row in rows["portfolio_validation_matrix.csv"]:
-        assert row["deployed_weight"] == pytest.approx(0.0)
-        assert row["cash_weight"] == pytest.approx(1.0)
-        assert row["max_aggregate_liquidity_share"] == pytest.approx(0.0)
+        assert row["deployed_weight"] == pytest.approx(sum(weights.values()))
+        assert row["cash_weight"] == pytest.approx(allocation.cash_weight)
+        assert row["max_aggregate_liquidity_share"] == pytest.approx(
+            portfolio_result.max_aggregate_liquidity_share
+        )
 
 
 def _portfolio_result(net_return: float) -> PortfolioResult:
