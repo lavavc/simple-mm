@@ -357,6 +357,7 @@ def _artifact_rows(
             )
         for rule, result in evaluation.portfolio_results.items():
             value = _portfolio_return(result)
+            allocation = evaluation.allocations[rule]
             portfolio_matrix[rule][evaluation.window_index] = value
             rows["portfolio_validation_matrix.csv"].append(
                 {
@@ -368,6 +369,9 @@ def _artifact_rows(
                     "cash_value": result.cash_value,
                     "total_fees": result.total_fees,
                     "total_transaction_cost": result.total_transaction_cost,
+                    "deployed_weight": sum(allocation.weights.values()),
+                    "cash_weight": allocation.cash_weight,
+                    "max_aggregate_liquidity_share": result.max_aggregate_liquidity_share,
                 }
             )
 

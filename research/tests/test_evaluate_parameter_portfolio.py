@@ -171,6 +171,26 @@ def test_artifact_contract_is_complete() -> None:
     )
 
 
+def test_portfolio_validation_rows_include_accounting_fields(
+    catalog: PortfolioCatalog,
+) -> None:
+    evaluation = _artifact_evaluation(
+        catalog,
+        window_index=0,
+        comparator_metrics={"static:a": {"net_return": 0.01}},
+        routed_catalog=route_directional_catalog(catalog, {}),
+    )
+
+    rows, _ = orchestration._artifact_rows(
+        catalog, (evaluation,), {0: _artifact_slices()[0]}, UNISWAP_BASE_POOL, 100.0
+    )
+
+    for row in rows["portfolio_validation_matrix.csv"]:
+        assert row["deployed_weight"] == pytest.approx(0.0)
+        assert row["cash_weight"] == pytest.approx(1.0)
+        assert row["max_aggregate_liquidity_share"] == pytest.approx(0.0)
+
+
 def _portfolio_result(net_return: float) -> PortfolioResult:
     return PortfolioResult(
         bankroll_usd=100.0,
