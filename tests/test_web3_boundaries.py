@@ -3,9 +3,12 @@
 Two non-obvious invariants:
 
 1. V4 swap amounts are signed int256 values packed as two's-complement big-endian
-   in 32-byte words. A negative amount0 means tokens flowed *into* the pool
-   (buyer's side), positive means tokens flowed *out*. Both log-data shapes
-   (bytes-like and hex-string) occur in practice.
+   in 32-byte words, reported from the *swapper's* perspective: the output token
+   delta is positive (paid to the user), the input negative — the opposite of
+   V3's pool-perspective convention. Verified against live Base receipt
+   0x1e2eeea3b1416f983b204c8cdd40e9c0eff122b0368c400b5e0a42cfc9f37d34 (buy of
+   cNGN=token0: amount0=+244653630964, amount1=-175457000). Both log-data
+   shapes (bytes-like and hex-string) occur in practice.
 
 2. event_id_from_log() must produce a stable, identical string regardless of
    whether transactionHash arrives as HexBytes or a plain hex string, and whether
@@ -39,8 +42,8 @@ def _make_adapter() -> BaseV4DexAdapter:
 def test_parse_swap_output_raw_handles_bytes_like_log_data() -> None:
     adapter = _make_adapter()
     payload = b"".join([
-        _word(-15),
-        _word(21),
+        _word(15),
+        _word(-21),
         bytes(32),
         bytes(32),
         bytes(32),
@@ -66,8 +69,8 @@ def test_parse_swap_output_raw_handles_bytes_like_log_data() -> None:
 def test_parse_swap_output_raw_handles_hex_string_log_data() -> None:
     adapter = _make_adapter()
     payload = b"".join([
-        _word(10),
-        _word(-22),
+        _word(-10),
+        _word(22),
         bytes(32),
         bytes(32),
         bytes(32),
@@ -88,6 +91,31 @@ def test_parse_swap_output_raw_handles_hex_string_log_data() -> None:
         adapter.config.token1_address,
     )
     assert output_raw == 22
+
+
+def test_parse_swap_output_raw_live_base_buy_receipt() -> None:
+    """Regression for the 2026-07-10 half-open: sign convention verified against
+    the live Base receipt of buy tx 0x1e2eee… ($175.457 USDC → 244,653.63 cNGN).
+    The old parser expected the output delta to be negative and returned None on
+    every V4 swap, so a fee-blind estimate silently replaced the actual fill."""
+    adapter = _make_adapter()
+    payload = b"".join([
+        _word(244653630964),   # amount0: +cNGN received (token0, output)
+        _word(-175457000),     # amount1: -USDC paid (token1, input)
+        bytes(32),
+        bytes(32),
+        bytes(32),
+        bytes(32),
+    ])
+    receipt = {"logs": [{"topics": [HexBytes(V4_SWAP_TOPIC)], "data": payload}]}
+
+    assert BaseV4DexAdapter._parse_swap_output_raw(
+        adapter, receipt, adapter.config.token0_address
+    ) == 244653630964
+    # The input token must never be mistaken for output.
+    assert BaseV4DexAdapter._parse_swap_output_raw(
+        adapter, receipt, adapter.config.token1_address
+    ) is None
 
 
 # =============================================================================

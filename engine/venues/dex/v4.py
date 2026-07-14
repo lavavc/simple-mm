@@ -444,10 +444,12 @@ class BaseV4DexAdapter(VenueAdapter):
                 continue
             amount0 = int.from_bytes(data[0:32], "big", signed=True)
             amount1 = int.from_bytes(data[32:64], "big", signed=True)
-            # The output token has a negative delta (pool paid it out).
+            # V4 Swap events report deltas from the swapper's perspective: the
+            # output token is positive (paid to the user), the input negative —
+            # the opposite of V3's pool-perspective convention.
             if token_out.lower() == self.config.token0_address.lower():
-                return abs(amount0) if amount0 < 0 else None
-            return abs(amount1) if amount1 < 0 else None
+                return amount0 if amount0 > 0 else None
+            return amount1 if amount1 > 0 else None
         return None
 
     async def _send_transaction(
