@@ -133,11 +133,20 @@ class ArbitrageExecutor:
 
         result = await venue.swap(venue.stable_address, amount_in_raw, min_out_raw)
 
-        actual_cngn = (
-            Decimal(result.output_raw) / Decimal(10 ** venue.cngn_decimals)
-            if result.output_raw
-            else expected_cngn
-        )
+        if result.output_raw:
+            actual_cngn = Decimal(result.output_raw) / Decimal(10 ** venue.cngn_decimals)
+        else:
+            # Estimate ignores pool fee and price impact — downstream sells sized
+            # from it can exceed the true fill. Must never happen silently.
+            actual_cngn = expected_cngn
+            if result.status == "confirmed":
+                logger.error(
+                    "dex_buy_output_unparsed",
+                    venue=venue_name,
+                    opportunity_id=opportunity_id,
+                    tx_hash=result.hash,
+                    fallback_cngn=float(expected_cngn),
+                )
 
         return ArbitrageTrade(
             id=0,
@@ -178,6 +187,13 @@ class ArbitrageExecutor:
             fill_price = actual_stable_out / amount_cngn
         else:
             fill_price = current_price
+            if result.status == "confirmed":
+                logger.error(
+                    "dex_sell_output_unparsed",
+                    venue=venue_name,
+                    opportunity_id=opportunity_id,
+                    tx_hash=result.hash,
+                )
 
         return ArbitrageTrade(
             id=0,
