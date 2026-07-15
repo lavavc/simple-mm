@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -19,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from research.backtester.data import Event, load_v4_events
 from research.backtester.pbo import PBOResult, compute_pbo
+from research.backtester.pool_state import PoolState
 from research.backtester.portfolio_allocation import (
     Allocation,
     TrainingMetrics,
@@ -32,7 +34,11 @@ from research.backtester.portfolio_catalog import (
     SleeveDefinition,
     build_portfolio_catalog,
 )
-from research.backtester.portfolio_simulator import PortfolioResult, simulate_portfolio
+from research.backtester.portfolio_simulator import (
+    LiquidityShareExceeded,
+    PortfolioResult,
+    simulate_portfolio,
+)
 from research.backtester.run import (
     WindowSlice,
     WindowSpec,
@@ -61,16 +67,56 @@ ALLOCATION_RULE_NAMES = ("equal_config", "equal_family", "shrinkage")
 
 
 @dataclass(frozen=True)
+class PortfolioRuleOutcome:
+    allocation: Allocation
+    status: Literal["valid", "invalid_liquidity_cap"]
+    result: PortfolioResult | None
+    observed_share: float | None
+    cap: float | None
+
+    def __post_init__(self) -> None:
+        if self.status == "valid":
+            if (
+                self.result is None
+                or self.observed_share is not None
+                or self.cap is not None
+            ):
+                raise ValueError("valid portfolio outcome requires only a result")
+            return
+        if self.status != "invalid_liquidity_cap":
+            raise ValueError(f"unsupported portfolio outcome status {self.status!r}")
+        if self.result is not None or self.observed_share is None or self.cap is None:
+            raise ValueError(
+                "invalid liquidity-cap outcome requires evidence without a result"
+            )
+        if (
+            not math.isfinite(self.observed_share)
+            or not math.isfinite(self.cap)
+            or not 0.0 < self.cap < self.observed_share <= 1.0
+        ):
+            raise ValueError("invalid liquidity-cap evidence is incoherent")
+
+
+@dataclass(frozen=True)
 class WindowEvaluation:
     pool: str
     window_index: int
     window_start: str
     window_end: str
     training_metrics: Mapping[str, TrainingMetrics]
-    allocations: Mapping[str, Allocation]
-    portfolio_results: Mapping[str, PortfolioResult]
+    rule_outcomes: Mapping[str, PortfolioRuleOutcome]
     comparator_metrics: Mapping[str, Mapping[str, float]]
     routed_catalog: PortfolioCatalog
+
+    def __post_init__(self) -> None:
+        if set(self.rule_outcomes) != set(ALLOCATION_RULE_NAMES):
+            raise ValueError("window evaluation requires exactly three allocation rules")
+        for rule, outcome in self.rule_outcomes.items():
+            if outcome.allocation.rule != rule:
+                raise ValueError(
+                    f"rule outcome {rule!r} contains allocation "
+                    f"{outcome.allocation.rule!r}"
+                )
 
 
 def route_directional_catalog(
@@ -113,6 +159,41 @@ def _portfolio_return(result: PortfolioResult) -> float:
     return result.final_value / result.bankroll_usd - 1.0
 
 
+def _simulate_rule_outcome(
+    *,
+    events: Sequence[Event],
+    sleeves: Sequence[SleeveDefinition],
+    allocation: Allocation,
+    pool_config: PoolConfig,
+    bankroll_usd: float,
+    initial_pool_state: PoolState | None,
+) -> PortfolioRuleOutcome:
+    try:
+        result = simulate_portfolio(
+            events=events,
+            sleeves=sleeves,
+            allocation=allocation,
+            pool_config=pool_config,
+            bankroll_usd=bankroll_usd,
+            initial_pool_state=initial_pool_state,
+        )
+    except LiquidityShareExceeded as exc:
+        return PortfolioRuleOutcome(
+            allocation=allocation,
+            status="invalid_liquidity_cap",
+            result=None,
+            observed_share=exc.observed_share,
+            cap=exc.cap,
+        )
+    return PortfolioRuleOutcome(
+        allocation=allocation,
+        status="valid",
+        result=result,
+        observed_share=None,
+        cap=None,
+    )
+
+
 def evaluate_window(
     *,
     pool: str,
@@ -133,17 +214,16 @@ def evaluate_window(
         for rule in rules
     }
     initial_pool_state = _build_pool_state(window_slice.train_events)
-    results = {
-        name: simulate_portfolio(
+    rule_outcomes: dict[str, PortfolioRuleOutcome] = {}
+    for name in ALLOCATION_RULE_NAMES:
+        rule_outcomes[name] = _simulate_rule_outcome(
             events=window_slice.val_events,
             sleeves=routed.sleeves,
-            allocation=allocation,
+            allocation=allocations[name],
             pool_config=pool_config,
             bankroll_usd=bankroll_usd,
             initial_pool_state=initial_pool_state,
         )
-        for name, allocation in allocations.items()
-    }
     comparators: dict[str, Mapping[str, float]] = {}
     for sleeve in routed.sleeves:
         sim = simulate_pool(
@@ -164,8 +244,7 @@ def evaluate_window(
         window_start=window_slice.window.val_start.isoformat(),
         window_end=window_slice.window.val_end.isoformat(),
         training_metrics=training,
-        allocations=allocations,
-        portfolio_results=results,
+        rule_outcomes=rule_outcomes,
         comparator_metrics=comparators,
         routed_catalog=routed,
     )
@@ -294,6 +373,7 @@ def _artifact_rows(
     sleeve_matrix: defaultdict[str, dict[int, float]] = defaultdict(dict)
     family_matrix: defaultdict[str, dict[int, float]] = defaultdict(dict)
     portfolio_matrix: defaultdict[str, dict[int, float]] = defaultdict(dict)
+    invalid_windows_by_rule: defaultdict[str, list[int]] = defaultdict(list)
     for evaluation in evaluations:
         common = _common(evaluation)
         routed_by_id = {item.sleeve_id: item for item in evaluation.routed_catalog.sleeves}
@@ -319,7 +399,8 @@ def _artifact_rows(
                     **(asdict(metric) if metric is not None else {}),
                 }
             )
-        for rule, allocation in evaluation.allocations.items():
+        for rule in ALLOCATION_RULE_NAMES:
+            allocation = evaluation.rule_outcomes[rule].allocation
             for unit in catalog.allocation_units:
                 rows["window_weights.csv"].append(
                     {
@@ -355,23 +436,49 @@ def _artifact_rows(
             rows["family_validation_matrix.csv"].append(
                 {**common, "family": family, "mean_standalone_net_return": value}
             )
-        for rule, result in evaluation.portfolio_results.items():
-            value = _portfolio_return(result)
-            allocation = evaluation.allocations[rule]
-            portfolio_matrix[rule][evaluation.window_index] = value
-            rows["portfolio_validation_matrix.csv"].append(
-                {
-                    **common,
-                    "rule": rule,
+        for rule in ALLOCATION_RULE_NAMES:
+            outcome = evaluation.rule_outcomes[rule]
+            allocation = outcome.allocation
+            result = outcome.result
+            if result is None:
+                invalid_windows_by_rule[rule].append(evaluation.window_index)
+                performance: dict[str, object] = {
+                    "net_return": "",
+                    "max_drawdown": "",
+                    "final_value": "",
+                    "cash_value": "",
+                    "total_fees": "",
+                    "total_transaction_cost": "",
+                    "max_aggregate_liquidity_share": "",
+                }
+            else:
+                value = _portfolio_return(result)
+                portfolio_matrix[rule][evaluation.window_index] = value
+                performance = {
                     "net_return": value,
                     "max_drawdown": _max_drawdown(result),
                     "final_value": result.final_value,
                     "cash_value": result.cash_value,
                     "total_fees": result.total_fees,
                     "total_transaction_cost": result.total_transaction_cost,
+                    "max_aggregate_liquidity_share": (
+                        result.max_aggregate_liquidity_share
+                    ),
+                }
+            rows["portfolio_validation_matrix.csv"].append(
+                {
+                    **common,
+                    "rule": rule,
+                    "status": outcome.status,
+                    "observed_share": (
+                        ""
+                        if outcome.observed_share is None
+                        else f"{outcome.observed_share:.6f}"
+                    ),
+                    "cap": "" if outcome.cap is None else f"{outcome.cap:.2f}",
+                    **performance,
                     "deployed_weight": sum(allocation.weights.values()),
                     "cash_weight": allocation.cash_weight,
-                    "max_aggregate_liquidity_share": result.max_aggregate_liquidity_share,
                 }
             )
 
@@ -385,9 +492,6 @@ def _artifact_rows(
     _require_complete_matrix(
         family_matrix, catalog.family_names, completed, label="family"
     )
-    _require_complete_matrix(
-        portfolio_matrix, ALLOCATION_RULE_NAMES, completed, label="portfolio"
-    )
     sleeve_means = {
         key: sum(values.values()) / len(values) for key, values in sleeve_matrix.items()
     }
@@ -396,26 +500,43 @@ def _artifact_rows(
     )
     for evaluation in evaluations:
         common = _common(evaluation)
-        for rule, allocation in evaluation.allocations.items():
+        initial_pool_state = _build_pool_state(
+            window_slices[evaluation.window_index].train_events
+        )
+        for rule in ALLOCATION_RULE_NAMES:
+            allocation = evaluation.rule_outcomes[rule].allocation
             weights = list(allocation.weights.values())
             contribution = sum(
                 allocation.weights.get(sleeve_id, 0.0) * metrics["net_return"]
                 for sleeve_id, metrics in evaluation.comparator_metrics.items()
             )
-            removal_return: float | None = None
+            removed_weight: float | str = ""
+            removal_deployed_weight: float | str = ""
+            removal_cash_weight: float | str = ""
+            removal_status = ""
+            removal_observed_share = ""
+            removal_cap = ""
+            removal_return: float | str = ""
             if best_sleeve is not None:
+                removed_weight = allocation.weights.get(best_sleeve, 0.0)
                 removed = remove_sleeve_from_allocation(allocation, best_sleeve)
-                removal = simulate_portfolio(
+                removal_deployed_weight = sum(removed.weights.values())
+                removal_cash_weight = removed.cash_weight
+                removal_outcome = _simulate_rule_outcome(
                     events=window_slices[evaluation.window_index].val_events,
                     sleeves=evaluation.routed_catalog.sleeves,
                     allocation=removed,
                     pool_config=pool_config,
                     bankroll_usd=bankroll_usd,
-                    initial_pool_state=_build_pool_state(
-                        window_slices[evaluation.window_index].train_events
-                    ),
+                    initial_pool_state=initial_pool_state,
                 )
-                removal_return = _portfolio_return(removal)
+                removal_status = removal_outcome.status
+                if removal_outcome.observed_share is not None:
+                    removal_observed_share = f"{removal_outcome.observed_share:.6f}"
+                if removal_outcome.cap is not None:
+                    removal_cap = f"{removal_outcome.cap:.2f}"
+                if removal_outcome.result is not None:
+                    removal_return = _portfolio_return(removal_outcome.result)
             rows["concentration_and_contribution.csv"].append(
                 {
                     **common,
@@ -424,6 +545,12 @@ def _artifact_rows(
                     "largest_weight": max(weights, default=0.0),
                     "standalone_weighted_contribution": contribution,
                     "best_sleeve_removed": best_sleeve or "",
+                    "best_sleeve_removed_weight": removed_weight,
+                    "best_sleeve_removal_deployed_weight": removal_deployed_weight,
+                    "best_sleeve_removal_cash_weight": removal_cash_weight,
+                    "best_sleeve_removal_status": removal_status,
+                    "best_sleeve_removal_observed_share": removal_observed_share,
+                    "best_sleeve_removal_cap": removal_cap,
                     "best_sleeve_removal_net_return": removal_return,
                 }
             )
@@ -432,13 +559,31 @@ def _artifact_rows(
     matrices = {
         "sleeves": sleeve_matrix,
         "families": family_matrix,
-        "allocation_rules": portfolio_matrix,
     }
     for name, matrix in matrices.items():
         if len(matrix) >= 2 and len(completed) >= 2:
             pbo_payload[name] = asdict(compute_matrix_pbo(matrix))
         else:
             pbo_payload[name] = {"status": "insufficient_complete_matrix"}
+    if invalid_windows_by_rule:
+        pbo_payload["allocation_rules"] = {
+            "status": "invalid_incomplete_matrix",
+            "invalid_window_indexes_by_rule": {
+                rule: sorted(invalid_windows_by_rule[rule])
+                for rule in ALLOCATION_RULE_NAMES
+                if rule in invalid_windows_by_rule
+            },
+        }
+    elif len(portfolio_matrix) >= 2 and len(completed) >= 2:
+        _require_complete_matrix(
+            portfolio_matrix,
+            ALLOCATION_RULE_NAMES,
+            completed,
+            label="portfolio",
+        )
+        pbo_payload["allocation_rules"] = asdict(compute_matrix_pbo(portfolio_matrix))
+    else:
+        pbo_payload["allocation_rules"] = {"status": "insufficient_complete_matrix"}
     return rows, pbo_payload
 
 

@@ -19,6 +19,7 @@ from research.backtester.pool_state import PoolState
 from research.backtester.portfolio_allocation import Allocation
 from research.backtester.portfolio_catalog import SleeveDefinition, parameter_fingerprint
 from research.backtester.portfolio_simulator import (
+    AGGREGATE_LIQUIDITY_SHARE_CAP,
     LiquidityShareExceeded,
     _net_actions,
     _settle_actions,
@@ -449,11 +450,21 @@ def test_aggregate_share_fails_even_when_each_sleeve_is_below_cap() -> None:
     )
     for entry_overlays_by_sleeve in overlay_cases:
         for _ in range(2):
-            with pytest.raises(LiquidityShareExceeded, match="aggregate synthetic"):
+            with pytest.raises(
+                LiquidityShareExceeded,
+                match="aggregate synthetic",
+            ) as exc_info:
                 simulate_portfolio(
                     **kwargs,
                     entry_overlays_by_sleeve=entry_overlays_by_sleeve,
                 )
+            assert exc_info.value.observed_share > exc_info.value.cap
+            assert exc_info.value.cap == AGGREGATE_LIQUIDITY_SHARE_CAP
+            assert str(exc_info.value) == (
+                "aggregate synthetic liquidity share "
+                f"{exc_info.value.observed_share:.6f} exceeds "
+                f"{AGGREGATE_LIQUIDITY_SHARE_CAP:.2f}"
+            )
             assert initial_pool_state.tick_map == before
 
 

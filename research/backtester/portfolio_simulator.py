@@ -33,6 +33,14 @@ AGGREGATE_LIQUIDITY_SHARE_CAP = 0.10
 class LiquidityShareExceeded(ValueError):  # noqa: N818 - required public contract
     """Raised when joint synthetic liquidity exceeds the approved pool share."""
 
+    def __init__(self, observed_share: float, cap: float) -> None:
+        self.observed_share = observed_share
+        self.cap = cap
+        super().__init__(
+            f"aggregate synthetic liquidity share {observed_share:.6f} "
+            f"exceeds {cap:.2f}"
+        )
+
 
 @dataclass
 class SleeveAttribution:
@@ -110,9 +118,7 @@ def _aggregate_share(runtimes: Sequence[SleeveRuntime], historical_liquidity: in
     denominator = historical_liquidity + synthetic
     share = synthetic / denominator if denominator > 0 else (1.0 if synthetic > 0 else 0.0)
     if share > AGGREGATE_LIQUIDITY_SHARE_CAP + 1e-12:
-        raise LiquidityShareExceeded(
-            f"aggregate synthetic liquidity share {share:.6f} exceeds 0.10"
-        )
+        raise LiquidityShareExceeded(share, AGGREGATE_LIQUIDITY_SHARE_CAP)
     return share
 
 

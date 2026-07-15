@@ -16,11 +16,16 @@ from research.backtester.portfolio_catalog import (
     SleeveDefinition,
     parameter_fingerprint,
 )
-from research.backtester.portfolio_simulator import PortfolioResult, simulate_portfolio
+from research.backtester.portfolio_simulator import (
+    LiquidityShareExceeded,
+    PortfolioResult,
+    simulate_portfolio,
+)
 from research.backtester.run import Window, WindowCounts, WindowSlice
 from research.backtester.simulator import UNISWAP_BASE_POOL
 from research.scripts.evaluate_parameter_portfolio import (
     ARTIFACT_NAMES,
+    PortfolioRuleOutcome,
     WindowEvaluation,
     build_parser,
     compute_matrix_pbo,
@@ -170,8 +175,149 @@ def test_validation_metrics_cannot_change_frozen_weights(
 
     first = evaluate(0.90)
     second = evaluate(-0.90)
-    assert first.allocations == second.allocations
-    assert first.portfolio_results != second.portfolio_results
+    assert {
+        rule: outcome.allocation for rule, outcome in first.rule_outcomes.items()
+    } == {
+        rule: outcome.allocation for rule, outcome in second.rule_outcomes.items()
+    }
+    assert {
+        rule: outcome.result for rule, outcome in first.rule_outcomes.items()
+    } != {
+        rule: outcome.result for rule, outcome in second.rule_outcomes.items()
+    }
+
+
+def test_portfolio_rule_outcome_rejects_incoherent_states() -> None:
+    allocation = Allocation("equal_config", {}, 1.0)
+    result = _portfolio_result(0.0)
+
+    with pytest.raises(ValueError, match="valid portfolio outcome"):
+        PortfolioRuleOutcome(allocation, "valid", None, None, None)
+    with pytest.raises(ValueError, match="valid portfolio outcome"):
+        PortfolioRuleOutcome(allocation, "valid", result, 0.11, 0.10)
+    with pytest.raises(ValueError, match="requires evidence"):
+        PortfolioRuleOutcome(allocation, "invalid_liquidity_cap", result, 0.11, 0.10)
+    with pytest.raises(ValueError, match="requires evidence"):
+        PortfolioRuleOutcome(allocation, "invalid_liquidity_cap", None, None, None)
+    with pytest.raises(ValueError, match="evidence is incoherent"):
+        PortfolioRuleOutcome(allocation, "invalid_liquidity_cap", None, 0.10, 0.10)
+    with pytest.raises(ValueError, match="unsupported"):
+        PortfolioRuleOutcome(  # type: ignore[arg-type]
+            allocation, "unexpected", None, None, None
+        )
+
+
+def test_window_evaluation_requires_exact_coherent_rule_outcomes(
+    catalog: PortfolioCatalog,
+) -> None:
+    evaluation = _artifact_evaluation(
+        catalog,
+        window_index=0,
+        comparator_metrics={"static:a": {"net_return": 0.0}},
+        routed_catalog=route_directional_catalog(catalog, {}),
+    )
+    missing = dict(evaluation.rule_outcomes)
+    missing.pop("shrinkage")
+    with pytest.raises(ValueError, match="exactly three allocation rules"):
+        replace(evaluation, rule_outcomes=missing)
+
+    extra = dict(evaluation.rule_outcomes)
+    extra["unexpected"] = PortfolioRuleOutcome(
+        Allocation("unexpected", {}, 1.0),
+        "valid",
+        _portfolio_result(0.0),
+        None,
+        None,
+    )
+    with pytest.raises(ValueError, match="exactly three allocation rules"):
+        replace(evaluation, rule_outcomes=extra)
+
+    mismatched = dict(evaluation.rule_outcomes)
+    mismatched["equal_config"] = replace(
+        mismatched["equal_config"],
+        allocation=Allocation("shrinkage", {}, 1.0),
+    )
+    with pytest.raises(ValueError, match="contains allocation 'shrinkage'"):
+        replace(evaluation, rule_outcomes=mismatched)
+
+
+def test_invalid_equal_config_does_not_abort_other_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: PortfolioCatalog,
+) -> None:
+    metric = TrainingMetrics(0.1, 1, 2.0, -0.1)
+    monkeypatch.setattr(
+        orchestration,
+        "_training_metrics",
+        lambda *args: {"static:a": metric},
+    )
+    called_rules: list[str] = []
+
+    def fake_portfolio(
+        *, allocation: Allocation, **kwargs: object
+    ) -> PortfolioResult:
+        called_rules.append(allocation.rule)
+        if allocation.rule == "equal_config":
+            raise LiquidityShareExceeded(0.118129, 0.10)
+        return _portfolio_result(0.01)
+
+    monkeypatch.setattr(orchestration, "simulate_portfolio", fake_portfolio)
+    monkeypatch.setattr(orchestration, "simulate_pool", lambda *args, **kwargs: object())
+    monkeypatch.setattr(orchestration, "_compute_metrics", lambda *args: {"net_return": 0.0})
+    monkeypatch.setattr(orchestration, "_build_pool_state", lambda events: None)
+    now = datetime.now(UTC)
+    window = Window(0, now, now + timedelta(hours=1), now, now + timedelta(hours=1))
+    counts = WindowCounts(1, 1, 0)
+
+    evaluation = orchestration.evaluate_window(
+        pool="uni-base",
+        catalog=catalog,
+        window_slice=WindowSlice(window, [], [], counts, counts, None),
+        entry_state={},
+        pool_config=UNISWAP_BASE_POOL,
+        bankroll_usd=100.0,
+    )
+
+    assert called_rules == ["equal_config", "equal_family", "shrinkage"]
+    invalid = evaluation.rule_outcomes["equal_config"]
+    assert invalid.status == "invalid_liquidity_cap"
+    assert invalid.result is None
+    assert invalid.observed_share == 0.118129
+    assert invalid.cap == 0.10
+    assert evaluation.rule_outcomes["equal_family"].status == "valid"
+    assert evaluation.rule_outcomes["shrinkage"].status == "valid"
+    assert "static:a" in evaluation.comparator_metrics
+
+
+def test_non_liquidity_rule_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: PortfolioCatalog,
+) -> None:
+    metric = TrainingMetrics(0.1, 1, 2.0, -0.1)
+    monkeypatch.setattr(
+        orchestration,
+        "_training_metrics",
+        lambda *args: {"static:a": metric},
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "simulate_portfolio",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("unrelated failure")),
+    )
+    monkeypatch.setattr(orchestration, "_build_pool_state", lambda events: None)
+    now = datetime.now(UTC)
+    window = Window(0, now, now, now, now)
+    counts = WindowCounts(1, 1, 0)
+
+    with pytest.raises(ValueError, match="unrelated failure"):
+        orchestration.evaluate_window(
+            pool="uni-base",
+            catalog=catalog,
+            window_slice=WindowSlice(window, [], [], counts, counts, None),
+            entry_state={},
+            pool_config=UNISWAP_BASE_POOL,
+            bankroll_usd=100.0,
+        )
 
 
 def test_remove_sleeve_keeps_removed_weight_as_cash() -> None:
@@ -226,10 +372,19 @@ def test_portfolio_validation_rows_include_accounting_fields(
     portfolio_result = replace(
         _portfolio_result(0.0), max_aggregate_liquidity_share=0.073
     )
+    outcomes = {
+        rule: PortfolioRuleOutcome(
+            replace(allocation, rule=rule),
+            "valid",
+            portfolio_result,
+            None,
+            None,
+        )
+        for rule in evaluation.rule_outcomes
+    }
     evaluation = replace(
         evaluation,
-        allocations={rule: replace(allocation, rule=rule) for rule in evaluation.allocations},
-        portfolio_results={rule: portfolio_result for rule in evaluation.portfolio_results},
+        rule_outcomes=outcomes,
     )
     monkeypatch.setattr(orchestration, "simulate_portfolio", lambda **kwargs: portfolio_result)
 
@@ -238,10 +393,196 @@ def test_portfolio_validation_rows_include_accounting_fields(
     )
 
     for row in rows["portfolio_validation_matrix.csv"]:
+        assert row["status"] == "valid"
+        assert row["observed_share"] == ""
+        assert row["cap"] == ""
         assert row["deployed_weight"] == pytest.approx(sum(weights.values()))
         assert row["cash_weight"] == pytest.approx(allocation.cash_weight)
         assert row["max_aggregate_liquidity_share"] == pytest.approx(
             portfolio_result.max_aggregate_liquidity_share
+        )
+
+
+def test_invalid_portfolio_row_keeps_metrics_blank_and_refuses_rule_pbo(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: PortfolioCatalog,
+) -> None:
+    routed = route_directional_catalog(catalog, {})
+    first = _artifact_evaluation(
+        catalog,
+        window_index=0,
+        comparator_metrics={"static:a": {"net_return": 0.01}},
+        routed_catalog=routed,
+    )
+    invalid_allocation = Allocation(
+        "equal_config",
+        {
+            "static:a": 0.2,
+            "directional:upside_tight_v1": 0.55,
+        },
+        0.25,
+    )
+    first_outcomes = dict(first.rule_outcomes)
+    first_outcomes["equal_config"] = PortfolioRuleOutcome(
+        invalid_allocation,
+        "invalid_liquidity_cap",
+        None,
+        0.118129,
+        0.10,
+    )
+    first = replace(first, rule_outcomes=first_outcomes)
+    second = _artifact_evaluation(
+        catalog,
+        window_index=1,
+        comparator_metrics={"static:a": {"net_return": 0.02}},
+        routed_catalog=routed,
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "simulate_portfolio",
+        lambda **kwargs: _portfolio_result(0.0),
+    )
+    monkeypatch.setattr(orchestration, "_build_pool_state", lambda events: None)
+
+    rows, pbo = orchestration._artifact_rows(
+        catalog,
+        (first, second),
+        _artifact_slices(),
+        UNISWAP_BASE_POOL,
+        100.0,
+    )
+
+    invalid_row = next(
+        row
+        for row in rows["portfolio_validation_matrix.csv"]
+        if row["window_index"] == 0 and row["rule"] == "equal_config"
+    )
+    assert invalid_row["status"] == "invalid_liquidity_cap"
+    assert invalid_row["observed_share"] == "0.118129"
+    assert invalid_row["cap"] == "0.10"
+    assert invalid_row["deployed_weight"] == pytest.approx(0.75)
+    assert invalid_row["cash_weight"] == pytest.approx(0.25)
+    for field in (
+        "net_return",
+        "max_drawdown",
+        "final_value",
+        "cash_value",
+        "total_fees",
+        "total_transaction_cost",
+        "max_aggregate_liquidity_share",
+    ):
+        assert invalid_row[field] == ""
+    attempted_weights = {
+        row["sleeve_id"]: row["weight"]
+        for row in rows["window_weights.csv"]
+        if row["window_index"] == 0 and row["rule"] == "equal_config"
+    }
+    assert attempted_weights == invalid_allocation.weights
+    assert {
+        row["cash_weight"]
+        for row in rows["window_weights.csv"]
+        if row["window_index"] == 0 and row["rule"] == "equal_config"
+    } == {0.25}
+    assert pbo["allocation_rules"] == {
+        "status": "invalid_incomplete_matrix",
+        "invalid_window_indexes_by_rule": {"equal_config": [0]},
+    }
+    assert "status" not in pbo["sleeves"]
+    assert "status" not in pbo["families"]
+
+
+def test_cap_invalid_removal_is_explicit_and_later_rules_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: PortfolioCatalog,
+) -> None:
+    evaluation = _artifact_evaluation(
+        catalog,
+        window_index=0,
+        comparator_metrics={"static:a": {"net_return": 0.01}},
+        routed_catalog=route_directional_catalog(catalog, {}),
+    )
+    outcomes = {
+        rule: PortfolioRuleOutcome(
+            Allocation(
+                rule,
+                {
+                    "static:a": 0.4,
+                    "directional:upside_tight_v1": 0.3,
+                },
+                0.3,
+            ),
+            "valid",
+            _portfolio_result(0.0),
+            None,
+            None,
+        )
+        for rule in orchestration.ALLOCATION_RULE_NAMES
+    }
+    evaluation = replace(evaluation, rule_outcomes=outcomes)
+    called_rules: list[str] = []
+
+    def fake_removal(*, allocation: Allocation, **kwargs: object) -> PortfolioResult:
+        called_rules.append(allocation.rule)
+        if allocation.rule == "equal_config":
+            raise LiquidityShareExceeded(0.118129, 0.10)
+        return _portfolio_result(0.02)
+
+    monkeypatch.setattr(orchestration, "simulate_portfolio", fake_removal)
+    monkeypatch.setattr(orchestration, "_build_pool_state", lambda events: None)
+
+    rows, _ = orchestration._artifact_rows(
+        catalog,
+        (evaluation,),
+        {0: _artifact_slices()[0]},
+        UNISWAP_BASE_POOL,
+        100.0,
+    )
+
+    assert called_rules == ["equal_config", "equal_family", "shrinkage"]
+    contribution_rows = rows["concentration_and_contribution.csv"]
+    invalid = contribution_rows[0]
+    assert invalid["best_sleeve_removed"] == "static:a"
+    assert invalid["best_sleeve_removed_weight"] == pytest.approx(0.4)
+    assert invalid["best_sleeve_removal_deployed_weight"] == pytest.approx(0.3)
+    assert invalid["best_sleeve_removal_cash_weight"] == pytest.approx(0.7)
+    assert invalid["best_sleeve_removal_status"] == "invalid_liquidity_cap"
+    assert invalid["best_sleeve_removal_observed_share"] == "0.118129"
+    assert invalid["best_sleeve_removal_cap"] == "0.10"
+    assert invalid["best_sleeve_removal_net_return"] == ""
+    assert [row["best_sleeve_removal_status"] for row in contribution_rows[1:]] == [
+        "valid",
+        "valid",
+    ]
+    assert [row["best_sleeve_removal_net_return"] for row in contribution_rows[1:]] == [
+        pytest.approx(0.02),
+        pytest.approx(0.02),
+    ]
+
+
+def test_non_liquidity_removal_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: PortfolioCatalog,
+) -> None:
+    evaluation = _artifact_evaluation(
+        catalog,
+        window_index=0,
+        comparator_metrics={"static:a": {"net_return": 0.01}},
+        routed_catalog=route_directional_catalog(catalog, {}),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "simulate_portfolio",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("unrelated removal failure")),
+    )
+    monkeypatch.setattr(orchestration, "_build_pool_state", lambda events: None)
+
+    with pytest.raises(ValueError, match="unrelated removal failure"):
+        orchestration._artifact_rows(
+            catalog,
+            (evaluation,),
+            {0: _artifact_slices()[0]},
+            UNISWAP_BASE_POOL,
+            100.0,
         )
 
 
@@ -268,9 +609,15 @@ def _artifact_evaluation(
     comparator_metrics: dict[str, dict[str, float]],
     routed_catalog: PortfolioCatalog,
 ) -> WindowEvaluation:
-    allocations = {
-        rule: Allocation(rule, {}, 1.0)
-        for rule in ("equal_config", "equal_family", "shrinkage")
+    outcomes = {
+        rule: PortfolioRuleOutcome(
+            Allocation(rule, {}, 1.0),
+            "valid",
+            _portfolio_result(0.0),
+            None,
+            None,
+        )
+        for rule in orchestration.ALLOCATION_RULE_NAMES
     }
     return WindowEvaluation(
         pool=catalog.pool,
@@ -278,8 +625,7 @@ def _artifact_evaluation(
         window_start=f"2026-01-0{window_index + 1}",
         window_end=f"2026-01-0{window_index + 2}",
         training_metrics={},
-        allocations=allocations,
-        portfolio_results={rule: _portfolio_result(0.0) for rule in allocations},
+        rule_outcomes=outcomes,
         comparator_metrics=comparator_metrics,
         routed_catalog=routed_catalog,
     )
