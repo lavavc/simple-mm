@@ -641,6 +641,11 @@ class DirectionalPredictiveAudit:
 def summarize_predictions(rows: Sequence[PredictionRow]) -> PredictiveMetrics: ...
 
 
+def validate_prediction_rows(
+    rows: Sequence[PredictionRow],
+) -> tuple[PredictionRow, ...]: ...
+
+
 def bootstrap_predictive(
     rows: Sequence[PredictionRow],
     *,
@@ -673,12 +678,16 @@ def audit_predictions(rows: Sequence[PredictionRow]) -> DirectionalPredictiveAud
 ```
 
 Positive improvements are baseline loss minus cross loss. Relative OOS
-R-squared is `1 - SSE_cross / SSE_baseline`; it is `None` when baseline SSE is
-zero so serialization never receives NaN or Infinity. Validate nonempty,
-finite, strictly timestamp-ordered rows with one direction, one positive
+R-squared is `1 - SSE_cross / SSE_baseline`; because both losses use the same
+row count, calculate and store it canonically as
+`1 - cross_mse_bps2 / baseline_mse_bps2` so the typed contract can recompute it
+exactly. It is `None` when baseline SSE is zero so serialization never receives
+NaN or Infinity. Validate nonempty, finite, strictly timestamp-ordered rows
+with one direction, one positive
 horizon, exact `target_timestamp_ms == timestamp_ms + horizon_ms`, unique
 target timestamps, nonnegative nondecreasing fold indices, one refit timestamp
-per observed fold, and every row inside its half-open seven-day refit window.
+per observed fold, strictly increasing refit timestamps across distinct
+observed folds, and every row inside its half-open seven-day refit window.
 Do not require observed fold indices to be contiguous: leave-one-fold and
 regime subsets legitimately contain gaps. Check the finiteness of derived
 errors, absolute errors, squared errors, per-day sums, sampled sums, and final
@@ -701,10 +710,12 @@ than averaging daily statistics first. Sort each empirical
 bootstrap distribution and select zero-based nearest-rank indices
 `ceil(alpha / 2 * B) - 1` and `ceil((1 - alpha / 2) * B) - 1`, clamped to the
 observed range, where `alpha = 1 - confidence_level`. Construct
-`confidence_level` as `Decimal(str(confidence_level))` before subtraction and
-rank arithmetic. This yields 49 and 1949 for `B=2000` and 95-percent confidence;
-performing the subtraction as binary float is forbidden because it moves the
-lower endpoint to index 50.
+`confidence_level` as `Decimal(str(confidence_level))`, convert that exact
+decimal value to a rational, and perform rank arithmetic without the ambient
+Decimal context rounding intermediate subtraction. This yields 49 and 1949 for
+`B=2000` and 95-percent confidence and `(0, 1)` for `B=2` at confidence
+`1e-30`; performing the subtraction as binary float or default-precision
+Decimal is forbidden because either can select an adjacent endpoint.
 The interval point is always the original paired-sample statistic, not the
 bootstrap mean.
 
@@ -716,6 +727,9 @@ non-finite `confidence_level` outside the open interval `(0, 1)`.
 they always use exactly 2,000 resamples, seed 20260715, and confidence 0.95 and
 offer no configuration parameters. Task 9 independently rejects any typed
 inference object whose stored bootstrap settings differ from that frozen tuple.
+`PredictiveInference` also enforces that tuple at construction; configurable
+`PredictiveBootstrap` objects remain test-helper outputs and cannot masquerade
+as production inference.
 
 The fixed adequacy floors are 20 target days overall and 10 target days
 containing at least one `abs(actual_bps) >= 10` row. Below either applicable
@@ -728,7 +742,9 @@ numeric sentinel.
 
 `PredictiveMetrics` and `PredictiveBootstrap` both carry direction and horizon.
 `classify_predictive()` rejects mismatched provenance or confidence-interval
-points that do not equal the corresponding full-sample metrics. Apply
+points that do not equal the corresponding full-sample metrics. Conditional
+accuracy interval values must remain in `[0, 1]` and directional-gain interval
+values in `[-1, 1]`. Apply
 classification after the adequacy gate in this exact order: positive evidence,
 affirmative null, suggestive, then inconclusive. Positive evidence requires
 positive MAE and MSE point improvements, both loss-interval lower bounds above
@@ -738,6 +754,14 @@ upper bound below 0.05. Missing directional intervals make the positive and
 affirmative-null predicates false; an adequate result may still be suggestive
 when both loss point improvements are positive. Suggestive does not require a
 directional point improvement. Every equality boundary fails its strict branch.
+The metrics contract requires exact equality for recomputed MAE/MSE
+improvements, RMSE, relative OOS R-squared, and directional gain; no tolerance
+may turn a canonical zero into a positive or negative publication input. The
+inference contract recomputes the evidence class from those coherent metrics
+and intervals, so a caller cannot construct a typed inference with a forged
+publication outcome.
+All frozen thresholds and bootstrap settings have named constants for Task 9
+methodology provenance.
 
 `unit_dependent` is true when any omitted day or fold changes the full evidence
 class or changes the exact sign of MAE improvement. Day units use ISO
@@ -752,8 +776,10 @@ metrics and classifies them as underpowered.
 `InfluenceReport`, `RegimeSensitivity`, and `DirectionalPredictiveAudit` carry
 direction and horizon explicitly. `audit_predictions()` validates that those
 fields, both metric/bootstrap provenance fields, and every nonempty regime
-subset agree. This complete audit is the only predictive input accepted by the
-manifest builder.
+subset agree. The regime contract recomputes its adjudicability and instability
+flags, and the directional audit requires early, mixed, and late row counts to
+partition the full inference exactly. This complete audit is the only
+predictive input accepted by the manifest builder.
 
 Regime sensitivity forms `early` only from rows whose target and source regimes
 are both early, `late` only when both are late, and `mixed` otherwise. Report all

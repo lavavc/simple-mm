@@ -126,12 +126,22 @@ nearest-rank empirical order statistics without interpolation. For 2,000 draws
 at 95 percent, the zero-based lower and upper indices are 49 and 1949. Compute
 the ranks with exact decimal arithmetic parsed from the confidence-level text;
 binary floating-point subtraction must not choose an adjacent order statistic.
+Convert the parsed Decimal to an exact rational for rank arithmetic so the
+ambient Decimal precision cannot round tiny accepted confidence levels.
 Byte-identical bootstrap streams are guaranteed only within a matching NumPy
 version, build configuration, machine, and byte order. Record those fields,
 plus the Python version, bit generator, and draw dtype, in provenance rather
 than claiming cross-environment stream stability.
 Relative out-of-sample R-squared is unavailable, rather than non-finite, when
-the baseline sum of squared errors is zero.
+the baseline sum of squared errors is zero. Store the mathematically identical
+`1 - cross_mse / baseline_mse` form so component reconciliation is exact.
+
+Typed predictive inference is authoritative rather than advisory: derived loss
+and directional fields, evidence class, frozen bootstrap settings, regime
+flags, and regime-partition row counts must reconcile at construction. A
+shared public structural validator applies the same ordering, horizon, target,
+fold, refit, and finiteness rules to statistical reporting and the later
+economic prediction loader.
 
 Treat the primary inference as underpowered, but still data-valid, when it has
 fewer than 20 target UTC days or when conditional directional accuracy has
