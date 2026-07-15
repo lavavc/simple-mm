@@ -115,15 +115,21 @@ directional-accuracy gain. Relative out-of-sample R-squared is
 `1 - SSE_cross / SSE_baseline`.
 
 On the conditional subset `abs(actual_bps) >= 10`, a directional hit requires
-`actual_bps * prediction_bps > 0`; a zero prediction is a miss. The threshold
-includes exact positive and negative 10-basis-point moves.
+actual and predicted moves to have the same nonzero sign; a zero prediction is
+a miss. Use sign comparisons rather than multiplication so extreme finite
+inputs cannot overflow. The threshold includes exact positive and negative
+10-basis-point moves.
 
 Pin the resampling implementation to NumPy `Generator(PCG64(seed))` and sample
-one integer day-index matrix in row-major order. Percentile endpoints use the
+one `int64` day-index matrix in row-major order. Percentile endpoints use the
 nearest-rank empirical order statistics without interpolation. For 2,000 draws
 at 95 percent, the zero-based lower and upper indices are 49 and 1949. Compute
 the ranks with exact decimal arithmetic parsed from the confidence-level text;
 binary floating-point subtraction must not choose an adjacent order statistic.
+Byte-identical bootstrap streams are guaranteed only within a matching NumPy
+version, build configuration, machine, and byte order. Record those fields,
+plus the Python version, bit generator, and draw dtype, in provenance rather
+than claiming cross-environment stream stability.
 Relative out-of-sample R-squared is unavailable, rather than non-finite, when
 the baseline sum of squared errors is zero.
 
@@ -277,6 +283,12 @@ event-study, DTW, market-structure, robustness, and economic results; artifact
 hashes; publication branches; allowed and forbidden claims; and figure
 identifiers. It excludes coefficients, per-event signal traces, leverage,
 sizing, and execution tactics.
+
+Provenance includes Python and NumPy versions, a SHA-256 of the
+`numpy.show_config(mode="dicts")` value serialized as sorted, compact JSON with
+UTF-8 encoding, no ASCII escaping, no non-finite values, and no trailing
+newline, machine architecture, byte order, `PCG64`, and `int64`. Byte-stable
+regeneration is asserted only when those runtime fields match.
 
 The top-level manifest groups are:
 

@@ -32,10 +32,12 @@ and strict mypy for the new package.
 - A label is trainable at refit time `r` only when `t + h <= r`.
 - Bootstrap count is `2000`, seed is `20260715`, and intervals are two-sided
   95-percent percentile intervals over paired target-day UTC blocks. Sampling
-  uses NumPy `Generator(PCG64(seed))` and one row-major integer-index matrix.
+  uses NumPy `Generator(PCG64(seed))` and one row-major `int64` index matrix.
   Endpoints are nearest-rank order statistics without interpolation; the
   zero-based indices are 49 and 1949 for the frozen run. Rank arithmetic uses
-  `Decimal(str(confidence_level))`, never binary float subtraction.
+  `Decimal(str(confidence_level))`, never binary float subtraction. Stream
+  byte-stability is scoped to matching recorded runtime provenance, not all
+  NumPy 2.x environments.
 - Do not tune horizons, features, thresholds, DTW bands, or classifications.
 - Keep Base and BSC results separate except for the explicit transfer tests.
 - Generated outputs stay under ignored
@@ -497,6 +499,9 @@ def test_positive_class_requires_both_loss_bounds_and_direction_bound() -> None:
 
 Pin the nearest-rank helper directly at indices 49 and 1949 for 2,000 draws and
 95-percent confidence; prove binary float drift cannot move either endpoint.
+Pin the exact `Generator(PCG64(20260715))` `int64` draw matrix with
+`high=4` and shape `(2, 4)` as `[[2, 0, 2, 0], [1, 2, 3, 1]]` in the recorded
+NumPy environment.
 Also pin a hand-calculated interval fixture, duplicated day weighting, exact
 positive and negative 10-bps inclusion, a just-below-threshold exclusion, zero
 prediction as a miss, baseline directional gain,
@@ -507,7 +512,11 @@ fixtures with at least 20 target days and 10 conditional target days rather
 than relying on the sub-10-bps predictive fixture. Do not assert that a
 percentile interval must contain the original point estimate; that is not a
 bootstrap invariant. Reject zero or negative resample counts, negative seeds,
-and non-finite or out-of-open-interval confidence levels.
+and non-finite or out-of-open-interval confidence levels. Reject derived-error,
+squared-error, or aggregate overflow even when every input field is finite.
+Require at least two target days and two folds for leave-one influence and the
+complete directional audit; keep ordinary one-day inference reportable as
+underpowered.
 
 - [ ] **Step 2: Run the tests and confirm missing inference functions**
 
@@ -668,18 +677,27 @@ R-squared is `1 - SSE_cross / SSE_baseline`; it is `None` when baseline SSE is
 zero so serialization never receives NaN or Infinity. Validate nonempty,
 finite, strictly timestamp-ordered rows with one direction, one positive
 horizon, exact `target_timestamp_ms == timestamp_ms + horizon_ms`, unique
-target timestamps, and fold/refit consistency. Preserve mixed transition rows
-as their own diagnostic group rather than silently assigning them pre or post.
+target timestamps, nonnegative nondecreasing fold indices, one refit timestamp
+per observed fold, and every row inside its half-open seven-day refit window.
+Do not require observed fold indices to be contiguous: leave-one-fold and
+regime subsets legitimately contain gaps. Check the finiteness of derived
+errors, absolute errors, squared errors, per-day sums, sampled sums, and final
+metrics with `math.fsum`; finite inputs do not excuse overflow. Preserve mixed
+transition rows as their own diagnostic group rather than silently assigning
+them pre or post.
 Use the target UTC date—not the prediction origin date—for day blocks.
-On rows with `abs(actual_bps) >= 10`, define a directional hit as
-`actual_bps * prediction_bps > 0`; exact positive and negative 10-bps moves are
-included and a zero prediction is a miss. Directional gain is cross accuracy
-minus baseline accuracy on the identical conditional rows.
+On rows with `abs(actual_bps) >= 10`, define a directional hit with equivalent
+same-nonzero-sign comparisons rather than multiplication; exact positive and
+negative 10-bps moves are included and a zero prediction is a miss. Directional
+gain is cross accuracy minus baseline accuracy on the identical conditional
+rows.
 
 Draw paired blocks with `numpy.random.Generator(numpy.random.PCG64(seed))` and
 one call to `integers(0, target_day_count, size=(resamples,
-target_day_count), endpoint=False)`. Repeated days repeat all their rows; retain
-row weighting rather than averaging daily statistics first. Sort each empirical
+target_day_count), dtype=numpy.int64, endpoint=False)`. Keep integer counts and
+hits in `int64` arrays and loss sums in `float64` arrays rather than coercing one
+mixed matrix. Repeated days repeat all their rows; retain row weighting rather
+than averaging daily statistics first. Sort each empirical
 bootstrap distribution and select zero-based nearest-rank indices
 `ceil(alpha / 2 * B) - 1` and `ceil((1 - alpha / 2) * B) - 1`, clamped to the
 observed range, where `alpha = 1 - confidence_level`. Construct
@@ -725,7 +743,11 @@ directional point improvement. Every equality boundary fails its strict branch.
 class or changes the exact sign of MAE improvement. Day units use ISO
 `YYYY-MM-DD`; fold units use their decimal index. Each omission is reevaluated
 independently with the frozen resampling count and seed. Crossing an adequacy
-floor counts as a class change.
+floor counts as a class change. `assess_prediction_influence()` and
+`audit_predictions()` fail closed unless the input contains at least two target
+UTC days and at least two observed folds, because omitting the sole unit would
+leave no inference. `infer_predictions()` itself retains valid one-unit loss
+metrics and classifies them as underpowered.
 
 `InfluenceReport`, `RegimeSensitivity`, and `DirectionalPredictiveAudit` carry
 direction and horizon explicitly. `audit_predictions()` validates that those
@@ -1483,7 +1505,8 @@ contract error.
 The bundled Draft 2020-12 schema is authoritative for every nested field. Set
 `additionalProperties: false` on every object. Require explicit status and
 unit-bearing aggregate properties in each result group, six named input hashes
-and intervals in provenance, the full artifact map, all five figure slots,
+and intervals plus a required runtime-environment object in provenance, the
+full artifact map, all five figure slots,
 publication claim arrays, and review identity/time nullability conditioned on
 artifact status. Use schema `if`/`then` branches for valid statistical pending,
 complete economic, generated QA-blocked, reviewed data-valid, and reviewed
@@ -1521,8 +1544,14 @@ article_manifest.json
 ```
 
 Do not serialize wall-clock generation time. Provenance uses schema version,
-code commit, complete configuration, input SHA-256 values, input intervals, and
-artifact hashes. Review time is added only by the later evidence-review gate.
+code commit, complete configuration, input SHA-256 values, input intervals,
+artifact hashes, and runtime fields: Python and NumPy versions, SHA-256 of the
+`numpy.show_config(mode="dicts")` value serialized by
+`json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+allow_nan=False).encode("utf-8")` with no trailing newline, machine
+architecture, byte order, bit generator `PCG64`, and draw dtype `int64`.
+Reporting tests claim byte stability only when these runtime fields match.
+Review time is added only by the later evidence-review gate.
 
 `manifest.py` is the single writer-facing contract used by statistical
 reporting and the later economic merge. Validate with a bundled JSON Schema
@@ -1532,7 +1561,8 @@ statistical manifest contains:
 ```text
 schema_version: "1.0.0"
 artifact_status: generated_unreviewed
-provenance: code_commit, six input hashes, six input intervals, full config
+provenance: code_commit, six input hashes, six input intervals, full config,
+            Python/NumPy/build/machine/byte-order/PCG64/int64 runtime fields
 qa: status="pass", reasons=[], causal audit counts
 robustness: status, flags, support counts, influence and regime audits
 predictive: status="complete", primary and reverse metrics/intervals/classes
