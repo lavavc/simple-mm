@@ -2,10 +2,17 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta
 
+import pytest
+
 from research.backtester.clmm_math import tick_to_sqrt_price_x96
 from research.backtester.data import Event, V4Event
+from research.backtester.entry_eligibility import (
+    EntryEligibilityDecision,
+    EntryEligibilityOverlay,
+)
 from research.backtester.params import BacktestParams, TransactionCostModel
 from research.backtester.position_runtime import (
+    SleeveRuntime,
     SleeveSettlement,
     create_sleeve_runtime,
 )
@@ -15,6 +22,43 @@ from research.backtester.simulator import (
     TransactionCostBreakdown,
     simulate_pool,
 )
+from research.backtester.sizing import EntryContext, SizingPolicy
+
+
+class RecordingSizingPolicy:
+    free_parameter_count = 0
+
+    def __init__(self) -> None:
+        self.contexts: list[EntryContext] = []
+
+    def deployed_capital_usd(self, context: EntryContext) -> float:
+        self.contexts.append(context)
+        return float(context.wallet_value_usd)
+
+
+class RecordingEligibilityOverlay:
+    def __init__(
+        self,
+        decisions: tuple[bool, ...],
+        *,
+        failure: Exception | None = None,
+    ) -> None:
+        self.decisions = decisions
+        self.failure = failure
+        self.contexts: list[EntryContext] = []
+
+    def evaluate(self, context: EntryContext) -> EntryEligibilityDecision:
+        self.contexts.append(context)
+        if self.failure is not None:
+            raise self.failure
+        decision_index = len(self.contexts) - 1
+        if decision_index >= len(self.decisions):
+            raise AssertionError("eligibility overlay was evaluated unexpectedly")
+        eligible = self.decisions[decision_index]
+        return EntryEligibilityDecision(
+            eligible=eligible,
+            reason="agreement" if eligible else "disagreement",
+        )
 
 
 def _swap(*, minute: int, tick: int, amount0: float, amount1: float) -> V4Event:
@@ -139,13 +183,19 @@ def test_exit_decision_does_not_mutate_wallet_or_position() -> None:
     assert runtime.position == position_before
 
 
-def _runtime_ready_to_enter():
+def _runtime_ready_to_enter(
+    *,
+    sizing_policy: SizingPolicy | None = None,
+    entry_eligibility: EntryEligibilityOverlay | None = None,
+) -> tuple[SleeveRuntime, V4Event, int]:
     events = _events_that_enter_accrue_fee_exit_and_reenter()
     runtime = create_sleeve_runtime(
         sleeve_id="paper",
         params=_paper_params_with_zero_gas(),
         pool_config=UNISWAP_BASE_POOL,
         capital_usd=500.0,
+        sizing_policy=sizing_policy,
+        entry_eligibility=entry_eligibility,
     )
     for event in events[:3]:
         assert isinstance(event, V4Event)
@@ -157,7 +207,7 @@ def _runtime_ready_to_enter():
     raise AssertionError("fixture did not make EWMA ready")
 
 
-def _runtime_ready_to_exit():
+def _runtime_ready_to_exit() -> tuple[SleeveRuntime, V4Event, int]:
     events = _events_that_enter_accrue_fee_exit_and_reenter()
     runtime = create_sleeve_runtime(
         sleeve_id="paper",
@@ -190,6 +240,141 @@ def test_entry_proposal_is_pure_and_application_mutates_runtime() -> None:
     assert runtime.wallet == action.wallet_after
     assert runtime.position == action.position_after
     assert runtime.position is not None
+
+
+def test_entry_overlay_and_sizing_receive_the_same_context_object() -> None:
+    overlay = RecordingEligibilityOverlay((True,))
+    sizing = RecordingSizingPolicy()
+    runtime, event, active_liquidity = _runtime_ready_to_enter(
+        sizing_policy=sizing,
+        entry_eligibility=overlay,
+    )
+
+    action = runtime.propose_entry(event, active_liquidity)
+
+    assert action is not None
+    assert len(overlay.contexts) == 1
+    assert len(sizing.contexts) == 1
+    assert overlay.contexts[0] is sizing.contexts[0]
+    assert overlay.contexts[0] == EntryContext(
+        block_time=event.block_time,
+        wallet_value_usd=500.0,
+        current_price=runtime.current_price,
+        current_tick=runtime.current_tick,
+        active_liquidity=active_liquidity,
+    )
+
+
+def test_entry_denial_precedes_sizing_and_preserves_runtime_state() -> None:
+    overlay = RecordingEligibilityOverlay((False,))
+    sizing = RecordingSizingPolicy()
+    runtime, event, active_liquidity = _runtime_ready_to_enter(
+        sizing_policy=sizing,
+        entry_eligibility=overlay,
+    )
+    wallet_before = deepcopy(runtime.wallet)
+    result_before = deepcopy(runtime.result)
+    position_before = deepcopy(runtime.position)
+    cooldown_time_before = runtime.cooldown_until_time
+    cooldown_block_before = runtime.cooldown_until_block
+
+    action = runtime.propose_entry(event, active_liquidity)
+
+    assert action is None
+    assert len(overlay.contexts) == 1
+    assert sizing.contexts == []
+    assert runtime.wallet == wallet_before
+    assert runtime.result == result_before
+    assert runtime.position == position_before
+    assert runtime.cooldown_until_time == cooldown_time_before
+    assert runtime.cooldown_until_block == cooldown_block_before
+
+
+def test_intrinsic_entry_filters_run_before_overlay_and_open_positions_skip_it() -> None:
+    overlay = RecordingEligibilityOverlay((True,))
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+        entry_eligibility=overlay,
+    )
+    first = events[0]
+    assert isinstance(first, V4Event)
+    first_liquidity, price_is_valid = runtime._observe_swap(first)
+    assert price_is_valid
+
+    assert runtime.propose_entry(first, first_liquidity) is None
+    assert overlay.contexts == []
+
+    runtime, event, active_liquidity = _runtime_ready_to_enter(
+        entry_eligibility=overlay
+    )
+    runtime.cooldown_until_time = event.block_time + timedelta(minutes=1)
+    assert runtime.propose_entry(event, active_liquidity) is None
+    assert overlay.contexts == []
+
+    runtime.cooldown_until_time = None
+    action = runtime.propose_entry(event, active_liquidity)
+    assert action is not None
+    runtime.apply_action(action)
+    overlay.contexts.clear()
+
+    assert runtime.propose_entry(event, active_liquidity) is None
+    assert overlay.contexts == []
+
+
+def test_entry_overlay_exception_propagates_before_sizing() -> None:
+    failure = RuntimeError("forecast lookup failed")
+    overlay = RecordingEligibilityOverlay((), failure=failure)
+    sizing = RecordingSizingPolicy()
+    runtime, event, active_liquidity = _runtime_ready_to_enter(
+        sizing_policy=sizing,
+        entry_eligibility=overlay,
+    )
+
+    with pytest.raises(RuntimeError, match="forecast lookup failed") as exc_info:
+        runtime.propose_entry(event, active_liquidity)
+
+    assert exc_info.value is failure
+    assert sizing.contexts == []
+
+
+def test_factory_preserves_entry_overlay_identity() -> None:
+    overlay = RecordingEligibilityOverlay((True,))
+
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+        entry_eligibility=overlay,
+    )
+
+    assert runtime.entry_eligibility is overlay
+
+
+def test_normal_exit_precedes_fresh_same_event_entry_eligibility_check() -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    overlay = RecordingEligibilityOverlay((True, False))
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+        entry_eligibility=overlay,
+    )
+
+    result = runtime.run(events[:4])
+
+    assert [context.block_time for context in overlay.contexts] == [
+        events[1].block_time,
+        events[3].block_time,
+    ]
+    assert result.rebalance_count == 1
+    assert len(result.episodes) == 1
+    assert runtime.position is None
 
 
 def test_exit_proposal_is_pure_and_application_records_episode_once() -> None:

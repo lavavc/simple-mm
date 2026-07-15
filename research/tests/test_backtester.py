@@ -7,11 +7,40 @@ from decimal import Decimal
 
 import pytest
 
-from research.backtester.data import BurnEvent, MintEvent, SwapEvent, V4Event, load_events, load_v4_events
+from engine.math.v3 import (
+    align_tick,
+    compute_swap_step,
+    constrain_tick_width,
+    price_to_tick,
+    sqrt_price_x96_to_decimal,
+    tick_to_price,
+    tick_to_sqrt_price,
+)
+from research.backtester import metrics
 from research.backtester.clmm_math import cngn_price_from_sqrt_price_x96, tick_to_sqrt_price_x96
+from research.backtester.data import (
+    BurnEvent,
+    MintEvent,
+    SwapEvent,
+    V4Event,
+    load_events,
+    load_v4_events,
+)
+from research.backtester.entry_eligibility import (
+    AlwaysEligibleOverlay,
+    EntryEligibilityDecision,
+)
+from research.backtester.params import (
+    BacktestParams,
+    TransactionCostModel,
+    generate_grid,
+    generate_paper_grid,
+)
+from research.backtester.pbo import compute_pbo, contiguous_partitions
+from research.backtester.pool_state import PoolState
 from research.backtester.run import (
-    WindowSpec,
     WindowResult,
+    WindowSpec,
     aggregate_window_results,
     evaluate_rolling_windows,
     evaluate_validation_matrix,
@@ -19,32 +48,22 @@ from research.backtester.run import (
     generate_windows,
     resolve_gas_costs,
 )
-from research.backtester.pbo import compute_pbo, contiguous_partitions
-from research.backtester.sizing import DeployFullWallet, EntryContext, FixedDeployment
-from engine.math.v3 import (
-    tick_to_price,
-    price_to_tick,
-    tick_to_sqrt_price,
-    sqrt_price_x96_to_decimal,
-    align_tick,
-    constrain_tick_width,
-    compute_swap_step,
-)
-from research.backtester.strategy import EWMACalculator, calculate_fixed_pct_tick_range, calculate_tick_range
-from research.backtester.pool_state import PoolState
-from research.backtester.params import BacktestParams, TransactionCostModel, generate_grid, generate_paper_grid
 from research.backtester.simulator import (
     PANCAKESWAP_POOL,
     UNISWAP_BASE_POOL,
     UNISWAP_BSC_POOL,
     VirtualPosition,
-    _exact_clmm_output_costs,
     _event_fee_wallet,
+    _exact_clmm_output_costs,
     _range_traversal_fraction,
     simulate_pool,
 )
-from research.backtester import metrics
-
+from research.backtester.sizing import DeployFullWallet, EntryContext, FixedDeployment
+from research.backtester.strategy import (
+    EWMACalculator,
+    calculate_fixed_pct_tick_range,
+    calculate_tick_range,
+)
 
 # ─── V3 math ────────────────────────────────────────────────────────────
 
@@ -877,6 +896,46 @@ class TestPaperStyleSimulation:
             assert sim.final_value == pytest.approx(legacy.final_value)
             assert sim.total_fees == pytest.approx(legacy.total_fees)
             assert len(sim.episodes) == len(legacy.episodes)
+
+    def test_always_eligible_overlay_is_the_exact_status_quo(self):
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
+        expected = simulate_pool(
+            events,
+            self._params(),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+        )
+        assert expected.episodes
+
+        actual = simulate_pool(
+            events,
+            self._params(),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            entry_eligibility=AlwaysEligibleOverlay(),
+        )
+
+        assert actual == expected
+
+    def test_simulate_pool_forwards_a_denied_entry_overlay(self):
+        class NeverEligibleOverlay:
+            def evaluate(self, context: EntryContext) -> EntryEligibilityDecision:
+                return EntryEligibilityDecision(False, "disagreement")
+
+        events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
+
+        result = simulate_pool(
+            events,
+            self._params(),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            entry_eligibility=NeverEligibleOverlay(),
+        )
+
+        assert result.episodes == []
+        assert result.total_fees == 0.0
+        assert result.total_entry_cost == 0.0
+        assert result.final_value == pytest.approx(500.0)
 
     def test_fixed_deployment_keeps_remainder_idle(self):
         cost_kwargs = {"transaction_costs": TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0)}

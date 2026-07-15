@@ -9,6 +9,7 @@ from typing import Literal
 
 from research.backtester.clmm_math import tick_to_sqrt_price_x96
 from research.backtester.data import BurnEvent, Event, MintEvent, SwapEvent, V4Event
+from research.backtester.entry_eligibility import EntryEligibilityOverlay
 from research.backtester.params import BacktestParams
 from research.backtester.pool_state import PoolState
 from research.backtester.simulator import (
@@ -77,6 +78,7 @@ class SleeveRuntime:
     pool_config: PoolConfig
     capital_usd: float
     sizing: SizingPolicy
+    entry_eligibility: EntryEligibilityOverlay | None = None
     idle_apr: float = 0.0
     ewma: EWMACalculator = field(init=False)
     pool_state: PoolState = field(default_factory=PoolState)
@@ -432,15 +434,19 @@ class SleeveRuntime:
         ):
             return None
         wallet_value = self.wallet.value_usd(self.current_price)
-        deploy_target = self.sizing.deployed_capital_usd(
-            EntryContext(
-                block_time=event.block_time,
-                wallet_value_usd=wallet_value,
-                current_price=self.current_price,
-                current_tick=self.current_tick,
-                active_liquidity=active_liquidity,
-            )
+        entry_context = EntryContext(
+            block_time=event.block_time,
+            wallet_value_usd=wallet_value,
+            current_price=self.current_price,
+            current_tick=self.current_tick,
+            active_liquidity=active_liquidity,
         )
+        if (
+            self.entry_eligibility is not None
+            and not self.entry_eligibility.evaluate(entry_context).eligible
+        ):
+            return None
+        deploy_target = self.sizing.deployed_capital_usd(entry_context)
         deploy_fraction = min(deploy_target / wallet_value, 1.0) if wallet_value > 0 else 0.0
         if deploy_fraction <= 0:
             return None
@@ -663,6 +669,7 @@ def create_sleeve_runtime(
     pool_config: PoolConfig,
     capital_usd: float,
     sizing_policy: SizingPolicy | None = None,
+    entry_eligibility: EntryEligibilityOverlay | None = None,
     idle_apr: float = 0.0,
 ) -> SleeveRuntime:
     return SleeveRuntime(
@@ -671,5 +678,6 @@ def create_sleeve_runtime(
         pool_config=pool_config,
         capital_usd=capital_usd,
         sizing=sizing_policy if sizing_policy is not None else DeployFullWallet(),
+        entry_eligibility=entry_eligibility,
         idle_apr=idle_apr,
     )

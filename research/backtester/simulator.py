@@ -16,6 +16,7 @@ from research.backtester.clmm_math import (
     tick_to_sqrt_price_x96,
 )
 from research.backtester.data import Event, V4Event
+from research.backtester.entry_eligibility import EntryEligibilityOverlay
 from research.backtester.params import BacktestParams, TransactionCostModel
 from research.backtester.pool_state import PoolState
 from research.backtester.sizing import SizingPolicy
@@ -1392,6 +1393,7 @@ def simulate_pool(
     initial_capital_usd: float = 5000.0,
     initial_pool_state: PoolState | None = None,
     sizing_policy: SizingPolicy | None = None,
+    entry_eligibility: EntryEligibilityOverlay | None = None,
     idle_apr: float = 0.0,
 ) -> SimResult:
     from research.backtester.position_runtime import create_sleeve_runtime
@@ -1402,6 +1404,7 @@ def simulate_pool(
         pool_config=pool_config,
         capital_usd=initial_capital_usd,
         sizing_policy=sizing_policy,
+        entry_eligibility=entry_eligibility,
         idle_apr=idle_apr,
     )
     return runtime.run(events, initial_pool_state)
