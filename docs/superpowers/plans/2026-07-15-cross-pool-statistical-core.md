@@ -436,6 +436,16 @@ eligible refit from `panel.common_interval_start_ms + 14 days`, then choose the
 first UTC Monday boundary at or after that instant; never infer the anchor from
 the first materialized panel row.
 
+Validation folds are half-open `[refit, next_refit)`, including the final
+partial fold, with one audit per nonempty fold. `FoldAudit.feature_means` and
+`feature_scales` contain the five direction-relative cross-model features in
+declared order; the nested baseline reuses the first two. Scaling uses the
+population standard deviation (`ddof=0`). Rank and condition number are checked
+on each standardized design including its intercept, with relative cutoff
+`numpy.finfo(float64).eps * max(n_rows, n_columns)` passed unchanged to the SVD
+least-squares solve. Reject only when the condition number is strictly greater
+than `maximum_condition_number`; equality is valid.
+
 - [ ] **Step 4: Run the primary one-hour tests**
 
 Run:

@@ -9,6 +9,7 @@ from typing import Literal, TypeAlias
 PoolName: TypeAlias = Literal["uni-base", "uni-bsc"]
 StoredPriceModel: TypeAlias = Literal["sqrt_mid"]
 Regime: TypeAlias = Literal["early", "mixed", "late"]
+Direction: TypeAlias = Literal["bsc_to_base", "base_to_bsc"]
 
 
 class CrossPoolContractError(ValueError):
@@ -87,3 +88,41 @@ class CausalPanel:
     common_interval_end_ms: int
     horizon_ms: int
     rows: tuple[PanelRow, ...]
+
+
+@dataclass(frozen=True)
+class WalkForwardConfig:
+    direction: Direction
+    initial_train_days: int = 14
+    refit_weekday: int = 0
+    maximum_condition_number: float = 1e12
+
+
+@dataclass(frozen=True)
+class PredictionRow:
+    timestamp_ms: int
+    target_timestamp_ms: int
+    horizon_ms: int
+    refit_timestamp_ms: int
+    fold_index: int
+    direction: Direction
+    target_regime: Regime
+    source_regime: Regime
+    actual_bps: float
+    baseline_prediction_bps: float
+    cross_prediction_bps: float
+
+
+@dataclass(frozen=True)
+class FoldAudit:
+    fold_index: int
+    refit_timestamp_ms: int
+    max_training_target_timestamp_ms: int
+    feature_means: tuple[float, ...]
+    feature_scales: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class WalkForwardResult:
+    predictions: tuple[PredictionRow, ...]
+    audits: tuple[FoldAudit, ...]
