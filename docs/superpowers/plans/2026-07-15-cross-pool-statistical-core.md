@@ -154,7 +154,15 @@ class PoolEvent:
     raw_mid: Decimal
     fee_adjusted_bid: Decimal
     fee_adjusted_ask: Decimal
+    stored_cngn_usd_price: Decimal
     stored_price_model: Literal["sqrt_mid"]
+
+
+@dataclass(frozen=True)
+class GapQuantiles:
+    p50: int
+    p95: int
+    p99: int
 
 
 @dataclass(frozen=True)
@@ -163,7 +171,7 @@ class StreamQuality:
     rows: int
     first_timestamp_ms: int
     last_timestamp_ms: int
-    update_gap_quantiles_ms: Mapping[str, int]
+    update_gap_quantiles_ms: GapQuantiles | None
     pre_transition_rows: int
     post_transition_rows: int
 
