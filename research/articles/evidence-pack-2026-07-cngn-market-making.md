@@ -99,8 +99,14 @@ DEX LP:
 | BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
 
 Interpretation: Base has a sparse DEX-internal directional regime worth
-preserving as a diagnostic. BSC rejects cross-pool generalization. No live LP
-promotion is justified without a non-pool inventory comparator.
+preserving as a diagnostic. The Base strict-QTS 20/25 directional LP policy did
+not transfer to BSC: it returned -1.272% across seven BSC windows, versus
++1.039% across four Base windows.
+
+That result concerns policy transferability. It does not test whether lagged
+BSC pool prices contain incremental information about future Base price
+changes. No live LP promotion is justified without a non-pool inventory
+comparator.
 
 ## What The Repo Does Not Prove
 
@@ -180,7 +186,8 @@ Mechanism:
   `quidax` anchor testable against future Quidax top book; `dex_vwap` and
   `blended` only proxy-testable with stale/as-of DEX context from this sample.
 - DEX LP summary:
-  Base strict QTS slice versus BSC rejection table above.
+  the table above contrasts the Base strict-QTS slice with the failed
+  strict-QTS policy transfer to BSC.
 - Claims allowed versus claims rejected:
   use this pack as the checklist before drafting.
 

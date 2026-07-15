@@ -3,7 +3,41 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 DESIGN_PATH = Path("docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md")
+
+TERMINOLOGY_PATHS = (
+    Path("research/articles/02-backtesting-the-market-layer.md"),
+    Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
+    Path("research/autoresearch/lp.md"),
+    Path("research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"),
+)
+
+CANONICAL_POLICY_TRANSFER = (
+    "The Base strict-QTS 20/25 directional LP policy did not transfer to BSC: "
+    "it returned -1.272% across seven BSC windows, versus +1.039% across four "
+    "Base windows."
+)
+
+CANONICAL_INFORMATION_TRANSFER = (
+    "That result concerns policy transferability. It does not test whether "
+    "lagged BSC pool prices contain incremental information about future Base "
+    "price changes."
+)
+
+STALE_POLICY_TRANSFER_PHRASES = (
+    "BSC rejects cross-pool generalization",
+    "BSC rejects transferability",
+    "BSC rejection",
+    "BSC rejects the same strict QTS gates",
+    "strict QTS gates reject BSC",
+)
+
+LP_RESULT_ROWS = (
+    "| Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |",
+    "| BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |",
+)
 
 MANIFEST_GROUPS = (
     "schema_version",
@@ -91,6 +125,55 @@ def test_cross_pool_design_pins_writer_manifest_and_branches() -> None:
     assert (
         "is a policy-transfer finding; it does not prejudge this information-transfer experiment"
     ) in normalized
+
+
+@pytest.mark.parametrize("path", TERMINOLOGY_PATHS)
+def test_policy_transfer_language_does_not_prejudge_information_transfer(
+    path: Path,
+) -> None:
+    text = path.read_text()
+    normalized = " ".join(text.split())
+
+    for stale_phrase in STALE_POLICY_TRANSFER_PHRASES:
+        assert stale_phrase not in text
+    assert CANONICAL_POLICY_TRANSFER in normalized
+    assert CANONICAL_INFORMATION_TRANSFER in normalized
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        Path("research/articles/02-backtesting-the-market-layer.md"),
+        Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
+    ),
+)
+def test_policy_transfer_edit_preserves_result_tables(path: Path) -> None:
+    text = path.read_text()
+
+    for row in LP_RESULT_ROWS:
+        assert row in text
+
+
+def test_policy_transfer_edit_preserves_lp_metrics_and_promotion_boundary() -> None:
+    lp_text = Path("research/autoresearch/lp.md").read_text()
+    normalized_lp = " ".join(lp_text.split())
+    article_text = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
+    normalized_article = " ".join(article_text.split())
+    evidence_text = Path(
+        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
+    ).read_text()
+    normalized_evidence = " ".join(evidence_text.split())
+
+    assert (
+        "worst -0.842%, 14.3% positive, and -1.602 percentage points versus hold."
+    ) in normalized_lp
+    assert "The Base slice is not live LP alpha." in lp_text
+    assert "no live LP promotion is justified" in normalized_article
+    assert (
+        "No live LP promotion is justified without a non-pool inventory comparator."
+        in normalized_evidence
+    )
+    assert "Closeout decision: DEX LP remains diagnostic, not deployable." in lp_text
 
 
 def _section_between(text: str, start: str, end: str) -> str:

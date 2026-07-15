@@ -82,8 +82,13 @@ Current evidence:
 - Directional `upside_tight_v1` under `gate_strict_qts_20_25` is the strongest
   Base-only DEX-internal slice: about +1.039% across four active windows, worst
   +0.118%, and +0.228 percentage points versus pool-mark hold.
-- BSC rejects the same strict QTS gates. It remains a falsification pool, not a
-  tuning target.
+- The Base strict-QTS 20/25 directional LP policy did not transfer to BSC: it
+  returned -1.272% across seven BSC windows, versus +1.039% across four Base
+  windows.
+- That result concerns policy transferability. It does not test whether lagged
+  BSC pool prices contain incremental information about future Base price
+  changes. For that policy-transfer test, BSC was a falsification pool rather
+  than a tuning target.
 - Promotion remains blocked because the non-pool cNGN inventory comparator has
   no usable overlapping reference series.
 
@@ -191,7 +196,7 @@ Required conclusions:
   - Uniswap v4 is context, not truth.
 - DEX LP:
   - Base has a sparse pool-internal directional regime worth preserving.
-  - BSC rejects cross-pool generalization.
+  - The Base strict-QTS 20/25 directional LP policy did not transfer to BSC.
   - No live LP promotion without an external reference comparator.
   - H12 capacity and dynamic sizing stay blocked unless an accepted comparator
     arrives.
@@ -272,7 +277,7 @@ Must include:
 - Binance `USDTNGN` cutoff and no-overlap result.
 - Quidax top-book-only caveat.
 - Quidax/Uniswap overlap basis-point summary.
-- Base directional LP result and BSC rejection.
+- Base directional LP result and failed strict-QTS policy transfer to BSC.
 - Bybit P2P as best forward reference, but not enough current data.
 - The article's regulatory line: "supervised liquidity," not "unrestricted
   DEX liquidity."
@@ -411,7 +416,7 @@ Main argument:
    - Quidax top-book only.
    - Bybit too short.
    - Base LP slice promising but sparse.
-   - BSC rejects transferability.
+   - The strict-QTS policy transfer to BSC failed.
 4. These failures are the point.
    - They show what evidence is required before live market-making policy
      changes.
@@ -424,7 +429,8 @@ Tables to publish:
 - Source availability matrix.
 - Fair Price label matrix.
 - Quidax/Uniswap overlap summary.
-- DEX LP summary: Base promising slice and BSC rejection.
+- DEX LP summary: Base promising slice and failed strict-QTS policy transfer to
+  BSC.
 - Claims allowed versus claims rejected.
 
 Claims to avoid:

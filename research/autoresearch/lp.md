@@ -132,9 +132,13 @@ What survives:
   `upside_tight_v1` under `gate_strict_qts_20_25` returns +1.039% across four
   active windows, worst +0.118%, 100.0% positive, and +0.228 percentage points
   versus pool-mark hold.
-- BSC rejects cross-pool generalization: the same strict QTS 20/25 gate returns
-  -1.272% across seven windows, worst -0.842%, 14.3% positive, and -1.602
-  percentage points versus hold.
+- The Base strict-QTS 20/25 directional LP policy did not transfer to BSC: it
+  returned -1.272% across seven BSC windows, versus +1.039% across four Base
+  windows.
+- That result concerns policy transferability. It does not test whether lagged
+  BSC pool prices contain incremental information about future Base price
+  changes. The BSC run was worst -0.842%, 14.3% positive, and -1.602 percentage
+  points versus hold.
 - The external-reference comparator is implemented and fail-closed. It should be
   reused when genuinely new timestamped non-pool cNGN marks exist.
 
@@ -162,7 +166,8 @@ Completed path:
    slice worth preserving: `upside_tight_v1` under `gate_strict_qts_20_25`
    returns +1.039% across four active windows, worst +0.118%, and +0.228
    percentage points versus pool-mark hold. This is still too sparse and too
-   internally marked for promotion. The same strict QTS gates reject BSC.
+   internally marked for promotion. The same strict-QTS policy did not transfer
+   to BSC.
 4. Source a realistic non-pool cNGN inventory comparator, then rerun strict
    active-window attribution through the implemented external-reference hooks.
    Completed 2026-07-10 as a rejection: Binance has no overlap; Bybit current

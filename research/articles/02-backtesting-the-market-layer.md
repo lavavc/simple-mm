@@ -53,8 +53,8 @@ DEX LP:
   after walk-forward validation?
 - Desired comparator: a non-pool cNGN inventory mark covering the relevant
   validation windows.
-- Result: Base has a sparse diagnostic slice; BSC rejects transferability; no
-  live LP promotion is justified.
+- Result: the Base strict-QTS policy did not transfer to BSC; no live LP
+  promotion is justified.
 
 CEX execution-mode feasibility:
 
@@ -119,16 +119,22 @@ mark, but not as a clean Fair Price label.
 
 ### 6. What the DEX LP experiments can support
 
-The final DEX LP conclusion is diagnostic:
+The completed strict-QTS policy-transfer conclusion is diagnostic:
 
 | Pool | Gate | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |
 | BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
 
-Base has a sparse DEX-internal regime worth preserving as a hypothesis. BSC
-rejects cross-pool generalization. Because no usable non-pool comparator covers
-the relevant windows, the article should not call this live LP alpha.
+Base has a sparse DEX-internal regime worth preserving as a hypothesis. The
+Base strict-QTS 20/25 directional LP policy did not transfer to BSC: it
+returned -1.272% across seven BSC windows, versus +1.039% across four Base
+windows.
+
+That result concerns policy transferability. It does not test whether lagged
+BSC pool prices contain incremental information about future Base price
+changes. Because no usable non-pool comparator covers the relevant windows,
+the article should not call this live LP alpha.
 
 ### 7. Why the failures are the point
 
@@ -152,7 +158,7 @@ testing conventions as much as they need code.
 3. The missing non-pool comparator.
 4. What Quidax can rigorously show.
 5. Quidax versus Uniswap v4 over the overlap.
-6. The Base diagnostic slice and the BSC rejection.
+6. The Base diagnostic slice and the failed strict-QTS policy transfer to BSC.
 7. Why publishing disciplined non-results helps the market.
 
 ## Evidence And Repo Anchors
