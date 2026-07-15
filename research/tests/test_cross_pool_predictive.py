@@ -8,6 +8,7 @@ from typing import cast
 import numpy as np
 import pytest
 
+from research.cross_pool.bootstrap import summarize_predictions
 from research.cross_pool.contracts import (
     CausalPanel,
     CrossPoolContractError,
@@ -81,6 +82,24 @@ def test_reverse_direction_swaps_target_source_age_and_gap_projection() -> None:
     assert result.audits[0].feature_means == pytest.approx(
         tuple(float(value) for value in expected.mean(axis=0))
     )
+
+
+def test_reverse_projection_recovers_only_base_to_bsc_lead() -> None:
+    panel = _base_leads_bsc_panel()
+
+    reverse = expanding_weekly_predictions(
+        panel,
+        WalkForwardConfig(direction="base_to_bsc"),
+    )
+    primary = expanding_weekly_predictions(
+        panel,
+        WalkForwardConfig(direction="bsc_to_base"),
+    )
+    reverse_metrics = summarize_predictions(reverse.predictions)
+    primary_metrics = summarize_predictions(primary.predictions)
+
+    assert reverse_metrics.mae_improvement_bps > 0.5
+    assert primary_metrics.mae_improvement_bps < -0.25
 
 
 def test_refit_schedule_anchors_raw_start_owns_half_open_folds_and_keeps_partial() -> None:
@@ -344,6 +363,29 @@ def _known_panel(
         horizon_ms=horizon_ms,
         rows=rows,
     )
+
+
+def _base_leads_bsc_panel() -> CausalPanel:
+    panel = _known_panel()
+    # A training-only BSC signal makes the primary cross term fail out of sample,
+    # while the existing persistent Base-to-BSC relation remains recoverable.
+    rows = tuple(
+        replace(
+            row,
+            base_forward_return_bps=(
+                1.75
+                + 0.25 * row.base_trailing_return_bps
+                - 0.000001 * row.base_age_ms
+                + (
+                    row.bsc_trailing_return_bps
+                    if row.timestamp_ms < FIRST_REFIT_MS
+                    else 0.0
+                )
+            ),
+        )
+        for row in panel.rows
+    )
+    return replace(panel, rows=rows)
 
 
 def _known_row(index: int, timestamp_ms: int, horizon_ms: int) -> PanelRow:
