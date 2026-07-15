@@ -1,5 +1,15 @@
 # cNGN Market-Making Article Plan
 
+```text
+CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
+CPL_PRIMARY_CLASS: UNAVAILABLE
+CPL_REVERSE_CLASS: UNAVAILABLE
+CPL_ARTICLE_BRANCH: UNAVAILABLE
+CPL_ECONOMIC_CLASS: UNAVAILABLE
+CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
+```
+
 Active July 2026 sequence:
 
 1. `01-supervised-liquidity.md`
@@ -13,6 +23,7 @@ Active July 2026 sequence:
 Supporting evidence:
 
 - `evidence-pack-2026-07-cngn-market-making.md`
+- `docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md`
 
 Archived source material:
 

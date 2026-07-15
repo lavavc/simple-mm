@@ -34,6 +34,20 @@ STALE_POLICY_TRANSFER_PHRASES = (
     "strict QTS gates reject BSC",
 )
 
+PENDING_BLOCK = """CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
+CPL_PRIMARY_CLASS: UNAVAILABLE
+CPL_REVERSE_CLASS: UNAVAILABLE
+CPL_ARTICLE_BRANCH: UNAVAILABLE
+CPL_ECONOMIC_CLASS: UNAVAILABLE
+CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json"""
+
+PENDING_ARTICLE_PATHS = (
+    Path("research/articles/README.md"),
+    Path("research/articles/02-backtesting-the-market-layer.md"),
+    Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
+)
+
 LP_RESULT_ROWS = (
     "| Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |",
     "| BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |",
@@ -174,6 +188,124 @@ def test_policy_transfer_edit_preserves_lp_metrics_and_promotion_boundary() -> N
         in normalized_evidence
     )
     assert "Closeout decision: DEX LP remains diagnostic, not deployable." in lp_text
+
+
+@pytest.mark.parametrize("path", PENDING_ARTICLE_PATHS)
+def test_pending_article_files_share_one_status_contract(path: Path) -> None:
+    text = path.read_text()
+
+    assert text.count(PENDING_BLOCK) == 1
+
+
+def test_pending_block_stays_out_of_historical_closeout_documents() -> None:
+    for path in (
+        Path("research/autoresearch/lp.md"),
+        Path("research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"),
+    ):
+        assert PENDING_BLOCK not in path.read_text()
+
+
+def test_pending_blocks_use_the_approved_document_anchors() -> None:
+    readme = Path("research/articles/README.md").read_text()
+    article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
+    evidence = Path("research/articles/evidence-pack-2026-07-cngn-market-making.md").read_text()
+
+    assert readme.index(PENDING_BLOCK) < readme.index("Active July 2026 sequence:")
+    assert article.index("## Why This Fits Lava") < article.index(PENDING_BLOCK)
+    assert article.index(PENDING_BLOCK) < article.index("## Narrative Progression")
+    assert evidence.index("Purpose:") < evidence.index(PENDING_BLOCK)
+    assert evidence.index(PENDING_BLOCK) < evidence.index("## Source Map")
+
+
+def test_pending_handoff_addendum_keeps_results_unreviewed() -> None:
+    handoff = Path(
+        "research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"
+    ).read_text()
+    normalized = " ".join(handoff.split())
+
+    assert handoff.count("## July 15, 2026 Addendum") == 1
+    assert "docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md" in handoff
+    assert "results remain pending" in normalized
+    assert (
+        "No directional, economic, or robustness claim from this new cross-pool "
+        "experiment should enter the durable evidence pack"
+    ) in normalized
+    assert handoff.index("## July 15, 2026 Addendum") < handoff.index("## Current Research State")
+
+
+def test_article_two_contains_only_approved_result_independent_cross_pool_prose() -> None:
+    article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
+    normalized = " ".join(article.split())
+
+    for phrase in (
+        "### 7. The separate cross-pool information-transfer experiment",
+        "`raw_sqrt_mid`",
+        "early/late",
+        "causal as-of",
+        "one-hour primary",
+        "15-minute and four-hour sensitivities",
+        "compares nested models",
+        "adds BSC features to a Base-only baseline",
+        "Base-only baseline",
+        "cross-pool model",
+        "14-day warmup",
+        "weekly walk-forward",
+        "reverse Base-to-BSC falsification",
+        "unconditional frozen-policy evaluation",
+        "USDC/USDT parity",
+        "below 10 basis points",
+        "causal price discovery",
+        "toxic flow",
+        "external-LP profitability",
+        "deployable alpha",
+    ):
+        assert phrase in normalized
+    assert article.index(
+        "### 7. The separate cross-pool information-transfer experiment"
+    ) < article.index("### 8. Why the failures are the point")
+
+
+@pytest.mark.parametrize("path", PENDING_ARTICLE_PATHS)
+def test_pending_article_files_do_not_fabricate_cross_pool_outcomes(path: Path) -> None:
+    text = path.read_text()
+
+    for fabricated_claim in (
+        "BSC leads Base",
+        "Base leads BSC",
+        "cross-pool model improved",
+        "signal-gated policy improved",
+    ):
+        assert fabricated_claim not in text
+
+
+def test_pending_article_files_link_the_approved_design() -> None:
+    design_path = "docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md"
+
+    assert design_path in Path("research/articles/README.md").read_text()
+    assert (
+        design_path
+        in Path("research/articles/evidence-pack-2026-07-cngn-market-making.md").read_text()
+    )
+
+
+def test_pending_scaffold_preserves_thesis_and_historical_closeout_boundaries() -> None:
+    article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
+    normalized_article = " ".join(article.split())
+    handoff = Path(
+        "research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"
+    ).read_text()
+
+    assert (
+        "The honest way to build market infrastructure for local stablecoins "
+        "is to turn every trading belief into a timestamped hypothesis, then "
+        "publish the tests that survive contact with venue-specific data."
+    ) in normalized_article
+    assert (
+        "Do not merge Base and BSC into one market unless transferability is the claim."
+        in normalized_article
+    )
+    assert "Date: 2026-07-10" in handoff
+    assert "Do not search again without genuinely new data." in handoff
 
 
 def _section_between(text: str, start: str, end: str) -> str:

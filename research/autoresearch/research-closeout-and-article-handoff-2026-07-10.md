@@ -19,6 +19,20 @@ from weak labels. It should finish the evidence trail, document what failed,
 clean the repo, and turn the research branch history into a measured public
 argument.
 
+## July 15, 2026 Addendum
+
+This dated handoff closes the earlier strict-QTS policy-transfer work; it does
+not adjudicate cross-pool information transfer. A separate experiment is now
+approved in
+`docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md` to test
+whether lagged BSC pool prices add information about future Base price changes,
+with a reverse-direction falsification and an unconditional frozen-policy test.
+
+Implementation, portfolio integration, and article scaffolding may proceed in
+parallel, but results remain pending. No directional, economic, or robustness
+claim from this new cross-pool experiment should enter the durable evidence
+pack until the generated manifest has passed QA and final evidence review.
+
 ## Current Research State
 
 ### Fair Price

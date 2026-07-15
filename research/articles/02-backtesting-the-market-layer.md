@@ -25,6 +25,16 @@ or a live DEX LP strategy. That is the article's value. It demonstrates how to
 avoid circular labels, stale references, and attractive backtests that do not
 survive venue-specific constraints.
 
+```text
+CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
+CPL_PRIMARY_CLASS: UNAVAILABLE
+CPL_REVERSE_CLASS: UNAVAILABLE
+CPL_ARTICLE_BRANCH: UNAVAILABLE
+CPL_ECONOMIC_CLASS: UNAVAILABLE
+CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
+```
+
 ## Narrative Progression
 
 ### 1. The wrong label can make any strategy look smart
@@ -136,7 +146,33 @@ BSC pool prices contain incremental information about future Base price
 changes. Because no usable non-pool comparator covers the relevant windows,
 the article should not call this live LP alpha.
 
-### 7. Why the failures are the point
+### 7. The separate cross-pool information-transfer experiment
+
+The failed strict-QTS policy transfer does not answer whether one pool contains
+incremental information about the other. The approved experiment uses each
+pool's canonical `raw_sqrt_mid` and checks stability across the known
+early/late methodology boundaries rather than reconstructing legacy prices.
+
+At each epoch-aligned decision time, a causal as-of panel carries forward only
+the last state already observable in each pool and reports that state's age.
+The preregistered horizons are a one-hour primary test with 15-minute and
+four-hour sensitivities. The confirmatory direction compares nested models: the
+cross-pool model adds BSC features to a Base-only baseline after a 14-day warmup
+and expanding weekly walk-forward refits. A reverse Base-to-BSC falsification
+uses the same construction.
+
+Once data QA and causal alignment pass, the economic follow-up is an
+unconditional frozen-policy evaluation. It applies the one-hour forecast only
+as an entry veto to the existing Base policy and does not retune routes, ranges,
+sizing, exits, gas, or validation windows in response to the statistical
+result.
+
+The comparison assumes USDC/USDT parity, so effects below 10 basis points are
+not economically interpretable without a historical basis series. Even reviewed
+results cannot establish causal price discovery, toxic flow, external-LP
+profitability, or deployable alpha from these two pool histories.
+
+### 8. Why the failures are the point
 
 The research branch produced reusable discipline:
 
@@ -159,7 +195,8 @@ testing conventions as much as they need code.
 4. What Quidax can rigorously show.
 5. Quidax versus Uniswap v4 over the overlap.
 6. The Base diagnostic slice and the failed strict-QTS policy transfer to BSC.
-7. Why publishing disciplined non-results helps the market.
+7. The separate cross-pool information-transfer method and pending status.
+8. Why publishing disciplined non-results helps the market.
 
 ## Evidence And Repo Anchors
 

@@ -5,6 +5,16 @@ Date: 2026-07-10
 Purpose: collect the source-backed claims that can support the next two Lava
 cNGN articles without implying live promotion of Fair Price or DEX LP research.
 
+```text
+CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
+CPL_PRIMARY_CLASS: UNAVAILABLE
+CPL_REVERSE_CLASS: UNAVAILABLE
+CPL_ARTICLE_BRANCH: UNAVAILABLE
+CPL_ECONOMIC_CLASS: UNAVAILABLE
+CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
+```
+
 ## Source Map
 
 External sources:
@@ -22,6 +32,7 @@ External sources:
 
 Local artifacts:
 
+- `docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md`
 - `research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md`
 - `research/autoresearch/fair-price.md`
 - `research/autoresearch/lp.md`
