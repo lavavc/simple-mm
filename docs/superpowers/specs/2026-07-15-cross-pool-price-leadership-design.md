@@ -265,6 +265,23 @@ hashes; publication branches; allowed and forbidden claims; and figure
 identifiers. It excludes coefficients, per-event signal traces, leverage,
 sizing, and execution tactics.
 
+The top-level manifest groups are:
+
+- `schema_version`;
+- `artifact_status`;
+- `provenance`;
+- `qa`;
+- `robustness`;
+- `predictive`;
+- `event_study`;
+- `dtw`;
+- `market_structure`;
+- `economics`;
+- `publication`;
+- `figures`;
+- `artifacts`;
+- `review`.
+
 The manifest distinguishes three concepts. `artifact_status` records generated
 versus human-reviewed state. `qa.status` records whether inputs and causal
 alignment are valid. `robustness.status` records instability, unit dependence,
@@ -272,6 +289,20 @@ or inadequate inference support in otherwise valid evidence. Human review may
 promote a `qa_blocked` artifact only to report `not_adjudicable_qa`, its failure
 reason, provenance, and forbidden claims; it may not promote predictive or
 economic performance claims from that artifact.
+
+A reviewed manifest requires reviewer identity and UTC time plus a schema-valid
+publication branch. Data-valid reviewed evidence requires complete aggregate
+fields, exactly one publication branch, and one independent economic branch. A
+human-reviewed QA failure requires `qa.status == "blocked"`, nonempty reasons,
+both branches set to `not_adjudicable_qa`, unavailable result groups, and no
+allowed performance claims. Serialization rejects NaN and Infinity and uses
+sorted keys, stable arrays, and unit-bearing field names.
+
+The bundled Draft 2020-12 JSON Schema and `validate_article_manifest()` are the
+enforcement boundary. They pin required nested groups, enums, aggregate fields,
+provenance and artifact hashes, review metadata, generated-versus-reviewed
+state relationships, the separate QA-blocked shape, and the frozen statistical
+and economic decision tables.
 
 Publication branches are:
 
