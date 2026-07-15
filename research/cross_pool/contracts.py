@@ -8,6 +8,7 @@ from typing import Literal, TypeAlias
 
 PoolName: TypeAlias = Literal["uni-base", "uni-bsc"]
 StoredPriceModel: TypeAlias = Literal["sqrt_mid"]
+Regime: TypeAlias = Literal["early", "mixed", "late"]
 
 
 class CrossPoolContractError(ValueError):
@@ -44,3 +45,45 @@ class StreamQuality:
     update_gap_quantiles_ms: GapQuantiles | None
     pre_transition_rows: int
     post_transition_rows: int
+
+
+@dataclass(frozen=True)
+class PanelConfig:
+    horizon_ms: int
+    base_transition_block: int = 45_848_255
+    bsc_transition_block: int = 97_799_490
+
+
+@dataclass(frozen=True)
+class PanelRow:
+    timestamp_ms: int
+    horizon_ms: int
+    base_state_timestamp_ms: int
+    bsc_state_timestamp_ms: int
+    base_forward_state_timestamp_ms: int
+    bsc_forward_state_timestamp_ms: int
+    base_lag_block_number: int
+    bsc_lag_block_number: int
+    base_state_block_number: int
+    bsc_state_block_number: int
+    base_forward_block_number: int
+    bsc_forward_block_number: int
+    base_age_ms: int
+    bsc_age_ms: int
+    base_mid: float
+    bsc_mid: float
+    base_trailing_return_bps: float
+    bsc_trailing_return_bps: float
+    base_minus_bsc_gap_bps: float
+    base_forward_return_bps: float
+    bsc_forward_return_bps: float
+    base_regime: Regime
+    bsc_regime: Regime
+
+
+@dataclass(frozen=True)
+class CausalPanel:
+    common_interval_start_ms: int
+    common_interval_end_ms: int
+    horizon_ms: int
+    rows: tuple[PanelRow, ...]
