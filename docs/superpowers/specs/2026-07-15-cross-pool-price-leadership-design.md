@@ -114,6 +114,19 @@ improvement intervals, RMSE point estimates, and baseline-relative conditional
 directional-accuracy gain. Relative out-of-sample R-squared is
 `1 - SSE_cross / SSE_baseline`.
 
+On the conditional subset `abs(actual_bps) >= 10`, a directional hit requires
+`actual_bps * prediction_bps > 0`; a zero prediction is a miss. The threshold
+includes exact positive and negative 10-basis-point moves.
+
+Pin the resampling implementation to NumPy `Generator(PCG64(seed))` and sample
+one integer day-index matrix in row-major order. Percentile endpoints use the
+nearest-rank empirical order statistics without interpolation. For 2,000 draws
+at 95 percent, the zero-based lower and upper indices are 49 and 1949. Compute
+the ranks with exact decimal arithmetic parsed from the confidence-level text;
+binary floating-point subtraction must not choose an adjacent order statistic.
+Relative out-of-sample R-squared is unavailable, rather than non-finite, when
+the baseline sum of squared errors is zero.
+
 Treat the primary inference as underpowered, but still data-valid, when it has
 fewer than 20 target UTC days or when conditional directional accuracy has
 eligible observations on fewer than 10 target UTC days. Loss inference remains
@@ -317,7 +330,8 @@ Select exactly one branch with this frozen decision table:
 
 - invalid data or causal alignment selects `not_adjudicable_qa`;
 - underpowered, unit-dependent, regime-unstable, or DTW-band-unstable evidence
-  selects `leadership_unresolved` before applying directional branches;
+  in either direction selects `leadership_unresolved` before applying
+  directional branches;
 - otherwise, positive primary and non-positive reverse evidence selects
   `bsc_to_base_incremental`;
 - positive reverse and non-positive primary evidence selects

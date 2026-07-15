@@ -31,7 +31,11 @@ and strict mypy for the new package.
   repeat weekly with expanding data.
 - A label is trainable at refit time `r` only when `t + h <= r`.
 - Bootstrap count is `2000`, seed is `20260715`, and intervals are two-sided
-  95-percent percentile intervals over paired target-day UTC blocks.
+  95-percent percentile intervals over paired target-day UTC blocks. Sampling
+  uses NumPy `Generator(PCG64(seed))` and one row-major integer-index matrix.
+  Endpoints are nearest-rank order statistics without interpolation; the
+  zero-based indices are 49 and 1949 for the frozen run. Rank arithmetic uses
+  `Decimal(str(confidence_level))`, never binary float subtraction.
 - Do not tune horizons, features, thresholds, DTW bands, or classifications.
 - Keep Base and BSC results separate except for the explicit transfer tests.
 - Generated outputs stay under ignored
@@ -472,8 +476,9 @@ git commit -m "feat: add expanding cross-pool OLS"
 
 **Interfaces:**
 - Consumes: complete paired `PredictionRow` sequences.
-- Produces: `PredictiveMetrics`, `PredictiveBootstrap`, `EvidenceClass`, and
-  `InfluenceReport`.
+- Produces: `DirectionalPredictiveAudit`, composed from `PredictiveInference`,
+  `InfluenceReport`, and `RegimeSensitivity`, with typed adequacy and
+  unavailable-subset states.
 
 - [ ] **Step 1: Write deterministic paired-bootstrap tests**
 
@@ -486,16 +491,23 @@ def test_bootstrap_is_paired_by_target_utc_day_and_seeded() -> None:
 
 
 def test_positive_class_requires_both_loss_bounds_and_direction_bound() -> None:
-    result = classify_primary(positive_metrics(), positive_intervals())
+    result = classify_predictive(positive_metrics(), positive_intervals())
     assert result == "positive_evidence"
 ```
 
-Pin exact two-sided percentile indices on a hand-calculated fixture, duplicated
-day weighting, conditional `abs(actual_bps) >= 10`, baseline directional gain,
+Pin the nearest-rank helper directly at indices 49 and 1949 for 2,000 draws and
+95-percent confidence; prove binary float drift cannot move either endpoint.
+Also pin a hand-calculated interval fixture, duplicated day weighting, exact
+positive and negative 10-bps inclusion, a just-below-threshold exclusion, zero
+prediction as a miss, baseline directional gain,
 classification precedence, affirmative-null boundaries, leave-one-day and
-leave-one-fold reversals, and early/late regime reversal. Do not assert that a
+leave-one-fold reversals, all nine target/source regime combinations, empty
+regime subsets, and early/late regime reversal. Use direct `PredictionRow`
+fixtures with at least 20 target days and 10 conditional target days rather
+than relying on the sub-10-bps predictive fixture. Do not assert that a
 percentile interval must contain the original point estimate; that is not a
-bootstrap invariant.
+bootstrap invariant. Reject zero or negative resample counts, negative seeds,
+and non-finite or out-of-open-interval confidence levels.
 
 - [ ] **Step 2: Run the tests and confirm missing inference functions**
 
@@ -513,6 +525,8 @@ EvidenceClass: TypeAlias = Literal[
 
 @dataclass(frozen=True)
 class PredictiveMetrics:
+    direction: Direction
+    horizon_ms: int
     rows: int
     target_day_count: int
     conditional_rows: int
@@ -525,7 +539,7 @@ class PredictiveMetrics:
     mse_improvement_bps2: float
     baseline_rmse_bps: float
     cross_rmse_bps: float
-    relative_oos_r2: float
+    relative_oos_r2: float | None
     baseline_conditional_directional_accuracy: float | None
     cross_conditional_directional_accuracy: float | None
     conditional_directional_accuracy_gain: float | None
@@ -540,13 +554,33 @@ class ConfidenceInterval:
 
 @dataclass(frozen=True)
 class PredictiveBootstrap:
+    direction: Direction
+    horizon_ms: int
     resamples: int
     seed: int
+    confidence_level: float
     mae_improvement_bps: ConfidenceInterval
     mse_improvement_bps2: ConfidenceInterval
     cross_conditional_directional_accuracy: ConfidenceInterval | None
     conditional_directional_accuracy_gain: ConfidenceInterval | None
     valid_conditional_resamples: int
+
+
+@dataclass(frozen=True)
+class AdequacyAudit:
+    target_day_count: int
+    conditional_target_day_count: int
+
+    @property
+    def underpowered(self) -> bool: ...
+
+
+@dataclass(frozen=True)
+class PredictiveInference:
+    metrics: PredictiveMetrics
+    bootstrap: PredictiveBootstrap
+    adequacy: AdequacyAudit
+    evidence_class: EvidenceClass
 
 
 @dataclass(frozen=True)
@@ -558,11 +592,41 @@ class OmissionResult:
 
 @dataclass(frozen=True)
 class InfluenceReport:
+    direction: Direction
+    horizon_ms: int
     full_mae_improvement_sign: Literal[-1, 0, 1]
     full_evidence_class: EvidenceClass
     leave_one_day: tuple[OmissionResult, ...]
     leave_one_fold: tuple[OmissionResult, ...]
     unit_dependent: bool
+
+
+@dataclass(frozen=True)
+class RegimeSubsetInference:
+    regime: Regime
+    row_count: int
+    inference: PredictiveInference | None
+    unavailable_reason: Literal["no_rows"] | None
+
+
+@dataclass(frozen=True)
+class RegimeSensitivity:
+    direction: Direction
+    horizon_ms: int
+    early: RegimeSubsetInference
+    mixed: RegimeSubsetInference
+    late: RegimeSubsetInference
+    regime_unstable: bool
+    regime_not_adjudicable: bool
+
+
+@dataclass(frozen=True)
+class DirectionalPredictiveAudit:
+    direction: Direction
+    horizon_ms: int
+    inference: PredictiveInference
+    influence: InfluenceReport
+    regime_sensitivity: RegimeSensitivity
 
 
 def summarize_predictions(rows: Sequence[PredictionRow]) -> PredictiveMetrics: ...
@@ -577,38 +641,111 @@ def bootstrap_predictive(
 ) -> PredictiveBootstrap: ...
 
 
-def classify_primary(
+def assess_adequacy(metrics: PredictiveMetrics) -> AdequacyAudit: ...
+
+
+def classify_predictive(
     metrics: PredictiveMetrics, bootstrap: PredictiveBootstrap
 ) -> EvidenceClass: ...
 
 
+def infer_predictions(
+    rows: Sequence[PredictionRow],
+) -> PredictiveInference: ...
+
+
 def assess_prediction_influence(rows: Sequence[PredictionRow]) -> InfluenceReport: ...
+
+
+def assess_regime_sensitivity(rows: Sequence[PredictionRow]) -> RegimeSensitivity: ...
+
+
+def audit_predictions(rows: Sequence[PredictionRow]) -> DirectionalPredictiveAudit: ...
 ```
 
 Positive improvements are baseline loss minus cross loss. Relative OOS
-R-squared is `1 - SSE_cross / SSE_baseline`. Preserve mixed transition rows as
-their own diagnostic group rather than silently assigning them pre or post.
-Use the target UTC date for day blocks. The fixed adequacy floors are 20 target
-days overall and 10 target days containing at least one
-`abs(actual_bps) >= 10` row. Below either applicable floor, retain loss metrics
-but classify the result as `inconclusive` with an `underpowered` robustness
-flag. If a directional bootstrap draw has no eligible rows, omit only that
-draw's directional statistic, record the valid count, and leave the
-directional interval unavailable unless all 2,000 draws are valid; never emit a
-numeric sentinel. `unit_dependent` is true when any omitted day or fold changes
-the full evidence class or changes the sign of MAE improvement. Apply
-classification in this exact order: positive evidence, affirmative null,
-suggestive, then inconclusive. Suggestive requires positive MAE and MSE point
-improvements; directional point improvement is not required.
+R-squared is `1 - SSE_cross / SSE_baseline`; it is `None` when baseline SSE is
+zero so serialization never receives NaN or Infinity. Validate nonempty,
+finite, strictly timestamp-ordered rows with one direction, one positive
+horizon, exact `target_timestamp_ms == timestamp_ms + horizon_ms`, unique
+target timestamps, and fold/refit consistency. Preserve mixed transition rows
+as their own diagnostic group rather than silently assigning them pre or post.
+Use the target UTC date—not the prediction origin date—for day blocks.
+On rows with `abs(actual_bps) >= 10`, define a directional hit as
+`actual_bps * prediction_bps > 0`; exact positive and negative 10-bps moves are
+included and a zero prediction is a miss. Directional gain is cross accuracy
+minus baseline accuracy on the identical conditional rows.
+
+Draw paired blocks with `numpy.random.Generator(numpy.random.PCG64(seed))` and
+one call to `integers(0, target_day_count, size=(resamples,
+target_day_count), endpoint=False)`. Repeated days repeat all their rows; retain
+row weighting rather than averaging daily statistics first. Sort each empirical
+bootstrap distribution and select zero-based nearest-rank indices
+`ceil(alpha / 2 * B) - 1` and `ceil((1 - alpha / 2) * B) - 1`, clamped to the
+observed range, where `alpha = 1 - confidence_level`. Construct
+`confidence_level` as `Decimal(str(confidence_level))` before subtraction and
+rank arithmetic. This yields 49 and 1949 for `B=2000` and 95-percent confidence;
+performing the subtraction as binary float is forbidden because it moves the
+lower endpoint to index 50.
+The interval point is always the original paired-sample statistic, not the
+bootstrap mean.
+
+`bootstrap_predictive()` accepts smaller configurations only for focused
+statistical tests and rejects non-positive `resamples`, negative `seed`, or a
+non-finite `confidence_level` outside the open interval `(0, 1)`.
+`infer_predictions()`, `assess_prediction_influence()`,
+`assess_regime_sensitivity()`, and `audit_predictions()` are production paths:
+they always use exactly 2,000 resamples, seed 20260715, and confidence 0.95 and
+offer no configuration parameters. Task 9 independently rejects any typed
+inference object whose stored bootstrap settings differ from that frozen tuple.
+
+The fixed adequacy floors are 20 target days overall and 10 target days
+containing at least one `abs(actual_bps) >= 10` row. Below either applicable
+floor, retain loss metrics but classify the result as `inconclusive`;
+`AdequacyAudit.underpowered` is the typed source of the later robustness flag.
+If a directional bootstrap draw has no eligible rows, omit only that draw's
+directional statistic, record the valid count, and leave both directional
+intervals unavailable unless every requested draw is valid; never emit a
+numeric sentinel.
+
+`PredictiveMetrics` and `PredictiveBootstrap` both carry direction and horizon.
+`classify_predictive()` rejects mismatched provenance or confidence-interval
+points that do not equal the corresponding full-sample metrics. Apply
+classification after the adequacy gate in this exact order: positive evidence,
+affirmative null, suggestive, then inconclusive. Positive evidence requires
+positive MAE and MSE point improvements, both loss-interval lower bounds above
+zero, and a cross directional-accuracy lower bound above 0.50. Affirmative null
+requires an MAE-improvement upper bound below 1.0 bps and a directional-gain
+upper bound below 0.05. Missing directional intervals make the positive and
+affirmative-null predicates false; an adequate result may still be suggestive
+when both loss point improvements are positive. Suggestive does not require a
+directional point improvement. Every equality boundary fails its strict branch.
+
+`unit_dependent` is true when any omitted day or fold changes the full evidence
+class or changes the exact sign of MAE improvement. Day units use ISO
+`YYYY-MM-DD`; fold units use their decimal index. Each omission is reevaluated
+independently with the frozen resampling count and seed. Crossing an adequacy
+floor counts as a class change.
+
+`InfluenceReport`, `RegimeSensitivity`, and `DirectionalPredictiveAudit` carry
+direction and horizon explicitly. `audit_predictions()` validates that those
+fields, both metric/bootstrap provenance fields, and every nonempty regime
+subset agree. This complete audit is the only predictive input accepted by the
+manifest builder.
 
 Regime sensitivity forms `early` only from rows whose target and source regimes
 are both early, `late` only when both are late, and `mixed` otherwise. Report all
-three. Compare early with late only when each contains at least 20 target UTC
-days and at least 10 target UTC days with conditionally eligible moves.
-`regime_unstable` is true when those two adequate subsets have opposite
-MAE-improvement signs or different evidence classes. If either subset misses
-either support floor, report `regime_not_adjudicable` without treating it as a
-sign reversal or a QA failure.
+three through `RegimeSubsetInference`; an empty subset has `inference=None` and
+`unavailable_reason="no_rows"` rather than a sentinel metric. Nonempty subsets
+are independently inferred. Compare early with late only when each contains at
+least 20 target UTC days and at least 10 target UTC days with conditionally
+eligible moves. `regime_unstable` is true when those two adequate subsets have
+opposite MAE-improvement signs or different evidence classes. If either subset
+misses either support floor, report `regime_not_adjudicable` without treating
+it as a sign reversal or QA failure, and set `regime_unstable=False`. Zero
+versus a positive or negative sign is not an opposite-sign result. Task 9
+derives `underpowered`, `unit_dependent`, `regime_unstable`, and
+`regime_not_adjudicable` only from these typed outputs.
 
 - [ ] **Step 4: Run Tasks 1-4 tests**
 
@@ -1188,7 +1325,9 @@ def test_publication_branch_uses_frozen_decision_table(
 Also test stable CSV fields, sorted JSON keys, no NaN/Infinity, manifest artifact
 coverage, nonempty figures, QA-blocked failure behavior, every publication
 branch, every economic branch and equality boundary, and JSON-Schema rejection
-after deleting or mistyping every required group.
+after deleting or mistyping every required group. Prove that an underpowered,
+unit-dependent, or regime-unstable reverse audit blocks a positive primary from
+selecting the one-way BSC-to-Base branch.
 
 - [ ] **Step 2: Implement the typed manifest and decision boundary**
 
@@ -1230,9 +1369,10 @@ class RobustnessStatus:
 @dataclass(frozen=True)
 class StatisticalManifestInput:
     qa_status: QaStatus
-    robustness_status: RobustnessStatus
-    primary_class: EvidenceClass
-    reverse_class: EvidenceClass
+    primary_predictive_audit: DirectionalPredictiveAudit
+    reverse_predictive_audit: DirectionalPredictiveAudit
+    primary_dtw_stability: DtwStability
+    reverse_dtw_stability: DtwStability
     provenance: Mapping[str, JsonValue]
     qa: Mapping[str, JsonValue]
     robustness: Mapping[str, JsonValue]
@@ -1271,6 +1411,15 @@ def select_article_branch(
 ) -> ArticleBranch: ...
 
 
+def derive_robustness_status(
+    primary: DirectionalPredictiveAudit,
+    reverse: DirectionalPredictiveAudit,
+    *,
+    primary_dtw: DtwStability,
+    reverse_dtw: DtwStability,
+) -> RobustnessStatus: ...
+
+
 def claims_for_article_branch(
     branch: ArticleBranch,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
@@ -1307,12 +1456,25 @@ claims are blocked by every flag except `regime_not_adjudicable` alone.
 predicates and has table-driven tests for equality on each metric before the
 economic runner depends on it.
 
-`build_article_manifest` derives `publication.article_branch` and both claim
-arrays from the four typed decision fields; callers cannot supply publication
-outcomes. It cross-checks those typed values against the corresponding QA,
-robustness, and predictive mapping fields. `merge_economic_manifest` derives the
-economic class from `decision_metrics` and cross-checks those metrics against
-the serialized economics group; callers cannot supply an economic class.
+`derive_robustness_status()` forms the union of both directional audits:
+`underpowered`, `unit_dependent`, `regime_unstable`, and
+`regime_not_adjudicable` are present when either the primary or reverse audit
+reports them, while `dtw_band_unstable` is present when either typed DTW
+stability result reports it. It
+validates BSC-to-Base primary and Base-to-BSC reverse direction, a one-hour
+`3_600_000`-millisecond horizon throughout every nested provenance field, and
+the frozen bootstrap tuple `(2000, 20260715, 0.95)`. It also validates matching
+primary/reverse directions on the DTW results. A reverse robustness failure
+therefore blocks a one-way primary claim even though the reverse evidence class
+is merely `inconclusive`.
+
+`build_article_manifest` derives both evidence classes, the robustness status,
+`publication.article_branch`, and both claim arrays from the two typed audits;
+callers cannot supply publication outcomes or pre-aggregated predictive flags.
+It cross-checks those typed values against the corresponding QA, robustness,
+and predictive mapping fields. `merge_economic_manifest` derives the economic
+class from `decision_metrics` and cross-checks those metrics against the
+serialized economics group; callers cannot supply an economic class.
 `validate_article_manifest` recomputes both decision tables and the claim arrays
 after JSON-Schema validation and rejects any mismatch. Tests mutate each branch,
 class, and claim array in an otherwise schema-valid payload and require a
