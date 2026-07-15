@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 
+import research.backtester.portfolio_simulator as portfolio_simulator
 from research.backtester.clmm_math import tick_to_sqrt_price_x96
 from research.backtester.data import V4Event
+from research.backtester.entry_eligibility import (
+    AlwaysEligibleOverlay,
+    EntryEligibilityDecision,
+)
 from research.backtester.params import BacktestParams, TransactionCostModel
 from research.backtester.pool_state import PoolState
 from research.backtester.portfolio_allocation import Allocation
@@ -27,6 +33,17 @@ from research.backtester.simulator import (
     _raw_amounts_to_wallet,
     _swap_cost_breakdown,
 )
+from research.backtester.sizing import EntryContext
+
+
+class NeverEligibleOverlay:
+    def evaluate(self, context: EntryContext) -> EntryEligibilityDecision:
+        return EntryEligibilityDecision(False, "disagreement")
+
+
+class RaisingEligibilityOverlay:
+    def evaluate(self, context: EntryContext) -> EntryEligibilityDecision:
+        raise AssertionError("zero-weight overlay must not be evaluated")
 
 
 def _params(*, max_share: float | None = None) -> BacktestParams:
@@ -99,6 +116,134 @@ def test_overlapping_positions_split_one_fee_pool() -> None:
     assert result.attribution["a"].fees_usd == pytest.approx(total_fee * l_a / denominator)
     assert result.attribution["b"].fees_usd == pytest.approx(total_fee * l_b / denominator)
     assert result.total_fees <= total_fee
+
+
+def test_always_eligible_overlay_matches_legacy_portfolio_exactly() -> None:
+    sleeves = (_sleeve("a", _params()), _sleeve("b", _params()))
+    allocation = Allocation("equal_config", {"a": 0.1, "b": 0.1}, 0.8)
+    kwargs = {
+        "events": [_swap(0), _swap(1), _swap(2)],
+        "sleeves": sleeves,
+        "allocation": allocation,
+        "pool_config": UNISWAP_BASE_POOL,
+        "bankroll_usd": 500.0,
+        "initial_pool_state": PoolState(),
+    }
+
+    legacy = simulate_portfolio(**kwargs)
+    empty = simulate_portfolio(**kwargs, entry_overlays_by_sleeve={})
+    partial = simulate_portfolio(
+        **kwargs,
+        entry_overlays_by_sleeve={"a": AlwaysEligibleOverlay()},
+    )
+    full = simulate_portfolio(
+        **kwargs,
+        entry_overlays_by_sleeve={
+            "a": AlwaysEligibleOverlay(),
+            "b": AlwaysEligibleOverlay(),
+        },
+    )
+
+    assert legacy.attribution["a"].liquidity_samples[-1][1] > 0
+    assert empty == legacy
+    assert partial == legacy
+    assert full == legacy
+
+
+def test_overlay_is_forwarded_only_to_matching_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeves = (_sleeve("a", _params()), _sleeve("b", _params()))
+    overlay = AlwaysEligibleOverlay()
+    factory = Mock(wraps=create_sleeve_runtime)
+    monkeypatch.setattr(portfolio_simulator, "create_sleeve_runtime", factory)
+
+    simulate_portfolio(
+        events=[],
+        sleeves=sleeves,
+        allocation=Allocation("equal_config", {"a": 0.1, "b": 0.1}, 0.8),
+        pool_config=UNISWAP_BASE_POOL,
+        bankroll_usd=500.0,
+        entry_overlays_by_sleeve={"a": overlay},
+    )
+
+    forwarded = {
+        call.kwargs["sleeve_id"]: call.kwargs["entry_eligibility"]
+        for call in factory.call_args_list
+    }
+    assert forwarded == {"a": overlay, "b": None}
+
+
+def test_denied_sleeve_keeps_budget_without_redistribution() -> None:
+    sleeves = (_sleeve("a", _params()), _sleeve("b", _params()))
+    events = [_swap(0), _swap(1), _swap(2)]
+
+    result = simulate_portfolio(
+        events=events,
+        sleeves=sleeves,
+        allocation=Allocation("equal_config", {"a": 0.1, "b": 0.1}, 0.8),
+        pool_config=UNISWAP_BASE_POOL,
+        bankroll_usd=500.0,
+        initial_pool_state=PoolState(),
+        entry_overlays_by_sleeve={"a": NeverEligibleOverlay()},
+    )
+
+    assert result.attribution["a"].capital_budget_usd == 50.0
+    assert result.attribution["a"].final_value == 50.0
+    assert result.attribution["a"].liquidity_at(events[-1].block_time) == 0.0
+    assert result.attribution["b"].capital_budget_usd == 50.0
+    assert result.attribution["b"].liquidity_at(events[-1].block_time) > 0.0
+    assert result.cash_value == 400.0
+
+
+def test_unknown_overlay_ids_are_rejected_in_sorted_order() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"entry overlays reference unknown sleeves: \['c', 'z'\]",
+    ):
+        simulate_portfolio(
+            events=[],
+            sleeves=(_sleeve("a", _params()),),
+            allocation=Allocation("equal_config", {"a": 0.1}, 0.9),
+            pool_config=UNISWAP_BASE_POOL,
+            bankroll_usd=500.0,
+            entry_overlays_by_sleeve={
+                "z": AlwaysEligibleOverlay(),
+                "c": AlwaysEligibleOverlay(),
+            },
+        )
+
+
+def test_unknown_allocation_validation_precedes_unknown_overlay_validation() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"allocation references unknown sleeves: \['allocation-missing'\]",
+    ):
+        simulate_portfolio(
+            events=[],
+            sleeves=(_sleeve("a", _params()),),
+            allocation=Allocation(
+                "equal_config",
+                {"allocation-missing": 0.1},
+                0.9,
+            ),
+            pool_config=UNISWAP_BASE_POOL,
+            bankroll_usd=500.0,
+            entry_overlays_by_sleeve={"overlay-missing": AlwaysEligibleOverlay()},
+        )
+
+
+def test_valid_zero_weight_overlay_is_inert() -> None:
+    result = simulate_portfolio(
+        events=[_swap(0), _swap(1)],
+        sleeves=(_sleeve("a", _params()), _sleeve("b", _params())),
+        allocation=Allocation("equal_config", {"a": 0.1}, 0.9),
+        pool_config=UNISWAP_BASE_POOL,
+        bankroll_usd=500.0,
+        entry_overlays_by_sleeve={"b": RaisingEligibilityOverlay()},
+    )
+
+    assert set(result.attribution) == {"a"}
 
 
 def test_opposing_inventory_actions_are_netted() -> None:
@@ -298,10 +443,18 @@ def test_aggregate_share_fails_even_when_each_sleeve_is_below_cap() -> None:
         initial_pool_state=initial_pool_state,
     )
 
-    for _ in range(2):
-        with pytest.raises(LiquidityShareExceeded, match="aggregate synthetic"):
-            simulate_portfolio(**kwargs)
-        assert initial_pool_state.tick_map == before
+    overlay_cases = (
+        None,
+        {"a": AlwaysEligibleOverlay(), "b": AlwaysEligibleOverlay()},
+    )
+    for entry_overlays_by_sleeve in overlay_cases:
+        for _ in range(2):
+            with pytest.raises(LiquidityShareExceeded, match="aggregate synthetic"):
+                simulate_portfolio(
+                    **kwargs,
+                    entry_overlays_by_sleeve=entry_overlays_by_sleeve,
+                )
+            assert initial_pool_state.tick_map == before
 
 
 def test_portfolio_and_sleeve_values_reconcile_exactly() -> None:

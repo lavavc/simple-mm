@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Literal, Mapping, Sequence
 
 from research.backtester.data import Event, SwapEvent, V4Event
+from research.backtester.entry_eligibility import EntryEligibilityOverlay
 from research.backtester.pool_state import PoolState
 from research.backtester.portfolio_allocation import Allocation
 from research.backtester.portfolio_catalog import SleeveDefinition
@@ -268,6 +269,7 @@ def simulate_portfolio(
     pool_config: PoolConfig,
     bankroll_usd: float,
     initial_pool_state: PoolState | None = None,
+    entry_overlays_by_sleeve: Mapping[str, EntryEligibilityOverlay] | None = None,
 ) -> PortfolioResult:
     if bankroll_usd <= 0:
         raise ValueError("bankroll_usd must be positive")
@@ -277,6 +279,14 @@ def simulate_portfolio(
     unknown = set(allocation.weights) - set(by_id)
     if unknown:
         raise ValueError(f"allocation references unknown sleeves: {sorted(unknown)}")
+    entry_overlays = (
+        {} if entry_overlays_by_sleeve is None else entry_overlays_by_sleeve
+    )
+    unknown_overlays = set(entry_overlays) - set(by_id)
+    if unknown_overlays:
+        raise ValueError(
+            f"entry overlays reference unknown sleeves: {sorted(unknown_overlays)}"
+        )
 
     runtimes = {
         sleeve_id: create_sleeve_runtime(
@@ -284,6 +294,7 @@ def simulate_portfolio(
             params=by_id[sleeve_id].params,
             pool_config=pool_config,
             capital_usd=bankroll_usd * weight,
+            entry_eligibility=entry_overlays.get(sleeve_id),
         )
         for sleeve_id, weight in allocation.weights.items()
         if weight > 0

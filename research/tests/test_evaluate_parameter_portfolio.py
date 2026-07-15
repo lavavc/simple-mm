@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import research.scripts.evaluate_parameter_portfolio as orchestration
+from research.backtester.entry_eligibility import AlwaysEligibleOverlay
 from research.backtester.params import BacktestParams
 from research.backtester.portfolio_allocation import Allocation, TrainingMetrics
 from research.backtester.portfolio_catalog import (
@@ -15,7 +16,7 @@ from research.backtester.portfolio_catalog import (
     SleeveDefinition,
     parameter_fingerprint,
 )
-from research.backtester.portfolio_simulator import PortfolioResult
+from research.backtester.portfolio_simulator import PortfolioResult, simulate_portfolio
 from research.backtester.run import Window, WindowCounts, WindowSlice
 from research.backtester.simulator import UNISWAP_BASE_POOL
 from research.scripts.evaluate_parameter_portfolio import (
@@ -70,13 +71,50 @@ def test_directional_policy_funds_only_the_causally_routed_archetype(
     )
     by_id = {sleeve.sleeve_id: sleeve for sleeve in routed.sleeves}
     assert by_id["directional:upside_tight_v1"].config_name.startswith("upside_capture_")
+    assert "directional:raw-up" not in by_id
     assert all("dip_accumulator" not in item.config_name for item in routed.sleeves)
     assert routed.directional_policies == ()
+
+    accepted = simulate_portfolio(
+        events=[],
+        sleeves=routed.sleeves,
+        allocation=Allocation("equal_config", {}, 1.0),
+        pool_config=UNISWAP_BASE_POOL,
+        bankroll_usd=100.0,
+        entry_overlays_by_sleeve={
+            "directional:upside_tight_v1": AlwaysEligibleOverlay()
+        },
+    )
+    assert accepted.attribution == {}
+
+    with pytest.raises(ValueError, match="entry overlays reference unknown sleeves"):
+        simulate_portfolio(
+            events=[],
+            sleeves=routed.sleeves,
+            allocation=Allocation("equal_config", {}, 1.0),
+            pool_config=UNISWAP_BASE_POOL,
+            bankroll_usd=100.0,
+            entry_overlays_by_sleeve={
+                "directional:raw-up": AlwaysEligibleOverlay()
+            },
+        )
 
 
 def test_no_position_omits_directional_policy(catalog: PortfolioCatalog) -> None:
     routed = route_directional_catalog(catalog, {})
     assert [sleeve.sleeve_id for sleeve in routed.sleeves] == ["static:a"]
+
+    with pytest.raises(ValueError, match="entry overlays reference unknown sleeves"):
+        simulate_portfolio(
+            events=[],
+            sleeves=routed.sleeves,
+            allocation=Allocation("equal_config", {}, 1.0),
+            pool_config=UNISWAP_BASE_POOL,
+            bankroll_usd=100.0,
+            entry_overlays_by_sleeve={
+                "directional:upside_tight_v1": AlwaysEligibleOverlay()
+            },
+        )
 
 
 def test_validation_metrics_cannot_change_frozen_weights(
