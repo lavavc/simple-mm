@@ -194,15 +194,37 @@ The LP lifecycle ledger exporter now has an RPC path for PositionManager
 python3 research/scripts/export_v4_lp_ledger.py \
   --pool uni-base \
   --start-block 42926879 \
-  --end-block 47130126 \
+  --end-block 47514853 \
   --out research/data/derived/uni_base_lp_ledger.csv
 
 python3 research/scripts/export_v4_lp_ledger.py \
   --pool uni-bsc \
   --start-block 84655203 \
-  --end-block 103315324 \
+  --end-block 105135905 \
   --out research/data/derived/uni_bsc_lp_ledger.csv
 ```
+
+Each export writes an adjacent `*.csv.coverage.json` sidecar that binds the
+exact ledger bytes to the requested block range and chain ID. Only the union of
+a target-pool PoolManager `ModifyLiquidity` scan and the PositionManager ERC-721
+`Transfer` scan is marked `rpc_verified`; `--candidate-tx-csv` and fixture
+exports are unverified and cannot support a complete market-structure
+diagnostic. A target-pool liquidity transaction that the configured
+PositionManager decoder cannot represent fails the export. The sidecar records
+both endpoint block hashes and timestamps, the observed ledger row range, and
+the canonical producer-attested candidate set and digest. Endpoint headers are
+captured before candidate and replay reads and must match exactly after those
+reads. Each fetched transaction and receipt must also agree on hash, block, and
+transaction index before decoding. The CSV and sidecar are staged and validated
+together; a failed replacement restores the prior valid pair or leaves no new
+pair when the exporter catches the publication error. A nonblocking advisory
+lock at `*.csv.publish.lock` serializes cooperating exporters targeting the same
+CSV through staging, validation, replacement, rollback, and cleanup; a
+concurrent exporter fails before changing either final file. A process
+interruption between the two renames can leave a mixed pair; readers reject it
+and the exporter refuses to overwrite it. Restore the retained backup named in
+any rollback error, or deliberately remove both final files, before retrying.
+Regenerate both whenever the analysis cutoff moves.
 
 Use the fixture path for deterministic decoder tests or hand-built fixtures:
 
@@ -244,6 +266,12 @@ opening liquidity. Each positive-liquidity action counts as a gross addition,
 including repeated additions to an existing position.
 Valid nonzero 20-byte owners are normalized only in memory; malformed, empty,
 and zero addresses remain unknown.
+
+Cross-pool concentration reporting additionally requires both verified coverage
+sidecars to extend through the inclusive common replay cutoff. The last LP row
+is not a coverage watermark: a quiet tail may contain no ledger action even when
+the RPC scan is complete. Missing, stale, candidate-list, fixture, or short-range
+sidecars fail closed.
 
 Then rebuild paper LP episodes from exact-attributed ledgers:
 
@@ -409,7 +437,7 @@ PYTHONPATH=. python3 research/scripts/report_pool_history_quality.py \
   --out research/data/quality/uni_bsc_pool_history_replay.md
 ```
 
-Do not use a full from-genesis RPC export as the default replay rebuild path
-until the PositionManager scan is refactored. The current exporter is suitable
-for incremental catch-up, but a full rebuild has to scan the global
-PositionManager log stream per chunk and then fetch candidate transactions.
+The ledger exporter scans target-pool liquidity logs and PositionManager
+transfer logs in bounded chunks, then fetches each candidate transaction once.
+The full inception-to-cutoff rebuild is intentionally separate from the faster
+incremental pool-history replay path.

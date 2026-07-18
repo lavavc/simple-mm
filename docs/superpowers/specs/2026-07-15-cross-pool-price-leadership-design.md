@@ -284,6 +284,21 @@ by normalized owner. Require the frozen pool-inception block and fee rate rather
 than accepting a truncated ledger or a uniformly wrong replay fee. Undefined
 concentration denominators are QA failures rather than zeros.
 
+Treat ledger tail coverage as a separate input contract. Each ledger must have
+an adjacent sidecar that binds its exact hash to a full inclusive RPC scan from
+pool inception through at least the common replay cutoff, including endpoint
+block hashes, timestamps, and numeric chain ID. Full discovery unions
+target-pool PoolManager `ModifyLiquidity` logs with PositionManager ERC-721
+`Transfer` logs; its canonical candidate set and digest are producer-attested.
+Fail if a discovered target-pool action cannot be represented by the configured
+PositionManager decoder. Bracket all RPC data reads with exact endpoint-header
+snapshots, require transaction and receipt hash/location agreement, and reject
+any endpoint change. Stage the ledger and sidecar as one validated pair under
+an output-scoped cooperating-exporter lock. The last observed LP action is not
+a coverage watermark. Candidate-list and fixture exports are unverified and
+cannot support `market_structure.status="complete"`; missing, stale, or short
+coverage fails closed.
+
 The owner-distribution analysis is post hoc and appears after the performance
 results. It may motivate hypotheses about why transferability differs, but it
 must not be used to claim that concentration caused leadership or that the

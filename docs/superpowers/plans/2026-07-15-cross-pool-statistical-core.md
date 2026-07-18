@@ -1369,12 +1369,28 @@ opening liquidity, no positive exact opening capital, or no positive exact
 known-owner capital fails closed instead of serializing zero as an undefined
 ratio or concentration statistic.
 
+An adjacent `ledger.csv.coverage.json` sidecar must bind each ledger's exact
+SHA-256 to an inclusive full-RPC scan beginning at pool inception and ending at
+or after the shared activity cutoff. Validate frozen pool identity, endpoint
+block hashes and timestamps, numeric chain ID, observed row bounds, and the
+canonical candidate-set digest. Full discovery is the union of target-pool
+PoolManager `ModifyLiquidity` logs and PositionManager ERC-721 `Transfer` logs;
+the candidate set is explicitly producer-attested. Any target-pool action that
+the configured PositionManager decoder cannot represent fails closed. Bracket
+all RPC data reads with exact start/end header snapshots, require transaction
+and receipt hash/location agreement, and reject any endpoint change. Candidate
+list and fixture exports remain explicitly unverified. Publish the ledger and
+sidecar as one staged, validated pair under an output-scoped cooperating
+exporter lock. A last LP action before the cutoff neither proves nor disproves
+tail coverage; missing, stale, short, or unverified sidecars fail closed.
+
 - [ ] **Step 5: Run the focused tests**
 
 Run:
-`python3 -m pytest research/tests/test_cross_pool_market_structure.py research/tests/test_lp_ledger_attribution_report.py -q`
+`python3 -m pytest research/tests/test_cross_pool_market_structure.py research/tests/test_v4_lp_ledger.py research/tests/test_lp_ledger_attribution_report.py -q`
 
-Expected: every activity, capital-accounting, and privacy test passes.
+Expected: every activity, ledger-coverage, capital-accounting, and privacy test
+passes.
 
 - [ ] **Step 6: Commit market-structure diagnostics**
 
@@ -1641,6 +1657,12 @@ architecture, byte order, bit generator `PCG64`, and draw dtype `int64`.
 Reporting tests claim byte stability only when these runtime fields match.
 Review time is added only by the later evidence-review gate.
 
+Keep the six primary CSV inputs unchanged. Under each ledger's provenance,
+record the adjacent coverage-sidecar SHA-256, chain ID, normalized verified scan
+range, and producer-attested candidate-set digest; the auxiliary sidecars are
+not seventh and eighth research datasets. A complete market-structure group
+requires both verified ranges to cover the recomputed common replay cutoff.
+
 `manifest.py` is the single writer-facing contract used by statistical
 reporting and the later economic merge. Validate with a bundled JSON Schema
 using `jsonschema.Draft202012Validator` before every write. The complete valid
@@ -1727,7 +1749,8 @@ git commit -m "feat: report cross-pool leadership analysis"
 The CLI requires `--base-replay`, `--bsc-replay`, `--base-ledger`, and
 `--bsc-ledger` in addition to the two feature tables. The report presents
 market-structure diagnostics after performance results and labels owner
-concentration as post hoc and non-causal.
+concentration as post hoc and non-causal. Coverage sidecars are resolved from
+the ledger paths using the required `ledger.csv.coverage.json` convention.
 
 ### Task 10: Run the Real Statistical Experiment Once
 

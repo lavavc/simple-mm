@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
+import hashlib
+import io
 import json
+import os
 import sys
-from dataclasses import asdict, fields
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Sequence
@@ -17,15 +24,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.backtester.v4_event_replay import ReplayEvent, ReplayedEvent, attach_event_time_state
-from research.backtester.v4_export import (
+from engine.web3_utils import coerce_hex_str  # noqa: E402
+from research.backtester.lp_ledger_attribution import (  # noqa: E402
+    build_fixture_ledger_coverage_bytes,
+    build_rpc_ledger_coverage_bytes,
+    ledger_coverage_path,
+    load_ledger_coverage,
+    pool_attribution_orientation,
+)
+from research.backtester.v4_event_replay import (  # noqa: E402
+    ReplayedEvent,
+    ReplayEvent,
+    attach_event_time_state,
+)
+from research.backtester.v4_export import (  # noqa: E402
     POOL_CONFIGS,
     POSITION_MANAGER_ABI,
     STATE_VIEW_ABI,
     V4_INITIALIZE_TOPIC,
+    V4_MODIFY_LIQUIDITY_TOPIC,
     V4_SWAP_TOPIC,
     _block_timestamp_from_raw,
-    _candidate_modify_liquidity_tx_hashes,
     _fetch_logs_with_debug,
     _make_web3,
     _position_state_from_chain,
@@ -34,7 +53,8 @@ from research.backtester.v4_export import (
     decode_initialize_row,
     decode_swap_row,
 )
-from research.backtester.v4_lp_ledger import (
+from research.backtester.v4_lp_ledger import (  # noqa: E402
+    TRANSFER_EVENT_TOPIC,
     DecodedLiquidityAction,
     LedgerPositionState,
     LPLedgerRow,
@@ -43,33 +63,131 @@ from research.backtester.v4_lp_ledger import (
     decode_liquidity_actions_for_tx,
     decode_ownership_events_from_receipt,
 )
-from engine.web3_utils import coerce_hex_str
-
+from research.cross_pool.contracts import CrossPoolContractError  # noqa: E402
 
 _LP_CANDIDATE_EVENT_TYPES = frozenset({"mint", "burn", "collect"})
 
 
+@dataclass(frozen=True)
+class RpcLPCandidateDiscovery:
+    action_transaction_hashes: tuple[str, ...]
+    ownership_transaction_hashes: tuple[str, ...]
+    all_transaction_hashes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _RpcTransactionBundle:
+    transaction_hash: str
+    transaction: dict[str, Any]
+    receipt: dict[str, Any]
+    block_number: int
+    transaction_index: int
+
+
+@dataclass(frozen=True)
+class _RpcCoverageEndpointSnapshot:
+    start_block_hash: str
+    start_timestamp_ms: int
+    end_block_hash: str
+    end_timestamp_ms: int
+
+
+def _discover_rpc_lp_candidates(
+    w3: Web3,
+    config: Any,
+    start_block: int,
+    end_block: int,
+) -> RpcLPCandidateDiscovery:
+    action_hashes: set[str] = set()
+    ownership_hashes: set[str] = set()
+    for chunk_start in range(start_block, end_block + 1, config.chunk_size):
+        chunk_end = min(chunk_start + config.chunk_size - 1, end_block)
+        action_logs = _fetch_logs_with_debug(
+            w3,
+            {
+                "address": Web3.to_checksum_address(config.pool_manager),
+                "topics": [V4_MODIFY_LIQUIDITY_TOPIC, config.pool_id],
+                "fromBlock": chunk_start,
+                "toBlock": chunk_end,
+            },
+            context=(
+                f"[{config.name}] pool modify-liquidity logs "
+                f"{chunk_start:,}->{chunk_end:,}"
+            ),
+        )
+        transfer_logs = _fetch_logs_with_debug(
+            w3,
+            {
+                "address": Web3.to_checksum_address(config.position_manager),
+                "topics": [TRANSFER_EVENT_TOPIC],
+                "fromBlock": chunk_start,
+                "toBlock": chunk_end,
+            },
+            context=(
+                f"[{config.name}] position-manager transfer logs "
+                f"{chunk_start:,}->{chunk_end:,}"
+            ),
+        )
+        action_hashes.update(_required_log_transaction_hashes(action_logs))
+        ownership_hashes.update(_required_log_transaction_hashes(transfer_logs))
+    canonical_actions = tuple(sorted(action_hashes))
+    canonical_ownership = tuple(sorted(ownership_hashes))
+    return RpcLPCandidateDiscovery(
+        action_transaction_hashes=canonical_actions,
+        ownership_transaction_hashes=canonical_ownership,
+        all_transaction_hashes=tuple(
+            sorted(action_hashes.union(ownership_hashes))
+        ),
+    )
+
+
+def _required_log_transaction_hashes(logs: Sequence[Any]) -> tuple[str, ...]:
+    transaction_hashes: list[str] = []
+    for log in logs:
+        raw_hash = log.get("transactionHash")
+        if raw_hash is None:
+            raise ValueError("verified LP discovery log is missing transactionHash")
+        transaction_hashes.append(
+            _normalize_transaction_hash(
+                raw_hash,
+                label="verified LP discovery log transactionHash",
+            )
+        )
+    return tuple(transaction_hashes)
+
+
 def export_fixture_lp_ledger(
+    pool: str,
+    start_block: int,
+    end_block: int,
     decoded_actions_path: Path,
     ownership_events_path: Path,
     price_events_path: Path,
     output_path: Path,
 ) -> int:
+    ledger_coverage_path(output_path)
     rows = build_lp_ledger_rows(
         decoded_actions=[
-            _decoded_action_from_json(item)
-            for item in _read_json_list(decoded_actions_path)
+            _decoded_action_from_json(item) for item in _read_json_list(decoded_actions_path)
         ],
         ownership_events=[
-            OwnershipEvent(**item)
-            for item in _read_json_list(ownership_events_path)
+            OwnershipEvent(**item) for item in _read_json_list(ownership_events_path)
         ],
-        price_events=[
-            ReplayedEvent(**item)
-            for item in _read_json_list(price_events_path)
-        ],
+        price_events=[ReplayedEvent(**item) for item in _read_json_list(price_events_path)],
     )
-    _write_ledger_rows(output_path, rows)
+    ledger_bytes = _render_ledger_rows(rows)
+    coverage_bytes = build_fixture_ledger_coverage_bytes(
+        pool,
+        ledger_bytes,
+        requested_start_block=start_block,
+        requested_end_block=end_block,
+        fixture_input_sha256={
+            "decoded_actions": _sha256_path(decoded_actions_path),
+            "ownership_events": _sha256_path(ownership_events_path),
+            "price_events": _sha256_path(price_events_path),
+        },
+    )
+    _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
     return len(rows)
 
 
@@ -80,14 +198,28 @@ def export_rpc_lp_ledger(
     output_path: Path,
     candidate_tx_hashes: Sequence[str] | None = None,
 ) -> int:
+    ledger_coverage_path(output_path)
     config = POOL_CONFIGS[pool]
     w3 = _make_web3(config)
+    chain_id = _coverage_chain_id(w3, pool)
+    initial_endpoint = _capture_rpc_coverage_endpoint(
+        w3,
+        start_block,
+        end_block,
+    )
+    used_full_rpc_scan = candidate_tx_hashes is None
+    if candidate_tx_hashes is None:
+        discovery = _discover_rpc_lp_candidates(w3, config, start_block, end_block)
+        resolved_candidate_hashes = discovery.all_transaction_hashes
+        required_action_hashes = frozenset(discovery.action_transaction_hashes)
+    else:
+        resolved_candidate_hashes = tuple(candidate_tx_hashes)
+        required_action_hashes = frozenset()
     decoded_actions, ownership_events = _decode_rpc_lp_inputs(
         w3,
         config,
-        start_block,
-        end_block,
-        candidate_tx_hashes,
+        resolved_candidate_hashes,
+        required_action_tx_hashes=required_action_hashes,
     )
     price_events = _replayed_price_events_for_actions(
         w3,
@@ -97,16 +229,39 @@ def export_rpc_lp_ledger(
         decoded_actions,
     )
     rows = build_lp_ledger_rows(decoded_actions, ownership_events, price_events)
-    _write_ledger_rows(output_path, rows)
+    final_endpoint = _capture_rpc_coverage_endpoint(
+        w3,
+        start_block,
+        end_block,
+    )
+    if final_endpoint != initial_endpoint:
+        raise CrossPoolContractError(
+            "RPC coverage endpoint snapshot changed during LP ledger export"
+        )
+    ledger_bytes = _render_ledger_rows(rows)
+    coverage_bytes = build_rpc_ledger_coverage_bytes(
+        pool,
+        ledger_bytes,
+        chain_id=chain_id,
+        covered_start_block=start_block,
+        covered_start_block_hash=initial_endpoint.start_block_hash,
+        covered_start_timestamp_ms=initial_endpoint.start_timestamp_ms,
+        covered_end_block=end_block,
+        covered_end_block_hash=initial_endpoint.end_block_hash,
+        covered_end_timestamp_ms=initial_endpoint.end_timestamp_ms,
+        candidate_transaction_hashes=resolved_candidate_hashes,
+        verification_mode=("rpc_verified" if used_full_rpc_scan else "candidate_list_unverified"),
+    )
+    _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
     return len(rows)
 
 
 def _decode_rpc_lp_inputs(
     w3: Web3,
     config: Any,
-    start_block: int,
-    end_block: int,
-    candidate_tx_hashes: Sequence[str] | None,
+    candidate_tx_hashes: Sequence[str],
+    *,
+    required_action_tx_hashes: frozenset[str],
 ) -> tuple[list[DecodedLiquidityAction], list[OwnershipEvent]]:
     position_manager = w3.eth.contract(
         address=Web3.to_checksum_address(config.position_manager),
@@ -127,55 +282,262 @@ def _decode_rpc_lp_inputs(
             liquidity_after=position.liquidity,
         )
 
-    tx_receipts = []
-    tx_hashes = (
-        list(candidate_tx_hashes)
-        if candidate_tx_hashes is not None
-        else _candidate_modify_liquidity_tx_hashes(w3, config, start_block, end_block)
+    normalized_required_action_hashes = frozenset(
+        _normalize_transaction_hash(value, label="required action transaction hash")
+        for value in required_action_tx_hashes
     )
-    for tx_hash in tx_hashes:
-        tx = dict(w3.eth.get_transaction(tx_hash))
-        receipt = dict(w3.eth.get_transaction_receipt(tx_hash))
-        tx_receipts.append((tx, receipt))
-
-    for tx, receipt in sorted(tx_receipts, key=_tx_receipt_sort_key):
-        block_number = int(receipt.get("blockNumber", tx["blockNumber"]))
-        block_timestamp = _block_timestamp_for_number(w3, block_number)
-        ownership_events.extend(
-            decode_ownership_events_from_receipt(receipt, config.position_manager)
+    tx_receipts: list[_RpcTransactionBundle] = []
+    for raw_requested_hash in candidate_tx_hashes:
+        requested_hash = _normalize_transaction_hash(
+            raw_requested_hash,
+            label="candidate transaction hash",
         )
-        decoded_actions.extend(
-            decode_liquidity_actions_for_tx(
-                tx,
-                receipt,
-                block_timestamp,
-                config,
-                token_state,
-                position_resolver=resolve_position,
+        tx = dict(w3.eth.get_transaction(requested_hash))
+        receipt = dict(w3.eth.get_transaction_receipt(requested_hash))
+        _require_matching_response_hash(
+            requested_hash,
+            tx.get("hash"),
+            label="RPC transaction response",
+        )
+        _require_matching_response_hash(
+            requested_hash,
+            receipt.get("transactionHash"),
+            label="RPC receipt response",
+        )
+        block_number, transaction_index = _require_matching_transaction_location(
+            requested_hash,
+            tx,
+            receipt,
+        )
+        tx_receipts.append(
+            _RpcTransactionBundle(
+                transaction_hash=requested_hash,
+                transaction=tx,
+                receipt=receipt,
+                block_number=block_number,
+                transaction_index=transaction_index,
             )
         )
+
+    for bundle in sorted(tx_receipts, key=_tx_receipt_sort_key):
+        block_timestamp = _block_timestamp_for_number(w3, bundle.block_number)
+        ownership_events.extend(
+            decode_ownership_events_from_receipt(
+                bundle.receipt,
+                config.position_manager,
+            )
+        )
+        transaction_actions = decode_liquidity_actions_for_tx(
+            bundle.transaction,
+            bundle.receipt,
+            block_timestamp,
+            config,
+            token_state,
+            position_resolver=resolve_position,
+        )
+        transaction_hash = bundle.transaction_hash
+        if transaction_hash in normalized_required_action_hashes:
+            expected_log_indices = _target_pool_modify_log_indices(
+                bundle.receipt,
+                config,
+            )
+            if not expected_log_indices:
+                raise ValueError(
+                    "target-pool candidate receipt has no target-pool "
+                    f"ModifyLiquidity log: {transaction_hash}"
+                )
+            if not transaction_actions:
+                raise ValueError(
+                    "target-pool liquidity transaction is not representable by the "
+                    f"configured PositionManager decoder: {transaction_hash}"
+                )
+            expected_log_index_set = frozenset(expected_log_indices)
+            represented_log_indices = tuple(
+                sorted(
+                    action.log_index
+                    for action in transaction_actions
+                    if action.log_index in expected_log_index_set
+                )
+            )
+            if represented_log_indices != expected_log_indices:
+                raise ValueError(
+                    "configured PositionManager decoder did not represent every "
+                    f"target-pool ModifyLiquidity log: {transaction_hash}"
+                )
+        decoded_actions.extend(transaction_actions)
     return decoded_actions, ownership_events
 
 
-def _tx_receipt_sort_key(item: tuple[dict[str, Any], dict[str, Any]]) -> tuple[int, int, str]:
-    tx, receipt = item
-    block_number = _int_from_rpc_value(receipt.get("blockNumber", tx["blockNumber"]))
-    transaction_index = _int_from_rpc_value(receipt.get("transactionIndex", tx.get("transactionIndex", 0)))
-    return block_number, transaction_index, str(tx["hash"])
+def _normalize_transaction_hash(value: Any, *, label: str) -> str:
+    try:
+        transaction_hash = coerce_hex_str(value).lower()
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a 32-byte hex value") from exc
+    if len(transaction_hash) != 66:
+        raise ValueError(f"{label} must be a 32-byte hex value")
+    try:
+        bytes.fromhex(transaction_hash[2:])
+    except ValueError as exc:
+        raise ValueError(f"{label} must be a 32-byte hex value") from exc
+    return transaction_hash
+
+
+def _require_matching_response_hash(
+    requested_hash: str,
+    response_hash: Any,
+    *,
+    label: str,
+) -> None:
+    try:
+        normalized_response_hash = _normalize_transaction_hash(
+            response_hash,
+            label=f"{label} hash",
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} does not match requested candidate hash {requested_hash}"
+        ) from exc
+    if normalized_response_hash != requested_hash:
+        raise ValueError(
+            f"{label} does not match requested candidate hash {requested_hash}"
+        )
+
+
+def _require_matching_transaction_location(
+    requested_hash: str,
+    transaction: dict[str, Any],
+    receipt: dict[str, Any],
+) -> tuple[int, int]:
+    location: list[int] = []
+    for field_name in ("blockNumber", "transactionIndex"):
+        transaction_value = _required_rpc_int_field(
+            transaction,
+            field_name,
+            label=(
+                "RPC transaction response for requested candidate hash "
+                f"{requested_hash}"
+            ),
+        )
+        receipt_value = _required_rpc_int_field(
+            receipt,
+            field_name,
+            label=(
+                "RPC receipt response for requested candidate hash "
+                f"{requested_hash}"
+            ),
+        )
+        if transaction_value != receipt_value:
+            raise ValueError(
+                "RPC transaction and receipt "
+                f"{field_name} differ for requested candidate hash {requested_hash}"
+            )
+        location.append(transaction_value)
+    return location[0], location[1]
+
+
+def _required_rpc_int_field(
+    payload: dict[str, Any],
+    field_name: str,
+    *,
+    label: str,
+) -> int:
+    if field_name not in payload or payload[field_name] is None:
+        raise ValueError(f"{label} is missing {field_name}")
+    try:
+        value = _int_from_rpc_value(payload[field_name])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} has invalid {field_name}") from exc
+    if value < 0:
+        raise ValueError(f"{label} has invalid {field_name}")
+    return value
+
+
+def _target_pool_modify_log_indices(
+    receipt: dict[str, Any],
+    config: Any,
+) -> tuple[int, ...]:
+    pool_manager = Web3.to_checksum_address(config.pool_manager)
+    pool_id = coerce_hex_str(config.pool_id).lower()
+    indices: list[int] = []
+    for log in receipt.get("logs", []):
+        if Web3.to_checksum_address(log["address"]) != pool_manager:
+            continue
+        topics = log.get("topics", [])
+        if len(topics) < 2:
+            continue
+        if coerce_hex_str(topics[0]).lower() != V4_MODIFY_LIQUIDITY_TOPIC:
+            continue
+        if coerce_hex_str(topics[1]).lower() != pool_id:
+            continue
+        indices.append(_int_from_rpc_value(log["logIndex"]))
+    return tuple(sorted(indices))
+
+
+def _tx_receipt_sort_key(item: _RpcTransactionBundle) -> tuple[int, int, str]:
+    return item.block_number, item.transaction_index, item.transaction_hash
 
 
 def _int_from_rpc_value(value: Any) -> int:
+    if isinstance(value, bool):
+        raise TypeError("RPC quantity cannot be boolean")
+    if isinstance(value, int):
+        return value
     if isinstance(value, str):
         if value.startswith(("0x", "0X")):
             return int(value, 16)
         return int(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return int.from_bytes(bytes(value), "big")
-    return int(value)
+    raise TypeError("RPC quantity must be integer, string, or bytes")
 
 
 def _block_timestamp_for_number(w3: Web3, block_number: int) -> int:
     return _block_timestamp_from_raw(_raw_get_block(w3, block_number, False))
+
+
+def _coverage_block_header(w3: Web3, block_number: int) -> tuple[str, int]:
+    raw_block = _raw_get_block(w3, block_number, False)
+    observed_block_number = _required_rpc_int_field(
+        raw_block,
+        "number",
+        label="RPC coverage block header",
+    )
+    if observed_block_number != block_number:
+        raise ValueError(
+            "RPC coverage block header returned block "
+            f"{observed_block_number} for requested block {block_number}"
+        )
+    block_hash = _normalize_transaction_hash(
+        raw_block.get("hash"),
+        label="RPC coverage block hash",
+    )
+    timestamp_ms = _block_timestamp_from_raw(raw_block) * 1_000
+    return block_hash, timestamp_ms
+
+
+def _capture_rpc_coverage_endpoint(
+    w3: Web3,
+    start_block: int,
+    end_block: int,
+) -> _RpcCoverageEndpointSnapshot:
+    start_block_hash, start_timestamp_ms = _coverage_block_header(w3, start_block)
+    end_block_hash, end_timestamp_ms = _coverage_block_header(w3, end_block)
+    return _RpcCoverageEndpointSnapshot(
+        start_block_hash=start_block_hash,
+        start_timestamp_ms=start_timestamp_ms,
+        end_block_hash=end_block_hash,
+        end_timestamp_ms=end_timestamp_ms,
+    )
+
+
+def _coverage_chain_id(w3: Web3, pool: str) -> int:
+    observed_chain_id = _int_from_rpc_value(w3.eth.chain_id)
+    expected_chain_id = pool_attribution_orientation(pool).chain_id
+    if observed_chain_id != expected_chain_id:
+        raise ValueError(
+            f"{pool} RPC chain ID {observed_chain_id} does not match {expected_chain_id}"
+        )
+    return observed_chain_id
 
 
 def _replayed_price_events_for_actions(
@@ -207,8 +569,7 @@ def _replayed_price_events_for_actions(
     initial_state = _state_seed_before_block(state_view, config, first_block)
     replayed_events = attach_event_time_state(replay_events, initial_state)
     action_keys = {
-        (action.block_number, action.log_index, action.event_order)
-        for action in decoded_actions
+        (action.block_number, action.log_index, action.event_order) for action in decoded_actions
     }
     return [
         event
@@ -265,7 +626,9 @@ def _candidate_tx_hashes_from_csv(path: Path, start_block: int, end_block: int) 
         reader = csv.DictReader(handle)
         required_fields = {"block_number", "event_type", "tx_hash"}
         if reader.fieldnames is None or not required_fields.issubset(reader.fieldnames):
-            raise ValueError(f"candidate tx CSV missing required fields {sorted(required_fields)}: {path}")
+            raise ValueError(
+                f"candidate tx CSV missing required fields {sorted(required_fields)}: {path}"
+            )
         for row in reader:
             if row["event_type"] not in _LP_CANDIDATE_EVENT_TYPES:
                 continue
@@ -286,6 +649,14 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
     return payload
 
 
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _decoded_action_from_json(payload: dict[str, Any]) -> DecodedLiquidityAction:
     decimal_fields = {
         "amount0",
@@ -302,14 +673,140 @@ def _decoded_action_from_json(payload: dict[str, Any]) -> DecodedLiquidityAction
     return DecodedLiquidityAction(**normalized)
 
 
-def _write_ledger_rows(output_path: Path, rows: list[LPLedgerRow]) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def _render_ledger_rows(rows: Sequence[LPLedgerRow]) -> bytes:
     fieldnames = [field.name for field in fields(LPLedgerRow)]
-    with output_path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(_csv_row(row))
+    handle = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        handle,
+        fieldnames=fieldnames,
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(_csv_row(row))
+    return handle.getvalue().encode("utf-8")
+
+
+def _publish_ledger_pair(
+    pool: str,
+    ledger_path: Path,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+) -> None:
+    with _publication_lock(ledger_path):
+        _publish_ledger_pair_locked(pool, ledger_path, ledger_bytes, coverage_bytes)
+
+
+@contextmanager
+def _publication_lock(ledger_path: Path) -> Iterator[None]:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = ledger_path.with_name(f"{ledger_path.name}.publish.lock")
+    with lock_path.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise CrossPoolContractError(
+                f"LP ledger publication is already active: {ledger_path}"
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _publish_ledger_pair_locked(
+    pool: str,
+    ledger_path: Path,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+) -> None:
+    sidecar_path = ledger_coverage_path(ledger_path)
+    ledger_exists = ledger_path.is_file()
+    sidecar_exists = sidecar_path.is_file()
+    if ledger_exists != sidecar_exists:
+        raise CrossPoolContractError(
+            "refusing to replace a partial LP ledger and coverage pair"
+        )
+    staged_ledger = _temporary_ledger_path(ledger_path, "stage")
+    staged_sidecar = ledger_coverage_path(staged_ledger)
+    backup_ledger: Path | None = None
+    backup_sidecar: Path | None = None
+    ledger_published = False
+    sidecar_published = False
+    preserve_backups = False
+    try:
+        _write_durable_bytes(staged_ledger, ledger_bytes)
+        _write_durable_bytes(staged_sidecar, coverage_bytes)
+        load_ledger_coverage(pool, staged_ledger)
+
+        if ledger_exists:
+            backup_ledger = _temporary_ledger_path(ledger_path, "backup")
+            backup_sidecar = ledger_coverage_path(backup_ledger)
+            _write_durable_bytes(backup_ledger, ledger_path.read_bytes())
+            _write_durable_bytes(backup_sidecar, sidecar_path.read_bytes())
+            load_ledger_coverage(pool, backup_ledger)
+
+        # Publishing the ledger first makes every intermediate state fail closed
+        # against the old or missing sidecar until the matching sidecar is visible.
+        _replace_path(staged_ledger, ledger_path)
+        ledger_published = True
+        _replace_path(staged_sidecar, sidecar_path)
+        sidecar_published = True
+        load_ledger_coverage(pool, ledger_path)
+    except BaseException:
+        try:
+            if backup_ledger is not None and backup_sidecar is not None:
+                if ledger_published:
+                    _replace_path(backup_ledger, ledger_path)
+                if sidecar_published:
+                    _replace_path(backup_sidecar, sidecar_path)
+            else:
+                if ledger_published:
+                    ledger_path.unlink(missing_ok=True)
+                if sidecar_published:
+                    sidecar_path.unlink(missing_ok=True)
+        except BaseException as rollback_error:
+            preserve_backups = True
+            retained_backups = tuple(
+                path
+                for path in (backup_ledger, backup_sidecar)
+                if path is not None and path.exists()
+            )
+            retained_text = ", ".join(str(path) for path in retained_backups)
+            raise RuntimeError(
+                "LP ledger publication rollback failed; recover from retained "
+                f"backup files: {retained_text}"
+            ) from rollback_error
+        raise
+    finally:
+        staged_ledger.unlink(missing_ok=True)
+        staged_sidecar.unlink(missing_ok=True)
+        if not preserve_backups:
+            if backup_ledger is not None:
+                backup_ledger.unlink(missing_ok=True)
+            if backup_sidecar is not None:
+                backup_sidecar.unlink(missing_ok=True)
+
+
+def _temporary_ledger_path(ledger_path: Path, purpose: str) -> Path:
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{ledger_path.stem}.{purpose}.",
+        suffix=".csv",
+        dir=ledger_path.parent,
+    )
+    os.close(descriptor)
+    return Path(raw_path)
+
+
+def _write_durable_bytes(path: Path, payload: bytes) -> None:
+    with path.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _replace_path(source: Path, destination: Path) -> None:
+    source.replace(destination)
 
 
 def _csv_row(row: LPLedgerRow) -> dict[str, object]:
@@ -337,6 +834,9 @@ def main() -> None:
     fixture_paths = (args.decoded_actions, args.ownership_events, args.price_events)
     if all(path is not None for path in fixture_paths):
         count = export_fixture_lp_ledger(
+            args.pool,
+            args.start_block,
+            args.end_block,
             args.decoded_actions,
             args.ownership_events,
             args.price_events,

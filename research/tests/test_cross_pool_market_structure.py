@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -9,10 +10,17 @@ from pathlib import Path
 
 import pytest
 
+import research.backtester.lp_ledger_attribution as ledger_attribution
 from research.backtester.lp_ledger_attribution import (
+    RpcVerificationMode,
+    ledger_coverage_path,
     load_ledger_attribution_rows,
+    load_ledger_coverage,
+    load_verified_ledger_attribution_rows,
     opening_capital_usd,
     pool_attribution_orientation,
+    write_fixture_ledger_coverage,
+    write_rpc_ledger_coverage,
 )
 from research.backtester.pool_price_semantics import raw_sqrt_mid_from_row
 from research.cross_pool import market_structure
@@ -128,6 +136,39 @@ def test_market_structure_uses_the_common_swap_interval_and_exact_capital(
     assert base.exact_opening_capital_hhi == Decimal("0.6250")
 
 
+def test_market_structure_analysis_preserves_verified_coverage_evidence(
+    tmp_path: Path,
+) -> None:
+    base_replay = _write_csv(
+        tmp_path / "base_replay.csv",
+        REPLAY_FIELDS,
+        _replay_rows("uni-base"),
+    )
+    bsc_replay = _write_csv(
+        tmp_path / "bsc_replay.csv",
+        REPLAY_FIELDS,
+        _replay_rows("uni-bsc", include_outer_rows=True),
+    )
+    base_ledger = _write_ledger(tmp_path, "uni-base")
+    bsc_ledger = _write_ledger(tmp_path, "uni-bsc")
+
+    analysis = market_structure.analyze_market_structure(
+        base_replay_path=base_replay,
+        bsc_replay_path=bsc_replay,
+        base_ledger_path=base_ledger,
+        bsc_ledger_path=bsc_ledger,
+    )
+
+    assert tuple(row.pool for row in analysis.venues) == ("uni-base", "uni-bsc")
+    assert tuple(row.pool for row in analysis.ledger_coverage) == (
+        "uni-base",
+        "uni-bsc",
+    )
+    assert analysis.ledger_coverage[0].sidecar_sha256 == hashlib.sha256(
+        ledger_coverage_path(base_ledger).read_bytes()
+    ).hexdigest()
+
+
 def test_common_interval_excludes_unmatched_activity_and_post_cutoff_capital(
     tmp_path: Path,
 ) -> None:
@@ -150,7 +191,7 @@ def test_non_swap_rows_do_not_enter_activity_liquidity_or_volume(
         _replay_row(
             "uni-base",
             timestamp_ms=START_MS + 1_000,
-            block_number=101,
+            block_number=INCEPTION_BLOCKS["uni-base"] + 101,
             log_index=2,
             sqrt_price_x96=9 * SQRT_BASE,
             active_liquidity=999,
@@ -371,7 +412,7 @@ def test_replay_validation_fails_closed(
         base_rows[1]["tx_hash"] = base_rows[0]["tx_hash"]
         base_rows[1]["log_index"] = base_rows[0]["log_index"]
     elif mutation == "reversed_order":
-        base_rows[1]["block_number"] = "99"
+        base_rows[1]["block_number"] = str(INCEPTION_BLOCKS["uni-base"] + 99)
     elif mutation == "backward_time":
         base_rows[1]["block_time"] = _iso_timestamp(START_MS - 1)
     elif mutation == "changed_fee":
@@ -501,6 +542,238 @@ def test_ledger_loader_rejects_a_canonical_but_truncated_history(
         load_ledger_attribution_rows("uni-base", path)
 
 
+def test_ledger_coverage_sidecar_is_canonical_and_strict(tmp_path: Path) -> None:
+    ledger = _write_csv(
+        tmp_path / "ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-base"),
+    )
+    _write_verified_coverage(ledger, "uni-base")
+    sidecar = ledger_coverage_path(ledger)
+    first = sidecar.read_bytes()
+    _write_verified_coverage(ledger, "uni-base")
+
+    assert sidecar.read_bytes() == first
+    assert first.endswith(b"\n")
+    assert b": " not in first
+    assert load_ledger_coverage("uni-base", ledger).verification_mode == "rpc_verified"
+
+    sidecar.write_bytes(first[:-1] + b"\r\n")
+    with pytest.raises(CrossPoolContractError, match="canonical JSON bytes"):
+        load_ledger_coverage("uni-base", ledger)
+
+    payload = json.loads(first)
+    sidecar.write_text(json.dumps(payload, indent=2) + "\n")
+    with pytest.raises(CrossPoolContractError, match="canonical JSON bytes"):
+        load_ledger_coverage("uni-base", ledger)
+
+    payload = json.loads(first)
+    payload["unexpected"] = True
+    _write_canonical_json(sidecar, payload)
+    with pytest.raises(CrossPoolContractError, match="unknown fields"):
+        load_ledger_coverage("uni-base", ledger)
+
+    sidecar.write_text('{"schema_version":"1.0.0","schema_version":"1.0.0"}\n')
+    with pytest.raises(CrossPoolContractError, match="duplicate JSON key"):
+        load_ledger_coverage("uni-base", ledger)
+
+    sidecar.write_bytes(first.replace(b'"chain_id":8453', b'"chain_id":NaN'))
+    with pytest.raises(CrossPoolContractError, match="non-finite JSON constant"):
+        load_ledger_coverage("uni-base", ledger)
+
+
+def test_fixture_coverage_range_must_contain_observed_ledger_rows(
+    tmp_path: Path,
+) -> None:
+    ledger = _write_csv(
+        tmp_path / "ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-base"),
+    )
+
+    with pytest.raises(CrossPoolContractError, match="outside the requested block range"):
+        write_fixture_ledger_coverage(
+            "uni-base",
+            ledger,
+            requested_start_block=INCEPTION_BLOCKS["uni-base"] + 1,
+            requested_end_block=INCEPTION_BLOCKS["uni-base"] + 1_000,
+            fixture_input_sha256={
+                "decoded_actions": "1" * 64,
+                "ownership_events": "2" * 64,
+                "price_events": "3" * 64,
+            },
+        )
+
+
+def test_verified_ledger_load_uses_one_immutable_ledger_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = _write_csv(
+        tmp_path / "ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-base"),
+    )
+    _write_verified_coverage(ledger, "uni-base")
+    sidecar = ledger_coverage_path(ledger)
+    expected_sidecar_sha = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    original_read = ledger_attribution._read_path_bytes
+    ledger_reads = 0
+
+    def mutate_after_ledger_snapshot(path: Path, *, label: str) -> bytes:
+        nonlocal ledger_reads
+        raw_bytes = original_read(path, label=label)
+        if path == ledger:
+            ledger_reads += 1
+            ledger.write_bytes(raw_bytes + b"\n")
+        return raw_bytes
+
+    monkeypatch.setattr(
+        ledger_attribution,
+        "_read_path_bytes",
+        mutate_after_ledger_snapshot,
+    )
+
+    loaded = load_verified_ledger_attribution_rows(
+        "uni-base",
+        ledger,
+        required_end_block=INCEPTION_BLOCKS["uni-base"] + 103,
+        required_end_timestamp_ms=END_MS,
+    )
+
+    assert ledger_reads == 1
+    assert len(loaded.rows) == len(_ledger_rows("uni-base"))
+    assert loaded.coverage.sidecar_sha256 == expected_sidecar_sha
+    assert loaded.coverage.chain_id == 8453
+    assert loaded.coverage.candidate_scan_status == "producer_attested"
+
+
+def test_candidate_set_is_canonical_and_digest_bound(tmp_path: Path) -> None:
+    ledger = _write_csv(
+        tmp_path / "ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-base"),
+    )
+    _write_verified_coverage(
+        ledger,
+        "uni-base",
+        candidate_transaction_hashes=(
+            "0X" + "AA" * 32,
+            "0x" + "11" * 32,
+        ),
+    )
+    sidecar = ledger_coverage_path(ledger)
+    payload = json.loads(sidecar.read_bytes())
+
+    assert payload["candidate_transaction_hashes"] == [
+        "0x" + "11" * 32,
+        "0x" + "aa" * 32,
+    ]
+    payload["candidate_transaction_hashes"].reverse()
+    _write_canonical_json(sidecar, payload)
+    with pytest.raises(CrossPoolContractError, match="canonical order"):
+        load_ledger_coverage("uni-base", ledger)
+
+    with pytest.raises(CrossPoolContractError, match="must be unique"):
+        _write_verified_coverage(
+            ledger,
+            "uni-base",
+            candidate_transaction_hashes=(
+                "0x" + "AA" * 32,
+                "0x" + "aa" * 32,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    (
+        ("chain_id", 56, "pool orientation"),
+        ("pool_id", "0x" + "ff" * 32, "pool orientation"),
+        ("covered_end_block_hash", "0x1234", "32-byte hex hash"),
+        ("ledger_rows", 999, "row facts"),
+        ("candidate_transactions_sha256", "0" * 64, "digest is inconsistent"),
+    ),
+)
+def test_coverage_identity_and_attestation_mutations_fail_closed(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    match: str,
+) -> None:
+    ledger = _write_csv(
+        tmp_path / "ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-base"),
+    )
+    _write_verified_coverage(ledger, "uni-base")
+    sidecar = ledger_coverage_path(ledger)
+    payload = json.loads(sidecar.read_bytes())
+    payload[field] = value
+    _write_canonical_json(sidecar, payload)
+
+    with pytest.raises(CrossPoolContractError, match=match):
+        load_ledger_coverage("uni-base", ledger)
+
+
+def test_verified_coverage_start_must_equal_pool_inception(tmp_path: Path) -> None:
+    ledger = _write_csv(
+        tmp_path / "ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-base"),
+    )
+    _write_verified_coverage(ledger, "uni-base")
+    sidecar = ledger_coverage_path(ledger)
+    payload = json.loads(sidecar.read_bytes())
+    payload["covered_start_block"] = INCEPTION_BLOCKS["uni-base"] - 1
+    _write_canonical_json(sidecar, payload)
+
+    with pytest.raises(CrossPoolContractError, match="begin at pool inception"):
+        load_verified_ledger_attribution_rows(
+            "uni-base",
+            ledger,
+            required_end_block=INCEPTION_BLOCKS["uni-base"] + 103,
+            required_end_timestamp_ms=END_MS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("missing", "coverage sidecar"),
+        ("ledger_hash", "ledger SHA-256"),
+        ("short_block", "common-interval swap block"),
+        ("short_time", "common activity end"),
+        ("candidate_list", "full RPC scan"),
+        ("fixture", "full RPC scan"),
+    ),
+)
+def test_market_structure_requires_verified_tail_coverage(
+    tmp_path: Path,
+    mutation: str,
+    match: str,
+) -> None:
+    with pytest.raises(CrossPoolContractError, match=match):
+        _summaries(tmp_path, base_coverage_mutation=mutation)
+
+
+def test_quiet_pool_coverage_must_reach_the_other_pool_common_cutoff(
+    tmp_path: Path,
+) -> None:
+    bsc_rows = tuple(
+        row
+        for row in _replay_rows("uni-bsc", include_outer_rows=True)
+        if row["block_time"] != _iso_timestamp(END_MS)
+    )
+
+    with pytest.raises(CrossPoolContractError, match="common activity end"):
+        _summaries(
+            tmp_path,
+            bsc_replay_rows=bsc_rows,
+            bsc_coverage_end_timestamp_ms=END_MS - 1,
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation", "match"),
     (
@@ -551,7 +824,10 @@ def _summaries(
     tmp_path: Path,
     *,
     base_replay_rows: tuple[dict[str, str], ...] | None = None,
+    bsc_replay_rows: tuple[dict[str, str], ...] | None = None,
     base_ledger_rows: tuple[dict[str, str], ...] | None = None,
+    base_coverage_mutation: str | None = None,
+    bsc_coverage_end_timestamp_ms: int = END_MS + 1_000,
 ) -> tuple[VenueStructureSummary, VenueStructureSummary]:
     base_replay_path = _write_csv(
         tmp_path / "base_replay.csv",
@@ -561,14 +837,61 @@ def _summaries(
     bsc_replay_path = _write_csv(
         tmp_path / "bsc_replay.csv",
         REPLAY_FIELDS,
-        _replay_rows("uni-bsc", include_outer_rows=True),
+        bsc_replay_rows or _replay_rows("uni-bsc", include_outer_rows=True),
     )
     base_ledger_path = _write_csv(
         tmp_path / "base_ledger.csv",
         LEDGER_FIELDS,
         base_ledger_rows or _ledger_rows("uni-base", include_post_cutoff=True),
     )
-    bsc_ledger_path = _write_ledger(tmp_path, "uni-bsc")
+    _write_verified_coverage(base_ledger_path, "uni-base")
+    if base_coverage_mutation == "missing":
+        ledger_coverage_path(base_ledger_path).unlink()
+    elif base_coverage_mutation == "ledger_hash":
+        with base_ledger_path.open("a") as handle:
+            handle.write("\n")
+    elif base_coverage_mutation == "short_block":
+        _write_verified_coverage(
+            base_ledger_path,
+            "uni-base",
+            covered_end_block=INCEPTION_BLOCKS["uni-base"] + 102,
+        )
+    elif base_coverage_mutation == "short_time":
+        _write_verified_coverage(
+            base_ledger_path,
+            "uni-base",
+            covered_end_timestamp_ms=END_MS - 1,
+        )
+    elif base_coverage_mutation == "candidate_list":
+        _write_verified_coverage(
+            base_ledger_path,
+            "uni-base",
+            verification_mode="candidate_list_unverified",
+        )
+    elif base_coverage_mutation == "fixture":
+        write_fixture_ledger_coverage(
+            "uni-base",
+            base_ledger_path,
+            requested_start_block=INCEPTION_BLOCKS["uni-base"],
+            requested_end_block=INCEPTION_BLOCKS["uni-base"] + 1_000,
+            fixture_input_sha256={
+                "decoded_actions": "1" * 64,
+                "ownership_events": "2" * 64,
+                "price_events": "3" * 64,
+            },
+        )
+    elif base_coverage_mutation is not None:
+        raise AssertionError(base_coverage_mutation)
+    bsc_ledger_path = _write_csv(
+        tmp_path / "uni-bsc_ledger.csv",
+        LEDGER_FIELDS,
+        _ledger_rows("uni-bsc"),
+    )
+    _write_verified_coverage(
+        bsc_ledger_path,
+        "uni-bsc",
+        covered_end_timestamp_ms=bsc_coverage_end_timestamp_ms,
+    )
     return summarize_market_structure(
         base_replay_path=base_replay_path,
         bsc_replay_path=bsc_replay_path,
@@ -586,7 +909,7 @@ def _replay_rows(
         _replay_row(
             pool,
             timestamp_ms=timestamp_ms,
-            block_number=100 + index,
+            block_number=INCEPTION_BLOCKS[pool] + 100 + index,
             log_index=1,
             sqrt_price_x96=sqrt_price_x96,
             active_liquidity=10 * (index + 1),
@@ -606,7 +929,7 @@ def _replay_rows(
             _replay_row(
                 pool,
                 timestamp_ms=START_MS - 1_000,
-                block_number=99,
+                block_number=INCEPTION_BLOCKS[pool] + 99,
                 log_index=1,
                 sqrt_price_x96=SQRT_BASE,
                 active_liquidity=999,
@@ -617,7 +940,7 @@ def _replay_rows(
             _replay_row(
                 pool,
                 timestamp_ms=END_MS + 1_000,
-                block_number=200,
+                block_number=INCEPTION_BLOCKS[pool] + 200,
                 log_index=1,
                 sqrt_price_x96=SQRT_BASE,
                 active_liquidity=999,
@@ -782,10 +1105,38 @@ def _ledger_row(
 
 
 def _write_ledger(tmp_path: Path, pool: PoolName) -> Path:
-    return _write_csv(
+    path = _write_csv(
         tmp_path / f"{pool}_ledger.csv",
         LEDGER_FIELDS,
         _ledger_rows(pool),
+    )
+    _write_verified_coverage(path, pool)
+    return path
+
+
+def _write_verified_coverage(
+    path: Path,
+    pool: PoolName,
+    *,
+    covered_end_block: int | None = None,
+    covered_end_timestamp_ms: int = END_MS + 1_000,
+    verification_mode: RpcVerificationMode = "rpc_verified",
+    candidate_transaction_hashes: tuple[str, ...] = ("0x" + "33" * 32,),
+) -> None:
+    write_rpc_ledger_coverage(
+        pool,
+        path,
+        chain_id=pool_attribution_orientation(pool).chain_id,
+        covered_start_block=INCEPTION_BLOCKS[pool],
+        covered_start_block_hash="0x" + "11" * 32,
+        covered_start_timestamp_ms=START_MS - 2_000,
+        covered_end_block=(
+            INCEPTION_BLOCKS[pool] + 1_000 if covered_end_block is None else covered_end_block
+        ),
+        covered_end_block_hash="0x" + "22" * 32,
+        covered_end_timestamp_ms=covered_end_timestamp_ms,
+        candidate_transaction_hashes=candidate_transaction_hashes,
+        verification_mode=verification_mode,
     )
 
 
@@ -803,6 +1154,19 @@ def _write_csv(
         writer.writeheader()
         writer.writerows(rows)
     return path
+
+
+def _write_canonical_json(path: Path, payload: object) -> None:
+    path.write_text(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+    )
 
 
 def _iso_timestamp(timestamp_ms: int) -> str:

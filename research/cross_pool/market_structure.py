@@ -13,7 +13,8 @@ from typing import Mapping, Sequence
 
 from research.backtester.lp_ledger_attribution import (
     LedgerAttributionRow,
-    load_ledger_attribution_rows,
+    VerifiedLedgerCoverageEvidence,
+    load_verified_ledger_attribution_rows,
     pool_attribution_orientation,
 )
 from research.cross_pool.contracts import (
@@ -203,6 +204,25 @@ class VenueStructureSummary:
 
 
 @dataclass(frozen=True)
+class MarketStructureAnalysis:
+    venues: tuple[VenueStructureSummary, VenueStructureSummary]
+    ledger_coverage: tuple[
+        VerifiedLedgerCoverageEvidence,
+        VerifiedLedgerCoverageEvidence,
+    ]
+
+    def __post_init__(self) -> None:
+        if tuple(row.pool for row in self.venues) != _POOL_ORDER:
+            raise CrossPoolContractError(
+                "market structure analysis requires ordered Base and BSC venues"
+            )
+        if tuple(row.pool for row in self.ledger_coverage) != _POOL_ORDER:
+            raise CrossPoolContractError(
+                "market structure analysis requires ordered Base and BSC coverage"
+            )
+
+
+@dataclass(frozen=True)
 class _ReplaySwap:
     pool: PoolName
     timestamp_ms: int
@@ -222,6 +242,21 @@ def summarize_market_structure(
     base_ledger_path: Path,
     bsc_ledger_path: Path,
 ) -> tuple[VenueStructureSummary, VenueStructureSummary]:
+    return analyze_market_structure(
+        base_replay_path=base_replay_path,
+        bsc_replay_path=bsc_replay_path,
+        base_ledger_path=base_ledger_path,
+        bsc_ledger_path=bsc_ledger_path,
+    ).venues
+
+
+def analyze_market_structure(
+    *,
+    base_replay_path: Path,
+    bsc_replay_path: Path,
+    base_ledger_path: Path,
+    bsc_ledger_path: Path,
+) -> MarketStructureAnalysis:
     base_swaps = _load_replay_swaps("uni-base", base_replay_path)
     bsc_swaps = _load_replay_swaps("uni-bsc", bsc_replay_path)
     activity_start_timestamp_ms = max(
@@ -245,30 +280,48 @@ def summarize_market_structure(
         start_timestamp_ms=activity_start_timestamp_ms,
         end_timestamp_ms=activity_end_timestamp_ms,
     )
+    base_verified = load_verified_ledger_attribution_rows(
+        "uni-base",
+        base_ledger_path,
+        required_end_block=base_common[-1].block_number,
+        required_end_timestamp_ms=activity_end_timestamp_ms,
+    )
+    bsc_verified = load_verified_ledger_attribution_rows(
+        "uni-bsc",
+        bsc_ledger_path,
+        required_end_block=bsc_common[-1].block_number,
+        required_end_timestamp_ms=activity_end_timestamp_ms,
+    )
     base_ledger = tuple(
         row
-        for row in load_ledger_attribution_rows("uni-base", base_ledger_path)
+        for row in base_verified.rows
         if row.timestamp_ms <= activity_end_timestamp_ms
     )
     bsc_ledger = tuple(
         row
-        for row in load_ledger_attribution_rows("uni-bsc", bsc_ledger_path)
+        for row in bsc_verified.rows
         if row.timestamp_ms <= activity_end_timestamp_ms
     )
-    return (
-        _summarize_venue(
-            pool="uni-base",
-            swaps=base_common,
-            ledger_rows=base_ledger,
-            activity_start_timestamp_ms=activity_start_timestamp_ms,
-            activity_end_timestamp_ms=activity_end_timestamp_ms,
+    return MarketStructureAnalysis(
+        venues=(
+            _summarize_venue(
+                pool="uni-base",
+                swaps=base_common,
+                ledger_rows=base_ledger,
+                activity_start_timestamp_ms=activity_start_timestamp_ms,
+                activity_end_timestamp_ms=activity_end_timestamp_ms,
+            ),
+            _summarize_venue(
+                pool="uni-bsc",
+                swaps=bsc_common,
+                ledger_rows=bsc_ledger,
+                activity_start_timestamp_ms=activity_start_timestamp_ms,
+                activity_end_timestamp_ms=activity_end_timestamp_ms,
+            ),
         ),
-        _summarize_venue(
-            pool="uni-bsc",
-            swaps=bsc_common,
-            ledger_rows=bsc_ledger,
-            activity_start_timestamp_ms=activity_start_timestamp_ms,
-            activity_end_timestamp_ms=activity_end_timestamp_ms,
+        ledger_coverage=(
+            base_verified.coverage,
+            bsc_verified.coverage,
         ),
     )
 
