@@ -881,7 +881,7 @@ git commit -m "feat: add reverse cross-pool falsification"
 ```python
 def test_shock_cluster_retains_first_crossing_only() -> None:
     shocks = detect_shocks(burst_source_events(), ShockConfig())
-    assert [shock.timestamp_ms for shock in shocks] == [FIRST_CROSSING_MS]
+    assert [shock.shock_timestamp_ms for shock in shocks] == [FIRST_CROSSING_MS]
 
 
 def test_event_response_uses_target_as_of_not_next_swap() -> None:

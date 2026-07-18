@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Literal, TypeAlias
 
@@ -19,6 +20,10 @@ EvidenceClass: TypeAlias = Literal[
 ]
 ImprovementSign: TypeAlias = Literal[-1, 0, 1]
 UnavailableReason: TypeAlias = Literal["no_rows"]
+EventExclusionReason: TypeAlias = Literal[
+    "missing_target_start_state",
+    "missing_target_end_state",
+]
 
 PREDICTIVE_BOOTSTRAP_RESAMPLES = 2_000
 PREDICTIVE_BOOTSTRAP_SEED = 20_260_715
@@ -29,6 +34,13 @@ PREDICTIVE_CONDITIONAL_MOVE_THRESHOLD_BPS = 10.0
 PREDICTIVE_POSITIVE_ACCURACY_LOWER_BOUND = 0.50
 PREDICTIVE_NULL_MAE_UPPER_BOUND_BPS = 1.0
 PREDICTIVE_NULL_DIRECTIONAL_GAIN_UPPER_BOUND = 0.05
+EVENT_SHOCK_LOOKBACK_MS = 900_000
+EVENT_SHOCK_THRESHOLD_BPS = 5.0
+EVENT_SHOCK_CLUSTER_MS = 900_000
+EVENT_RESPONSE_HORIZONS_MS = (900_000, 3_600_000, 14_400_000)
+EVENT_BOOTSTRAP_RESAMPLES = 2_000
+EVENT_BOOTSTRAP_SEED = 20_260_715
+EVENT_BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
 
 
 class CrossPoolContractError(ValueError):
@@ -47,6 +59,212 @@ class PoolEvent:
     fee_adjusted_ask: Decimal
     stored_cngn_usd_price: Decimal
     stored_price_model: StoredPriceModel
+
+
+@dataclass(frozen=True)
+class ShockConfig:
+    lookback_ms: int = EVENT_SHOCK_LOOKBACK_MS
+    threshold_bps: float = EVENT_SHOCK_THRESHOLD_BPS
+    cluster_ms: int = EVENT_SHOCK_CLUSTER_MS
+    response_horizons_ms: tuple[int, ...] = EVENT_RESPONSE_HORIZONS_MS
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.lookback_ms, "shock lookback_ms")
+        if (
+            isinstance(self.threshold_bps, bool)
+            or not math.isfinite(self.threshold_bps)
+            or self.threshold_bps <= 0.0
+        ):
+            raise CrossPoolContractError(
+                "shock threshold_bps must be positive and finite"
+            )
+        _require_positive_int(self.cluster_ms, "shock cluster_ms")
+        if not isinstance(self.response_horizons_ms, tuple):
+            raise CrossPoolContractError("response horizons must be an immutable tuple")
+        if not self.response_horizons_ms:
+            raise CrossPoolContractError("response horizons must be positive")
+        for horizon_ms in self.response_horizons_ms:
+            _require_positive_int(horizon_ms, "response horizon_ms")
+        if any(
+            current <= previous
+            for previous, current in zip(
+                self.response_horizons_ms,
+                self.response_horizons_ms[1:],
+                strict=False,
+            )
+        ):
+            raise CrossPoolContractError(
+                "response horizons must be strictly increasing and unique"
+            )
+
+
+@dataclass(frozen=True)
+class ShockEvent:
+    direction: Direction
+    source_pool: PoolName
+    target_pool: PoolName
+    source_start_timestamp_ms: int
+    shock_timestamp_ms: int
+    source_move_bps: float
+    source_move_sign: Literal[-1, 1]
+    shock_day_utc: date
+
+    def __post_init__(self) -> None:
+        _validate_event_direction_pools(
+            self.direction,
+            self.source_pool,
+            self.target_pool,
+        )
+        _require_positive_int(
+            self.source_start_timestamp_ms,
+            "shock source_start_timestamp_ms",
+        )
+        _require_positive_int(self.shock_timestamp_ms, "shock timestamp_ms")
+        if self.source_start_timestamp_ms >= self.shock_timestamp_ms:
+            raise CrossPoolContractError(
+                "shock source start must be positive and precede the crossing"
+        )
+        _require_finite(self.source_move_bps, "shock source_move_bps")
+        expected_sign = 1 if self.source_move_bps > 0.0 else -1
+        if (
+            self.source_move_bps == 0.0
+            or not isinstance(self.source_move_sign, int)
+            or isinstance(self.source_move_sign, bool)
+            or self.source_move_sign != expected_sign
+        ):
+            raise CrossPoolContractError("shock sign must match a nonzero source move")
+        if self.shock_day_utc != utc_day_from_timestamp_ms(self.shock_timestamp_ms):
+            raise CrossPoolContractError("shock UTC day must match its timestamp")
+
+
+@dataclass(frozen=True)
+class EventResponse:
+    direction: Direction
+    source_pool: PoolName
+    target_pool: PoolName
+    shock_timestamp_ms: int
+    shock_day_utc: date
+    horizon_ms: int
+    source_move_bps: float
+    target_start_timestamp_ms: int
+    target_end_timestamp_ms: int
+    target_response_bps: float
+    direction_agrees: bool
+
+    def __post_init__(self) -> None:
+        _validate_event_direction_pools(
+            self.direction,
+            self.source_pool,
+            self.target_pool,
+        )
+        _validate_direction_horizon(self.direction, self.horizon_ms)
+        _require_positive_int(self.shock_timestamp_ms, "event shock_timestamp_ms")
+        if self.shock_day_utc != utc_day_from_timestamp_ms(self.shock_timestamp_ms):
+            raise CrossPoolContractError("event UTC day must match its shock timestamp")
+        _require_finite(self.source_move_bps, "event source_move_bps")
+        if self.source_move_bps == 0.0:
+            raise CrossPoolContractError("event source move must be nonzero")
+        _require_positive_int(
+            self.target_start_timestamp_ms,
+            "event target_start_timestamp_ms",
+        )
+        _require_positive_int(
+            self.target_end_timestamp_ms,
+            "event target_end_timestamp_ms",
+        )
+        if self.target_start_timestamp_ms > self.shock_timestamp_ms:
+            raise CrossPoolContractError("event target start must be as of the shock")
+        if not (
+            self.target_start_timestamp_ms
+            <= self.target_end_timestamp_ms
+            <= self.shock_timestamp_ms + self.horizon_ms
+        ):
+            raise CrossPoolContractError("event target end must be as of the horizon")
+        _require_finite(self.target_response_bps, "event target_response_bps")
+        if not isinstance(self.direction_agrees, bool):
+            raise CrossPoolContractError(
+                "event direction agreement must be a boolean"
+            )
+        expected_agreement = (
+            self.target_response_bps > 0.0 and self.source_move_bps > 0.0
+        ) or (self.target_response_bps < 0.0 and self.source_move_bps < 0.0)
+        if self.direction_agrees != expected_agreement:
+            raise CrossPoolContractError(
+                "event direction agreement must match the nonzero response signs"
+            )
+
+
+@dataclass(frozen=True)
+class EventExclusion:
+    direction: Direction
+    shock_timestamp_ms: int
+    shock_day_utc: date
+    horizon_ms: int
+    reason: EventExclusionReason
+
+    def __post_init__(self) -> None:
+        _validate_direction_horizon(self.direction, self.horizon_ms)
+        _require_positive_int(self.shock_timestamp_ms, "exclusion shock_timestamp_ms")
+        if self.shock_day_utc != utc_day_from_timestamp_ms(self.shock_timestamp_ms):
+            raise CrossPoolContractError(
+                "exclusion UTC day must match its shock timestamp"
+            )
+        if self.reason not in (
+            "missing_target_start_state",
+            "missing_target_end_state",
+        ):
+            raise CrossPoolContractError("unsupported event exclusion reason")
+
+
+@dataclass(frozen=True)
+class EventStudyResult:
+    responses: tuple[EventResponse, ...]
+    exclusions: tuple[EventExclusion, ...]
+
+    def __post_init__(self) -> None:
+        response_keys = tuple(_event_outcome_key(row) for row in self.responses)
+        exclusion_keys = tuple(_event_outcome_key(row) for row in self.exclusions)
+        if response_keys != tuple(sorted(response_keys)):
+            raise CrossPoolContractError("event responses must use canonical ordering")
+        if exclusion_keys != tuple(sorted(exclusion_keys)):
+            raise CrossPoolContractError("event exclusions must use canonical ordering")
+        if len(set(response_keys)) != len(response_keys):
+            raise CrossPoolContractError("event response keys must be unique")
+        if len(set(exclusion_keys)) != len(exclusion_keys):
+            raise CrossPoolContractError("event exclusion keys must be unique")
+        if set(response_keys) & set(exclusion_keys):
+            raise CrossPoolContractError(
+                "an event outcome cannot be both a response and an exclusion"
+            )
+
+
+@dataclass(frozen=True)
+class EventSummary:
+    direction: Direction
+    horizon_ms: int
+    event_count: int
+    event_day_count: int
+    mean_response_bps: ConfidenceInterval
+    median_response_bps: ConfidenceInterval
+    direction_agreement: ConfidenceInterval
+
+    def __post_init__(self) -> None:
+        _validate_direction_horizon(self.direction, self.horizon_ms)
+        _require_positive_int(self.event_count, "event_count")
+        _require_positive_int(self.event_day_count, "event_day_count")
+        if self.event_day_count > self.event_count:
+            raise CrossPoolContractError("event_day_count cannot exceed event_count")
+        if any(
+            not 0.0 <= value <= 1.0
+            for value in (
+                self.direction_agreement.point,
+                self.direction_agreement.lower,
+                self.direction_agreement.upper,
+            )
+        ):
+            raise CrossPoolContractError(
+                "event direction agreement interval must be between 0 and 1"
+            )
 
 
 @dataclass(frozen=True)
@@ -569,8 +787,43 @@ class DirectionalPredictiveAudit:
 def _validate_direction_horizon(direction: Direction, horizon_ms: int) -> None:
     if direction not in ("bsc_to_base", "base_to_bsc"):
         raise CrossPoolContractError("unsupported predictive direction")
-    if horizon_ms <= 0:
-        raise CrossPoolContractError("predictive horizon_ms must be positive")
+    _require_positive_int(horizon_ms, "horizon_ms")
+
+
+def _validate_event_direction_pools(
+    direction: Direction,
+    source_pool: PoolName,
+    target_pool: PoolName,
+) -> None:
+    expected = {
+        "bsc_to_base": ("uni-bsc", "uni-base"),
+        "base_to_bsc": ("uni-base", "uni-bsc"),
+    }
+    if expected.get(direction) != (source_pool, target_pool):
+        raise CrossPoolContractError(
+            "event direction must match its source and target pools"
+        )
+
+
+def _event_outcome_key(
+    row: EventResponse | EventExclusion,
+) -> tuple[int, int, int]:
+    direction_order = {"bsc_to_base": 0, "base_to_bsc": 1}
+    return (
+        direction_order[row.direction],
+        row.shock_timestamp_ms,
+        row.horizon_ms,
+    )
+
+
+def utc_day_from_timestamp_ms(timestamp_ms: int) -> date:
+    _require_positive_int(timestamp_ms, "event timestamp_ms")
+    try:
+        return date(1970, 1, 1) + timedelta(days=timestamp_ms // 86_400_000)
+    except OverflowError as exc:
+        raise CrossPoolContractError(
+            "event timestamp_ms is outside the supported date range"
+        ) from exc
 
 
 def _validate_regime(regime: Regime) -> None:
@@ -602,8 +855,13 @@ def _improvement_sign(value: float) -> ImprovementSign:
 
 
 def _require_finite(value: float, name: str) -> None:
-    if not math.isfinite(value):
+    if isinstance(value, bool) or not math.isfinite(value):
         raise CrossPoolContractError(f"{name} must be finite")
+
+
+def _require_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise CrossPoolContractError(f"{name} must be a positive integer")
 
 
 def _require_nonnegative_finite(value: float, name: str) -> None:
