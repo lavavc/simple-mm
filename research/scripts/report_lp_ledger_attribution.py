@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -14,23 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.backtester.v4_export import POOL_CONFIGS
-
-
-_REQUIRED_FIELDS = {
-    "chain",
-    "block_number",
-    "tx_hash",
-    "event_type",
-    "token_id",
-    "liquidity_delta",
-    "amount0_actual",
-    "amount1_actual",
-    "amount0_attribution_source",
-    "amount1_attribution_source",
-    "amount_attribution_status",
-    "cngn_usd_price_at_event",
-}
+from research.backtester.lp_ledger_attribution import load_ledger_attribution_rows  # noqa: E402
+from research.cross_pool.contracts import CrossPoolContractError  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -63,37 +48,29 @@ class LPAttributionSummary:
 
 
 def analyze_lp_ledger_attribution(pool: str, path: Path) -> LPAttributionSummary:
-    rows = _read_rows(path)
-    openings = [row for row in rows if _decimal(row["liquidity_delta"]) > 0]
-    closings = [row for row in rows if _decimal(row["liquidity_delta"]) < 0]
-    zero_delta_rows = [row for row in rows if _decimal(row["liquidity_delta"]) == 0]
-    exact_openings = [row for row in openings if row["amount_attribution_status"] == "exact"]
-    ambiguous_openings = [
-        row
-        for row in openings
-        if row["amount_attribution_status"].startswith("ambiguous")
-    ]
-    exact_opening_capital_usd = sum(
-        (_capital_usd(pool, row) for row in exact_openings),
-        Decimal("0"),
+    rows = load_ledger_attribution_rows(pool, path)
+    openings = [row for row in rows if row.liquidity_delta > 0]
+    closings = [row for row in rows if row.liquidity_delta < 0]
+    zero_delta_rows = [row for row in rows if row.liquidity_delta == 0]
+    exact_openings = [row for row in openings if row.attribution_class == "exact"]
+    ambiguous_openings = [row for row in openings if row.attribution_class == "ambiguous"]
+    exact_opening_capital_usd = _sum_decimals(
+        row.opening_capital_usd for row in exact_openings if row.opening_capital_usd is not None
     )
-    exact_opening_liquidity = sum(
-        (_decimal(row["liquidity_delta"]) for row in exact_openings),
-        Decimal("0"),
+    exact_opening_liquidity = _sum_decimals(row.liquidity_delta for row in exact_openings)
+    ambiguous_opening_liquidity = _sum_decimals(row.liquidity_delta for row in ambiguous_openings)
+    total_tracked_opening_liquidity = _sum_decimals(
+        (exact_opening_liquidity, ambiguous_opening_liquidity)
     )
-    ambiguous_opening_liquidity = sum(
-        (_decimal(row["liquidity_delta"]) for row in ambiguous_openings),
-        Decimal("0"),
-    )
-    total_tracked_opening_liquidity = exact_opening_liquidity + ambiguous_opening_liquidity
-    if total_tracked_opening_liquidity == 0:
-        ambiguous_opening_liquidity_share = Decimal("0")
-    else:
-        with localcontext() as context:
-            context.prec = 28
-            ambiguous_opening_liquidity_share = +(
-                ambiguous_opening_liquidity / total_tracked_opening_liquidity
-            )
+    if total_tracked_opening_liquidity <= 0:
+        raise CrossPoolContractError(
+            "LP attribution report requires positive tracked opening liquidity"
+        )
+    with localcontext() as context:
+        context.prec = 28
+        ambiguous_opening_liquidity_share = +(
+            ambiguous_opening_liquidity / total_tracked_opening_liquidity
+        )
 
     return LPAttributionSummary(
         pool=pool,
@@ -107,20 +84,19 @@ def analyze_lp_ledger_attribution(pool: str, path: Path) -> LPAttributionSummary
         exact_opening_capital_usd=exact_opening_capital_usd,
         ambiguous_opening_liquidity=ambiguous_opening_liquidity,
         ambiguous_opening_liquidity_share=ambiguous_opening_liquidity_share,
-        status_counts=_counts(row["amount_attribution_status"] for row in rows),
-        opening_status_counts=_counts(row["amount_attribution_status"] for row in openings),
+        status_counts=_counts(row.raw_attribution_status for row in rows),
+        opening_status_counts=_counts(row.raw_attribution_status for row in openings),
         opening_source_counts=_counts(
-            f"{row['amount0_attribution_source']}|{row['amount1_attribution_source']}"
-            for row in openings
+            f"{row.amount0_attribution_source}|{row.amount1_attribution_source}" for row in openings
         ),
         ambiguous_samples=[
             AmbiguousOpeningSample(
-                block_number=int(row["block_number"]),
-                tx_hash=row["tx_hash"],
-                event_type=row["event_type"],
-                token_id=int(row["token_id"]),
-                amount_attribution_status=row["amount_attribution_status"],
-                liquidity_delta=_decimal(row["liquidity_delta"]),
+                block_number=row.block_number,
+                tx_hash=row.tx_hash,
+                event_type=row.event_type,
+                token_id=row.token_id,
+                amount_attribution_status=row.raw_attribution_status,
+                liquidity_delta=row.liquidity_delta,
             )
             for row in ambiguous_openings[:10]
         ],
@@ -131,7 +107,8 @@ def render_markdown(summaries: Sequence[LPAttributionSummary]) -> str:
     lines = [
         "# LP Ledger Attribution QA",
         "",
-        "| Pool | Rows | Openings | Exact openings | Ambiguous openings | Exact opening capital USD | Ambiguous liquidity share |",
+        "| Pool | Rows | Openings | Exact openings | Ambiguous openings | "
+        "Exact opening capital USD | Ambiguous liquidity share |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for summary in summaries:
@@ -183,56 +160,30 @@ def render_markdown(summaries: Sequence[LPAttributionSummary]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _read_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise ValueError(f"empty LP ledger CSV: {path}")
-        missing = sorted(_REQUIRED_FIELDS.difference(reader.fieldnames))
-        if missing:
-            raise ValueError(f"LP ledger CSV missing fields {missing}: {path}")
-        return list(reader)
-
-
-def _capital_usd(pool: str, row: dict[str, str]) -> Decimal:
-    amount0 = _decimal(row["amount0_actual"])
-    amount1 = _decimal(row["amount1_actual"])
-    price = _decimal(row["cngn_usd_price_at_event"])
-    token0_symbol, token1_symbol = _token_symbols(pool, row)
-    if token0_symbol == "cNGN":
-        return amount0 * price + amount1
-    if token1_symbol == "cNGN":
-        return amount0 + amount1 * price
-    raise ValueError(f"LP ledger row does not identify cNGN side: {row['tx_hash']}")
-
-
-def _token_symbols(pool: str, row: dict[str, str]) -> tuple[str, str]:
-    config = POOL_CONFIGS.get(pool)
-    if config is not None:
-        return config.token0_symbol, config.token1_symbol
-    if row.get("token0_symbol") and row.get("token1_symbol"):
-        return row["token0_symbol"], row["token1_symbol"]
-    raise ValueError(f"unknown pool without token symbols: {pool}")
-
-
-def _counts(values: Sequence[str]) -> dict[str, int]:
+def _counts(values: Iterable[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
         counts[value] = counts.get(value, 0) + 1
     return dict(sorted(counts.items()))
 
 
-def _decimal(value: str) -> Decimal:
-    return Decimal(value)
+def _sum_decimals(values: Iterable[Decimal]) -> Decimal:
+    with localcontext() as context:
+        context.prec = 60
+        return +sum(values, Decimal("0"))
 
 
 def _format_decimal(value: Decimal, places: int) -> str:
-    quantizer = Decimal("1").scaleb(-places)
-    return f"{value.quantize(quantizer):,}"
+    with localcontext() as context:
+        context.prec = 60
+        quantizer = Decimal("1").scaleb(-places)
+        return f"{value.quantize(quantizer):,}"
 
 
 def _format_percent(value: Decimal) -> str:
-    return f"{(value * Decimal('100')).quantize(Decimal('0.0001'))}%"
+    with localcontext() as context:
+        context.prec = 60
+        return f"{(value * Decimal('100')).quantize(Decimal('0.0001'))}%"
 
 
 def _parse_ledger_arg(value: str) -> tuple[str, Path]:
@@ -261,10 +212,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    summaries = [
-        analyze_lp_ledger_attribution(pool, path)
-        for pool, path in args.ledger
-    ]
+    summaries = [analyze_lp_ledger_attribution(pool, path) for pool, path in args.ledger]
     markdown = render_markdown(summaries)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

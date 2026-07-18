@@ -1182,8 +1182,8 @@ git commit -m "feat: add constrained weekly DTW analysis"
 
 **Interfaces:**
 - Consumes: canonical Base/BSC replay CSVs and LP ledgers.
-- Produces: one `VenueStructureSummary` per pool without serializing owner
-  addresses.
+- Produces: one `VenueStructureSummary` per pool on the shared raw-swap
+  interval without serializing owner addresses.
 
 - [ ] **Step 1: Write activity, concentration, and privacy tests**
 
@@ -1191,10 +1191,11 @@ git commit -m "feat: add constrained weekly DTW analysis"
 def test_market_structure_reports_activity_and_exact_capital_concentration(
     tmp_path: Path,
 ) -> None:
-    summary = summarize_venue_structure(
-        pool="uni-base",
-        replay_path=write_replay_fixture(tmp_path),
-        ledger_path=write_ledger_fixture(tmp_path),
+    summary, _ = summarize_market_structure(
+        base_replay_path=write_replay_fixture(tmp_path, pool="uni-base"),
+        bsc_replay_path=write_replay_fixture(tmp_path, pool="uni-bsc"),
+        base_ledger_path=write_ledger_fixture(tmp_path, pool="uni-base"),
+        bsc_ledger_path=write_ledger_fixture(tmp_path, pool="uni-bsc"),
     )
     assert summary.swap_count == 4
     assert summary.meaningful_move_count == 2
@@ -1239,8 +1240,12 @@ AttributionClass: TypeAlias = Literal["exact", "ambiguous", "other"]
 @dataclass(frozen=True)
 class LedgerAttributionRow:
     pool: str
+    pool_id: str
     block_number: int
     tx_hash: str
+    log_index: int
+    event_order: int
+    timestamp_ms: int
     token_id: int
     event_type: str
     owner: str | None
@@ -1248,6 +1253,8 @@ class LedgerAttributionRow:
     amount0_actual: Decimal
     amount1_actual: Decimal
     cngn_usd_price: Decimal
+    amount0_attribution_source: str
+    amount1_attribution_source: str
     raw_attribution_status: str
     attribution_class: AttributionClass
     opening_capital_usd: Decimal | None
@@ -1272,7 +1279,10 @@ Map every `amount_attribution_status` beginning with `ambiguous` to the typed
 `other`, while retaining the raw status for the existing aggregate report. Set
 `opening_capital_usd` only for positive-liquidity exact rows. Reject negative
 actual amounts, a non-positive price on an exact opening, a positive-liquidity
-row with an unsupported attribution status, or unknown pool orientation.
+row with an unsupported attribution status, or unknown pool orientation. Here,
+an opening is each positive-liquidity action, meaning a gross addition rather
+than the first action for a unique position; repeated additions remain distinct
+until capital is aggregated by normalized owner.
 
 - [ ] **Step 4: Implement strict replay and venue summaries**
 
@@ -1290,6 +1300,9 @@ class DistributionSummary:
 @dataclass(frozen=True)
 class VenueStructureSummary:
     pool: PoolName
+    activity_start_timestamp_ms: int
+    activity_end_timestamp_ms: int
+    ledger_cutoff_timestamp_ms: int
     swap_count: int
     meaningful_move_count: int
     fee_rate: Decimal
@@ -1312,29 +1325,49 @@ class VenueStructureSummary:
     exact_opening_capital_hhi: Decimal
 
 
-def summarize_venue_structure(
-    *, pool: PoolName, replay_path: Path, ledger_path: Path
-) -> VenueStructureSummary: ...
+def summarize_market_structure(
+    *,
+    base_replay_path: Path,
+    bsc_replay_path: Path,
+    base_ledger_path: Path,
+    bsc_ledger_path: Path,
+) -> tuple[VenueStructureSummary, VenueStructureSummary]: ...
 
 
 def serialize_market_structure(rows: Sequence[VenueStructureSummary]) -> str: ...
 ```
 
-Meaningful moves are consecutive canonical `sqrt_price_x96` mids whose
-absolute log change is at least 10 bps. Update gaps are computed across swap
-timestamps. Active-liquidity and `amount_usd` distributions use swap rows only;
-fee rates must be constant within each pool or fail closed.
+First load both raw replay streams and define the inclusive activity interval as
+the later first-swap timestamp through the earlier last-swap timestamp. Require
+at least two swaps from each venue inside that shared interval. Meaningful moves
+are consecutive swap-row canonical `sqrt_price_x96` mids whose absolute log
+change is at least 10 bps. Update gaps are computed across swap timestamps and
+retain legitimate zero-millisecond gaps; replay order is strict by block and log
+index while timestamps are nondecreasing. Active-liquidity and `amount_usd`
+distributions use swap rows only; fee rates must be constant within each pool or
+fail closed, and the constant must equal the pool's frozen fee rate.
+`active_liquidity` remains pool-native V4 liquidity units and
+`amount_usd` remains the exporter's stablecoin-notional USD proxy, so neither is
+compared across venues as executable depth or audited turnover.
 
-For owner diagnostics, count normalized known owners but never emit their
-addresses or stable address-derived labels. Concentration uses only
+For ledger diagnostics, use pool-inception rows only through the common activity
+end and label the result historical gross opening capital rather than current
+capital. Require the first ledger row to equal the frozen pool-inception block;
+a canonically ordered but truncated ledger fails closed. Reject duplicate ledger
+identities and noncanonical ordering using the persisted log index, event order,
+and timestamp fields. For owner diagnostics,
+count normalized known owners among exact positive-liquidity additions but
+never emit their addresses or stable address-derived labels. Concentration uses only
 positive-liquidity rows with `amount_attribution_status == "exact"` and known
 owners, aggregating repeated openings by normalized owner before computing top
 shares and HHI. `exact_known_owner_capital_coverage` divides exact capital with
 a known owner by all exact opening capital. `ambiguous_opening_liquidity_share`
 divides ambiguous opening liquidity by exact plus ambiguous opening liquidity;
 ambiguous capital is never imputed. Quantiles use deterministic type-7 linear
-interpolation on sorted values; a distribution with no observations fails
-closed.
+interpolation on sorted values. A distribution with no observations, no tracked
+opening liquidity, no positive exact opening capital, or no positive exact
+known-owner capital fails closed instead of serializing zero as an undefined
+ratio or concentration statistic.
 
 - [ ] **Step 5: Run the focused tests**
 

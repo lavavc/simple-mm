@@ -271,6 +271,19 @@ Report venue characteristics that can affect the analysis:
 - active-liquidity and volume summaries;
 - anonymized LP-owner counts and gross opening-capital concentration.
 
+Compute replay activity on the inclusive common first-to-last-swap interval so
+neither venue receives extra calendar support. Retain same-timestamp swaps as
+distinct ordered observations and include their zero update gaps. Treat active
+liquidity as venue-native V4 liquidity units and volume as the exporter's
+stablecoin-notional USD proxy, not comparable executable depth or audited
+turnover. Ledger concentration covers historical gross exact additions from
+pool inception through the common activity end; it is not current capital or a
+position-level profitability measure. Each positive-liquidity action is a gross
+addition, including repeated additions to the same position, before aggregation
+by normalized owner. Require the frozen pool-inception block and fee rate rather
+than accepting a truncated ledger or a uniformly wrong replay fee. Undefined
+concentration denominators are QA failures rather than zeros.
+
 The owner-distribution analysis is post hoc and appears after the performance
 results. It may motivate hypotheses about why transferability differs, but it
 must not be used to claim that concentration caused leadership or that the

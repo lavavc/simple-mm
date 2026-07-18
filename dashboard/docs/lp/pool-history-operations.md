@@ -235,6 +235,16 @@ python3 research/scripts/report_lp_ledger_attribution.py \
   --out research/data/quality/lp_ledger_attribution.md
 ```
 
+Attribution QA reads the canonical ledger identity, ordering, owner, attribution,
+and event-time price columns through one strict boundary. It fails closed on a
+pool-orientation mismatch, a first row after the frozen pool-inception block,
+duplicate or noncanonical action order, negative actual token amounts, an
+unsupported positive-liquidity attribution status, or no positive tracked
+opening liquidity. Each positive-liquidity action counts as a gross addition,
+including repeated additions to an existing position.
+Valid nonzero 20-byte owners are normalized only in memory; malformed, empty,
+and zero addresses remain unknown.
+
 Then rebuild paper LP episodes from exact-attributed ledgers:
 
 ```bash
