@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from statistics import median
+from types import MappingProxyType
 from typing import Literal, TypeAlias
 
 PoolName: TypeAlias = Literal["uni-base", "uni-bsc"]
@@ -41,6 +44,13 @@ EVENT_RESPONSE_HORIZONS_MS = (900_000, 3_600_000, 14_400_000)
 EVENT_BOOTSTRAP_RESAMPLES = 2_000
 EVENT_BOOTSTRAP_SEED = 20_260_715
 EVENT_BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
+DTW_GRID_MS = 900_000
+DTW_BAND_STEPS = (1, 4, 16)
+DTW_PRIMARY_BAND_STEPS = 4
+DTW_DAY_MS = 86_400_000
+DTW_WEEK_MS = 7 * DTW_DAY_MS
+DTW_POINTS_PER_WEEK = DTW_WEEK_MS // DTW_GRID_MS
+DTW_MONDAY_EPOCH_MS = 4 * DTW_DAY_MS
 
 
 class CrossPoolContractError(ValueError):
@@ -265,6 +275,313 @@ class EventSummary:
             raise CrossPoolContractError(
                 "event direction agreement interval must be between 0 and 1"
             )
+
+
+@dataclass(frozen=True)
+class DtwConfig:
+    grid_ms: int = DTW_GRID_MS
+    band_steps: tuple[int, ...] = DTW_BAND_STEPS
+    primary_band_steps: int = DTW_PRIMARY_BAND_STEPS
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.grid_ms, "DTW grid_ms")
+        if not isinstance(self.band_steps, tuple):
+            raise CrossPoolContractError("DTW band_steps must be an immutable tuple")
+        for band_steps in self.band_steps:
+            _require_positive_int(band_steps, "DTW band_steps value")
+        _require_positive_int(self.primary_band_steps, "DTW primary_band_steps")
+        if (
+            self.grid_ms != DTW_GRID_MS
+            or self.band_steps != DTW_BAND_STEPS
+            or self.primary_band_steps != DTW_PRIMARY_BAND_STEPS
+        ):
+            raise CrossPoolContractError("DTW configuration is frozen")
+
+
+@dataclass(frozen=True)
+class DtwPath:
+    source_length: int
+    target_length: int
+    band_steps: int
+    matches: tuple[tuple[int, int], ...]
+    total_cost: float
+    normalized_cost: float
+    median_signed_lag_steps: float
+
+    def __post_init__(self) -> None:
+        _require_positive_int(self.source_length, "DTW source_length")
+        _require_positive_int(self.target_length, "DTW target_length")
+        _require_nonnegative_int(self.band_steps, "DTW band_steps")
+        signed_lags = _validate_dtw_matches(
+            self.matches,
+            source_length=self.source_length,
+            target_length=self.target_length,
+            band_steps=self.band_steps,
+        )
+        _require_nonnegative_finite(self.total_cost, "DTW total_cost")
+        _require_nonnegative_finite(self.normalized_cost, "DTW normalized_cost")
+        _require_exact(
+            self.normalized_cost,
+            self.total_cost / len(self.matches),
+            "DTW normalized cost",
+        )
+        _require_finite(
+            self.median_signed_lag_steps,
+            "DTW median_signed_lag_steps",
+        )
+        _require_exact(
+            self.median_signed_lag_steps,
+            float(median(signed_lags)),
+            "DTW median signed lag",
+        )
+
+
+@dataclass(frozen=True)
+class DtwWeekResult:
+    week_start_timestamp_ms: int
+    direction: Direction
+    band_steps: int
+    path_length: int
+    total_cost: float
+    normalized_cost: float
+    median_signed_lag_steps: float
+    matches: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        _validate_utc_week_start(self.week_start_timestamp_ms)
+        _validate_direction(self.direction)
+        _require_positive_int(self.band_steps, "DTW week band_steps")
+        if self.band_steps not in DTW_BAND_STEPS:
+            raise CrossPoolContractError("DTW week requires a frozen band")
+        _require_positive_int(self.path_length, "DTW week path_length")
+        signed_lags = _validate_dtw_matches(
+            self.matches,
+            source_length=DTW_POINTS_PER_WEEK,
+            target_length=DTW_POINTS_PER_WEEK,
+            band_steps=self.band_steps,
+        )
+        if self.path_length != len(self.matches):
+            raise CrossPoolContractError("DTW week path_length must match its path")
+        _require_nonnegative_finite(self.total_cost, "DTW week total_cost")
+        _require_nonnegative_finite(
+            self.normalized_cost,
+            "DTW week normalized_cost",
+        )
+        _require_exact(
+            self.normalized_cost,
+            self.total_cost / self.path_length,
+            "DTW week normalized cost",
+        )
+        _require_finite(
+            self.median_signed_lag_steps,
+            "DTW week median_signed_lag_steps",
+        )
+        _require_exact(
+            self.median_signed_lag_steps,
+            float(median(signed_lags)),
+            "DTW week median signed lag",
+        )
+
+
+@dataclass(frozen=True)
+class DtwNullResult:
+    week_start_timestamp_ms: int
+    direction: Direction
+    band_steps: int
+    rotation_days: int
+    path_length: int
+    total_cost: float
+    normalized_cost: float
+    observed_normalized_cost: float
+    observed_cost_improvement: float
+    median_signed_lag_steps: float
+    observed_median_signed_lag_steps: float
+    observed_signed_lag_difference_steps: float
+
+    def __post_init__(self) -> None:
+        _validate_utc_week_start(self.week_start_timestamp_ms)
+        _validate_direction(self.direction)
+        _require_positive_int(self.band_steps, "DTW null band_steps")
+        if self.band_steps not in DTW_BAND_STEPS:
+            raise CrossPoolContractError("DTW null requires a frozen band")
+        _require_positive_int(self.rotation_days, "DTW null rotation_days")
+        if self.rotation_days > 6:
+            raise CrossPoolContractError("DTW null rotation_days must be between 1 and 6")
+        _require_positive_int(self.path_length, "DTW null path_length")
+        if not DTW_POINTS_PER_WEEK <= self.path_length <= 2 * DTW_POINTS_PER_WEEK - 1:
+            raise CrossPoolContractError("DTW null path_length is inconsistent")
+        _require_nonnegative_finite(self.total_cost, "DTW null total_cost")
+        _require_nonnegative_finite(
+            self.normalized_cost,
+            "DTW null normalized_cost",
+        )
+        _require_exact(
+            self.normalized_cost,
+            self.total_cost / self.path_length,
+            "DTW null normalized cost",
+        )
+        _require_nonnegative_finite(
+            self.observed_normalized_cost,
+            "DTW null observed_normalized_cost",
+        )
+        _require_finite(
+            self.observed_cost_improvement,
+            "DTW null observed_cost_improvement",
+        )
+        _require_exact(
+            self.observed_cost_improvement,
+            self.normalized_cost - self.observed_normalized_cost,
+            "DTW null observed cost improvement",
+        )
+        for name, value in (
+            ("median_signed_lag_steps", self.median_signed_lag_steps),
+            (
+                "observed_median_signed_lag_steps",
+                self.observed_median_signed_lag_steps,
+            ),
+        ):
+            _require_finite(value, f"DTW null {name}")
+            if abs(value) > self.band_steps:
+                raise CrossPoolContractError(f"DTW null {name} exceeds its band")
+        _require_finite(
+            self.observed_signed_lag_difference_steps,
+            "DTW null observed_signed_lag_difference_steps",
+        )
+        _require_exact(
+            self.observed_signed_lag_difference_steps,
+            self.median_signed_lag_steps
+            - self.observed_median_signed_lag_steps,
+            "DTW null observed signed lag difference",
+        )
+
+
+@dataclass(frozen=True)
+class DtwStability:
+    direction: Direction
+    aggregate_median_lag_by_band: Mapping[int, float]
+    weekly_median_lags_by_band: Mapping[int, tuple[tuple[int, float], ...]]
+    primary_band_same_sign_week_share: float
+    band_unstable: bool
+
+    def __post_init__(self) -> None:
+        _validate_direction(self.direction)
+        expected_bands = DTW_BAND_STEPS
+        if tuple(self.aggregate_median_lag_by_band) != expected_bands or tuple(
+            self.weekly_median_lags_by_band
+        ) != expected_bands:
+            raise CrossPoolContractError(
+                "DTW stability requires the frozen bands in canonical order"
+            )
+
+        weekly_support: dict[int, tuple[tuple[int, float], ...]] = {}
+        common_weeks: tuple[int, ...] | None = None
+        aggregates: dict[int, float] = {}
+        for band_steps in expected_bands:
+            support = self.weekly_median_lags_by_band[band_steps]
+            if not isinstance(support, tuple) or not support:
+                raise CrossPoolContractError(
+                    "DTW stability requires immutable nonempty weekly support"
+                )
+            weeks: list[int] = []
+            lags: list[float] = []
+            for row in support:
+                if not isinstance(row, tuple) or len(row) != 2:
+                    raise CrossPoolContractError(
+                        "DTW stability weekly support must contain week-lag pairs"
+                    )
+                week_start_timestamp_ms, lag = row
+                _validate_utc_week_start(week_start_timestamp_ms)
+                _require_finite(lag, "DTW stability weekly median lag")
+                if abs(lag) > band_steps:
+                    raise CrossPoolContractError(
+                        "DTW stability weekly median lag exceeds its band"
+                    )
+                weeks.append(week_start_timestamp_ms)
+                lags.append(lag)
+            week_tuple = tuple(weeks)
+            if len(set(week_tuple)) != len(week_tuple) or week_tuple != tuple(
+                sorted(week_tuple)
+            ):
+                raise CrossPoolContractError(
+                    "DTW stability weeks must be unique and canonically ordered"
+                )
+            if any(
+                current != previous + DTW_WEEK_MS
+                for previous, current in zip(
+                    week_tuple,
+                    week_tuple[1:],
+                    strict=False,
+                )
+            ):
+                raise CrossPoolContractError(
+                    "DTW stability requires consecutive complete weeks"
+                )
+            if common_weeks is None:
+                common_weeks = week_tuple
+            elif week_tuple != common_weeks:
+                raise CrossPoolContractError(
+                    "DTW stability bands must use identical week support"
+                )
+            aggregate = self.aggregate_median_lag_by_band[band_steps]
+            _require_finite(aggregate, "DTW stability aggregate median lag")
+            _require_exact(
+                aggregate,
+                float(median(lags)),
+                f"DTW stability aggregate band {band_steps}",
+            )
+            weekly_support[band_steps] = support
+            aggregates[band_steps] = aggregate
+
+        assert common_weeks is not None
+        _require_finite(
+            self.primary_band_same_sign_week_share,
+            "DTW stability primary-band same-sign share",
+        )
+        if not 0.0 <= self.primary_band_same_sign_week_share <= 1.0:
+            raise CrossPoolContractError(
+                "DTW stability primary-band same-sign share must be between 0 and 1"
+            )
+        primary_aggregate = aggregates[DTW_PRIMARY_BAND_STEPS]
+        primary_sign = _dtw_sign(primary_aggregate)
+        primary_lags = (
+            lag for _, lag in weekly_support[DTW_PRIMARY_BAND_STEPS]
+        )
+        same_sign_count = sum(
+            1
+            for lag in primary_lags
+            if _dtw_sign(lag) != 0 and _dtw_sign(lag) == primary_sign
+        )
+        expected_share = (
+            0.0 if primary_sign == 0 else same_sign_count / len(common_weeks)
+        )
+        _require_exact(
+            self.primary_band_same_sign_week_share,
+            expected_share,
+            "DTW stability primary-band same-sign share",
+        )
+        aggregate_signs = {_dtw_sign(value) for value in aggregates.values()}
+        opposing_nonzero_signs = -1 in aggregate_signs and 1 in aggregate_signs
+        expected_unstable = (
+            primary_sign == 0
+            or opposing_nonzero_signs
+            or same_sign_count * 3 < 2 * len(common_weeks)
+        )
+        if not isinstance(self.band_unstable, bool) or (
+            self.band_unstable != expected_unstable
+        ):
+            raise CrossPoolContractError(
+                "DTW stability band_unstable must match its weekly support"
+            )
+        object.__setattr__(
+            self,
+            "aggregate_median_lag_by_band",
+            MappingProxyType(aggregates),
+        )
+        object.__setattr__(
+            self,
+            "weekly_median_lags_by_band",
+            MappingProxyType(weekly_support),
+        )
 
 
 @dataclass(frozen=True)
@@ -785,9 +1102,19 @@ class DirectionalPredictiveAudit:
 
 
 def _validate_direction_horizon(direction: Direction, horizon_ms: int) -> None:
-    if direction not in ("bsc_to_base", "base_to_bsc"):
-        raise CrossPoolContractError("unsupported predictive direction")
+    _validate_direction(direction)
     _require_positive_int(horizon_ms, "horizon_ms")
+
+
+def _validate_direction(direction: Direction) -> None:
+    if direction not in ("bsc_to_base", "base_to_bsc"):
+        raise CrossPoolContractError("unsupported direction")
+
+
+def _validate_utc_week_start(timestamp_ms: int) -> None:
+    _require_positive_int(timestamp_ms, "DTW week_start_timestamp_ms")
+    if (timestamp_ms - DTW_MONDAY_EPOCH_MS) % DTW_WEEK_MS != 0:
+        raise CrossPoolContractError("DTW week must start at Monday 00:00 UTC")
 
 
 def _validate_event_direction_pools(
@@ -854,6 +1181,14 @@ def _improvement_sign(value: float) -> ImprovementSign:
     return 0
 
 
+def _dtw_sign(value: float) -> Literal[-1, 0, 1]:
+    if value > 0.0:
+        return 1
+    if value < 0.0:
+        return -1
+    return 0
+
+
 def _require_finite(value: float, name: str) -> None:
     if isinstance(value, bool) or not math.isfinite(value):
         raise CrossPoolContractError(f"{name} must be finite")
@@ -862,6 +1197,49 @@ def _require_finite(value: float, name: str) -> None:
 def _require_positive_int(value: int, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise CrossPoolContractError(f"{name} must be a positive integer")
+
+
+def _require_nonnegative_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise CrossPoolContractError(f"{name} must be a nonnegative integer")
+
+
+def _validate_dtw_matches(
+    matches: tuple[tuple[int, int], ...],
+    *,
+    source_length: int,
+    target_length: int,
+    band_steps: int,
+) -> tuple[int, ...]:
+    if not isinstance(matches, tuple) or not matches:
+        raise CrossPoolContractError("DTW matches must be a nonempty immutable tuple")
+    for match in matches:
+        if not isinstance(match, tuple) or len(match) != 2:
+            raise CrossPoolContractError("DTW matches must contain index pairs")
+        source_index, target_index = match
+        _require_nonnegative_int(source_index, "DTW source index")
+        _require_nonnegative_int(target_index, "DTW target index")
+        if source_index >= source_length or target_index >= target_length:
+            raise CrossPoolContractError("DTW match index exceeds its sequence length")
+        if abs(source_index - target_index) > band_steps:
+            raise CrossPoolContractError("DTW match exceeds the requested band")
+    if matches[0] != (0, 0):
+        raise CrossPoolContractError("DTW path must start at the fixed origin")
+    if matches[-1] != (source_length - 1, target_length - 1):
+        raise CrossPoolContractError("DTW path must reach the fixed terminal indices")
+    if len(set(matches)) != len(matches):
+        raise CrossPoolContractError("DTW matches must be unique")
+    if any(
+        (next_source - source_index, next_target - target_index)
+        not in {(1, 1), (1, 0), (0, 1)}
+        for (source_index, target_index), (next_source, next_target) in zip(
+            matches,
+            matches[1:],
+            strict=False,
+        )
+    ):
+        raise CrossPoolContractError("DTW path must use only legal steps")
+    return tuple(target_index - source_index for source_index, target_index in matches)
 
 
 def _require_nonnegative_finite(value: float, name: str) -> None:

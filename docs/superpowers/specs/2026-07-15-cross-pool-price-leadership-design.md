@@ -200,12 +200,15 @@ If the signed lag changes materially across bands or weeks, report leadership
 as unstable even if the global path looks persuasive.
 
 Use a 15-minute UTC as-of innovation grid and complete UTC Monday-Sunday weeks.
-Standardize innovations within each week, use squared local cost, allow
-`(1,1)`, `(1,0)`, and `(0,1)` steps with deterministic diagonal-first ties,
-and normalize cost by path length. The 15-minute, one-hour, and four-hour bands
-are one, four, and sixteen grid steps. Nulls are every nonzero whole-day
-circular rotation within a week. Define positive signed lag as target time
-minus source time. Leadership is band-unstable when the aggregate lag sign
+Standardize each pool's innovations independently within each week using the
+population standard deviation, use squared local cost, and allow `(1,1)`,
+`(1,0)`, and `(0,1)` steps. Resolve equal-cost predecessors in that exact order,
+so ties prefer the diagonal, then a source advance, then a target advance, and
+normalize cost by path length. The 15-minute, one-hour, and four-hour bands are
+one, four, and sixteen grid steps. For each direction, hold the standardized
+source fixed and form the six null alignments by left-rotating the standardized
+target by one through six whole UTC days. Define positive signed lag as target
+time minus source time. Leadership is band-unstable when the aggregate lag sign
 reverses across bands or fewer than two-thirds of complete weeks share the
 primary-band sign.
 

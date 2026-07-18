@@ -1016,7 +1016,7 @@ git commit -m "feat: add cross-pool event study"
 
 **Interfaces:**
 - Consumes: the 15-minute causal panel.
-- Produces: `DtwPath`, `DtwWeekResult`, and `DtwNullResult`.
+- Produces: `DtwPath`, `DtwWeekResult`, `DtwNullResult`, and `DtwStability`.
 
 - [ ] **Step 1: Write exact-path and null tests**
 
@@ -1027,7 +1027,11 @@ def test_banded_dtw_never_escapes_requested_band() -> None:
 
 
 def test_weekly_nulls_use_every_nonzero_day_rotation() -> None:
-    nulls = build_day_rotation_nulls(one_complete_week_panel(), DtwConfig())
+    nulls = build_day_rotation_nulls(
+        one_complete_week_panel(),
+        DtwConfig(),
+        direction="bsc_to_base",
+    )
     assert {row.rotation_days for row in nulls} == {1, 2, 3, 4, 5, 6}
 ```
 
@@ -1053,6 +1057,9 @@ class DtwConfig:
 
 @dataclass(frozen=True)
 class DtwPath:
+    source_length: int
+    target_length: int
+    band_steps: int
     matches: tuple[tuple[int, int], ...]
     total_cost: float
     normalized_cost: float
@@ -1065,6 +1072,7 @@ class DtwWeekResult:
     direction: Direction
     band_steps: int
     path_length: int
+    total_cost: float
     normalized_cost: float
     median_signed_lag_steps: float
     matches: tuple[tuple[int, int], ...]
@@ -1076,9 +1084,13 @@ class DtwNullResult:
     direction: Direction
     band_steps: int
     rotation_days: int
+    path_length: int
+    total_cost: float
     normalized_cost: float
+    observed_normalized_cost: float
     observed_cost_improvement: float
     median_signed_lag_steps: float
+    observed_median_signed_lag_steps: float
     observed_signed_lag_difference_steps: float
 
 
@@ -1086,6 +1098,7 @@ class DtwNullResult:
 class DtwStability:
     direction: Direction
     aggregate_median_lag_by_band: Mapping[int, float]
+    weekly_median_lags_by_band: Mapping[int, tuple[tuple[int, float], ...]]
     primary_band_same_sign_week_share: float
     band_unstable: bool
 
@@ -1096,12 +1109,18 @@ def banded_dtw(
 
 
 def evaluate_weekly_dtw(
-    panel_15m: Sequence[PanelRow], config: DtwConfig
+    panel_15m: Sequence[PanelRow],
+    config: DtwConfig,
+    *,
+    direction: Direction,
 ) -> tuple[DtwWeekResult, ...]: ...
 
 
 def build_day_rotation_nulls(
-    panel_15m: Sequence[PanelRow], config: DtwConfig
+    panel_15m: Sequence[PanelRow],
+    config: DtwConfig,
+    *,
+    direction: Direction,
 ) -> tuple[DtwNullResult, ...]: ...
 
 
@@ -1116,6 +1135,16 @@ weeks whose nonzero median has the aggregate primary-band sign divided by all
 complete weeks. Mark instability when the primary aggregate sign is zero, any
 two nonzero band aggregates have opposite signs, or the same-sign share is
 below two-thirds.
+
+The DTW configuration is frozen to the 15-minute grid and bands `(1, 4, 16)`.
+Each directional call uses only the causal trailing-return innovations,
+standardized independently by pool and complete week with population variance.
+Equal-cost predecessors use the total priority diagonal `(1,1)`, source advance
+`(1,0)`, then target advance `(0,1)`. Hold the standardized source fixed and
+left-rotate the standardized target by `96 * rotation_days` observations for
+the six nulls. Leading and trailing partial UTC weeks are excluded; an internal
+grid gap, a non-15-minute row, non-finite innovation, causal-state mismatch, or
+zero-variance complete week is a contract failure.
 
 For each observed week/band, every nonzero whole-day rotation produces one null
 row. `observed_cost_improvement` is rotation normalized cost minus observed
