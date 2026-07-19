@@ -38,7 +38,7 @@ meaningful ones for that venue.
 
 | Direction | Peak corr | Lag | p | Thirds (corr@lag) |
 |---|---:|---:|---:|---|
-| uni-base → uni-bsc | +0.086 | +3m | 0.00 | +0.06@33m, +0.26@3m, +0.07@3m |
+| uni-base → uni-bsc | +0.086 | +3m | <0.01 | +0.06@33m, +0.26@3m, +0.07@3m |
 | uni-bsc → uni-base | +0.050 | +16m | 0.02 | −0.05@24m, +0.06@4m, +0.08@16m |
 | uni-base → quidax | +0.019 | +18m | 0.11 | +0.04@58m, 0.00@9m, +0.06@18m |
 | uni-bsc → quidax | −0.031 | +44m | 0.03 | +0.05@54m, −0.05@60m, −0.08@44m |
@@ -54,12 +54,13 @@ Event study — direction of Quidax quote changes vs prior pool move:
 
 ## Accepted Findings
 
-1. **uni-base leads uni-bsc by ~3 minutes.** Peak +0.086 at +3m, p = 0.00,
+1. **uni-base leads uni-bsc by ~3 minutes.** Peak +0.086 at +3m, p < 0.01,
    positive in all three sub-periods (and at the same 3-minute lag in two of
    three). Price discovery for cNGN/USD concentrates on the Base pool; the BSC
-   pool aligns within minutes. Candidate mechanism for cross-pool LP
-   performance differences: the lagging pool is adversely selected by
-   arbitrageurs more often.
+   pool aligns within minutes. A candidate (untested here) mechanism for cross-pool LP performance
+   differences: a lagging pool trades at stale prices more often; whether
+   this materializes as measurable LP adverse selection is not established
+   by this study.
 2. **Quidax never leads the pools.** Near-zero correlations at every lag
    (p ≥ 0.13), consistent across sub-periods. The Quidax book is a follower —
    in line with the market-structure finding in the Quidax execution EDA that
@@ -67,9 +68,10 @@ Event study — direction of Quidax quote changes vs prior pool move:
 3. **When Quidax re-quotes, it usually moves in the direction the Base pool
    moved over the preceding 15–60 minutes** (69% at 15m, 66% at 30m, 63% at
    60m vs a 50% null; N = 13–70 events). Modest-N directional evidence that
-   manual re-quotes follow the pools with a lag of tens of minutes. This
-   latency window is the mechanism behind the engine's UNI→QUIDAX CEX-DEX
-   arbitrage opportunities.
+   re-quotes follow the pools. (Superseded on latency: Iteration 2 shows
+   the lag is bimodal — minutes-to-hours or overnight — not a constant.) This
+   latency is consistent with the price gaps the engine's UNI→QUIDAX
+   CEX-DEX detection acts on (not separately evidenced in this doc).
 
 ## Reported but Not Accepted
 
@@ -97,8 +99,8 @@ Date: 2026-07-19
 
 To address the forward-filled-quote limitation, the lead/lag question was
 re-run on actual pool trades: every V4 Swap event in both pools over the same
-window (1,280 Base swaps, 3,777 BSC-block-stamped swaps of 3,799 fetched),
-each with its exact block timestamp and post-swap marginal price. Two
+window (1,280 Base swaps and 3,799 BSC swaps, across 1,153 and 3,777 blocks
+respectively), each with its exact block timestamp and post-swap marginal price. Two
 independent implementations were run (`research/scripts/run_lead_lag_analysis.py`
 and a separate cross-check with a de-clustered event design); their results
 agree, and all figures below reproduce from the raw data.
@@ -131,9 +133,10 @@ Per-swap triggers (implementation A):
 | Excluding our trades (N=90 / 146) | 3 min | +24.0% | +0.6% | +3.9% | −9.7% |
 | | 30 min | +55.1% | +2.2% | +13.4% | −37.3% |
 
-De-clustered cross-check (implementation B; one trigger per 10-minute window,
-so burst episodes count once — N=68 Base / 87 BSC events, excluding our
-trades N=69 / 88):
+De-clustered cross-check (implementation B; one trigger per 10-minute
+window, so burst episodes count once). Table shows the excluding-our-trades
+run (N=69 Base / 88 BSC; all-trades N=68 / 87 gives +3.9/+9.7 bp
+Base→BSC — same picture):
 
 | Direction | Horizon | Mean response | Beta | Trigger-pool continuation |
 |---|---|---:|---:|---:|
@@ -158,13 +161,13 @@ tape", not "same events minus ours".
    (Base→BSC p < 0.002).
 2. **BSC's moves are mostly noise.** The reverse direction transmits only
    2–5% at 30 minutes, and the trigger pool's own continuation splits sharply:
-   Base moves continue (+3.8 bp / +13% beta at 30m) while BSC moves revert
-   (−11.5 bp / −37% beta). Base-initiated moves carry information; the bulk of
-   BSC-initiated moves are transient dislocations that get arbitraged back.
+   Base moves continue (impl B: +3.8 bp; impl A beta: +13% at 30m) while BSC
+   moves revert (impl B: −11.5 bp; impl A beta: −37%). Base-initiated moves carry information; the bulk of
+   BSC-initiated moves are transient and revert. (The data shows the
+   reversion, not who trades it back.)
 3. **Not our engine's artifact.** With all 186 of our swaps removed, every
    number above is essentially unchanged. The lead/lag structure is organic
-   market behavior; our arbitrage accounts for only a small share of the
-   correction flow.
+   market behavior, not an artifact of our own trading.
 
 ## Autoresearch Iterations (2026-07-19)
 
@@ -185,7 +188,7 @@ recomputed per draw.
 | BSC→Base | 3 min | +0.4 bp | 0.0 ± 0.1 | 0.022 |
 | BSC→Base | 30 min | +1.3 bp | 0.0 ± 0.4 | 0.006 |
 
-Refinement to Finding 2: BSC→Base transmission is statistically detectable,
+Refinement to swap-level Finding 2: BSC→Base transmission is statistically detectable,
 not zero — but economically small (~4% of the move vs ~50% in the other
 direction). "Base ignores BSC" becomes "BSC transmits weakly but measurably."
 
@@ -195,19 +198,21 @@ Event-aligned: each Quidax re-quote ≥5 bps is traced back (≤24 h) to the
 onset of the preceding same-direction 30-minute Base move reaching half the
 re-quote's size. 12 of 56 re-quotes match. The lag distribution is bimodal:
 a fast cluster (~19–48 min) and a slow cluster (6–22 h) — a single "median
-latency" number is not meaningful. The slow cluster's re-quotes concentrate
-in morning hours, which motivated:
+latency" number is not meaningful. Most (4 of 6) slow-cluster re-quotes
+arrive in morning hours, which motivated:
 
 ### Iteration 3 — re-quotes follow the Lagos workday
 
 Hour-of-day distribution of all 161 quote changes: **78% fall between 08:00
 and 16:59 Lagos time** (uniform expectation 37.5%; z = 10.7), peaking
-10:00–13:00. The Quidax book is maintained on an office schedule.
-Consequence: the manual re-quote latency is regime-dependent —
-minutes-to-hours during the Lagos workday, overnight-or-longer otherwise —
-so pool moves outside working hours leave the longest-lived UNI→QUIDAX
-dislocations. This is a direct timing input for CEX-DEX arbitrage and for
-any future Quidax ladder policy.
+10:00–13:00. The pattern is consistent with the book being maintained manually during
+West Africa business hours.
+Consequence: the re-quote latency is regime-dependent —
+minutes-to-hours during working hours, overnight-or-longer otherwise.
+Implication (not yet measured; Next item 4): pool moves outside working
+hours should leave the longest-lived UNI→QUIDAX dislocations, which would
+make this a timing input for CEX-DEX arbitrage and any future Quidax
+ladder policy.
 
 ## Next
 
