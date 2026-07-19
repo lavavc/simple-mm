@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-SWAPS_FILE = "/Users/mac/Desktop/pool_swaps.json"
+SWAPS_FILE = str(Path(__file__).resolve().parents[1] / "data" / "pool_swaps.json")
 CACHE_FILE = "data/tx_senders_cache.json"
 DB_FILE = "data/cngn.db"
 

@@ -15,7 +15,7 @@ load_dotenv()
 from engine.config import settings
 
 CACHE_FILE = "data/tx_senders_cache.json"
-SWAPS_FILE = "/Users/mac/Desktop/pool_swaps.json"
+SWAPS_FILE = str(Path(__file__).resolve().parents[1] / "data" / "pool_swaps.json")
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
