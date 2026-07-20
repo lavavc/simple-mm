@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from eth_abi import encode  # type: ignore[attr-defined]
+from requests import ConnectionError as RequestsConnectionError
 from web3 import Web3
 
 import research.scripts.export_v4_lp_ledger as lp_ledger_export
@@ -25,7 +26,11 @@ from research.backtester.lp_ledger_attribution import (
     load_ledger_coverage,
 )
 from research.backtester.v4_event_replay import ReplayedEvent
-from research.backtester.v4_export import POOL_CONFIGS, V4_MODIFY_LIQUIDITY_TOPIC
+from research.backtester.v4_export import (
+    POOL_CONFIGS,
+    V4_MODIFY_LIQUIDITY_TOPIC,
+    _make_web3,
+)
 from research.backtester.v4_lp_ledger import (
     DecodedLiquidityAction,
     LedgerPositionState,
@@ -66,6 +71,81 @@ def test_lp_ledger_cli_boundary_redacts_uncaught_rpc_credentials(
     assert exit_code == 1
     assert secret not in captured.err
     assert "[REDACTED]" in captured.err
+
+
+def test_research_rpc_provider_uses_bounded_read_retries() -> None:
+    w3 = _make_web3(
+        SimpleNamespace(
+            rpc_url="http://127.0.0.1:1",
+            chain="base",
+        )
+    )
+
+    retry = w3.provider.exception_retry_configuration
+    assert retry.retries == 8
+    assert retry.backoff_factor == 0.5
+    assert RequestsConnectionError in retry.errors
+    assert set(retry.method_allowlist) == {
+        "eth_getLogs",
+        "eth_getTransactionByHash",
+        "eth_getTransactionReceipt",
+        "eth_getBlockByNumber",
+        "eth_call",
+        "eth_chainId",
+    }
+
+
+def test_research_rpc_provider_retries_the_observed_transport_error(
+    monkeypatch,
+) -> None:
+    w3 = _make_web3(
+        SimpleNamespace(
+            rpc_url="http://127.0.0.1:1",
+            chain="base",
+        )
+    )
+    attempts = 0
+    sleeps = []
+
+    def post(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RequestsConnectionError("remote closed the connection")
+        return b"ok"
+
+    monkeypatch.setattr(
+        w3.provider._request_session_manager,
+        "make_post_request",
+        post,
+    )
+    monkeypatch.setattr("web3.providers.rpc.rpc.time.sleep", sleeps.append)
+
+    assert w3.provider._make_request("eth_chainId", b"request") == b"ok"
+    assert attempts == 2
+    assert sleeps == [0.5]
+
+
+def test_historical_position_lookup_propagates_transport_failures() -> None:
+    config = POOL_CONFIGS["uni-base"]
+
+    class FailingCall:
+        def call(self, **_kwargs):
+            raise RequestsConnectionError("remote closed the connection")
+
+    position_manager = SimpleNamespace(
+        functions=SimpleNamespace(
+            getPoolAndPositionInfo=lambda _token_id: FailingCall(),
+        )
+    )
+
+    with pytest.raises(RequestsConnectionError):
+        lp_ledger_export._position_state_from_chain(
+            1,
+            position_manager,
+            config,
+            100,
+        )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()

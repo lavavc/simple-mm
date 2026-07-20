@@ -28,6 +28,8 @@ from research.cross_pool.contracts import CrossPoolContractError, PoolName
 from research.cross_pool.market_structure import (
     DistributionSummary,
     VenueStructureSummary,
+    inspect_replay_stream,
+    replay_end_block_at_or_before,
     serialize_market_structure,
     summarize_market_structure,
 )
@@ -80,6 +82,28 @@ LEDGER_FIELDS = (
     "cngn_usd_price_at_event",
     "timestamp_ms",
 )
+
+
+def test_replay_inspection_exposes_provenance_interval_and_cutoff_block(
+    tmp_path: Path,
+) -> None:
+    replay_path = _write_csv(
+        tmp_path / "base_replay.csv",
+        REPLAY_FIELDS,
+        _replay_rows("uni-base"),
+    )
+
+    evidence = inspect_replay_stream("uni-base", replay_path)
+
+    assert evidence.pool == "uni-base"
+    assert evidence.swap_count == 4
+    assert evidence.first_timestamp_ms == START_MS
+    assert evidence.last_timestamp_ms == END_MS
+    assert replay_end_block_at_or_before(
+        "uni-base",
+        replay_path,
+        cutoff_timestamp_ms=END_MS - 1_000,
+    ) == INCEPTION_BLOCKS["uni-base"] + 102
 
 
 def test_market_structure_uses_the_common_swap_interval_and_exact_capital(

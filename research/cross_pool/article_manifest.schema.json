@@ -1,0 +1,2057 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lava.xyz/schemas/cross-pool-article-manifest-1.0.0.json",
+  "title": "Cross-pool article manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_status",
+    "provenance",
+    "qa",
+    "robustness",
+    "predictive",
+    "event_study",
+    "dtw",
+    "market_structure",
+    "economics",
+    "publication",
+    "figures",
+    "artifacts",
+    "review"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "artifact_status": {
+      "enum": ["generated_unreviewed", "qa_blocked", "reviewed"]
+    },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "qa": {
+      "oneOf": [
+        { "$ref": "#/$defs/qa_pass" },
+        { "$ref": "#/$defs/qa_blocked" }
+      ]
+    },
+    "robustness": {
+      "oneOf": [
+        { "$ref": "#/$defs/robustness_complete" },
+        { "$ref": "#/$defs/robustness_unavailable" }
+      ]
+    },
+    "predictive": {
+      "oneOf": [
+        { "$ref": "#/$defs/predictive_complete" },
+        { "$ref": "#/$defs/predictive_unavailable" }
+      ]
+    },
+    "event_study": {
+      "oneOf": [
+        { "$ref": "#/$defs/event_study_complete" },
+        { "$ref": "#/$defs/event_study_unavailable" }
+      ]
+    },
+    "dtw": {
+      "oneOf": [
+        { "$ref": "#/$defs/dtw_complete" },
+        { "$ref": "#/$defs/dtw_unavailable" }
+      ]
+    },
+    "market_structure": {
+      "oneOf": [
+        { "$ref": "#/$defs/market_structure_complete" },
+        { "$ref": "#/$defs/market_structure_unavailable" }
+      ]
+    },
+    "economics": {
+      "oneOf": [
+        { "$ref": "#/$defs/economics_pending" },
+        { "$ref": "#/$defs/economics_complete" },
+        { "$ref": "#/$defs/economics_not_adjudicable" },
+        { "$ref": "#/$defs/economics_unavailable" }
+      ]
+    },
+    "publication": {
+      "oneOf": [
+        { "$ref": "#/$defs/publication_pending" },
+        { "$ref": "#/$defs/publication_economic_complete" },
+        { "$ref": "#/$defs/publication_economic_invalid" },
+        { "$ref": "#/$defs/publication_blocked" }
+      ]
+    },
+    "figures": {
+      "oneOf": [
+        { "$ref": "#/$defs/figures_statistical" },
+        { "$ref": "#/$defs/figures_economic_complete" },
+        { "$ref": "#/$defs/figures_blocked" }
+      ]
+    },
+    "artifacts": {
+      "oneOf": [
+        { "$ref": "#/$defs/artifacts_statistical" },
+        { "$ref": "#/$defs/artifacts_economic_complete" },
+        { "$ref": "#/$defs/artifacts_blocked" }
+      ]
+    },
+    "review": {
+      "oneOf": [
+        { "$ref": "#/$defs/review_pending" },
+        { "$ref": "#/$defs/review_reviewed" }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "title": "generated data-valid statistics with economics pending",
+      "properties": {
+        "artifact_status": { "const": "generated_unreviewed" },
+        "qa": { "$ref": "#/$defs/qa_pass" },
+        "robustness": { "$ref": "#/$defs/robustness_complete" },
+        "predictive": { "$ref": "#/$defs/predictive_complete" },
+        "event_study": { "$ref": "#/$defs/event_study_complete" },
+        "dtw": { "$ref": "#/$defs/dtw_complete" },
+        "market_structure": { "$ref": "#/$defs/market_structure_complete" },
+        "economics": { "$ref": "#/$defs/economics_pending" },
+        "publication": { "$ref": "#/$defs/publication_pending" },
+        "figures": { "$ref": "#/$defs/figures_statistical" },
+        "artifacts": { "$ref": "#/$defs/artifacts_statistical" },
+        "review": { "$ref": "#/$defs/review_pending" }
+      }
+    },
+    {
+      "title": "generated data-valid statistics and economics",
+      "properties": {
+        "artifact_status": { "const": "generated_unreviewed" },
+        "qa": { "$ref": "#/$defs/qa_pass" },
+        "robustness": { "$ref": "#/$defs/robustness_complete" },
+        "predictive": { "$ref": "#/$defs/predictive_complete" },
+        "event_study": { "$ref": "#/$defs/event_study_complete" },
+        "dtw": { "$ref": "#/$defs/dtw_complete" },
+        "market_structure": { "$ref": "#/$defs/market_structure_complete" },
+        "economics": { "$ref": "#/$defs/economics_complete" },
+        "publication": { "$ref": "#/$defs/publication_economic_complete" },
+        "figures": { "$ref": "#/$defs/figures_economic_complete" },
+        "artifacts": { "$ref": "#/$defs/artifacts_economic_complete" },
+        "review": { "$ref": "#/$defs/review_pending" }
+      }
+    },
+    {
+      "title": "generated QA-blocked",
+      "properties": {
+        "artifact_status": { "const": "qa_blocked" },
+        "qa": { "$ref": "#/$defs/qa_blocked" },
+        "robustness": { "$ref": "#/$defs/robustness_unavailable" },
+        "predictive": { "$ref": "#/$defs/predictive_unavailable" },
+        "event_study": { "$ref": "#/$defs/event_study_unavailable" },
+        "dtw": { "$ref": "#/$defs/dtw_unavailable" },
+        "market_structure": { "$ref": "#/$defs/market_structure_unavailable" },
+        "economics": { "$ref": "#/$defs/economics_unavailable" },
+        "publication": { "$ref": "#/$defs/publication_blocked" },
+        "figures": { "$ref": "#/$defs/figures_blocked" },
+        "artifacts": { "$ref": "#/$defs/artifacts_blocked" },
+        "review": { "$ref": "#/$defs/review_pending" }
+      }
+    },
+    {
+      "title": "generated data-valid statistics with invalid economics",
+      "properties": {
+        "artifact_status": { "const": "generated_unreviewed" },
+        "qa": { "$ref": "#/$defs/qa_pass" },
+        "robustness": { "$ref": "#/$defs/robustness_complete" },
+        "predictive": { "$ref": "#/$defs/predictive_complete" },
+        "event_study": { "$ref": "#/$defs/event_study_complete" },
+        "dtw": { "$ref": "#/$defs/dtw_complete" },
+        "market_structure": { "$ref": "#/$defs/market_structure_complete" },
+        "economics": { "$ref": "#/$defs/economics_not_adjudicable" },
+        "publication": { "$ref": "#/$defs/publication_economic_invalid" },
+        "figures": { "$ref": "#/$defs/figures_statistical" },
+        "artifacts": { "$ref": "#/$defs/artifacts_statistical" },
+        "review": { "$ref": "#/$defs/review_pending" }
+      }
+    },
+    {
+      "title": "reviewed data-valid statistics and economics",
+      "properties": {
+        "artifact_status": { "const": "reviewed" },
+        "qa": { "$ref": "#/$defs/qa_pass" },
+        "robustness": { "$ref": "#/$defs/robustness_complete" },
+        "predictive": { "$ref": "#/$defs/predictive_complete" },
+        "event_study": { "$ref": "#/$defs/event_study_complete" },
+        "dtw": { "$ref": "#/$defs/dtw_complete" },
+        "market_structure": { "$ref": "#/$defs/market_structure_complete" },
+        "economics": { "$ref": "#/$defs/economics_complete" },
+        "publication": { "$ref": "#/$defs/publication_economic_complete" },
+        "figures": { "$ref": "#/$defs/figures_economic_complete" },
+        "artifacts": { "$ref": "#/$defs/artifacts_economic_complete" },
+        "review": { "$ref": "#/$defs/review_reviewed" }
+      }
+    },
+    {
+      "title": "reviewed data-valid statistics with invalid economics",
+      "properties": {
+        "artifact_status": { "const": "reviewed" },
+        "qa": { "$ref": "#/$defs/qa_pass" },
+        "robustness": { "$ref": "#/$defs/robustness_complete" },
+        "predictive": { "$ref": "#/$defs/predictive_complete" },
+        "event_study": { "$ref": "#/$defs/event_study_complete" },
+        "dtw": { "$ref": "#/$defs/dtw_complete" },
+        "market_structure": { "$ref": "#/$defs/market_structure_complete" },
+        "economics": { "$ref": "#/$defs/economics_not_adjudicable" },
+        "publication": { "$ref": "#/$defs/publication_economic_invalid" },
+        "figures": { "$ref": "#/$defs/figures_statistical" },
+        "artifacts": { "$ref": "#/$defs/artifacts_statistical" },
+        "review": { "$ref": "#/$defs/review_reviewed" }
+      }
+    },
+    {
+      "title": "reviewed QA-blocked",
+      "properties": {
+        "artifact_status": { "const": "reviewed" },
+        "qa": { "$ref": "#/$defs/qa_blocked" },
+        "robustness": { "$ref": "#/$defs/robustness_unavailable" },
+        "predictive": { "$ref": "#/$defs/predictive_unavailable" },
+        "event_study": { "$ref": "#/$defs/event_study_unavailable" },
+        "dtw": { "$ref": "#/$defs/dtw_unavailable" },
+        "market_structure": { "$ref": "#/$defs/market_structure_unavailable" },
+        "economics": { "$ref": "#/$defs/economics_unavailable" },
+        "publication": { "$ref": "#/$defs/publication_blocked" },
+        "figures": { "$ref": "#/$defs/figures_blocked" },
+        "artifacts": { "$ref": "#/$defs/artifacts_blocked" },
+        "review": { "$ref": "#/$defs/review_reviewed" }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullable_sha256": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "input_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "first_timestamp_ms", "last_timestamp_ms"],
+      "properties": {
+        "rows": { "type": "integer", "minimum": 1 },
+        "first_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "last_timestamp_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "nullable_input_interval": {
+      "oneOf": [
+        { "$ref": "#/$defs/input_interval" },
+        { "type": "null" }
+      ]
+    },
+    "input_sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_features",
+        "bsc_features",
+        "base_replay",
+        "bsc_replay",
+        "base_ledger",
+        "bsc_ledger"
+      ],
+      "properties": {
+        "base_features": { "$ref": "#/$defs/nullable_sha256" },
+        "bsc_features": { "$ref": "#/$defs/nullable_sha256" },
+        "base_replay": { "$ref": "#/$defs/nullable_sha256" },
+        "bsc_replay": { "$ref": "#/$defs/nullable_sha256" },
+        "base_ledger": { "$ref": "#/$defs/nullable_sha256" },
+        "bsc_ledger": { "$ref": "#/$defs/nullable_sha256" }
+      }
+    },
+    "input_intervals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_features",
+        "bsc_features",
+        "base_replay",
+        "bsc_replay",
+        "base_ledger",
+        "bsc_ledger"
+      ],
+      "properties": {
+        "base_features": { "$ref": "#/$defs/nullable_input_interval" },
+        "bsc_features": { "$ref": "#/$defs/nullable_input_interval" },
+        "base_replay": { "$ref": "#/$defs/nullable_input_interval" },
+        "bsc_replay": { "$ref": "#/$defs/nullable_input_interval" },
+        "base_ledger": { "$ref": "#/$defs/nullable_input_interval" },
+        "bsc_ledger": { "$ref": "#/$defs/nullable_input_interval" }
+      }
+    },
+    "ledger_coverage_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "sidecar_sha256",
+        "ledger_sha256",
+        "pool",
+        "chain",
+        "chain_id",
+        "pool_id",
+        "covered_start_block",
+        "covered_start_block_hash",
+        "covered_start_timestamp_ms",
+        "covered_end_block",
+        "covered_end_block_hash",
+        "covered_end_timestamp_ms",
+        "required_end_block",
+        "required_end_timestamp_ms",
+        "candidate_transaction_count",
+        "candidate_transactions_sha256",
+        "candidate_scan_source",
+        "candidate_scan_status"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "sidecar_sha256": { "$ref": "#/$defs/sha256" },
+        "ledger_sha256": { "$ref": "#/$defs/sha256" },
+        "pool": { "enum": ["uni-base", "uni-bsc"] },
+        "chain": { "enum": ["base", "bsc"] },
+        "chain_id": { "type": "integer", "minimum": 1 },
+        "pool_id": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+        "covered_start_block": { "type": "integer", "minimum": 1 },
+        "covered_start_block_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "covered_start_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "covered_end_block": { "type": "integer", "minimum": 1 },
+        "covered_end_block_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "covered_end_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "required_end_block": { "type": "integer", "minimum": 1 },
+        "required_end_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "candidate_transaction_count": { "type": "integer", "minimum": 0 },
+        "candidate_transactions_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_scan_source": {
+          "const": "pool_manager_modify_liquidity_plus_position_manager_transfer_logs"
+        },
+        "candidate_scan_status": { "const": "producer_attested" }
+      }
+    },
+    "nullable_base_ledger_coverage": {
+      "oneOf": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/ledger_coverage_evidence" },
+            {
+              "properties": {
+                "pool": { "const": "uni-base" },
+                "chain": { "const": "base" },
+                "chain_id": { "const": 8453 },
+                "covered_start_block": { "const": 42926879 },
+                "pool_id": {
+                  "const": "0x84fa97768196067f0e5aa157709039a3897e219cba3002d9ad38bf44e300fe93"
+                }
+              }
+            }
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "nullable_bsc_ledger_coverage": {
+      "oneOf": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/ledger_coverage_evidence" },
+            {
+              "properties": {
+                "pool": { "const": "uni-bsc" },
+                "chain": { "const": "bsc" },
+                "chain_id": { "const": 56 },
+                "covered_start_block": { "const": 84655203 },
+                "pool_id": {
+                  "const": "0x2268f03a28f37f16cd3610dc669536f8c815d9d4cb2906feeeba9150fb2d8596"
+                }
+              }
+            }
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "ledger_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_ledger", "bsc_ledger"],
+      "properties": {
+        "base_ledger": { "$ref": "#/$defs/nullable_base_ledger_coverage" },
+        "bsc_ledger": { "$ref": "#/$defs/nullable_bsc_ledger_coverage" }
+      }
+    },
+    "run_configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "panel_horizons_ms",
+        "base_transition_block",
+        "bsc_transition_block",
+        "walk_forward_initial_train_days",
+        "walk_forward_refit_weekday",
+        "walk_forward_maximum_condition_number",
+        "predictive_bootstrap_resamples",
+        "predictive_bootstrap_seed",
+        "predictive_bootstrap_confidence_level",
+        "predictive_min_target_days",
+        "predictive_min_conditional_target_days",
+        "predictive_conditional_move_threshold_bps",
+        "predictive_positive_accuracy_lower_bound",
+        "predictive_null_mae_upper_bound_bps",
+        "predictive_null_directional_gain_upper_bound",
+        "event_shock_lookback_ms",
+        "event_shock_threshold_bps",
+        "event_shock_cluster_ms",
+        "event_response_horizons_ms",
+        "event_bootstrap_resamples",
+        "event_bootstrap_seed",
+        "event_bootstrap_confidence_level",
+        "dtw_grid_ms",
+        "dtw_band_steps",
+        "dtw_primary_band_steps"
+      ],
+      "properties": {
+        "panel_horizons_ms": { "const": [900000, 3600000, 14400000] },
+        "base_transition_block": { "const": 45848255 },
+        "bsc_transition_block": { "const": 97799490 },
+        "walk_forward_initial_train_days": { "const": 14 },
+        "walk_forward_refit_weekday": { "const": 0 },
+        "walk_forward_maximum_condition_number": { "const": 1000000000000.0 },
+        "predictive_bootstrap_resamples": { "const": 2000 },
+        "predictive_bootstrap_seed": { "const": 20260715 },
+        "predictive_bootstrap_confidence_level": { "const": 0.95 },
+        "predictive_min_target_days": { "const": 20 },
+        "predictive_min_conditional_target_days": { "const": 10 },
+        "predictive_conditional_move_threshold_bps": { "const": 10.0 },
+        "predictive_positive_accuracy_lower_bound": { "const": 0.5 },
+        "predictive_null_mae_upper_bound_bps": { "const": 1.0 },
+        "predictive_null_directional_gain_upper_bound": { "const": 0.05 },
+        "event_shock_lookback_ms": { "const": 900000 },
+        "event_shock_threshold_bps": { "const": 5.0 },
+        "event_shock_cluster_ms": { "const": 900000 },
+        "event_response_horizons_ms": { "const": [900000, 3600000, 14400000] },
+        "event_bootstrap_resamples": { "const": 2000 },
+        "event_bootstrap_seed": { "const": 20260715 },
+        "event_bootstrap_confidence_level": { "const": 0.95 },
+        "dtw_grid_ms": { "const": 900000 },
+        "dtw_band_steps": { "const": [1, 4, 16] },
+        "dtw_primary_band_steps": { "const": 4 }
+      }
+    },
+    "runtime_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python_version",
+        "numpy_version",
+        "numpy_build_sha256",
+        "machine_architecture",
+        "byte_order",
+        "bit_generator",
+        "draw_dtype",
+        "matplotlib_version",
+        "matplotlib_backend",
+        "freetype_version",
+        "font_name",
+        "font_file_sha256",
+        "figure_rcparams_sha256"
+      ],
+      "properties": {
+        "python_version": { "type": "string", "minLength": 1 },
+        "numpy_version": { "type": "string", "minLength": 1 },
+        "numpy_build_sha256": { "$ref": "#/$defs/sha256" },
+        "machine_architecture": { "type": "string", "minLength": 1 },
+        "byte_order": { "enum": ["little", "big"] },
+        "bit_generator": { "const": "PCG64" },
+        "draw_dtype": { "const": "int64" },
+        "matplotlib_version": { "type": "string", "minLength": 1 },
+        "matplotlib_backend": { "const": "Agg" },
+        "freetype_version": { "type": "string", "minLength": 1 },
+        "font_name": { "type": "string", "minLength": 1 },
+        "font_file_sha256": { "$ref": "#/$defs/sha256" },
+        "figure_rcparams_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code_commit",
+        "source_diff_sha256",
+        "input_sha256",
+        "input_intervals",
+        "ledger_coverage",
+        "config",
+        "runtime"
+      ],
+      "properties": {
+        "code_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_diff_sha256": { "$ref": "#/$defs/sha256" },
+        "input_sha256": { "$ref": "#/$defs/input_sha256" },
+        "input_intervals": { "$ref": "#/$defs/input_intervals" },
+        "ledger_coverage": { "$ref": "#/$defs/ledger_coverage" },
+        "config": { "$ref": "#/$defs/run_configuration" },
+        "runtime": { "$ref": "#/$defs/runtime_environment" }
+      }
+    },
+    "qa_reason": {
+      "enum": [
+        "ANALYSIS_CONTRACT_INVALID",
+        "CAUSAL_ALIGNMENT_INVALID",
+        "FEATURE_BASE_INVALID",
+        "FEATURE_BSC_INVALID",
+        "LEDGER_BASE_COVERAGE_INVALID",
+        "LEDGER_BSC_COVERAGE_INVALID",
+        "REPLAY_BASE_INVALID",
+        "REPLAY_BSC_INVALID"
+      ]
+    },
+    "qa_blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons", "causal_audit_counts"],
+      "properties": {
+        "status": { "const": "blocked" },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/qa_reason" }
+        },
+        "causal_audit_counts": { "type": "null" }
+      }
+    },
+    "qa_pass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons", "causal_audit_counts"],
+      "properties": {
+        "status": { "const": "pass" },
+        "reasons": { "const": [] },
+        "causal_audit_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_stream_rows",
+            "bsc_stream_rows",
+            "panel_15m_rows",
+            "panel_1h_rows",
+            "panel_4h_rows"
+          ],
+          "properties": {
+            "base_stream_rows": { "type": "integer", "minimum": 1 },
+            "bsc_stream_rows": { "type": "integer", "minimum": 1 },
+            "panel_15m_rows": { "type": "integer", "minimum": 1 },
+            "panel_1h_rows": { "type": "integer", "minimum": 1 },
+            "panel_4h_rows": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "robustness_flag": {
+      "enum": [
+        "dtw_band_unstable",
+        "regime_not_adjudicable",
+        "regime_unstable",
+        "underpowered",
+        "unit_dependent"
+      ]
+    },
+    "influence_audit_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leave_one_day_count",
+        "leave_one_fold_count",
+        "unit_dependent"
+      ],
+      "properties": {
+        "leave_one_day_count": { "type": "integer", "minimum": 1 },
+        "leave_one_fold_count": { "type": "integer", "minimum": 1 },
+        "unit_dependent": { "type": "boolean" }
+      }
+    },
+    "regime_audit_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "early_rows",
+        "mixed_rows",
+        "late_rows",
+        "regime_unstable",
+        "regime_not_adjudicable"
+      ],
+      "properties": {
+        "early_rows": { "type": "integer", "minimum": 0 },
+        "mixed_rows": { "type": "integer", "minimum": 0 },
+        "late_rows": { "type": "integer", "minimum": 0 },
+        "regime_unstable": { "type": "boolean" },
+        "regime_not_adjudicable": { "type": "boolean" }
+      }
+    },
+    "robustness_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "flags",
+        "support_counts",
+        "influence_audit",
+        "regime_audit"
+      ],
+      "properties": {
+        "status": { "const": "complete" },
+        "flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/robustness_flag" }
+        },
+        "support_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary_target_day_count",
+            "primary_conditional_target_day_count",
+            "reverse_target_day_count",
+            "reverse_conditional_target_day_count"
+          ],
+          "properties": {
+            "primary_target_day_count": { "type": "integer", "minimum": 0 },
+            "primary_conditional_target_day_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reverse_target_day_count": { "type": "integer", "minimum": 0 },
+            "reverse_conditional_target_day_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "influence_audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["primary", "reverse"],
+          "properties": {
+            "primary": { "$ref": "#/$defs/influence_audit_summary" },
+            "reverse": { "$ref": "#/$defs/influence_audit_summary" }
+          }
+        },
+        "regime_audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["primary", "reverse"],
+          "properties": {
+            "primary": { "$ref": "#/$defs/regime_audit_summary" },
+            "reverse": { "$ref": "#/$defs/regime_audit_summary" }
+          }
+        }
+      }
+    },
+    "robustness_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "flags",
+        "support_counts",
+        "influence_audit",
+        "regime_audit"
+      ],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "flags": { "const": [] },
+        "support_counts": { "type": "null" },
+        "influence_audit": { "type": "null" },
+        "regime_audit": { "type": "null" }
+      }
+    },
+    "evidence_class": {
+      "enum": [
+        "positive_evidence",
+        "suggestive",
+        "affirmative_null",
+        "inconclusive"
+      ]
+    },
+    "confidence_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point", "lower", "upper"],
+      "properties": {
+        "point": { "type": "number" },
+        "lower": { "type": "number" },
+        "upper": { "type": "number" }
+      }
+    },
+    "nullable_confidence_interval": {
+      "oneOf": [
+        { "$ref": "#/$defs/confidence_interval" },
+        { "type": "null" }
+      ]
+    },
+    "predictive_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "horizon_ms",
+        "rows",
+        "target_day_count",
+        "conditional_rows",
+        "conditional_target_day_count",
+        "baseline_mae_bps",
+        "cross_mae_bps",
+        "mae_improvement_bps",
+        "baseline_mse_bps2",
+        "cross_mse_bps2",
+        "mse_improvement_bps2",
+        "baseline_rmse_bps",
+        "cross_rmse_bps",
+        "relative_oos_r2",
+        "baseline_conditional_directional_accuracy",
+        "cross_conditional_directional_accuracy",
+        "conditional_directional_accuracy_gain"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "horizon_ms": { "enum": [900000, 3600000, 14400000] },
+        "rows": { "type": "integer", "minimum": 1 },
+        "target_day_count": { "type": "integer", "minimum": 1 },
+        "conditional_rows": { "type": "integer", "minimum": 0 },
+        "conditional_target_day_count": { "type": "integer", "minimum": 0 },
+        "baseline_mae_bps": { "type": "number", "minimum": 0 },
+        "cross_mae_bps": { "type": "number", "minimum": 0 },
+        "mae_improvement_bps": { "type": "number" },
+        "baseline_mse_bps2": { "type": "number", "minimum": 0 },
+        "cross_mse_bps2": { "type": "number", "minimum": 0 },
+        "mse_improvement_bps2": { "type": "number" },
+        "baseline_rmse_bps": { "type": "number", "minimum": 0 },
+        "cross_rmse_bps": { "type": "number", "minimum": 0 },
+        "relative_oos_r2": { "type": ["number", "null"] },
+        "baseline_conditional_directional_accuracy": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "cross_conditional_directional_accuracy": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "conditional_directional_accuracy_gain": {
+          "type": ["number", "null"],
+          "minimum": -1,
+          "maximum": 1
+        }
+      }
+    },
+    "predictive_bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "horizon_ms",
+        "resamples",
+        "seed",
+        "confidence_level",
+        "mae_improvement_bps",
+        "mse_improvement_bps2",
+        "cross_conditional_directional_accuracy",
+        "conditional_directional_accuracy_gain",
+        "valid_conditional_resamples"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "horizon_ms": { "enum": [900000, 3600000, 14400000] },
+        "resamples": { "const": 2000 },
+        "seed": { "const": 20260715 },
+        "confidence_level": { "const": 0.95 },
+        "mae_improvement_bps": { "$ref": "#/$defs/confidence_interval" },
+        "mse_improvement_bps2": { "$ref": "#/$defs/confidence_interval" },
+        "cross_conditional_directional_accuracy": {
+          "$ref": "#/$defs/nullable_confidence_interval"
+        },
+        "conditional_directional_accuracy_gain": {
+          "$ref": "#/$defs/nullable_confidence_interval"
+        },
+        "valid_conditional_resamples": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000
+        }
+      }
+    },
+    "predictive_inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metrics", "bootstrap", "adequacy", "evidence_class"],
+      "properties": {
+        "metrics": { "$ref": "#/$defs/predictive_metrics" },
+        "bootstrap": { "$ref": "#/$defs/predictive_bootstrap" },
+        "adequacy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "target_day_count",
+            "conditional_target_day_count",
+            "underpowered"
+          ],
+          "properties": {
+            "target_day_count": { "type": "integer", "minimum": 0 },
+            "conditional_target_day_count": { "type": "integer", "minimum": 0 },
+            "underpowered": { "type": "boolean" }
+          }
+        },
+        "evidence_class": { "$ref": "#/$defs/evidence_class" }
+      }
+    },
+    "omission_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "mae_improvement_sign", "evidence_class"],
+      "properties": {
+        "unit": { "type": "string", "minLength": 1 },
+        "mae_improvement_sign": { "enum": [-1, 0, 1] },
+        "evidence_class": { "$ref": "#/$defs/evidence_class" }
+      }
+    },
+    "influence_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "horizon_ms",
+        "full_mae_improvement_sign",
+        "full_evidence_class",
+        "leave_one_day",
+        "leave_one_fold",
+        "unit_dependent"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "horizon_ms": { "const": 3600000 },
+        "full_mae_improvement_sign": { "enum": [-1, 0, 1] },
+        "full_evidence_class": { "$ref": "#/$defs/evidence_class" },
+        "leave_one_day": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/omission_result" }
+        },
+        "leave_one_fold": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/omission_result" }
+        },
+        "unit_dependent": { "type": "boolean" }
+      }
+    },
+    "regime_subset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["regime", "row_count", "inference", "unavailable_reason"],
+      "properties": {
+        "regime": { "enum": ["early", "mixed", "late"] },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "inference": {
+          "oneOf": [
+            { "$ref": "#/$defs/predictive_inference" },
+            { "type": "null" }
+          ]
+        },
+        "unavailable_reason": { "enum": ["no_rows", null] }
+      }
+    },
+    "regime_sensitivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "horizon_ms",
+        "early",
+        "mixed",
+        "late",
+        "regime_unstable",
+        "regime_not_adjudicable"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "horizon_ms": { "const": 3600000 },
+        "early": { "$ref": "#/$defs/regime_subset" },
+        "mixed": { "$ref": "#/$defs/regime_subset" },
+        "late": { "$ref": "#/$defs/regime_subset" },
+        "regime_unstable": { "type": "boolean" },
+        "regime_not_adjudicable": { "type": "boolean" }
+      }
+    },
+    "predictive_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "horizon_ms",
+        "evidence_class",
+        "inference",
+        "influence",
+        "regime_sensitivity"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "horizon_ms": { "const": 3600000 },
+        "evidence_class": { "$ref": "#/$defs/evidence_class" },
+        "inference": { "$ref": "#/$defs/predictive_inference" },
+        "influence": { "$ref": "#/$defs/influence_report" },
+        "regime_sensitivity": { "$ref": "#/$defs/regime_sensitivity" }
+      }
+    },
+    "predictive_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "primary", "reverse", "sensitivity"],
+      "properties": {
+        "status": { "const": "complete" },
+        "primary": {
+          "allOf": [
+            { "$ref": "#/$defs/predictive_audit" },
+            { "properties": { "direction": { "const": "bsc_to_base" } } }
+          ]
+        },
+        "reverse": {
+          "allOf": [
+            { "$ref": "#/$defs/predictive_audit" },
+            { "properties": { "direction": { "const": "base_to_bsc" } } }
+          ]
+        },
+        "sensitivity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["panel_15m", "panel_4h"],
+          "properties": {
+            "panel_15m": {
+              "$ref": "#/$defs/predictive_sensitivity_direction_pair_15m"
+            },
+            "panel_4h": {
+              "$ref": "#/$defs/predictive_sensitivity_direction_pair_4h"
+            }
+          }
+        }
+      }
+    },
+    "predictive_sensitivity_direction_pair_15m": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "reverse"],
+      "properties": {
+        "primary": {
+          "allOf": [
+            { "$ref": "#/$defs/predictive_inference" },
+            {
+              "properties": {
+                "metrics": {
+                  "properties": {
+                    "direction": { "const": "bsc_to_base" },
+                    "horizon_ms": { "const": 900000 }
+                  }
+                },
+                "bootstrap": {
+                  "properties": {
+                    "direction": { "const": "bsc_to_base" },
+                    "horizon_ms": { "const": 900000 }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reverse": {
+          "allOf": [
+            { "$ref": "#/$defs/predictive_inference" },
+            {
+              "properties": {
+                "metrics": {
+                  "properties": {
+                    "direction": { "const": "base_to_bsc" },
+                    "horizon_ms": { "const": 900000 }
+                  }
+                },
+                "bootstrap": {
+                  "properties": {
+                    "direction": { "const": "base_to_bsc" },
+                    "horizon_ms": { "const": 900000 }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "predictive_sensitivity_direction_pair_4h": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "reverse"],
+      "properties": {
+        "primary": {
+          "allOf": [
+            { "$ref": "#/$defs/predictive_inference" },
+            {
+              "properties": {
+                "metrics": {
+                  "properties": {
+                    "direction": { "const": "bsc_to_base" },
+                    "horizon_ms": { "const": 14400000 }
+                  }
+                },
+                "bootstrap": {
+                  "properties": {
+                    "direction": { "const": "bsc_to_base" },
+                    "horizon_ms": { "const": 14400000 }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "reverse": {
+          "allOf": [
+            { "$ref": "#/$defs/predictive_inference" },
+            {
+              "properties": {
+                "metrics": {
+                  "properties": {
+                    "direction": { "const": "base_to_bsc" },
+                    "horizon_ms": { "const": 14400000 }
+                  }
+                },
+                "bootstrap": {
+                  "properties": {
+                    "direction": { "const": "base_to_bsc" },
+                    "horizon_ms": { "const": 14400000 }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "predictive_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "primary", "reverse", "sensitivity"],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "primary": { "type": "null" },
+        "reverse": { "type": "null" },
+        "sensitivity": { "type": "null" }
+      }
+    },
+    "event_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point", "lower", "upper"],
+      "properties": {
+        "point": { "type": "number" },
+        "lower": { "type": "number" },
+        "upper": { "type": "number" }
+      }
+    },
+    "event_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "horizon_ms",
+        "event_count",
+        "event_day_count",
+        "mean_response_bps",
+        "median_response_bps",
+        "direction_agreement"
+      ],
+      "properties": {
+        "horizon_ms": { "enum": [900000, 3600000, 14400000] },
+        "event_count": { "type": "integer", "minimum": 1 },
+        "event_day_count": { "type": "integer", "minimum": 1 },
+        "mean_response_bps": { "$ref": "#/$defs/event_interval" },
+        "median_response_bps": { "$ref": "#/$defs/event_interval" },
+        "direction_agreement": { "$ref": "#/$defs/event_interval" }
+      }
+    },
+    "event_direction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "shock_count",
+        "response_count",
+        "exclusion_count",
+        "summaries"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "shock_count": { "type": "integer", "minimum": 1 },
+        "response_count": { "type": "integer", "minimum": 1 },
+        "exclusion_count": { "type": "integer", "minimum": 0 },
+        "summaries": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/event_summary" },
+                { "properties": { "horizon_ms": { "const": 900000 } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/event_summary" },
+                { "properties": { "horizon_ms": { "const": 3600000 } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/event_summary" },
+                { "properties": { "horizon_ms": { "const": 14400000 } } }
+              ]
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "event_study_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "primary", "reverse", "exclusion_counts"],
+      "properties": {
+        "status": { "const": "complete" },
+        "primary": {
+          "allOf": [
+            { "$ref": "#/$defs/event_direction" },
+            { "properties": { "direction": { "const": "bsc_to_base" } } }
+          ]
+        },
+        "reverse": {
+          "allOf": [
+            { "$ref": "#/$defs/event_direction" },
+            { "properties": { "direction": { "const": "base_to_bsc" } } }
+          ]
+        },
+        "exclusion_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary_missing_target_start_state",
+            "primary_missing_target_end_state",
+            "reverse_missing_target_start_state",
+            "reverse_missing_target_end_state"
+          ],
+          "properties": {
+            "primary_missing_target_start_state": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "primary_missing_target_end_state": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reverse_missing_target_start_state": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reverse_missing_target_end_state": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "event_study_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "primary", "reverse", "exclusion_counts"],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "primary": { "type": "null" },
+        "reverse": { "type": "null" },
+        "exclusion_counts": { "type": "null" }
+      }
+    },
+    "dtw_band_aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["band_steps", "median_signed_lag_steps"],
+      "properties": {
+        "band_steps": { "enum": [1, 4, 16] },
+        "median_signed_lag_steps": { "type": "number" }
+      }
+    },
+    "dtw_week_lag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["week_start_timestamp_ms", "median_signed_lag_steps"],
+      "properties": {
+        "week_start_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "median_signed_lag_steps": { "type": "number" }
+      }
+    },
+    "dtw_band_weeks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["band_steps", "weeks"],
+      "properties": {
+        "band_steps": { "enum": [1, 4, 16] },
+        "weeks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/dtw_week_lag" }
+        }
+      }
+    },
+    "dtw_stability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "aggregate_median_lag_by_band",
+        "weekly_median_lags_by_band",
+        "primary_band_same_sign_week_share",
+        "band_unstable"
+      ],
+      "properties": {
+        "direction": { "enum": ["bsc_to_base", "base_to_bsc"] },
+        "aggregate_median_lag_by_band": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/dtw_band_aggregate" },
+                { "properties": { "band_steps": { "const": 1 } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/dtw_band_aggregate" },
+                { "properties": { "band_steps": { "const": 4 } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/dtw_band_aggregate" },
+                { "properties": { "band_steps": { "const": 16 } } }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "weekly_median_lags_by_band": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/dtw_band_weeks" },
+                { "properties": { "band_steps": { "const": 1 } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/dtw_band_weeks" },
+                { "properties": { "band_steps": { "const": 4 } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/dtw_band_weeks" },
+                { "properties": { "band_steps": { "const": 16 } } }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "primary_band_same_sign_week_share": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "band_unstable": { "type": "boolean" }
+      }
+    },
+    "dtw_null_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_rotation_comparison_count",
+        "primary_observed_cost_better_share",
+        "reverse_rotation_comparison_count",
+        "reverse_observed_cost_better_share"
+      ],
+      "properties": {
+        "primary_rotation_comparison_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "primary_observed_cost_better_share": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reverse_rotation_comparison_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reverse_observed_cost_better_share": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "dtw_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "primary", "reverse", "null_summary"],
+      "properties": {
+        "status": { "const": "complete" },
+        "primary": {
+          "allOf": [
+            { "$ref": "#/$defs/dtw_stability" },
+            { "properties": { "direction": { "const": "bsc_to_base" } } }
+          ]
+        },
+        "reverse": {
+          "allOf": [
+            { "$ref": "#/$defs/dtw_stability" },
+            { "properties": { "direction": { "const": "base_to_bsc" } } }
+          ]
+        },
+        "null_summary": { "$ref": "#/$defs/dtw_null_summary" }
+      }
+    },
+    "dtw_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "primary", "reverse", "null_summary"],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "primary": { "type": "null" },
+        "reverse": { "type": "null" },
+        "null_summary": { "type": "null" }
+      }
+    },
+    "decimal_string": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "nonnegative_decimal_string": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "venue_structure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pool",
+        "activity_start_timestamp_ms",
+        "activity_end_timestamp_ms",
+        "swap_count",
+        "meaningful_move_count",
+        "fee_rate_fraction",
+        "median_update_gap_ms",
+        "p95_update_gap_ms",
+        "median_active_liquidity_units",
+        "total_volume_usd",
+        "known_owner_count",
+        "exact_known_owner_capital_coverage_fraction",
+        "exact_opening_capital_top_owner_share_fraction",
+        "exact_opening_capital_top_three_share_fraction",
+        "exact_opening_capital_hhi_fraction"
+      ],
+      "properties": {
+        "pool": { "enum": ["uni-base", "uni-bsc"] },
+        "activity_start_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "activity_end_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "swap_count": { "type": "integer", "minimum": 1 },
+        "meaningful_move_count": { "type": "integer", "minimum": 0 },
+        "fee_rate_fraction": { "$ref": "#/$defs/nonnegative_decimal_string" },
+        "median_update_gap_ms": { "$ref": "#/$defs/nonnegative_decimal_string" },
+        "p95_update_gap_ms": { "$ref": "#/$defs/nonnegative_decimal_string" },
+        "median_active_liquidity_units": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "total_volume_usd": { "$ref": "#/$defs/nonnegative_decimal_string" },
+        "known_owner_count": { "type": "integer", "minimum": 0 },
+        "exact_known_owner_capital_coverage_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "exact_opening_capital_top_owner_share_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "exact_opening_capital_top_three_share_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "exact_opening_capital_hhi_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        }
+      }
+    },
+    "market_structure_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "venues"],
+      "properties": {
+        "status": { "const": "complete" },
+        "venues": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/venue_structure" },
+                { "properties": { "pool": { "const": "uni-base" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/venue_structure" },
+                { "properties": { "pool": { "const": "uni-bsc" } } }
+              ]
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "market_structure_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "venues"],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "venues": { "type": "null" }
+      }
+    },
+    "economics_pending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "frozen_contract",
+        "decision_metrics",
+        "strategies"
+      ],
+      "properties": {
+        "status": { "const": "pending" },
+        "frozen_contract": { "type": "null" },
+        "decision_metrics": { "type": "null" },
+        "strategies": { "type": "null" }
+      }
+    },
+    "economic_invalid_reason": {
+      "enum": [
+        "ECONOMIC_INPUT_INVALID",
+        "ENTRY_STATE_CONTRACT_MISMATCH",
+        "FORECAST_COVERAGE_INVALID",
+        "PARAMETER_CONTRACT_MISMATCH",
+        "PREDICTION_ARTIFACT_HASH_MISMATCH",
+        "PREDICTION_ROWS_INVALID"
+      ]
+    },
+    "forecast_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "routed_entry_decision_count",
+        "forecast_covered_entry_decision_count",
+        "maximum_selected_forecast_age_ms",
+        "first_routed_entry_timestamp_ms",
+        "last_routed_entry_timestamp_ms"
+      ],
+      "properties": {
+        "routed_entry_decision_count": { "type": "integer", "minimum": 0 },
+        "forecast_covered_entry_decision_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maximum_selected_forecast_age_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "exclusiveMaximum": 3600000
+        },
+        "first_routed_entry_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "last_routed_entry_timestamp_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "frozen_economic_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_pool",
+        "policy_profile",
+        "static_config",
+        "initial_capital_usd",
+        "prediction_artifact",
+        "prediction_sha256",
+        "prediction_direction",
+        "prediction_horizon_ms",
+        "forecast_agreement_threshold_bps",
+        "flow_markout_feature_sha256",
+        "entry_state_contract_sha256",
+        "parameter_contract_sha256",
+        "mint_gas_usd",
+        "remove_gas_usd",
+        "excluded_window_indices",
+        "evaluation_window_indices",
+        "active_routes",
+        "forecast_coverage"
+      ],
+      "properties": {
+        "base_pool": { "const": "uni-base" },
+        "policy_profile": { "const": "upside_tight_v1" },
+        "static_config": { "const": "static_spot_w0025" },
+        "initial_capital_usd": { "const": "1200" },
+        "prediction_artifact": { "const": "predictive_predictions.csv" },
+        "prediction_sha256": { "$ref": "#/$defs/sha256" },
+        "prediction_direction": { "const": "bsc_to_base" },
+        "prediction_horizon_ms": { "const": 3600000 },
+        "forecast_agreement_threshold_bps": { "const": "5" },
+        "flow_markout_feature_sha256": { "$ref": "#/$defs/sha256" },
+        "entry_state_contract_sha256": {
+          "const": "61d9f7977c9806bf25c01a3f2db9bc5ecb56bb7612fcc6c72bf68a94a31f118b"
+        },
+        "parameter_contract_sha256": {
+          "const": "abe886b69c909010a1e1a27eb16d740448cde2993c2a5ec7835e1b03a864888f"
+        },
+        "mint_gas_usd": { "const": "0.073" },
+        "remove_gas_usd": { "const": "0.022" },
+        "excluded_window_indices": { "const": [0, 1, 2] },
+        "evaluation_window_indices": {
+          "const": [
+            3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            19, 20, 21, 22, 23, 24, 25
+          ]
+        },
+        "active_routes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["7", "18", "23", "25"],
+          "properties": {
+            "7": { "const": "upside_capture" },
+            "18": { "const": "fee_box" },
+            "23": { "const": "upside_capture" },
+            "25": { "const": "dip_accumulator" }
+          }
+        },
+        "forecast_coverage": { "$ref": "#/$defs/forecast_coverage" }
+      }
+    },
+    "economic_decision_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputs_valid",
+        "original_net_return_fraction",
+        "gated_net_return_fraction",
+        "original_worst_window_return_fraction",
+        "gated_worst_window_return_fraction",
+        "original_worst_within_window_drawdown_magnitude_fraction",
+        "gated_worst_within_window_drawdown_magnitude_fraction"
+      ],
+      "properties": {
+        "inputs_valid": { "const": true },
+        "original_net_return_fraction": { "$ref": "#/$defs/decimal_string" },
+        "gated_net_return_fraction": { "$ref": "#/$defs/decimal_string" },
+        "original_worst_window_return_fraction": {
+          "$ref": "#/$defs/decimal_string"
+        },
+        "gated_worst_window_return_fraction": {
+          "$ref": "#/$defs/decimal_string"
+        },
+        "original_worst_within_window_drawdown_magnitude_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "gated_worst_within_window_drawdown_magnitude_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        }
+      }
+    },
+    "nullable_nonnegative_decimal_string": {
+      "oneOf": [
+        { "$ref": "#/$defs/nonnegative_decimal_string" },
+        { "type": "null" }
+      ]
+    },
+    "strategy_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_count",
+        "active_window_count",
+        "positive_window_count",
+        "positive_active_window_count",
+        "aggregate_net_return_fraction",
+        "worst_window_return_fraction",
+        "worst_within_window_drawdown_magnitude_fraction",
+        "all_window_positive_rate_fraction",
+        "active_window_positive_rate_fraction",
+        "total_fees_usd",
+        "total_transaction_cost_usd",
+        "fee_to_transaction_cost_ratio",
+        "rebalance_count"
+      ],
+      "properties": {
+        "window_count": { "type": "integer", "minimum": 1 },
+        "active_window_count": { "type": "integer", "minimum": 0 },
+        "positive_window_count": { "type": "integer", "minimum": 0 },
+        "positive_active_window_count": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "aggregate_net_return_fraction": { "$ref": "#/$defs/decimal_string" },
+        "worst_window_return_fraction": { "$ref": "#/$defs/decimal_string" },
+        "worst_within_window_drawdown_magnitude_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "all_window_positive_rate_fraction": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "active_window_positive_rate_fraction": {
+          "$ref": "#/$defs/nullable_nonnegative_decimal_string"
+        },
+        "total_fees_usd": { "$ref": "#/$defs/nonnegative_decimal_string" },
+        "total_transaction_cost_usd": {
+          "$ref": "#/$defs/nonnegative_decimal_string"
+        },
+        "fee_to_transaction_cost_ratio": {
+          "$ref": "#/$defs/nullable_nonnegative_decimal_string"
+        },
+        "rebalance_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "economics_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "frozen_contract",
+        "decision_metrics",
+        "strategies"
+      ],
+      "properties": {
+        "status": { "const": "complete" },
+        "frozen_contract": { "$ref": "#/$defs/frozen_economic_contract" },
+        "decision_metrics": { "$ref": "#/$defs/economic_decision_metrics" },
+        "strategies": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "original",
+            "gated",
+            "static",
+            "pool_mark_hold_cngn",
+            "cash"
+          ],
+          "properties": {
+            "original": { "$ref": "#/$defs/strategy_summary" },
+            "gated": { "$ref": "#/$defs/strategy_summary" },
+            "static": { "$ref": "#/$defs/strategy_summary" },
+            "pool_mark_hold_cngn": { "$ref": "#/$defs/strategy_summary" },
+            "cash": { "$ref": "#/$defs/strategy_summary" }
+          }
+        }
+      }
+    },
+    "economics_not_adjudicable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason_codes",
+        "frozen_contract",
+        "decision_metrics",
+        "strategies"
+      ],
+      "properties": {
+        "status": { "const": "not_adjudicable_qa" },
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/economic_invalid_reason" }
+        },
+        "frozen_contract": { "type": "null" },
+        "decision_metrics": { "type": "null" },
+        "strategies": { "type": "null" }
+      }
+    },
+    "economics_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "frozen_contract",
+        "decision_metrics",
+        "strategies"
+      ],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "frozen_contract": { "type": "null" },
+        "decision_metrics": { "type": "null" },
+        "strategies": { "type": "null" }
+      }
+    },
+    "claim": {
+      "enum": [
+        "aggregate_base_to_bsc_incremental_evidence",
+        "aggregate_bidirectional_incremental_evidence_without_unique_leader",
+        "aggregate_bsc_to_base_incremental_evidence",
+        "aggregate_leadership_unresolved",
+        "aggregate_no_material_incremental_lead",
+        "causal_price_discovery",
+        "deployable_alpha",
+        "external_lp_profitability",
+        "operational_signal_coefficients_leverage_or_sizing",
+        "toxic_flow_attribution"
+      ]
+    },
+    "publication_data_valid_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "article_branch",
+        "economic_class",
+        "allowed_claims",
+        "forbidden_claims"
+      ],
+      "properties": {
+        "article_branch": {
+          "enum": [
+            "bsc_to_base_incremental",
+            "base_to_bsc_incremental",
+            "bidirectional_incremental_no_unique_leader",
+            "no_material_incremental_lead",
+            "leadership_unresolved"
+          ]
+        },
+        "economic_class": {
+          "enum": [
+            "unavailable",
+            "pareto_improvement",
+            "return_risk_tradeoff",
+            "no_net_return_improvement",
+            "not_adjudicable_qa"
+          ]
+        },
+        "allowed_claims": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/claim" }
+        },
+        "forbidden_claims": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/claim" }
+        }
+      }
+    },
+    "publication_pending": {
+      "allOf": [
+        { "$ref": "#/$defs/publication_data_valid_base" },
+        { "properties": { "economic_class": { "const": "unavailable" } } }
+      ]
+    },
+    "publication_economic_complete": {
+      "allOf": [
+        { "$ref": "#/$defs/publication_data_valid_base" },
+        {
+          "properties": {
+            "economic_class": {
+              "enum": [
+                "pareto_improvement",
+                "return_risk_tradeoff",
+                "no_net_return_improvement"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "publication_economic_invalid": {
+      "allOf": [
+        { "$ref": "#/$defs/publication_data_valid_base" },
+        {
+          "properties": {
+            "economic_class": { "const": "not_adjudicable_qa" }
+          }
+        }
+      ]
+    },
+    "publication_blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "article_branch",
+        "economic_class",
+        "allowed_claims",
+        "forbidden_claims"
+      ],
+      "properties": {
+        "article_branch": { "const": "not_adjudicable_qa" },
+        "economic_class": { "const": "not_adjudicable_qa" },
+        "allowed_claims": { "const": [] },
+        "forbidden_claims": {
+          "const": [
+            "aggregate_base_to_bsc_incremental_evidence",
+            "aggregate_bidirectional_incremental_evidence_without_unique_leader",
+            "aggregate_bsc_to_base_incremental_evidence",
+            "aggregate_leadership_unresolved",
+            "aggregate_no_material_incremental_lead",
+            "causal_price_discovery",
+            "deployable_alpha",
+            "external_lp_profitability",
+            "operational_signal_coefficients_leverage_or_sizing",
+            "toxic_flow_attribution"
+          ]
+        }
+      }
+    },
+    "figure_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "sha256"],
+      "properties": {
+        "artifact": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "price_gap_figure": {
+      "allOf": [
+        { "$ref": "#/$defs/figure_binding" },
+        { "properties": { "artifact": { "const": "price_gap.png" } } }
+      ]
+    },
+    "event_response_figure": {
+      "allOf": [
+        { "$ref": "#/$defs/figure_binding" },
+        { "properties": { "artifact": { "const": "event_response.png" } } }
+      ]
+    },
+    "dtw_lag_figure": {
+      "allOf": [
+        { "$ref": "#/$defs/figure_binding" },
+        { "properties": { "artifact": { "const": "dtw_lag.png" } } }
+      ]
+    },
+    "predictive_performance_figure": {
+      "allOf": [
+        { "$ref": "#/$defs/figure_binding" },
+        {
+          "properties": {
+            "artifact": { "const": "predictive_performance.png" }
+          }
+        }
+      ]
+    },
+    "lp_performance_figure": {
+      "allOf": [
+        { "$ref": "#/$defs/figure_binding" },
+        { "properties": { "artifact": { "const": "lp_performance.png" } } }
+      ]
+    },
+    "figures_statistical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "price_gap",
+        "event_response",
+        "dtw_lag",
+        "diagnostic_predictive_performance",
+        "lp_performance"
+      ],
+      "properties": {
+        "price_gap": { "$ref": "#/$defs/price_gap_figure" },
+        "event_response": { "$ref": "#/$defs/event_response_figure" },
+        "dtw_lag": { "$ref": "#/$defs/dtw_lag_figure" },
+        "diagnostic_predictive_performance": {
+          "$ref": "#/$defs/predictive_performance_figure"
+        },
+        "lp_performance": { "type": "null" }
+      }
+    },
+    "figures_economic_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "price_gap",
+        "event_response",
+        "dtw_lag",
+        "diagnostic_predictive_performance",
+        "lp_performance"
+      ],
+      "properties": {
+        "price_gap": { "$ref": "#/$defs/price_gap_figure" },
+        "event_response": { "$ref": "#/$defs/event_response_figure" },
+        "dtw_lag": { "$ref": "#/$defs/dtw_lag_figure" },
+        "diagnostic_predictive_performance": {
+          "$ref": "#/$defs/predictive_performance_figure"
+        },
+        "lp_performance": { "$ref": "#/$defs/lp_performance_figure" }
+      }
+    },
+    "figures_blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "price_gap",
+        "event_response",
+        "dtw_lag",
+        "diagnostic_predictive_performance",
+        "lp_performance"
+      ],
+      "properties": {
+        "price_gap": { "type": "null" },
+        "event_response": { "type": "null" },
+        "dtw_lag": { "type": "null" },
+        "diagnostic_predictive_performance": { "type": "null" },
+        "lp_performance": { "type": "null" }
+      }
+    },
+    "artifacts_statistical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data_quality.json",
+        "market_structure.json",
+        "panel_15m.csv",
+        "panel_1h.csv",
+        "panel_4h.csv",
+        "predictive_predictions.csv",
+        "predictive_metrics.json",
+        "event_study.csv",
+        "dtw_weekly_paths.csv",
+        "dtw_nulls.csv",
+        "statistical_report.md",
+        "price_gap.png",
+        "predictive_performance.png",
+        "event_response.png",
+        "dtw_lag.png"
+      ],
+      "properties": {
+        "data_quality.json": { "$ref": "#/$defs/sha256" },
+        "market_structure.json": { "$ref": "#/$defs/sha256" },
+        "panel_15m.csv": { "$ref": "#/$defs/sha256" },
+        "panel_1h.csv": { "$ref": "#/$defs/sha256" },
+        "panel_4h.csv": { "$ref": "#/$defs/sha256" },
+        "predictive_predictions.csv": { "$ref": "#/$defs/sha256" },
+        "predictive_metrics.json": { "$ref": "#/$defs/sha256" },
+        "event_study.csv": { "$ref": "#/$defs/sha256" },
+        "dtw_weekly_paths.csv": { "$ref": "#/$defs/sha256" },
+        "dtw_nulls.csv": { "$ref": "#/$defs/sha256" },
+        "statistical_report.md": { "$ref": "#/$defs/sha256" },
+        "price_gap.png": { "$ref": "#/$defs/sha256" },
+        "predictive_performance.png": { "$ref": "#/$defs/sha256" },
+        "event_response.png": { "$ref": "#/$defs/sha256" },
+        "dtw_lag.png": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "artifacts_economic_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data_quality.json",
+        "market_structure.json",
+        "panel_15m.csv",
+        "panel_1h.csv",
+        "panel_4h.csv",
+        "predictive_predictions.csv",
+        "predictive_metrics.json",
+        "event_study.csv",
+        "dtw_weekly_paths.csv",
+        "dtw_nulls.csv",
+        "statistical_report.md",
+        "price_gap.png",
+        "predictive_performance.png",
+        "event_response.png",
+        "dtw_lag.png",
+        "frozen_policy_windows.csv",
+        "frozen_policy_summary.csv",
+        "frozen_policy_exclusions.csv",
+        "frozen_policy_report.md",
+        "lp_performance.png"
+      ],
+      "properties": {
+        "data_quality.json": { "$ref": "#/$defs/sha256" },
+        "market_structure.json": { "$ref": "#/$defs/sha256" },
+        "panel_15m.csv": { "$ref": "#/$defs/sha256" },
+        "panel_1h.csv": { "$ref": "#/$defs/sha256" },
+        "panel_4h.csv": { "$ref": "#/$defs/sha256" },
+        "predictive_predictions.csv": { "$ref": "#/$defs/sha256" },
+        "predictive_metrics.json": { "$ref": "#/$defs/sha256" },
+        "event_study.csv": { "$ref": "#/$defs/sha256" },
+        "dtw_weekly_paths.csv": { "$ref": "#/$defs/sha256" },
+        "dtw_nulls.csv": { "$ref": "#/$defs/sha256" },
+        "statistical_report.md": { "$ref": "#/$defs/sha256" },
+        "price_gap.png": { "$ref": "#/$defs/sha256" },
+        "predictive_performance.png": { "$ref": "#/$defs/sha256" },
+        "event_response.png": { "$ref": "#/$defs/sha256" },
+        "dtw_lag.png": { "$ref": "#/$defs/sha256" },
+        "frozen_policy_windows.csv": { "$ref": "#/$defs/sha256" },
+        "frozen_policy_summary.csv": { "$ref": "#/$defs/sha256" },
+        "frozen_policy_exclusions.csv": { "$ref": "#/$defs/sha256" },
+        "frozen_policy_report.md": { "$ref": "#/$defs/sha256" },
+        "lp_performance.png": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "artifacts_blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "review_pending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewed_by", "reviewed_at_utc"],
+      "properties": {
+        "status": { "const": "pending" },
+        "reviewed_by": { "type": "null" },
+        "reviewed_at_utc": { "type": "null" }
+      }
+    },
+    "review_reviewed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewed_by", "reviewed_at_utc"],
+      "properties": {
+        "status": { "const": "reviewed" },
+        "reviewed_by": { "type": "string", "minLength": 1 },
+        "reviewed_at_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+        }
+      }
+    }
+  }
+}

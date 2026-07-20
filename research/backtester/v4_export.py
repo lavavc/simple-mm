@@ -18,9 +18,11 @@ from typing import Any
 
 from eth_abi import decode  # type: ignore[attr-defined]
 from eth_abi.exceptions import DecodingError  # type: ignore[attr-defined]
-from requests import HTTPError
+from requests import ConnectionError as RequestsConnectionError
+from requests import HTTPError, Timeout
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
+from web3.providers.rpc.utils import ExceptionRetryConfiguration
 
 from engine.config import settings
 from engine.web3_utils import as_hexstr, coerce_hex_str, redact_rpc_credentials
@@ -40,6 +42,20 @@ V4_INITIALIZE_TOPIC = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e611
 V4_MODIFY_LIQUIDITY_TOPIC = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec"
 V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
 _Q96 = 2**96
+_RESEARCH_RPC_READ_METHODS = (
+    "eth_chainId",
+    "eth_getLogs",
+    "eth_getTransactionByHash",
+    "eth_getTransactionReceipt",
+    "eth_getBlockByNumber",
+    "eth_call",
+)
+_RESEARCH_RPC_TRANSPORT_ERRORS = (
+    ConnectionError,
+    RequestsConnectionError,
+    HTTPError,
+    Timeout,
+)
 
 POSITION_MANAGER_ABI = [
     {
@@ -307,7 +323,18 @@ POOL_CONFIGS = {
 
 
 def _make_web3(config: ExportPoolConfig) -> Web3:
-    w3 = Web3(Web3.HTTPProvider(config.rpc_url))
+    retry_configuration = ExceptionRetryConfiguration(
+        errors=_RESEARCH_RPC_TRANSPORT_ERRORS,
+        retries=8,
+        backoff_factor=0.5,
+        method_allowlist=_RESEARCH_RPC_READ_METHODS,
+    )
+    w3 = Web3(
+        Web3.HTTPProvider(
+            config.rpc_url,
+            exception_retry_configuration=retry_configuration,
+        )
+    )
     if config.chain == "bsc":
         w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return w3
@@ -825,6 +852,8 @@ def _position_state_from_chain(
     call_kwargs = {"block_identifier": block_number} if block_number is not None and block_number >= 0 else {}
     try:
         pool_key, info = position_manager.functions.getPoolAndPositionInfo(token_id).call(**call_kwargs)
+    except _RESEARCH_RPC_TRANSPORT_ERRORS:
+        raise
     except Exception:
         return None
     if not _pool_key_matches(pool_key, config):
@@ -834,6 +863,8 @@ def _position_state_from_chain(
         return None
     try:
         liquidity = int(position_manager.functions.getPositionLiquidity(token_id).call(**call_kwargs))
+    except _RESEARCH_RPC_TRANSPORT_ERRORS:
+        raise
     except Exception:
         liquidity = 0
     return PositionTokenState(

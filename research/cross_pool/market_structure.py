@@ -223,6 +223,29 @@ class MarketStructureAnalysis:
 
 
 @dataclass(frozen=True)
+class ReplayStreamEvidence:
+    pool: PoolName
+    swap_count: int
+    first_timestamp_ms: int
+    last_timestamp_ms: int
+
+    def __post_init__(self) -> None:
+        if self.pool not in _POOL_ORDER:
+            raise CrossPoolContractError("replay evidence requires a supported pool")
+        _require_positive_int(self.swap_count, "replay evidence swap_count")
+        _require_positive_int(
+            self.first_timestamp_ms,
+            "replay evidence first timestamp",
+        )
+        _require_positive_int(
+            self.last_timestamp_ms,
+            "replay evidence last timestamp",
+        )
+        if self.first_timestamp_ms > self.last_timestamp_ms:
+            raise CrossPoolContractError("replay evidence interval is empty")
+
+
+@dataclass(frozen=True)
 class _ReplaySwap:
     pool: PoolName
     timestamp_ms: int
@@ -233,6 +256,36 @@ class _ReplaySwap:
     active_liquidity: Decimal
     fee_rate: Decimal
     amount_usd: Decimal
+
+
+def inspect_replay_stream(pool: PoolName, path: Path) -> ReplayStreamEvidence:
+    """Validate one replay independently and expose its swap interval."""
+    swaps = _load_replay_swaps(pool, path)
+    return ReplayStreamEvidence(
+        pool=pool,
+        swap_count=len(swaps),
+        first_timestamp_ms=swaps[0].timestamp_ms,
+        last_timestamp_ms=swaps[-1].timestamp_ms,
+    )
+
+
+def replay_end_block_at_or_before(
+    pool: PoolName,
+    path: Path,
+    *,
+    cutoff_timestamp_ms: int,
+) -> int:
+    """Return the last validated swap block observable by a UTC cutoff."""
+    _require_positive_int(cutoff_timestamp_ms, "replay cutoff timestamp")
+    swaps = _load_replay_swaps(pool, path)
+    eligible = tuple(
+        row for row in swaps if row.timestamp_ms <= cutoff_timestamp_ms
+    )
+    if not eligible:
+        raise CrossPoolContractError(
+            f"{pool} replay has no swap at or before the required cutoff"
+        )
+    return eligible[-1].block_number
 
 
 def summarize_market_structure(
