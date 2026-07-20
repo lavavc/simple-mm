@@ -6,7 +6,7 @@ import argparse
 import csv
 import sys
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Mapping, Protocol, Sequence
 
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
@@ -15,8 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from engine.web3_utils import as_hexstr, coerce_hex_str, redact_rpc_credentials
 from research.backtester.v4_export import POOL_CONFIGS, ExportPoolConfig
-from engine.web3_utils import as_hexstr, coerce_hex_str
 
 RECEIPT_FIELDS = [
     "chain",
@@ -117,10 +117,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    count = export_tx_receipts(args.chain, args.tx_csv, args.out, build_web3(args.chain))
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    try:
+        count = export_tx_receipts(
+            args.chain,
+            args.tx_csv,
+            args.out,
+            build_web3(args.chain),
+        )
+    except Exception as exc:
+        print(
+            f"receipt export failed: {redact_rpc_credentials(exc)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     print(f"wrote {count} receipt rows to {args.out}")
+    return 0
 
 
 def _write_receipt_rows(output_path: Path, rows: list[dict[str, str]]) -> None:
@@ -161,4 +175,4 @@ def _int_value(value: object, field: str) -> int:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

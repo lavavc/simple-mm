@@ -14,7 +14,7 @@ from web3 import AsyncWeb3
 
 from engine.config import settings
 from engine.types import V4PoolReadConfig
-from engine.web3_utils import as_hexstr, coerce_hex_bytes
+from engine.web3_utils import as_hexstr, coerce_hex_bytes, redact_rpc_credentials
 
 logger = structlog.get_logger()
 getcontext().prec = 50
@@ -44,7 +44,7 @@ async def _fetch_fee_with_retry(w3: AsyncWeb3, pool: str, pool_address: str) -> 
                     pool=pool_address,
                     attempt=attempt + 1,
                     retry_in_seconds=wait,
-                    error=str(e),
+                    error=redact_rpc_credentials(e),
                 )
                 await asyncio.sleep(wait)
 
@@ -52,7 +52,7 @@ async def _fetch_fee_with_retry(w3: AsyncWeb3, pool: str, pool_address: str) -> 
         "pool_fee_fetch_failed",
         pool=pool_address,
         attempts=_FEE_MAX_ATTEMPTS,
-        error=str(last_err),
+        error=redact_rpc_credentials(last_err),
         note="fee stored as None — arb execution will be blocked until resolved",
     )
     return None
@@ -135,7 +135,11 @@ async def update_single_pool_state(rpc_url: str, pool_address: str) -> bool:
 
         return True
     except Exception as e:
-        logger.error("pool_state_fetch_error", error=str(e), rpc=rpc_url, pool=pool_address)
+        logger.error(
+            "pool_state_fetch_error",
+            error=redact_rpc_credentials(e),
+            pool=pool_address,
+        )
         return False
 
 
@@ -175,7 +179,11 @@ async def update_single_v4_pool_state(config: V4PoolReadConfig) -> bool:
         }
         return True
     except Exception as e:
-        logger.error("v4_pool_state_fetch_error", error=str(e), rpc=config.rpc_url, pool=config.pool_address)
+        logger.error(
+            "v4_pool_state_fetch_error",
+            error=redact_rpc_credentials(e),
+            pool=config.pool_address,
+        )
         return False
 
 

@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -21,10 +22,14 @@ from requests import HTTPError
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
-from research.backtester.clmm_math import cngn_price_from_sqrt_price_x96
-from research.backtester.v4_event_replay import PoolStateSnapshot, ReplayEvent, attach_event_time_state
 from engine.config import settings
-from engine.web3_utils import as_hexstr, coerce_hex_str
+from engine.web3_utils import as_hexstr, coerce_hex_str, redact_rpc_credentials
+from research.backtester.clmm_math import cngn_price_from_sqrt_price_x96
+from research.backtester.v4_event_replay import (
+    PoolStateSnapshot,
+    ReplayEvent,
+    attach_event_time_state,
+)
 
 _V4_LP_INCREASE_LIQUIDITY = 0
 _V4_LP_DECREASE_LIQUIDITY = 1
@@ -318,13 +323,21 @@ def _fetch_logs_with_debug(w3: Web3, params: dict[str, Any], context: str) -> li
     except HTTPError as exc:
         response = getattr(exc, "response", None)
         body = ""
+        status = "unavailable"
+        reason = "unavailable"
         if response is not None:
+            status = str(response.status_code)
+            reason = redact_rpc_credentials(response.reason)
             try:
-                body = response.text
+                body = redact_rpc_credentials(response.text)
             except Exception:
                 body = "<unavailable>"
-        _log(f"{context}: HTTPError {exc}. params={params}. body={body}")
-        raise
+        safe_message = f"RPC log request failed status={status} reason={reason}"
+        _log(
+            f"{context}: HTTPError status={status} reason={reason}. "
+            f"params={params}. body={body}"
+        )
+        raise RuntimeError(safe_message) from None
 
 
 def _candidate_modify_liquidity_tx_hashes(
@@ -986,7 +999,7 @@ def export_pool_history(
         )
     _log(
         f"[{config.name}] export start: blocks {start_block:,} -> {end_block:,}, "
-        f"initial chunk={config.chunk_size:,}, rpc={config.rpc_url}"
+        f"initial chunk={config.chunk_size:,}, chain={config.chain}"
     )
     block_timestamps: dict[int, int] = {}
     pool_state_cache: dict[int, tuple[int, int, int, float]] = {}
@@ -1179,15 +1192,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    count = export_pool_history(
-        POOL_CONFIGS[args.pool],
-        output_path=args.output,
-        start_block=args.start_block,
-        end_block=args.end_block,
-        rpc_url=args.rpc_url,
-        resume=args.resume,
-        checkpoint_path=args.checkpoint_file,
-    )
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    try:
+        count = export_pool_history(
+            POOL_CONFIGS[args.pool],
+            output_path=args.output,
+            start_block=args.start_block,
+            end_block=args.end_block,
+            rpc_url=args.rpc_url,
+            resume=args.resume,
+            checkpoint_path=args.checkpoint_file,
+        )
+    except Exception as exc:
+        print(
+            f"export failed: {redact_rpc_credentials(exc)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     print(f"wrote {count} rows to {args.output}")
+    return 0

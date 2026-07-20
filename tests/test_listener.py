@@ -14,6 +14,25 @@ from engine.types import WalletActivitySubscription
 
 _WALLET = "0x74b479868e3B8a21BDE4bb09F85177aCF9976A2d"
 _TOKEN = "0x55d398326f99059fF775485246999027B3197955"
+_RPC_SECRET = "fixture-secret-that-must-not-be-logged"
+_SECRET_URL = f"wss://example.invalid/v2/{_RPC_SECRET}"
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str, dict[str, object]]] = []
+
+    def warning(self, event: str, **fields: object) -> None:
+        self.records.append(("warning", event, fields))
+
+    def error(self, event: str, **fields: object) -> None:
+        self.records.append(("error", event, fields))
+
+    def info(self, event: str, **fields: object) -> None:
+        self.records.append(("info", event, fields))
+
+    def debug(self, event: str, **fields: object) -> None:
+        self.records.append(("debug", event, fields))
 
 
 def _topic(address: str) -> str:
@@ -144,3 +163,73 @@ async def test_refresh_pool_state_triggers_market_update(monkeypatch):
     await listener._refresh_pool_state("base", type("PoolCfg", (), {"pool_address": "0xpool"})())
 
     assert triggered == ["base"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_pool_state_failure_redacts_endpoint_credential(monkeypatch):
+    from engine.arb.listener import ArbitrageWebSocketListener
+    import engine.arb.listener as _listener
+
+    recording = _RecordingLogger()
+    listener = ArbitrageWebSocketListener(broadcast=lambda _: None)
+    monkeypatch.setattr(_listener, "logger", recording)
+
+    async def _failed_refresh(_pool_config):
+        raise RuntimeError(f"RPC request failed at {_SECRET_URL}")
+
+    monkeypatch.setattr(_listener, "update_single_v4_pool_state", _failed_refresh)
+
+    await listener._refresh_pool_state(
+        "base",
+        type("PoolCfg", (), {"pool_address": "0xpool"})(),
+    )
+
+    _, event, fields = recording.records[-1]
+    assert event == "wss_pool_state_refresh_failed"
+    assert _RPC_SECRET not in repr(fields)
+    assert "[REDACTED]" in str(fields["error"])
+
+
+@pytest.mark.asyncio
+async def test_wss_connection_failure_redacts_endpoint_credential(monkeypatch):
+    from engine.arb.listener import ArbitrageWebSocketListener
+    import engine.arb.listener as _listener
+
+    recording = _RecordingLogger()
+    listener = ArbitrageWebSocketListener(broadcast=lambda _: None)
+    listener._running = True
+    monkeypatch.setattr(_listener, "logger", recording)
+
+    class _FailingConnection:
+        async def __aenter__(self):
+            raise RuntimeError(f"WSS request failed at {_SECRET_URL}")
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        _listener.websockets,
+        "connect",
+        lambda _url: _FailingConnection(),
+    )
+
+    async def _stop_after_failure(_seconds: float) -> None:
+        listener._running = False
+
+    monkeypatch.setattr(_listener.asyncio, "sleep", _stop_after_failure)
+    pool_config = type(
+        "PoolCfg",
+        (),
+        {"pool_address": "0xpool", "pool_manager": "0xmanager"},
+    )()
+
+    await listener._listen_to_chain("base", _SECRET_URL, pool_config, [])
+
+    error_records = [
+        fields
+        for _, event, fields in recording.records
+        if event == "wss_connection_error"
+    ]
+    assert len(error_records) == 1
+    assert _RPC_SECRET not in repr(error_records[0])
+    assert "[REDACTED]" in str(error_records[0]["error"])

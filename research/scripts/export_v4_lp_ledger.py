@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from engine.web3_utils import coerce_hex_str  # noqa: E402
+from engine.web3_utils import coerce_hex_str, redact_rpc_credentials  # noqa: E402
 from research.backtester.lp_ledger_attribution import (  # noqa: E402
     build_fixture_ledger_coverage_bytes,
     build_rpc_ledger_coverage_bytes,
@@ -829,40 +829,53 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    fixture_paths = (args.decoded_actions, args.ownership_events, args.price_events)
-    if all(path is not None for path in fixture_paths):
-        count = export_fixture_lp_ledger(
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    try:
+        fixture_paths = (args.decoded_actions, args.ownership_events, args.price_events)
+        if all(path is not None for path in fixture_paths):
+            count = export_fixture_lp_ledger(
+                args.pool,
+                args.start_block,
+                args.end_block,
+                args.decoded_actions,
+                args.ownership_events,
+                args.price_events,
+                args.out,
+            )
+            print(f"wrote {count} LP ledger rows to {args.out}")
+            return 0
+        if any(path is not None for path in fixture_paths):
+            raise ValueError(
+                "provide all fixture inputs together: --decoded-actions, "
+                "--ownership-events, and --price-events"
+            )
+        candidate_tx_hashes = (
+            _candidate_tx_hashes_from_csv(
+                args.candidate_tx_csv,
+                args.start_block,
+                args.end_block,
+            )
+            if args.candidate_tx_csv is not None
+            else None
+        )
+        count = export_rpc_lp_ledger(
             args.pool,
             args.start_block,
             args.end_block,
-            args.decoded_actions,
-            args.ownership_events,
-            args.price_events,
             args.out,
+            candidate_tx_hashes=candidate_tx_hashes,
         )
-        print(f"wrote {count} LP ledger rows to {args.out}")
-        return
-    if any(path is not None for path in fixture_paths):
-        raise SystemExit(
-            "provide all fixture inputs together: --decoded-actions, "
-            "--ownership-events, and --price-events"
+    except Exception as exc:
+        print(
+            f"LP ledger export failed: {redact_rpc_credentials(exc)}",
+            file=sys.stderr,
+            flush=True,
         )
-    candidate_tx_hashes = (
-        _candidate_tx_hashes_from_csv(args.candidate_tx_csv, args.start_block, args.end_block)
-        if args.candidate_tx_csv is not None
-        else None
-    )
-    count = export_rpc_lp_ledger(
-        args.pool,
-        args.start_block,
-        args.end_block,
-        args.out,
-        candidate_tx_hashes=candidate_tx_hashes,
-    )
+        return 1
     print(f"wrote {count} LP ledger rows to {args.out}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

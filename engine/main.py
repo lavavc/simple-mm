@@ -34,6 +34,7 @@ from engine.lp.uniswap_v4 import V4PositionManager
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter, UNISWAP_BASE_EXECUTION_CONFIG
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter, UNISWAP_BSC_EXECUTION_CONFIG
 from engine.venues.wallet.blockradar import BlockradarAdapter
+from engine.web3_utils import redact_rpc_log_event
 from engine.ws import ws_manager
 
 
@@ -45,6 +46,7 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        redact_rpc_log_event,
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,

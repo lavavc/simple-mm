@@ -4,11 +4,34 @@ from typing import Mapping
 
 import pytest
 
+import research.scripts.export_tx_receipts as receipt_export
 from research.scripts.export_tx_receipts import (
     export_tx_receipts,
     read_unique_tx_hashes,
     receipt_row,
 )
+
+
+def test_receipt_cli_boundary_redacts_uncaught_rpc_credentials(
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "fixture-cli-secret"
+    endpoint = f"https://base-mainnet.g.alchemy.com/v2/{secret}"
+
+    def _failed_build(_chain: str):
+        raise RuntimeError(f"provider failed at {endpoint}")
+
+    monkeypatch.setattr(receipt_export, "build_web3", _failed_build)
+
+    exit_code = receipt_export.main(
+        ["--chain", "base", "--tx-csv", "unused.csv", "--out", "unused.csv"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert "[REDACTED]" in captured.err
 
 
 class FakeEth:

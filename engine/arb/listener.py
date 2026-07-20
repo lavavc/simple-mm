@@ -12,6 +12,7 @@ from engine.market.pool_state import handle_v4_swap_log, update_single_v4_pool_s
 from engine.types import WalletActivitySubscription
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+from engine.web3_utils import redact_rpc_credentials
 
 logger = structlog.get_logger()
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -192,7 +193,11 @@ class ArbitrageWebSocketListener:
                 logger.info("wss_pool_state_refreshed", chain=chain_name, pool=pool_config.pool_address)
                 self._trigger_market_update(chain_name)
         except Exception as e:
-            logger.warning("wss_pool_state_refresh_failed", chain=chain_name, error=str(e))
+            logger.warning(
+                "wss_pool_state_refresh_failed",
+                chain=chain_name,
+                error=redact_rpc_credentials(e),
+            )
 
     async def _recv_with_keepalive(self, ws: Any, chain_name: str) -> str:
         """Wait for the next WS message, using ping/pong to detect zombie sockets."""
@@ -310,10 +315,19 @@ class ArbitrageWebSocketListener:
 
             except websockets.exceptions.ConnectionClosed as e:
                 self.active_connections.discard(chain_name)
-                logger.warning("wss_connection_closed", chain=chain_name, code=e.code, reason=e.reason)
+                logger.warning(
+                    "wss_connection_closed",
+                    chain=chain_name,
+                    code=e.code,
+                    reason=redact_rpc_credentials(e.reason),
+                )
             except Exception as e:
                 self.active_connections.discard(chain_name)
-                logger.error("wss_connection_error", chain=chain_name, error=str(e))
+                logger.error(
+                    "wss_connection_error",
+                    chain=chain_name,
+                    error=redact_rpc_credentials(e),
+                )
 
             if self._running:
                 logger.info("wss_reconnecting", chain=chain_name, backoff_seconds=backoff)
@@ -383,7 +397,11 @@ class ArbitrageWebSocketListener:
                     if (market_update or wallet_venues) and self.on_dex_event:
                         await self.on_dex_event()
                 except Exception as exc:
-                    logger.error("event_driven_arb_calc_failed", error=str(exc), exc_info=True)
+                    logger.error(
+                        "event_driven_arb_calc_failed",
+                        error=redact_rpc_credentials(exc),
+                        exc_info=True,
+                    )
 
                 if not self._pending_market_update and not self._pending_wallet_venues:
                     break

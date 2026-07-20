@@ -18,6 +18,7 @@ from hexbytes import HexBytes
 
 from engine.market.dex_volume import V4_SWAP_TOPIC, event_id_from_log
 from engine.venues.dex.v4 import BaseV4DexAdapter
+from engine.web3_utils import redact_rpc_credentials, redact_rpc_log_event
 
 
 def _word(value: int) -> bytes:
@@ -110,3 +111,35 @@ def test_event_id_stable_across_log_shapes():
 
     assert id_from_hexbytes is not None
     assert id_from_hexbytes == id_from_hexstr
+
+
+def test_rpc_credentials_are_redacted_from_https_wss_and_exception_text() -> None:
+    secret = "credential-value"
+    raw = (
+        f"HTTPS https://base-mainnet.g.alchemy.com/v2/{secret}; "
+        f"WSS wss://bnb-mainnet.g.alchemy.com/v2/{secret}; "
+        f"error for url: https://eth-mainnet.g.alchemy.com/v2/{secret}?x=1"
+    )
+
+    redacted = redact_rpc_credentials(raw)
+
+    assert secret not in redacted
+    assert redacted.count("[REDACTED]") == 3
+    assert "https://mainnet.base.org" == redact_rpc_credentials(
+        "https://mainnet.base.org"
+    )
+
+
+def test_rpc_log_processor_redacts_nested_values_and_exceptions() -> None:
+    secret = "nested-credential"
+    endpoint = f"https://base-mainnet.g.alchemy.com/v2/{secret}"
+    event = {
+        "event": f"request failed for {endpoint}",
+        "nested": {"rpc": endpoint},
+        "items": [endpoint, RuntimeError(f"provider error at {endpoint}")],
+    }
+
+    processed = redact_rpc_log_event(None, "error", event)
+
+    assert secret not in repr(processed)
+    assert repr(processed).count("[REDACTED]") == 4

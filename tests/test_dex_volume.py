@@ -15,6 +15,20 @@ from engine.market.dex_volume import (
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
 
+_RPC_SECRET = "fixture-secret-that-must-not-be-logged"
+_SECRET_URL = f"https://example.invalid/v2/{_RPC_SECRET}"
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str, dict[str, object]]] = []
+
+    def warning(self, event: str, **fields: object) -> None:
+        self.records.append(("warning", event, fields))
+
+    def info(self, event: str, **fields: object) -> None:
+        self.records.append(("info", event, fields))
+
 
 def _word(value: int) -> bytes:
     return int(value).to_bytes(32, "big", signed=True)
@@ -144,6 +158,54 @@ def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):
 
     assert store.is_seeded("pool") is False
     assert store.get_24h_volume_usd("pool") == Decimal("0")
+
+
+def test_refresh_logs_neither_rpc_endpoint_nor_credential(monkeypatch, tmp_path):
+    store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
+    recording = _RecordingLogger()
+    monkeypatch.setattr(dex_volume, "_STORE", store)
+    monkeypatch.setattr(dex_volume, "logger", recording)
+    monkeypatch.setattr(dex_volume, "_rpc_candidates", lambda _config: [_SECRET_URL])
+
+    async def _boom(_config, _rpc_url: str):
+        raise RuntimeError(f"RPC request failed at {_SECRET_URL}")
+
+    monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _boom)
+
+    class _Config:
+        pool_address = "pool"
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_refresh_pool(_Config()))
+
+    _, event, fields = recording.records[-1]
+    assert event == "dex_volume_backfill_rpc_failed"
+    assert "rpc" not in fields
+    assert _RPC_SECRET not in repr(fields)
+    assert "[REDACTED]" in str(fields["error"])
+
+
+def test_refresh_success_log_omits_rpc_endpoint(monkeypatch, tmp_path):
+    store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
+    recording = _RecordingLogger()
+    monkeypatch.setattr(dex_volume, "_STORE", store)
+    monkeypatch.setattr(dex_volume, "logger", recording)
+    monkeypatch.setattr(dex_volume, "_rpc_candidates", lambda _config: [_SECRET_URL])
+
+    async def _scan(_config, _rpc_url: str):
+        return dex_volume._PoolVolumeState()
+
+    monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _scan)
+
+    class _Config:
+        pool_address = "pool"
+
+    asyncio.run(_refresh_pool(_Config()))
+
+    _, event, fields = recording.records[-1]
+    assert event == "dex_volume_backfill_succeeded"
+    assert "rpc" not in fields
+    assert _RPC_SECRET not in repr(fields)
 
 
 def test_refresh_failure_does_not_leave_partial_volume_visible(monkeypatch, tmp_path):

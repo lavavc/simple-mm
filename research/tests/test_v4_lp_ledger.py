@@ -36,6 +36,37 @@ from research.backtester.v4_lp_ledger import (
 )
 from research.cross_pool.contracts import CrossPoolContractError
 
+
+def test_lp_ledger_cli_boundary_redacts_uncaught_rpc_credentials(
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "fixture-cli-secret"
+    endpoint = f"https://base-mainnet.g.alchemy.com/v2/{secret}"
+
+    def _failed_export(*_args, **_kwargs):
+        raise RuntimeError(f"provider failed at {endpoint}")
+
+    monkeypatch.setattr(lp_ledger_export, "export_rpc_lp_ledger", _failed_export)
+
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            "1",
+            "--end-block",
+            "2",
+            "--out",
+            "unused.csv",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert "[REDACTED]" in captured.err
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"

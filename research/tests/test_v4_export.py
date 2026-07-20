@@ -2,35 +2,63 @@ import csv
 import json
 from decimal import Decimal
 
+import pytest
 from eth_abi import encode  # type: ignore[attr-defined]
+from requests import HTTPError, Response
+from web3 import Web3
 
+import research.backtester.v4_export as v4_export
+from engine.lp.types import (
+    _V4_LP_BURN_POSITION,
+    _V4_LP_INCREASE_LIQUIDITY,
+    _V4_LP_MINT_POSITION,
+    _V4_LP_TAKE_PAIR,
+)
+from research.backtester.v4_event_replay import PoolStateSnapshot
 from research.backtester.v4_export import (
     POOL_CONFIGS,
-    _candidate_modify_liquidity_tx_hashes,
     _amounts_from_liquidity,
     _apply_event_time_price_replay,
-    build_liquidity_rows_for_tx,
+    _candidate_modify_liquidity_tx_hashes,
+    _decode_burn_param,
+    _decode_increase_or_decrease_param,
+    _decode_mint_param,
     _decode_position_info,
     _decode_take_pair_param,
     _extract_take_pair_amounts,
-    _decode_burn_param,
-    _decode_increase_or_decrease_param,
+    _fetch_logs_with_debug,
     _int_from_rpc,
     _pool_id_prefix_matches,
     _read_existing_export_metadata,
     _read_export_checkpoint,
     _resolve_resume_start_block,
     _write_export_checkpoint,
-    _decode_mint_param,
+    build_liquidity_rows_for_tx,
     decode_initialize_row,
-    decode_modify_liquidity_row,
     decode_modify_liquidities_payload,
+    decode_modify_liquidity_row,
     decode_swap_row,
     derive_cngn_price,
 )
-from research.backtester.v4_event_replay import PoolStateSnapshot
-from engine.lp.types import _V4_LP_BURN_POSITION, _V4_LP_INCREASE_LIQUIDITY, _V4_LP_MINT_POSITION, _V4_LP_TAKE_PAIR
-from web3 import Web3
+
+
+def test_cli_boundary_redacts_uncaught_rpc_credentials(monkeypatch, capsys) -> None:
+    secret = "fixture-cli-secret"
+    endpoint = f"https://base-mainnet.g.alchemy.com/v2/{secret}"
+
+    def _failed_export(*_args, **_kwargs):
+        raise RuntimeError(f"provider failed at {endpoint}")
+
+    monkeypatch.setattr(v4_export, "export_pool_history", _failed_export)
+
+    exit_code = v4_export.main(
+        ["--pool", "uni-base", "--output", "unused.csv"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert "[REDACTED]" in captured.err
 
 
 def _build_modify_input(actions: bytes, params: list[bytes], deadline: int = 123) -> str:
@@ -48,6 +76,40 @@ def _encode_position_info(pool_id: str, tick_lower: int, tick_upper: int, has_su
 
 
 class TestV4Export:
+    def test_rpc_log_failure_does_not_print_credential_bearing_url(self, capsys):
+        secret = "replacement-api-key"
+        response = Response()
+        response.status_code = 400
+        response.reason = "Bad Request"
+        response.url = f"https://example.invalid/v2/{secret}"
+        response._content = b'{"error":{"message":"range too large"}}'
+        error = HTTPError(
+            f"400 Client Error for url: {response.url}",
+            response=response,
+        )
+
+        class _FailingEth:
+            @staticmethod
+            def get_logs(_params):
+                raise error
+
+        class _FailingWeb3:
+            eth = _FailingEth()
+
+        with pytest.raises(RuntimeError, match="status=400") as captured:
+            _fetch_logs_with_debug(
+                _FailingWeb3(),
+                {"fromBlock": 1, "toBlock": 10},
+                "[test] logs",
+            )
+
+        stderr = capsys.readouterr().err
+        assert secret not in str(captured.value)
+        assert captured.value.__cause__ is None
+        assert secret not in stderr
+        assert "status=400" in stderr
+        assert "range too large" in stderr
+
     def test_derive_cngn_price_base(self):
         price = derive_cngn_price(1_500_000_000, -1_000_000, POOL_CONFIGS["uni-base"])
         assert price == Decimal("0.0006666666666666666666666666667")

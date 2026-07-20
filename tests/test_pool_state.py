@@ -1,14 +1,18 @@
 """Pure + seeded-cache tests for pool_state.py."""
 
 import time
-import pytest
 from decimal import Decimal
 
+import pytest
+
+import engine.market.pool_state as pool_state
 from engine.market.pool_state import (
+    _fetch_fee_with_retry,
     get_cached_pool_state,
-    update_pool_state_from_event,
+    update_single_pool_state,
     swap_token0_for_token1,
     swap_token1_for_token0,
+    update_pool_state_from_event,
     Q96,
 )
 
@@ -23,6 +27,78 @@ import math as _math
 _BASE_SQRT_X96 = Decimal(int(_math.sqrt(0.000606) * (2 ** 96)))
 _LIQ = Decimal(10 ** 18)
 _FEE = Decimal("0.0005")
+_RPC_SECRET = "fixture-secret-that-must-not-be-logged"
+_SECRET_URL = f"https://example.invalid/v2/{_RPC_SECRET}"
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str, dict[str, object]]] = []
+
+    def warning(self, event: str, **fields: object) -> None:
+        self.records.append(("warning", event, fields))
+
+    def error(self, event: str, **fields: object) -> None:
+        self.records.append(("error", event, fields))
+
+    def debug(self, event: str, **fields: object) -> None:
+        self.records.append(("debug", event, fields))
+
+    def info(self, event: str, **fields: object) -> None:
+        self.records.append(("info", event, fields))
+
+
+class _FailingEth:
+    async def call(self, _payload: object) -> bytes:
+        raise RuntimeError(f"RPC request failed at {_SECRET_URL}")
+
+
+class _FailingAsyncWeb3:
+    AsyncHTTPProvider = staticmethod(lambda _url: object())
+
+    def __init__(self, _provider: object) -> None:
+        self.eth = _FailingEth()
+
+    @staticmethod
+    def to_checksum_address(address: str) -> str:
+        return address
+
+
+@pytest.mark.asyncio
+async def test_pool_state_failure_logs_no_rpc_endpoint_or_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording = _RecordingLogger()
+    monkeypatch.setattr(pool_state, "logger", recording)
+    monkeypatch.setattr(pool_state, "AsyncWeb3", _FailingAsyncWeb3)
+
+    assert await update_single_pool_state(_SECRET_URL, "0xpool") is False
+
+    level, event, fields = recording.records[-1]
+    assert (level, event) == ("error", "pool_state_fetch_error")
+    assert "rpc" not in fields
+    assert _RPC_SECRET not in repr(fields)
+    assert "[REDACTED]" in str(fields["error"])
+
+
+@pytest.mark.asyncio
+async def test_pool_fee_retry_redacts_every_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording = _RecordingLogger()
+    monkeypatch.setattr(pool_state, "logger", recording)
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(pool_state.asyncio, "sleep", _no_sleep)
+    w3 = type("W3", (), {"eth": _FailingEth()})()
+
+    assert await _fetch_fee_with_retry(w3, "0xpool", "0xpool") is None
+    failures = [fields for _, _, fields in recording.records if "error" in fields]
+    assert len(failures) == 3
+    assert all(_RPC_SECRET not in repr(fields) for fields in failures)
+    assert all("[REDACTED]" in str(fields["error"]) for fields in failures)
 
 
 class TestSwapToken0ForToken1:

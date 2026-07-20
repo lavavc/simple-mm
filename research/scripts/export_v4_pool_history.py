@@ -13,4 +13,4 @@ from research.backtester.v4_export import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

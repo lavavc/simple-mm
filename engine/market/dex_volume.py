@@ -18,7 +18,12 @@ from web3.types import LogReceipt
 
 from engine.config import settings
 from engine.types import V4PoolReadConfig
-from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
+from engine.web3_utils import (
+    as_hexstr,
+    coerce_hex_bytes,
+    coerce_hex_str,
+    redact_rpc_credentials,
+)
 
 logger = structlog.get_logger()
 
@@ -316,14 +321,18 @@ async def _refresh_pool(config: V4PoolReadConfig) -> None:
         try:
             state = await _scan_pool_window_from_rpc(config, rpc_url)
             if was_seeded:
-                logger.info("dex_volume_resync_succeeded", pool=config.pool_address, rpc=rpc_url)
+                logger.info("dex_volume_resync_succeeded", pool=config.pool_address)
             else:
-                logger.info("dex_volume_backfill_succeeded", pool=config.pool_address, rpc=rpc_url)
+                logger.info("dex_volume_backfill_succeeded", pool=config.pool_address)
             _STORE.replace_seeded(config.pool_address, state)
             return
         except Exception as exc:
             last_error = exc
-            logger.warning("dex_volume_backfill_rpc_failed", pool=config.pool_address, rpc=rpc_url, error=str(exc))
+            logger.warning(
+                "dex_volume_backfill_rpc_failed",
+                pool=config.pool_address,
+                error=redact_rpc_credentials(exc),
+            )
     _STORE.reset(config.pool_address)
     if last_error:
         raise last_error
@@ -343,7 +352,11 @@ async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> 
         try:
             await _refresh_pool(config)
         except Exception as exc:
-            logger.warning("dex_volume_backfill_failed", pool=config.pool_address, error=str(exc))
+            logger.warning(
+                "dex_volume_backfill_failed",
+                pool=config.pool_address,
+                error=redact_rpc_credentials(exc),
+            )
 
 
 async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:
@@ -352,7 +365,11 @@ async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:
     try:
         await _refresh_pool(config)
     except Exception as exc:
-        logger.warning("dex_volume_sync_failed", pool=config.pool_address, error=str(exc))
+        logger.warning(
+            "dex_volume_sync_failed",
+            pool=config.pool_address,
+            error=redact_rpc_credentials(exc),
+        )
 
 
 def record_live_v4_swap_volume(
