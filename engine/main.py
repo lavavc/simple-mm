@@ -5,22 +5,24 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any, AsyncIterator, cast
 
-from fastapi import FastAPI, WebSocket
-from web3 import Web3
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 import structlog
 import uvicorn
+from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from web3 import Web3
 
 from engine.accounts import AccountManager, AccountRole
 from engine.api import api_router
-from engine.types import ArbitrageParams, CexParams
+from engine.arb import ArbitrageEngine
 from engine.bot import telegram as bot
 from engine.config import DexParams, settings
 from engine.db.repository import open_repository
+from engine.lp.uniswap_v4 import V4PositionManager
 from engine.market.fair_price import MarketFairPriceCalculator, StrategyPriceCalculator
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
 from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
@@ -28,15 +30,13 @@ from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormali
 from engine.market.venue_prices import VenuePriceAggregator, create_venue_aggregator
 from engine.runtime import EngineRuntime
 from engine.scheduler import SchedulerConfig, TradingScheduler
-from engine.arb import ArbitrageEngine
+from engine.types import ArbitrageParams, CexParams
 from engine.venues.cex.quidax import QuidaxAdapter
-from engine.lp.uniswap_v4 import V4PositionManager
-from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter, UNISWAP_BASE_EXECUTION_CONFIG
-from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter, UNISWAP_BSC_EXECUTION_CONFIG
+from engine.venues.dex.uniswap_base import UNISWAP_BASE_EXECUTION_CONFIG, UniswapBaseV4Adapter
+from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_EXECUTION_CONFIG, UniswapBscV4Adapter
 from engine.venues.wallet.blockradar import BlockradarAdapter
 from engine.web3_utils import redact_rpc_log_event
 from engine.ws import ws_manager
-
 
 structlog.configure(
     processors=[
@@ -46,7 +46,10 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
-        redact_rpc_log_event,
+        partial(
+            redact_rpc_log_event,
+            sensitive_values=(settings.alchemy_key,),
+        ),
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
@@ -133,7 +136,13 @@ async def init_venues(
 
     if settings.quidax_api_key and _has_lp_user:
         if settings.quidax_user_id and not _has_unique_address:
-            logger.warning("quidax_lp_venue_skipped", reason="Deposit address matches trade venue or is missing; skipping to prevent double-counting portfolio exposure.")
+            logger.warning(
+                "quidax_lp_venue_skipped",
+                reason=(
+                    "Deposit address matches trade venue or is missing; skipping to prevent "
+                    "double-counting portfolio exposure."
+                ),
+            )
         else:
             venues["quidax-lp"] = QuidaxAdapter(
                 api_key=settings.quidax_api_key,
@@ -150,7 +159,11 @@ async def init_venues(
         api_key=settings.blockradar_api_key,
         wallet_id=settings.blockradar_wallet_id,
     )
-    logger.info("venue_initialized", venue="blockradar", rate_setting=bool(settings.blockradar_api_key))
+    logger.info(
+        "venue_initialized",
+        venue="blockradar",
+        rate_setting=bool(settings.blockradar_api_key),
+    )
     return venues
 
 

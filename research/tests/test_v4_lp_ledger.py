@@ -70,7 +70,37 @@ def test_lp_ledger_cli_boundary_redacts_uncaught_rpc_credentials(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert secret not in captured.err
-    assert "[REDACTED]" in captured.err
+    assert captured.err == "[lp-ledger][uni-base] phase=preflight error=unknown_error\n"
+
+
+def test_lp_ledger_cli_boundary_never_renders_bare_exception_secrets(
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "bare-current-alchemy-key"
+
+    def _failed_export(*_args, **_kwargs):
+        raise RuntimeError(f"provider rejected {secret}")
+
+    monkeypatch.setattr(lp_ledger_export, "export_rpc_lp_ledger", _failed_export)
+
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            "1",
+            "--end-block",
+            "2",
+            "--out",
+            "unused.csv",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert captured.err == "[lp-ledger][uni-base] phase=preflight error=unknown_error\n"
 
 
 def test_research_rpc_provider_uses_bounded_read_retries() -> None:

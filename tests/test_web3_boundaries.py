@@ -12,8 +12,11 @@ Two non-obvious invariants:
    logIndex arrives as a numeric int or a hex string. The event ID is used for
    volume dedup — divergence means the same swap is counted twice or dropped.
 """
+
+from collections import UserDict
 from types import SimpleNamespace
 
+import pytest
 from hexbytes import HexBytes
 
 from engine.market.dex_volume import V4_SWAP_TOPIC, event_id_from_log
@@ -36,14 +39,16 @@ def _make_adapter() -> BaseV4DexAdapter:
 
 def test_parse_swap_output_raw_handles_bytes_like_log_data() -> None:
     adapter = _make_adapter()
-    payload = b"".join([
-        _word(-15),
-        _word(21),
-        bytes(32),
-        bytes(32),
-        bytes(32),
-        bytes(32),
-    ])
+    payload = b"".join(
+        [
+            _word(-15),
+            _word(21),
+            bytes(32),
+            bytes(32),
+            bytes(32),
+            bytes(32),
+        ]
+    )
     receipt = {
         "logs": [
             {
@@ -63,14 +68,16 @@ def test_parse_swap_output_raw_handles_bytes_like_log_data() -> None:
 
 def test_parse_swap_output_raw_handles_hex_string_log_data() -> None:
     adapter = _make_adapter()
-    payload = b"".join([
-        _word(10),
-        _word(-22),
-        bytes(32),
-        bytes(32),
-        bytes(32),
-        bytes(32),
-    ])
+    payload = b"".join(
+        [
+            _word(10),
+            _word(-22),
+            bytes(32),
+            bytes(32),
+            bytes(32),
+            bytes(32),
+        ]
+    )
     receipt = {
         "logs": [
             {
@@ -125,9 +132,7 @@ def test_rpc_credentials_are_redacted_from_https_wss_and_exception_text() -> Non
 
     assert secret not in redacted
     assert redacted.count("[REDACTED]") == 3
-    assert "https://mainnet.base.org" == redact_rpc_credentials(
-        "https://mainnet.base.org"
-    )
+    assert "https://mainnet.base.org" == redact_rpc_credentials("https://mainnet.base.org")
 
 
 def test_rpc_log_processor_redacts_nested_values_and_exceptions() -> None:
@@ -143,3 +148,90 @@ def test_rpc_log_processor_redacts_nested_values_and_exceptions() -> None:
 
     assert secret not in repr(processed)
     assert repr(processed).count("[REDACTED]") == 4
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "https://base-mainnet.g.alchemy.com/v3/current-provider-secret",
+        "https://rpc-user:current-provider-secret@rpc.example.test/path",
+        "https://rpc.example.test/path?api_key=current-provider-secret&ok=1",
+        "Authorization: Bearer current-provider-secret",
+        "bearer current-provider-secret",
+        "X-API-Key: current-provider-secret",
+    ),
+)
+def test_rpc_redactor_covers_common_credential_shapes(raw: str) -> None:
+    redacted = redact_rpc_credentials(raw)
+
+    assert "current-provider-secret" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_rpc_redactor_scrubs_explicit_configured_values_longest_first() -> None:
+    redacted = redact_rpc_credentials(
+        "short long-secret and long-secret-suffix",
+        sensitive_values=("long-secret", "long-secret-suffix", "short"),
+    )
+
+    assert redacted == "[REDACTED] [REDACTED] and [REDACTED]"
+
+
+def test_rpc_log_processor_is_cycle_safe_for_nested_exceptions() -> None:
+    secret = "cycle-secret"
+    event: dict[str, object] = {
+        "error": RuntimeError(f"Authorization: Bearer {secret} at https://rpc.test/v2/{secret}")
+    }
+    event["cycle"] = event
+
+    processed = redact_rpc_log_event(None, "error", event)
+
+    assert secret not in repr(processed)
+    assert processed["cycle"] == "[REDACTED_CYCLE]"
+
+
+def test_rpc_log_processor_scrubs_configured_values_and_credential_headers() -> None:
+    configured_secret = "opaque-configured-secret"
+    header_secret = "opaque-header-secret"
+    event = {
+        "exception": f"provider rejected opaque value {configured_secret}",
+        "headers": {
+            "X-API-Key": header_secret,
+            "Authorization": f"Basic {header_secret}",
+        },
+    }
+
+    processed = redact_rpc_log_event(
+        None,
+        "error",
+        event,
+        sensitive_values=(configured_secret,),
+    )
+
+    assert configured_secret not in repr(processed)
+    assert header_secret not in repr(processed)
+    assert processed["headers"] == {
+        "X-API-Key": "[REDACTED]",
+        "Authorization": "[REDACTED]",
+    }
+
+
+def test_rpc_log_processor_scrubs_generic_mappings_and_bytes_like_values() -> None:
+    secret = "opaque-configured-secret"
+    event = {
+        "headers": UserDict({"X-API-Key": secret}),
+        "payloads": (secret.encode(), bytearray(secret.encode())),
+    }
+
+    processed = redact_rpc_log_event(
+        None,
+        "error",
+        event,
+        sensitive_values=(secret,),
+    )
+
+    assert secret not in repr(processed)
+    assert processed == {
+        "headers": {"X-API-Key": "[REDACTED]"},
+        "payloads": ("[REDACTED]", "[REDACTED]"),
+    }

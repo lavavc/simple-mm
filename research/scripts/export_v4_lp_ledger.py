@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from engine.web3_utils import coerce_hex_str, redact_rpc_credentials  # noqa: E402
+from engine.web3_utils import coerce_hex_str  # noqa: E402
 from research.backtester.lp_ledger_attribution import (  # noqa: E402
     build_fixture_ledger_coverage_bytes,
     build_rpc_ledger_coverage_bytes,
@@ -32,6 +32,7 @@ from research.backtester.lp_ledger_attribution import (  # noqa: E402
     load_ledger_coverage,
     pool_attribution_orientation,
 )
+from research.backtester.lp_ledger_checkpoint import render_safe_failure  # noqa: E402
 from research.backtester.v4_event_replay import (  # noqa: E402
     ReplayedEvent,
     ReplayEvent,
@@ -868,7 +869,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except Exception as exc:
         print(
-            f"LP ledger export failed: {redact_rpc_credentials(exc)}",
+            render_safe_failure(
+                pool=args.pool,
+                phase="preflight",
+                error_code="unknown_error",
+                exception=exc,
+            ),
             file=sys.stderr,
             flush=True,
         )
