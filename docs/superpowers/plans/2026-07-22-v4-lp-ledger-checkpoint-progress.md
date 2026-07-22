@@ -10,11 +10,13 @@ resumable and durably observable without weakening their verified coverage or
 atomic publication contracts.
 
 **Architecture:** A private `LPLedgerCheckpoint` SQLite boundary owns exact run
-identity, staged phase evidence, progress generations, and read-only status
-snapshots. The existing exporter becomes phase orchestration around that store
-while retaining the current pure LP decoder, event-time replay, ledger builder,
-coverage builder, and fail-closed final pair. Operational progress is a small
-generation-matched JSON mirror; it is never research evidence.
+identity, source-specific staged evidence, progress generations, and read-only
+status snapshots. The exporter first discovers, fetches, and reconciles every
+target-pool action; freezes the resulting token-ID set; attests the complete
+PositionManager Transfer scan while fetching only relevant ownership bundles;
+then binds the existing frozen replay artifact and publishes a richer verified
+coverage pair. Operational progress is a small generation-matched JSON mirror;
+it is never research evidence.
 
 **Tech Stack:** Python 3.12, standard-library `sqlite3`, `fcntl`, canonical
 JSON/CSV, Web3.py, frozen dataclasses, pytest, Ruff, mypy, and existing
@@ -39,11 +41,24 @@ research-only RPC helpers.
 - The checkpoint binds exact pool/config/range/output/endpoint/runtime/source
   identity and never stores an RPC URL, credential, header, raw exception, or
   command line.
-- Discovery commits one fixed range only after both `ModifyLiquidity` and
-  PositionManager `Transfer` scans complete; quiet ranges are durable evidence.
-- Candidate decode remains canonical by `(block_number, transaction_index,
-  transaction_hash)` and event replay remains canonical by
-  `(block_number, log_index, event_order)`.
+- Target-action discovery and full-transfer attestation use independent fixed
+  range partitions; quiet ranges are durable evidence in each stream.
+- Every target-pool action is fetched and reconciled before the canonical token
+  set freezes. Existing precoverage rows never define completeness.
+- The complete PositionManager Transfer scan records an unfiltered count and
+  digest per chunk, but only frozen-token transfers become fetch candidates.
+- Action and relevant-transfer decode remain canonical by
+  `(block_number, transaction_index, transaction_hash)` and event replay remains
+  canonical by `(block_number, log_index, event_order)`.
+- Existing Base/BSC replay CSVs are reused only after exact byte-digest, range,
+  order, pool, and `sqrt_mid` validation; the ledger exporter does not rescan
+  Initialize/Swap logs.
+- Base replay is exactly SHA-256
+  `41c3d5b945abdffde32087590c21115914404f496069519c572e393b667f99b9`,
+  639921 bytes, 1596 data rows, blocks 42926879 through 47514853. BSC replay is
+  exactly SHA-256
+  `bf99f9a17ea2ff0048da7c7eec4fa0c8fa3b9e7e5586e6200919b66edaccd1e2`,
+  1330201 bytes, 3119 data rows, blocks 84655203 through 105135905.
 - Start/end headers are revalidated on every resume and before publication.
   Conflicting block identities fail closed.
 - No partial checkpoint is an `rpc_verified` ledger. Only the validated final
@@ -73,12 +88,40 @@ research-only RPC helpers.
 - Modify `engine/web3_utils.py`: defense-in-depth credential scrubber expansion.
 - Modify `tests/test_web3_boundaries.py`: path/query/userinfo/header/bearer/nested
   and configured-secret redaction tests.
+- Modify `research/backtester/lp_ledger_attribution.py`: versioned action,
+  transfer, token-set, replay-input, and selected-bundle coverage evidence.
+- Modify `research/cross_pool/manifest.py` and
+  `research/cross_pool/article_manifest.schema.json`: preserve the richer
+  coverage proof in final research evidence.
+- Modify `research/tests/test_cross_pool_market_structure.py` and
+  `research/tests/test_cross_pool_reporting.py`: sidecar-v2 and manifest gates.
 - Modify `dashboard/docs/lp/pool-history-operations.md`: paths, status commands,
   automatic resume, fresh start, failure recovery, and evidentiary boundaries.
 
+## Binding 2026-07-22 Amendment
+
+Tasks 1 and 2 were implemented against checkpoint schema v1 before the live
+transfer benchmark exposed the all-PositionManager candidate error. Their path,
+locking, SQLite durability, canonical serialization, block-identity, and
+transactional foundations remain valid. Their old phase list, two-source shared
+discovery partition, flat witness shape, candidate union, combined decode
+cursor, replay RPC tables, and `BuildInputs.candidate_hashes` contract are
+historical implementation evidence only and are superseded by Task 4 below.
+
+Task 3 retains atomic progress, status, lock, and secret-safety behavior but must
+be committed only after its phase list and counters reflect schema v2. Tasks 4
+through 9 below replace the original Tasks 4 through 8 in full. Checkpoint and
+progress schema versions both increment; old operational files fail closed and
+require explicit `--fresh`. No canonical ledger pair was produced by schema v1.
+
 ---
 
-### Task 1: Add Checkpoint Identity, Paths, Run Lock, And Frozen SQLite Schema
+### Task 1 (Completed Under Schema V1; Corrected By Task 4): Add Checkpoint Identity, Paths, Run Lock, And Frozen SQLite Schema
+
+The exact phase list and SQL below record the already committed v1
+implementation. They are not current requirements after the binding amendment;
+Task 4 replaces them with schema v2 while preserving the valid path, lock,
+durability, and canonical-codec behavior.
 
 **Files:**
 - Create: `research/backtester/lp_ledger_checkpoint.py`
@@ -598,7 +641,12 @@ git commit -m "feat: add LP ledger checkpoint foundation"
 
 ---
 
-### Task 2: Add Transactional Staged-Evidence APIs
+### Task 2 (Completed Under Schema V1; Corrected By Task 4): Add Transactional Staged-Evidence APIs
+
+The flat candidate union and combined action/ownership APIs below record the
+already committed v1 implementation. Task 4 replaces those interfaces with
+source-specific action, transfer-attestation, and ownership phases before any
+exporter adapter uses them.
 
 **Files:**
 - Modify: `research/backtester/lp_ledger_checkpoint.py`
@@ -763,7 +811,12 @@ git commit -m "feat: stage resumable LP ledger evidence"
 
 ---
 
-### Task 3: Add Progress, Read-Only Status, And Secret-Safe Failures
+### Task 3 (Uncommitted V1 Foundation; Finish Only Through Task 4): Add Progress, Read-Only Status, And Secret-Safe Failures
+
+This section records the already written progress/status/redaction foundation.
+Do not execute or accept Steps 1–4 independently: their schema-v1 baseline was
+green before the amendment, while Task 4 now owns the schema-v2 RED/GREEN
+cycle, phase/counter replacement, and the only commit containing this work.
 
 **Files:**
 - Modify: `research/backtester/lp_ledger_checkpoint.py`
@@ -778,7 +831,7 @@ git commit -m "feat: stage resumable LP ledger evidence"
 - Produces: canonical progress JSON, normalized status facts, human/JSON status
   output, `ErrorCode`, and allowlist-only failure rendering.
 
-- [ ] **Step 1: Write failing progress, status, and redaction tests**
+- [x] **Historical Step 1: Write progress, status, and redaction tests**
 
 Add tests proving:
 
@@ -787,13 +840,13 @@ def test_safe_failure_never_interpolates_exception_text() -> None:
     secret = "current-provider-secret"
     line = render_safe_failure(
         pool="uni-base",
-        phase="candidate_fetch",
+        phase="action_fetch",
         error_code="rpc_error",
         exception=RuntimeError(f"Authorization: Bearer {secret}"),
     )
     assert secret not in line
     assert "RuntimeError" not in line
-    assert line == "[lp-ledger][uni-base] phase=candidate_fetch error=rpc_error"
+    assert line == "[lp-ledger][uni-base] phase=action_fetch error=rpc_error"
 ```
 
 `test_status_uses_sqlite_generation_and_rejects_stale_progress` writes a
@@ -807,13 +860,14 @@ Parameterize `redact_rpc_credentials` for `/v2/<secret>`, URL userinfo, query
 keys, `Authorization`, bearer, `X-API-Key`, nested exceptions, and explicit
 configured secret values. Test missing/malformed/wrong-run/wrong-attempt/
 wrong-generation progress; atomic replace failure preserving the prior file;
-phase-local rate/ETA with controlled clocks; active lock despite an old update;
+phase-local rate/ETA with controlled clocks; action/frozen-token/full-transfer/
+relevant-transfer/ownership counters; active lock despite an old update;
 read-only status with a live WAL; corrupt/incompatible checkpoint reporting as
 `blocked`; progress-only modes reporting `non_resumable` or `unknown`; bounded
 write scheduling at five seconds, thirty seconds, or twenty-five newly durable
 units; and human/JSON CLI output for Base+BSC.
 
-- [ ] **Step 2: Run tests and confirm the missing-progress/status failures**
+- [x] **Historical Step 2: Confirm the missing-progress/status failures**
 
 ```bash
 python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py tests/test_web3_boundaries.py
@@ -822,7 +876,7 @@ python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py tests/test_web3
 Expected: failures name `write_progress_atomically`, `read_export_status`, and
 the unredacted credential vectors.
 
-- [ ] **Step 3: Implement progress generation matching and status CLI**
+- [x] **Historical Step 3: Implement the schema-v1-neutral progress/status foundation**
 
 Add these exact public interfaces:
 
@@ -864,25 +918,648 @@ Extend `redact_rpc_credentials(raw, *, sensitive_values=())` only as defense in
 depth. The exporter-safe renderer must use fixed fields and must not stringify
 the exception or emit arbitrary exception class names.
 
-- [ ] **Step 4: Run focused tests and CLI compilation**
+- [x] **Historical Step 4: Verify the foundation against schema v1**
 
 ```bash
 python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py tests/test_web3_boundaries.py
 python3 -m py_compile research/scripts/report_lp_ledger_export_status.py engine/web3_utils.py
 ```
 
-Expected: all focused tests pass; compilation succeeds.
+Historical result: all focused schema-v1 tests passed and compilation
+succeeded. Task 4 deliberately makes the new v2 tests fail before replacing the
+obsolete phases and counters.
 
-- [ ] **Step 5: Commit Task 3**
+- [ ] **Step 5: Carry the Task 3 foundation into Task 4 without committing it**
+
+Task 3 is not an independently acceptable commit after the binding amendment.
+Keep its atomic progress, read-only status, lock, and secret-safety work in the
+working tree, but run Task 4's schema-v2 RED/GREEN cycle before committing the
+combined progress/checkpoint change.
+
+---
+
+### Task 4: Rebase The Checkpoint To Action-First Schema V2 And Finish Progress
+
+**Files:**
+- Modify: `research/backtester/lp_ledger_checkpoint.py`
+- Modify: `research/tests/test_lp_ledger_checkpoint.py`
+- Modify: `research/scripts/report_lp_ledger_export_status.py`
+- Modify: `engine/main.py`
+- Modify: `engine/web3_utils.py`
+- Modify: `tests/test_web3_boundaries.py`
+
+**Interfaces:**
+- Consumes: the valid Task 1/2 SQLite code, lock, canonical-codec, and Task 3
+  progress/redaction foundations. Existing schema-v1 operational artifacts are
+  invalid inputs and fail closed.
+- Produces: checkpoint schema v2, progress schema v2, source-specific action and
+  transfer APIs, frozen-token evidence, replay-input evidence, and truthful
+  action-first progress/status facts.
+
+- [ ] **Step 1: Write the failing schema-v2 and progress-v2 tests**
+
+Pin this phase tuple exactly:
+
+```python
+(
+    "preflight",
+    "action_discovery",
+    "action_fetch",
+    "action_decode",
+    "token_set_freeze",
+    "full_transfer_scan",
+    "relevant_transfer_fetch",
+    "relevant_transfer_decode",
+    "replay_input_bind",
+    "price_replay",
+    "build",
+    "publish",
+    "succeeded",
+)
+```
+
+Add focused tests that require:
+
+```text
+DiscoveryWitness(..., topics: tuple[str, ...], data: str)
+PositionKeyMapping(
+  token_id, pool_id, tick_lower, tick_upper, salt,
+  mint_block_number, mint_log_index, mint_event_order,
+)
+ReplayInputEvidence(
+  path, sha256, byte_length, row_count, header_sha256, parser_version,
+  price_semantics_sha256, chain, pool_id, first_block, last_block,
+  first_timestamp_ms, last_timestamp_ms, price_event_count,
+  price_events_sha256,
+)
+
+incomplete_action_chunks() -> tuple[BlockRange, ...]
+commit_action_chunk(block_range, witnesses) -> CheckpointSnapshot
+action_candidate_hashes() -> tuple[str, ...]
+unfetched_action_hashes() -> tuple[str, ...]
+commit_action_bundle(bundle) -> CheckpointSnapshot
+undecoded_action_bundles() -> tuple[CandidateBundle, ...]
+commit_decoded_action_transaction(..., position_keys) -> CheckpointSnapshot
+freeze_action_token_set() -> CheckpointSnapshot
+frozen_token_ids() -> tuple[int, ...]
+
+incomplete_transfer_chunks() -> tuple[BlockRange, ...]
+commit_transfer_chunk(
+  block_range,
+  unfiltered_count: int,
+  unfiltered_sha256: str,
+  relevant_witnesses: Sequence[DiscoveryWitness],
+) -> CheckpointSnapshot
+relevant_transfer_transaction_hashes() -> tuple[str, ...]
+unfetched_relevant_transfer_hashes() -> tuple[str, ...]
+commit_relevant_transfer_bundle(bundle) -> CheckpointSnapshot
+undecoded_relevant_transfer_bundles() -> tuple[CandidateBundle, ...]
+commit_decoded_relevant_transfer_transaction(...) -> CheckpointSnapshot
+
+commit_replay_input(evidence: ReplayInputEvidence) -> CheckpointSnapshot
+commit_action_price_bindings(bindings) -> CheckpointSnapshot
+```
+
+Require complete topic tuples and data to round-trip canonically. Require token
+set freeze to sort/deduplicate decoded-action IDs, persist count/digest, reject
+incomplete action decode, and detect digest tampering. Require transfer chunks
+to retain only frozen-token witnesses while preserving the caller-supplied
+unfiltered count/digest. Reject a count below the retained-witness count and
+reject duplicate or unfrozen relevant witnesses. Adapter tests in Task 7—not
+the checkpoint store—prove the digest is computed from the complete normalized
+log response before filtering.
+
+Directly exercise zero/overlap storage semantics: an empty frozen set still
+allows full-transfer scan completion followed by durable `0/0`
+relevant-transfer fetch/decode phases; an action/relevant-transfer overlap
+reuses exactly one raw bundle row but creates separate transfer-fetch and
+transfer-decode relation markers; and the relevant-fetch total counts every
+distinct retained-transfer hash, including reused action bundles.
+
+Pin named build inputs: action transaction hashes, frozen token IDs,
+unfiltered-transfer attestation, relevant transfer hashes/witnesses, eligible
+bundle hashes, replay input, actions, ownership events, and price bindings. A
+flat `candidate_hashes` field is forbidden.
+
+Update progress/status tests to require
+`action_candidate_transaction_count`, `action_count`, `frozen_token_count`,
+`full_transfer_log_count`, `relevant_transfer_witness_count`,
+`relevant_transfer_transaction_count`, `ownership_event_count`,
+`bound_action_count`, and `ledger_row_count`. Their exact sources are:
+
+| Field | Exact meaning |
+| --- | --- |
+| `action_candidate_transaction_count` | Distinct transaction hashes among action witnesses |
+| `action_count` | Persisted decoded liquidity actions |
+| `frozen_token_count` | Persisted frozen token IDs |
+| `full_transfer_log_count` | Sum of all unfiltered PositionManager Transfer logs across committed chunks |
+| `relevant_transfer_witness_count` | Retained Transfer logs whose indexed token ID belongs to the frozen set |
+| `relevant_transfer_transaction_count` | Distinct hashes among retained witnesses, including hashes that overlap action transactions |
+| `ownership_event_count` | Persisted frozen-token ownership events |
+| `bound_action_count` | Persisted action price bindings |
+| `ledger_row_count` | Built canonical ledger rows |
+
+The `relevant_transfer_fetch` total is every distinct relevant-transfer hash,
+not merely cache misses. An overlapping action bundle still receives a separate
+durable relevant-transfer-fetch relation marker after its existing raw bundle
+passes the retained-witness validation. Require schema-v1 database/progress
+artifacts to fail closed.
+
+Preflight rejects either endpoint unless
+`requested_start == replay_input.first_block` and
+`requested_end == replay_input.last_block`. The checkpoint schema owns every
+`ReplayInputEvidence` field in Task 4; Task 8 validates and fills that record
+without another schema change.
+
+Pin the schema-v2 durable mapping to accept and validate
+`token_set_sha256`, `unfiltered_transfer_sha256`, and
+`replay_input_sha256`. Canonical progress parsing rejects obsolete
+`candidate_count` and `replay_event_count`. CLI JSON and human-table tests must
+assert the exact v2 keys and headings; neither output may contain `CANDIDATES`.
+
+- [ ] **Step 2: Run the focused tests and observe the obsolete-union failures**
 
 ```bash
-git add research/backtester/lp_ledger_checkpoint.py research/scripts/report_lp_ledger_export_status.py research/tests/test_lp_ledger_checkpoint.py engine/web3_utils.py tests/test_web3_boundaries.py
-git commit -m "feat: report durable LP ledger progress"
+python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py tests/test_web3_boundaries.py
+```
+
+Expected: the new tests fail on the old phase tuple, schema version, flat
+`topic0/topic1` witness, shared discovery partition, union candidate methods,
+replay RPC tables, and ambiguous counters. Existing redaction tests remain
+green.
+
+- [ ] **Step 3: Implement the minimal schema-v2/store/progress replacement**
+
+Bump checkpoint and progress schema versions. Replace the shared discovery
+partition with action and transfer partitions. Keep one deduplicated raw bundle
+cache but use separate action-fetch, action-decode, relevant-transfer-fetch,
+and relevant-transfer-decode relations/cursors. Remove replay RPC chunk/seed
+tables and add one exact replay-input record. Extend witness receipt matching to
+require the entire topics tuple and log data.
+
+Replace `RunIdentity.state_view` and the vague combined `discovery_topics` with
+the accepted wrapper EntryPoint, explicit action topic, explicit Transfer topic,
+and the complete frozen replay identity. Add an immutable
+`token_position_keys` table now so Task 6 can persist mint-derived
+`PositionKeyMapping` rows without a later schema change; it is never a
+salt-to-token inference fallback.
+
+Every evidence-bearing final commit advances only to the immediate next phase
+in the same transaction. Recompute token-set, witness, candidate, and replay
+facts during resume validation. Preserve existing no-follow paths, WAL,
+directory safety, canonical JSON, progress generation matching, read-only
+status, and credential redaction unchanged except for the new phases/counters.
+Preflight computes the replay artifact identity bound into `RunIdentity`;
+`replay_input_bind` rereads the file and commits evidence only if it is exactly
+equal. Test file-byte drift both before binding and on resume.
+
+- [ ] **Step 4: Run focused verification and compilation**
+
+```bash
+python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py tests/test_web3_boundaries.py
+python3 -m ruff check research/backtester/lp_ledger_checkpoint.py research/scripts/report_lp_ledger_export_status.py research/tests/test_lp_ledger_checkpoint.py engine/main.py engine/web3_utils.py tests/test_web3_boundaries.py
+python3 -m mypy research/backtester/lp_ledger_checkpoint.py
+python3 -m py_compile research/backtester/lp_ledger_checkpoint.py research/scripts/report_lp_ledger_export_status.py engine/main.py engine/web3_utils.py
+git diff --check
+```
+
+Expected: focused tests and checks pass; only the known third-party WebSockets
+deprecation warning may remain.
+
+- [ ] **Step 5: Commit Task 4**
+
+```bash
+git add engine/main.py engine/web3_utils.py research/backtester/lp_ledger_checkpoint.py research/scripts/report_lp_ledger_export_status.py research/tests/test_lp_ledger_checkpoint.py tests/test_web3_boundaries.py
+git commit -m "feat: checkpoint action-first LP ledger progress"
 ```
 
 ---
 
-### Task 4: Stage Candidate Discovery And Transaction Bundles
+### Task 5: Stage Complete Target-Action Discovery And Bundles
+
+**Files:**
+- Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/tests/test_v4_lp_ledger.py`
+
+**Interfaces:**
+- Consumes: schema-v2 action chunk/bundle APIs, fixed frozen ranges, PoolManager
+  `ModifyLiquidity` logs, and existing RPC normalization validators.
+- Produces: `_stage_action_discovery(...)`,
+  `_fetch_and_validate_candidate_bundle(...)`, and
+  `_stage_action_bundles(...)`.
+
+- [ ] **Step 1: Write failing target-action discovery/fetch tests**
+
+Test quiet action chunks, complete topics/data normalization, crash before and
+after chunk commit, resume skipping only committed chunks, missing log identity,
+wrong pool/topic/address, canonical action hash set, transaction/receipt/hash/
+location disagreement, exact receipt witness matching, fetch-order independence,
+and committed-bundle reuse.
+
+Use these adapter calls:
+
+```python
+_stage_action_discovery(run, fake_w3, config, start_block, end_block)
+_stage_action_bundles(run, fake_w3, start_block, end_block)
+```
+
+- [ ] **Step 2: Run RED**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "action_discovery or action_bundle"
+```
+
+Expected: failures name the missing action-specific adapters.
+
+- [ ] **Step 3: Implement only action discovery and action bundle staging**
+
+Query target-pool `ModifyLiquidity` logs once per incomplete action chunk.
+Normalize full witness identity, commit quiet chunks, and fetch only canonical
+action transaction hashes. Split the existing point-read logic into one bundle
+validator reusable by Task 7. Do not query PositionManager Transfers in this
+task and do not retain the old all-transfer regression helper on the verified
+path.
+
+- [ ] **Step 4: Run GREEN and regressions**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "action or requested_hash or transaction_location"
+python3 -m py_compile research/scripts/export_v4_lp_ledger.py
+git diff --check
+```
+
+- [ ] **Step 5: Commit Task 5**
+
+```bash
+git add research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py
+git commit -m "feat: stage complete LP action evidence"
+```
+
+---
+
+### Task 6: Decode Every Target Action And Freeze Relevant Token IDs
+
+**Files:**
+- Modify: `research/backtester/v4_lp_ledger.py`
+- Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/tests/test_v4_lp_ledger.py`
+
+**Interfaces:**
+- Consumes: canonical action bundles/witnesses, historical position cache,
+  existing direct/multicall decoder, and the observed ERC-4337 wrapper shape.
+- Produces: `position_manager_calls_for_transaction(...)`,
+  `_stage_action_decode(...)`, and `_freeze_action_token_set(...)`.
+
+- [ ] **Step 1: Write failing direct, wrapped, multi-action, and freeze tests**
+
+Pin an anonymized local fixture for the observed wrapped path:
+
+```text
+EntryPoint handleOps((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[],address)
+  -> account execute(bytes32,bytes), batch mode 0x01
+  -> (address,uint256,bytes)[]
+  -> configured PositionManager multicall(bytes[])
+```
+
+Assert the synthetic PositionManager call uses the user-operation sender—not
+the bundler—as `from`. Assert all 43 known Base wrapper-pattern burn witnesses
+are representable in an integration fixture and that witness salts map to the
+decoded token IDs. Add fail-closed tests for malformed `handleOps`, unsupported
+execution mode, a wrong outer EntryPoint, zero or multiple matching
+PositionManager calls, noncanonical ABI payloads, action/log count or identity
+mismatch, and a target action with no decoder representation.
+
+Add an exact multi-mint test proving each mint action maps to a distinct
+zero-address PositionManager Transfer by log order; `_find_minted_token_id()`
+may not select the first mint for multiple actions. Test chronological resume,
+historical position found/not-found caching, state restoration, and atomic
+token-set freeze. Require durable position state to include the salt-bearing
+`PoolPositionKey`. Test same-log-order rows with wrong pool, ticks, salt, or
+signed delta; excessive decrements must fail rather than clamp liquidity.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "wrapped_action or multi_mint or action_decode or token_set"
+```
+
+Expected: wrapped calls produce no actions, multi-mint mapping is ambiguous,
+and token freeze is unavailable.
+
+- [ ] **Step 3: Implement the smallest explicit wrapper and reconciliation path**
+
+Decode only the pinned EntryPoint/account batch shape plus existing direct and
+PositionManager `multicall` inputs. Return explicit call contexts containing
+PositionManager input, the user-operation effective sender, wrapper source,
+user-operation index, batch index, and outer transaction hash. Require the
+outer target to be the configured EntryPoint, exactly one representable user
+operation, exact batch mode `0x01`, and exactly one configured PositionManager
+call. Permit unrelated batch calls, but reject unknown selector aliases,
+unsupported mode bits, nested generic recursion, malformed/noncanonical ABI,
+or any zero/multiple-target ambiguity.
+
+Decode every raw target-pool log into a full structural witness containing log
+index, pool ID, PoolManager sender, ticks, signed liquidity delta, and salt.
+Match every decoded action to exactly one witness by semantic identity; use
+ordering only as a deterministic tie-break after identity equality. Pair all
+mint operations with all zero-address PositionManager Transfers in global
+operation/log order, then match their pool/ticks/delta and persist the resulting
+salt-bearing position key. For increases/decreases, recover the token's prior
+key and require exact pool/ticks/salt/delta agreement. Any unmatched or extra
+action/witness fails; there is no positional dequeue or salt-based token-ID
+fallback.
+
+Stage action decoding in transaction order with cached headers and historical
+position resolutions. Commit decoded actions/state/cursor atomically. Once all
+action bundles reconcile exactly, call the checkpoint's evidence-bearing token
+freeze transition. The precoverage ledger is used only in Task 9 comparison.
+
+- [ ] **Step 4: Run GREEN and decoder regressions**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "decode or action or mint or ownership"
+python3 -m py_compile research/backtester/v4_lp_ledger.py research/scripts/export_v4_lp_ledger.py
+git diff --check
+```
+
+- [ ] **Step 5: Commit Task 6**
+
+```bash
+git add research/backtester/v4_lp_ledger.py research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py
+git commit -m "feat: reconcile wrapped LP actions"
+```
+
+---
+
+### Task 7: Attest All Transfers And Fetch Only Relevant Ownership Bundles
+
+**Files:**
+- Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/tests/test_v4_lp_ledger.py`
+
+**Interfaces:**
+- Consumes: frozen token IDs, complete PositionManager Transfer log stream,
+  schema-v2 transfer chunks, shared bundle validator, and ownership decoder.
+- Produces: `_stage_full_transfer_scan(...)`,
+  `_stage_relevant_transfer_bundles(...)`, and
+  `_stage_relevant_transfer_decode(...)`.
+
+- [ ] **Step 1: Write failing transfer-attestation/filter tests**
+
+For each fake chunk include relevant, irrelevant, mint, burn, transfer-only,
+same-action-transaction, and quiet cases. Assert canonical unfiltered
+count/digest covers every returned log; only `topic3` IDs in the frozen set are
+persisted as relevant witnesses; filtering spans the entire inception-to-end
+range; irrelevant hashes never enter bundle reads; action bundles are reused;
+and every retained witness matches exactly one receipt log. Require the
+unfiltered digest to be recomputed from the full normalized response rather
+than trusted from an injected scalar, and reject a count below relevant count,
+duplicate retained witnesses, or any retained witness absent from that full
+response.
+
+Add deterministic provider subdivision tests: an oversized/error response does
+not commit a chunk, subdivided children cover the exact parent interval without
+gaps/overlap, and no response is accepted as silently truncated. Test ownership
+ordering within the same transaction, ownership changes before first action and
+after final action, zero-address endpoints, unfrozen-token rejection, and
+crash/resume for scan, fetch, and decode independently. An empty frozen-token
+set still completes the full scan and both zero-work transfer phases durably.
+An action/transfer overlap reuses one raw bundle but advances separate durable
+relevant-fetch and ownership-decode markers. Every retained witness must map
+one-to-one to one ownership event with identical full log identity, token ID,
+from/to addresses, and canonical order; missing, duplicate, or extra relevant
+ownership events fail.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "transfer_scan or relevant_transfer or ownership_decode"
+```
+
+- [ ] **Step 3: Implement full attestation and relevant-only point reads**
+
+For each configured parent chunk, normalize all Transfer logs before computing
+its canonical digest. After three retryable transport, rate-limit, or
+range-size failures, subdivide sequentially and deterministically until all
+children succeed or a single-block leaf fails; child intervals are transient,
+and their merged canonical log set is committed only under the fixed parent.
+Non-retryable, malformed, explicitly truncated, or exhausted responses fail
+without a parent commit. Filter only after validation using indexed `topic3`.
+Commit the unfiltered count/digest and relevant witnesses together. Derive the
+relevant transaction set from retained witnesses, subtract already staged
+action bundles only for RPC point reads, and still mark every relevant hash in
+the separate fetch relation. Decode only frozen-token ownership events and
+reconcile them exactly to retained witnesses. Preserve one raw bundle when a
+transaction belongs to both populations and separate action/ownership decode
+markers.
+
+- [ ] **Step 4: Run GREEN and prove no unrelated point reads**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "transfer or ownership or candidate"
+python3 -m py_compile research/scripts/export_v4_lp_ledger.py
+git diff --check
+```
+
+- [ ] **Step 5: Commit Task 7**
+
+```bash
+git add research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py
+git commit -m "feat: filter LP ownership bundle reads"
+```
+
+---
+
+### Task 8: Bind Frozen Replay Inputs And Publish Coverage Sidecar V2
+
+**Files:**
+- Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/backtester/lp_ledger_attribution.py`
+- Modify: `research/cross_pool/manifest.py`
+- Modify: `research/cross_pool/article_manifest.schema.json`
+- Modify: `research/tests/test_v4_lp_ledger.py`
+- Modify: `research/tests/test_cross_pool_market_structure.py`
+- Modify: `research/tests/test_cross_pool_reporting.py`
+
+**Interfaces:**
+- Consumes: decoded actions, ownership events, frozen replay CSV, action/
+  transfer/token attestations, eligible bundle set, and endpoint snapshot.
+- Produces: `_bind_frozen_replay_input(...)`, `_stage_price_replay(...)`,
+  `RpcLedgerCoverage` schema v2, and `_build_rpc_ledger_pair_from_checkpoint(...)`.
+
+- [ ] **Step 1: Write failing replay-drift, ordering, sidecar-v2, and manifest tests**
+
+Require exact replay path/digest/byte length/row count/range/timestamps,
+pool/chain, frozen CSV header, parser version, and canonical order. Validate
+required row identities and accept only `initialize`/`swap` rows as price-state
+updates; derive price from positive `sqrt_price_x96`, token orientation, and
+decimals via `pool_price_semantics.py`. Never use stored `cngn_usd_price` as
+state. Test an action before and after a same-block swap, malformed rows,
+duplicate order keys, changed artifact bytes before bind and on resume, missing
+price state, and exact one-binding-per-action cardinality. Assert zero price-log
+RPC calls.
+
+Pin coverage mutations independently for action witness count/digest/hashes,
+frozen token IDs/digest, unfiltered transfer count/digest, relevant witness
+count/digest/hashes, eligible bundle hashes/digest, reconciliation facts,
+replay input digest/range/counts, endpoint facts, and ledger bytes. Every
+mutation must fail the strict loader and manifest gate.
+
+All set digests are SHA-256 over UTF-8 canonical JSON with sorted keys and no
+insignificant whitespace. Action/relevant witnesses use full normalized log
+objects sorted by `(block_number, transaction_index, log_index,
+transaction_hash)`; token IDs are numerically sorted canonical decimal strings;
+hash sets are sorted normalized lowercase hashes. A full-transfer chunk digest
+covers its complete normalized witness array before filtering. The aggregate
+full-transfer digest covers the ordered configured-parent records
+`(index,start,end,count,sha256)` and separately binds PositionManager address,
+Transfer topic, and inclusive run range; transient subdivision leaves never
+enter the preimage. Eligible bundles use sorted hashes plus their validated raw
+bundle digests.
+
+Action reconciliation evidence contains count, digest, and exact-success status
+over sorted action-witness-to-decoded-action identities. Ownership
+reconciliation analogously covers every retained Transfer witness. Replay
+evidence includes exact endpoint timestamps, parser version, price-semantics
+source digest, and row/order facts. The distilled manifest evidence must copy
+these fields and require its independently captured Base/BSC replay digest,
+range, and timestamps to equal the corresponding ledger coverage values.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py -k "replay_input or staged_replay or coverage or manifest"
+```
+
+- [ ] **Step 3: Implement local replay binding and sidecar-v2 propagation**
+
+Load and validate the existing replay CSV without RPC. Bind exact artifact
+metadata in the checkpoint, derive event-time states from its canonical
+Initialize/Swap stream, and commit one action binding each. Build ledger bytes
+from explicit canonical actions/ownership/bindings.
+
+Bump the sidecar schema and replace the ambiguous scan-source field with named
+action, token, full-transfer, relevant-transfer, eligible-bundle, replay-input,
+and reconciliation evidence. Update strict parsing/serialization, distilled
+verified evidence, manifest JSON/schema, and test fixtures. Do not accept v1 as
+verified through a compatibility shim. The manifest gate compares each ledger's
+replay-input digest, range, and timestamps to the exact replay artifact consumed
+by the cross-pool analysis and fails on any mismatch.
+
+- [ ] **Step 4: Run GREEN and integrated research regressions**
+
+```bash
+python3 -m pytest -q research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py
+python3 -m ruff check research/backtester/lp_ledger_attribution.py research/cross_pool/manifest.py research/scripts/export_v4_lp_ledger.py
+python3 -m py_compile research/backtester/lp_ledger_attribution.py research/cross_pool/manifest.py research/scripts/export_v4_lp_ledger.py
+git diff --check
+```
+
+- [ ] **Step 5: Commit Task 8**
+
+```bash
+git add research/backtester/lp_ledger_attribution.py research/cross_pool/manifest.py research/cross_pool/article_manifest.schema.json research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py
+git commit -m "feat: attest relevant LP ledger coverage"
+```
+
+---
+
+### Task 9: Wire Publication, Prove Resume Equality, Document, And Run Frozen Exports
+
+**Files:**
+- Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/tests/test_v4_lp_ledger.py`
+- Modify: `research/tests/test_lp_ledger_checkpoint.py`
+- Modify: `dashboard/docs/lp/pool-history-operations.md`
+
+**Interfaces:**
+- Consumes: all schema-v2 phases, expected final bytes/hashes, endpoint
+  revalidation, publication reconciliation, frozen Base/BSC ranges, and ignored
+  operational paths.
+- Produces: automatic full-RPC resume, canonical Base/BSC ledger/coverage pairs,
+  precoverage reconciliation report, and the gate into the final backtest.
+
+- [ ] **Step 1: Write failing orchestration and crash/resume acceptance tests**
+
+Pin the public order:
+
+```text
+preflight -> action discovery/fetch/decode -> token freeze -> full transfer scan
+-> relevant transfer fetch/decode -> replay input bind -> price replay -> build
+-> endpoint revalidation -> publish -> succeeded
+```
+
+Inject process death after every committed phase and after each final rename.
+For every boundary require resumed CSV and sidecar bytes to equal a clean run,
+no committed action/transfer chunk or bundle to repeat, no price-log RPC call,
+and strict sidecar-v2 loading. Scan database/WAL/SHM/progress/stdout/stderr bytes
+for injected credentials.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py research/tests/test_v4_lp_ledger.py -k "full_rpc or crash_resume or byte_equal or raw_secret or publication"
+```
+
+- [ ] **Step 3: Implement public orchestration and exact publication recovery**
+
+Wire the schema-v2 phases under the output run lock. Preserve start/end endpoint
+checks, expected-hash-before-rename, directory fsync, exact mixed-pair
+reconciliation, ambiguous-file refusal, terminal WAL handling, safe errors, and
+progress updates. Candidate-list/fixture modes remain unverified and do not
+create schema-v2 checkpoints.
+
+- [ ] **Step 4: Update the operations runbook**
+
+Document schema-v2 phases/counters, explicit `--fresh` requirement for schema
+v1, frozen replay digest binding, complete-transfer versus relevant-bundle
+evidence, automatic resume/status commands, checkpoint namespace, mixed-pair
+recovery, and the rule that operational files are not research evidence.
+
+- [ ] **Step 5: Run final local verification and Sol/Terra review**
+
+```bash
+python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py research/tests/test_v4_lp_ledger.py research/tests/test_v4_event_replay.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py tests/test_web3_boundaries.py
+python3 -m ruff check research/backtester/lp_ledger_checkpoint.py research/backtester/lp_ledger_attribution.py research/backtester/v4_lp_ledger.py research/cross_pool/manifest.py research/scripts/export_v4_lp_ledger.py research/scripts/report_lp_ledger_export_status.py
+python3 -m mypy research/backtester/lp_ledger_checkpoint.py
+python3 -m py_compile research/backtester/lp_ledger_checkpoint.py research/backtester/lp_ledger_attribution.py research/backtester/v4_lp_ledger.py research/cross_pool/manifest.py research/scripts/export_v4_lp_ledger.py research/scripts/report_lp_ledger_export_status.py
+git diff --check
+```
+
+Resolve every Critical or Important review finding and rerun its covering tests.
+
+- [ ] **Step 6: Run bounded real-RPC Base/BSC smoke-resume checks**
+
+Use ignored temporary outputs from each pool's inception through one small
+chunk. Confirm at least one durable unit, interrupt, resume, and require strict
+sidecar-v2 validation without printing or persisting RPC credentials.
+
+- [ ] **Step 7: Run the frozen exports and reconcile precoverage rows**
+
+Run both frozen ranges to canonical outputs. Require every target action to be
+classified, every prior row key to match exactly or produce an explicit
+fail-closed difference report, and all newly reconstructed rows—especially the
+wrapped Base burns—to pass attribution, ownership, range, and endpoint QA.
+
+- [ ] **Step 8: Commit Task 9 before starting downstream results**
+
+```bash
+git add research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py research/tests/test_lp_ledger_checkpoint.py dashboard/docs/lp/pool-history-operations.md
+git commit -m "test: prove action-first LP ledger recovery"
+```
+
+Only validated canonical pairs may enter the portfolio-of-positions backtest,
+manifest generation, figures, or article results.
+
+---
+
+## Appendix: Superseded 2026-07-22 Tasks
+
+The original Tasks 4 through 8 below are retained only as an audit trail. They
+must not be executed: they union every PositionManager Transfer transaction
+into the bundle candidate set and independently rescan price logs.
+
+### Superseded Original Task 4 (Do Not Execute): Stage Candidate Discovery And Transaction Bundles
 
 **Files:**
 - Modify: `research/scripts/export_v4_lp_ledger.py`
@@ -968,7 +1645,7 @@ git commit -m "feat: checkpoint LP ledger candidate reads"
 
 ---
 
-### Task 5: Stage Chronological Decode And Historical Caches
+### Superseded Original Task 5 (Do Not Execute): Stage Chronological Decode And Historical Caches
 
 **Files:**
 - Modify: `research/scripts/export_v4_lp_ledger.py`
@@ -1041,7 +1718,7 @@ git commit -m "feat: checkpoint LP ledger decoding"
 
 ---
 
-### Task 6: Stage Price Evidence, Replay Seed, Bindings, And Final Build
+### Superseded Original Task 6 (Do Not Execute): Stage Price Evidence, Replay Seed, Bindings, And Final Build
 
 **Files:**
 - Modify: `research/scripts/export_v4_lp_ledger.py`
@@ -1126,7 +1803,7 @@ git commit -m "feat: checkpoint LP ledger price replay"
 
 ---
 
-### Task 7: Add Directory-Durable Publication Reconciliation And Public CLI Wiring
+### Superseded Original Task 7 (Do Not Execute): Add Directory-Durable Publication Reconciliation And Public CLI Wiring
 
 **Files:**
 - Modify: `research/scripts/export_v4_lp_ledger.py`
@@ -1238,7 +1915,7 @@ git commit -m "feat: resume verified LP ledger exports"
 
 ---
 
-### Task 8: Prove Crash/Resume Byte Equality, Document Operations, And Smoke Both Chains
+### Superseded Original Task 8 (Do Not Execute): Prove Crash/Resume Byte Equality, Document Operations, And Smoke Both Chains
 
 **Files:**
 - Modify: `research/tests/test_v4_lp_ledger.py`

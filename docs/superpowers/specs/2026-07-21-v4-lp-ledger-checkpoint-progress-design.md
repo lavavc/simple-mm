@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-21
 
-**Status:** Approved design, pending implementation
+**Status:** Approved design, amended 2026-07-22; implementation in progress
 
 **Scope:** Full-RPC `rpc_verified` Base and BSC LP-ledger exports
 
@@ -18,9 +18,12 @@ whether a quiet process is advancing, blocked, or dead.
 
 The Base and BSC exports were both terminated by a host reboot after several
 hours. Their absent canonical ledger and coverage pairs correctly failed
-closed, but all completed RPC work was lost. The replacement must preserve the
-existing evidence contract while making expensive internal work resumable and
-observable.
+closed, but all completed RPC work was lost. A subsequent live benchmark also
+exposed a specification error: treating every PositionManager `Transfer`
+transaction as a bundle candidate would fetch and decode roughly 804,000
+unrelated positions. The replacement must preserve complete target-pool action
+and ownership evidence while making expensive internal work resumable,
+observable, and scoped to the research population.
 
 ## Goals
 
@@ -37,29 +40,60 @@ observable.
    than guessing how to recover it.
 7. Ensure RPC credentials and endpoint URLs cannot enter checkpoint, progress,
    status, or error artifacts.
+8. Attest the complete PositionManager `Transfer` log scan while fetching
+   transaction bundles only for target-pool actions and ownership transfers of
+   token IDs derived from those actions.
+9. Reuse the frozen pool-history replay artifacts by exact byte digest instead
+   of rerunning their already completed exports.
 
 ## Non-Goals
 
 - A partial checkpoint is not an LP ledger, coverage sidecar, frozen result, or
   publication artifact.
-- This change does not alter the July 15 statistical specification, candidate
-  discovery sources, LP-decoding semantics, event-time price methodology,
-  portfolio rules, or article evidence policy.
+- This change does not alter the July 15 statistical estimand, event-time price
+  methodology, portfolio rules, or article evidence policy. It corrects the
+  acquisition contract so unrelated PositionManager positions are scan
+  evidence rather than transaction-bundle candidates.
 - This change does not create a generic workflow or checkpoint framework for
   unrelated research scripts.
 - Candidate-list and fixture exports do not become verified or resumable merely
   because they emit progress.
-- The initial implementation does not add new RPC request fan-out or change the
-  provider retry policy. Performance changes require separate evidence.
+- The initial implementation adds no parallel RPC fan-out. Its performance
+  correction comes from ordering action discovery before transfer filtering and
+  eliminating unrelated bundle reads. A configured parent range may be queried
+  through bounded sequential binary subdivision after three retryable
+  transport, rate-limit, or provider-range failures. Children are transient
+  query units; the fixed parent remains the only durable attestation unit and is
+  committed only after every child succeeds. A non-retryable or malformed
+  response, explicit truncation signal, or failure at a single-block leaf stops
+  the run without committing the parent.
 
 ## Existing Evidence Boundary
 
 The July 15 design requires each verified ledger to bind exact CSV bytes to a
-full inclusive scan from pool inception through the requested end block. Full
-discovery is the union of target-pool PoolManager `ModifyLiquidity` logs and
-PositionManager ERC-721 `Transfer` logs. Transactions and receipts must agree on
-identity and location, endpoint headers must match before and after all reads,
-and the final CSV and coverage sidecar must publish as one validated pair.
+full inclusive scan from pool inception through the requested end block. The
+amended evidence population is:
+
+1. every target-pool PoolManager `ModifyLiquidity` witness;
+2. the canonical token-ID set derived from complete, reconciled action
+   decoding;
+3. every PositionManager ERC-721 `Transfer` witness whose indexed token ID is
+   in that frozen set; and
+4. the complete count and canonical digest of all PositionManager `Transfer`
+   logs observed while producing that relevant subset.
+
+Transactions and receipts must agree on identity and location for every fetched
+action or relevant ownership candidate. Endpoint headers must match before and
+after all reads, and the final CSV and coverage sidecar must publish as one
+validated pair. The complete unfiltered transfer scan is attested but its
+unrelated transactions are never fetched.
+
+The existing precoverage ledgers are regression oracles only. Their 36 Base and
+13 BSC rows prove exact attribution for the rows present, not completeness. In
+particular, all target-pool action witnesses must be reconciled before the token
+set freezes; wrapped or indirect PositionManager calls cannot be silently
+omitted merely because the top-level transaction input is not a direct
+`modifyLiquidities` call.
 
 Those rules remain authoritative. Checkpointing operates strictly before the
 final pair-publication boundary. A completed checkpoint can reconstruct a
@@ -128,10 +162,14 @@ binds:
 - Python and Web3 runtime versions used by the exporter;
 - verification mode;
 - pool name, chain name, and numeric chain ID;
-- pool ID, PoolManager, PositionManager, StateView, token addresses, token
-  decimals, fee rate, and price orientation;
+- pool ID, PoolManager, PositionManager, the accepted wrapper EntryPoint, token
+  addresses, token decimals, fee rate, and price orientation;
 - inclusive requested start and end blocks;
-- configured block chunk size and discovery topics;
+- configured block chunk size, the explicit target-action topic, and the
+  explicit PositionManager Transfer topic;
+- normalized absolute frozen replay-artifact path, SHA-256 digest, byte length,
+  row count, exact header digest, parser version, price-semantics source digest,
+  first/last block, first/last timestamp, chain, and pool ID;
 - normalized absolute output path; and
 - initial start/end block hashes and timestamps.
 
@@ -139,8 +177,11 @@ RPC URLs, API keys, HTTP headers, command-line strings, exception messages, and
 response diagnostics are forbidden from the database and fingerprint payload.
 
 On a new run, the exporter validates arguments and chain identity, captures the
-endpoint snapshot, creates the exact schema transactionally, and records the
-fingerprint before discovery begins.
+endpoint snapshot, computes and validates the frozen replay identity, creates
+the exact schema transactionally, and records the fingerprint before discovery
+begins. The later `replay_input_bind` phase rereads and revalidates the file,
+then persists evidence that must equal this preflight identity. Bytes changing
+between preflight and binding, or between attempts, make the run incompatible.
 
 On resume, it opens the database without migration, rejects a symlinked file,
 runs SQLite integrity and exact-schema checks, recomputes all local identity
@@ -148,6 +189,11 @@ fields, re-reads the chain ID and endpoint snapshot, and requires exact
 fingerprint equality. Unknown tables, columns, indexes, triggers, schema
 versions, gaps, overlaps, or inconsistent phase cursors fail closed. There is no
 automatic migration, rewind, or partial salvage.
+
+The 2026-07-22 action-first amendment bumps both checkpoint and progress schema
+versions. Any pre-amendment checkpoint or progress file fails closed and
+requires explicit `--fresh`; no run had produced a canonical pair under the old
+checkpoint schema, so compatibility shims are forbidden.
 
 The same command resumes a compatible checkpoint by default. `--fresh` is the
 only supported way to abandon staging state. It is processed while holding the
@@ -188,19 +234,22 @@ Logical tables cover these responsibilities:
 | Table group | Durable responsibility |
 | --- | --- |
 | Run metadata and phases | Identity, fingerprint, endpoint snapshot, attempts, phase state, and exact durable cursors |
-| Discovery chunks | The complete fixed block partition and proof that both discovery queries completed for each interval |
-| Discovery witnesses | Source stream, block identity, transaction hash/index, log index, address, and topic for each discovered log |
-| Candidate bundles | Canonically normalized transaction and receipt payloads, location facts, and payload digests |
+| Action-discovery chunks and witnesses | The complete fixed block partition, every target-pool `ModifyLiquidity` log including full topics/data, and exact per-chunk completion |
+| Action candidates and bundles | Canonically normalized target-action transaction and receipt payloads, location facts, and payload digests |
 | Block headers | Deduplicated canonical block hash and timestamp reads used during decode |
 | Position resolutions | Historical token-position lookups, including explicit no-position results, bound to their query block |
-| Decoded state and rows | Chronological decoder cursor, current token state, decoded actions, and ownership events committed together |
-| Replay chunks and events | Complete fixed block partitions plus normalized Initialize/Swap evidence bound to event-block hashes |
-| Replay seed | The explicit no-seed decision or the prior-block StateView snapshot and its canonical block identity |
+| Decoded action state and rows | Chronological action cursor, current token state including the salt-bearing `PoolPositionKey`, decoded actions, historical resolution results, and exact witness reconciliation |
+| Frozen token set | Canonical distinct action token IDs, cardinality, and digest committed only after complete action decoding |
+| Transfer-scan chunks | Complete fixed block partitions with total unfiltered transfer-log count/digest and retained relevant count for every chunk |
+| Relevant transfer witnesses and bundles | Full log identity for frozen-token transfers plus canonically normalized bundles only for relevant transfer-only transactions |
+| Ownership decode | A separate relevant-transfer cursor and chronologically ordered ownership events restricted to the frozen token set |
+| Replay input | Exact frozen replay path, bytes/header/source digests, byte length, row count, parser version, chain/pool, range, and endpoint timestamps validated against run identity |
 | Action price bindings | Deterministic event-time state attached to each decoded action |
 
 Exact SQL belongs in the implementation plan, but the schema must use primary
 keys and uniqueness constraints that make duplicate candidates, witnesses,
-actions, ownership events, and price bindings impossible to accept silently.
+actions, token IDs, ownership events, transfer-scan attestations, replay inputs,
+and price bindings impossible to accept silently.
 
 SQLite `INTEGER` is permitted only for values proven to fit its signed 64-bit
 range, such as block number, transaction index, log index, event order,
@@ -218,10 +267,14 @@ The only forward phase order is:
 
 ```text
 preflight
-  -> candidate_discovery
-  -> candidate_fetch
-  -> chronological_decode
-  -> price_event_scan
+  -> action_discovery
+  -> action_fetch
+  -> action_decode
+  -> token_set_freeze
+  -> full_transfer_scan
+  -> relevant_transfer_fetch
+  -> relevant_transfer_decode
+  -> replay_input_bind
   -> price_replay
   -> build
   -> publish
@@ -236,100 +289,175 @@ the same transaction as the last unit that satisfies that phase.
 
 Validate the `.csv` output contract, acquire the run lock, resolve pool
 configuration, and require a full-RPC start block equal to that pool's configured
-inception block. Then create the Web3 client, require the expected chain ID, and
-capture the exact requested start/end headers. Create or validate the checkpoint
-before any resumable scan. Candidate-list and fixture modes remain explicitly
-unverified and keep their separate requested-range behavior.
+inception block. Require the requested range to equal the frozen replay
+artifact's first/last block exactly; a ledger may not precede or extend beyond
+its price evidence. Then create the Web3 client, require the expected chain ID,
+and capture the exact requested start/end headers. Create or validate the
+checkpoint before any resumable scan. Candidate-list and fixture modes remain
+explicitly unverified and keep their separate requested-range behavior.
 
-### 2. Candidate Discovery
+### 2. Action Discovery
 
-Partition the inclusive range using the existing configured chunk size. For
-each incomplete chunk:
+Partition the inclusive range using the configured chunk size and fetch only
+target-pool `ModifyLiquidity` logs. Require block hash/number, transaction
+hash/index, log index, PoolManager address, complete topics, and data. Normalize
+and sort every witness before atomically committing the witness group and chunk
+completion. Empty chunks are positive evidence. Resume skips only committed
+action chunks.
 
-1. fetch target-pool `ModifyLiquidity` logs;
-2. fetch PositionManager `Transfer` logs;
-3. validate required log identity and range fields;
-4. normalize and sort witnesses; and
-5. insert both witness groups and the completed chunk row in one database
-   transaction.
+The action transaction set is the canonical distinct hash set reconstructed
+from these witnesses. It is not inferred from an existing ledger or scalar
+last-block marker.
 
-A crash after one RPC response but before the transaction repeats both queries.
-No chunk is complete unless both sources completed. An empty chunk is recorded
-as positive evidence that both scans covered a quiet interval. The final
-candidate set is the canonical union of transaction hashes reconstructed from
-all completed witnesses; it is never trusted from a scalar last-block marker.
+### 3. Action Fetch
 
-### 3. Candidate Fetch
+Fetch and stage one normalized transaction/receipt bundle for every action
+transaction. Require requested, transaction, and receipt hashes to agree;
+transaction and receipt block number/index/hash to agree; the location to fall
+within the frozen range; and every action witness to appear in the receipt at
+the same address, block hash, log index, topics, and data. Fetch order does not
+define decode order.
 
-For every canonical candidate not already staged, fetch its transaction and
-receipt. Normalize Web3 boundary types into strict JSON-compatible values and
-require:
+### 4. Action Decode
 
-- requested, transaction, and receipt hashes to agree;
-- transaction and receipt block numbers and transaction indexes to agree;
-- transaction and receipt block hashes to be present and agree;
-- the location to fall within the requested range; and
-- every discovery witness for that candidate to be represented by its receipt,
-  including the same block hash and log index.
-
-Persist validated bundles in bounded transactions. Resume skips only bundles
-whose normalized payload and digest pass database constraints. Final decode
-order never depends on fetch or commit order.
-
-### 4. Chronological Decode
-
-Decode the complete staged candidate set in canonical
+Decode action bundles in canonical
 `(block_number, transaction_index, transaction_hash)` order. Block headers and
-historical position resolutions are cached transactionally so a restart does
-not repeat successful network reads.
+historical position resolutions are cached transactionally. Each bounded commit
+contains decoded actions, token-position state changes, historical resolutions,
+the action-bundle marker, and exact chronological cursor.
 
-Each bounded decode commit includes:
+Every target-pool witness must map to exactly one represented action identity.
+Direct PositionManager calls, multicalls, and supported wrapped calls share that
+same invariant. A top-level input that cannot be decoded is not evidence that
+the action is irrelevant. Wrapped Base burn transactions must be decoded or the
+run fails closed. The supported wrapped path is the configured EntryPoint
+`handleOps` call, one representable user operation, the pinned account
+`execute(bytes32,bytes)` batch mode, and exactly one configured PositionManager
+call within the decoded batch. Its effective sender is the user-operation
+sender, never the outer bundler. Unknown targets, selectors, modes, nested
+generic recursion, malformed encodings, or zero/multiple matching
+PositionManager calls fail closed.
 
-- decoded actions;
-- ownership events;
-- token-position state changes;
-- historical resolution results consumed by the batch; and
-- the exact chronological cursor.
+Every raw target-pool modify log is decoded into its full pool, sender, ticks,
+signed liquidity delta, salt, and log identity. An action matches exactly one
+witness by this semantic identity; ordering is only a deterministic tie-break
+after identity equality. Mints pair all mint operations with all zero-address
+PositionManager Transfers in operation/log order before structural matching.
+Increase/decrease actions recover the token's prior salt-bearing position key
+and require exact pool/ticks/salt/delta agreement. Selecting the first mint,
+positionally dequeuing a nonmatching witness, clamping invalid liquidity, or
+leaving any action/witness unmatched is forbidden.
 
-If a process stops before commit, that bounded batch is replayed from the last
-committed state. Required target-pool action reconciliation remains unchanged:
-every discovered target-pool `ModifyLiquidity` witness must map to a represented
-decoded action or the export fails.
+### 5. Token-Set Freeze
 
-### 5. Price-Event Scan
+After action decoding is complete, derive the sorted distinct token IDs from
+the persisted decoded actions. Commit the full canonical set, count, and digest
+in one evidence-bearing transition. Recompute the set from decoded rows during
+resume validation. An incomplete action cursor, unreconciled witness, duplicate
+or noncanonical token ID, or digest mismatch blocks the transition.
 
-Scan Initialize and Swap evidence over the same requested inclusive range in
-fixed chunks. A replay chunk commits only after both topic reads succeed and all
-events are normalized with their block hashes. Quiet chunks are durable. Every
-event block is checked against a canonical header record, and one block number
-cannot acquire two hashes anywhere in the checkpoint. Network evidence is
-therefore reusable even if local replay later stops.
+The frozen set is the only authority for subsequent ownership relevance. The
+precoverage ledgers may be compared as regression fixtures but may not seed or
+restrict this set.
 
-### 6. Price Replay
+### 6. Full Transfer Scan
 
-Before replay, determine the earliest staged event block. Persist either the
-explicit rule-driven no-seed result at pool inception or the StateView
-`sqrt_price_x96` and tick snapshot from the immediately preceding block,
-including that block's number and canonical hash. The seed read and its header
-commit atomically and are never repeated or replaced during a compatible
-resume.
+Only after the token set freezes, scan all PositionManager ERC-721 `Transfer`
+logs over the complete inclusive range. For each chunk, normalize every log and
+compute its canonical unfiltered count and digest before filtering. Commit the
+unfiltered count/digest, relevant count, relevant witnesses, and chunk
+completion atomically. Retain a witness when indexed `topic3` is in the frozen
+token set, including zero-address mint and burn transfers. Unrelated witnesses
+are covered by the unfiltered attestation but do not become candidates.
 
-Reconstruct event-time pool state from that staged seed, staged
-Initialize/Swap events, and decoded actions using the existing canonical
-`(block_number, log_index, event_order)` semantics. Persist one unique price
-binding for every decoded action. Missing, duplicate, mixed-block-hash,
-crossed-order, or unseedable state fails closed.
+Filtering applies across the full range, not from a token's first observed
+action. Provider errors, oversized responses, or ambiguity trigger deterministic
+sequential subdivision/retry under the bounded policy above. Successful child
+logs are normalized and merged into their configured parent before its count
+and digest are computed, so retry shape cannot change durable evidence. A chunk
+is never marked complete after a potentially truncated response.
 
-The implementation may recompute an incomplete local replay from staged events;
-it must not repeat completed RPC scans. Any future incremental replay
-optimization must prove byte equality with the full deterministic replay.
+### 7. Relevant Transfer Fetch
 
-### 7. Build And Publish
+The final eligible transaction set is exactly the union of action transaction
+hashes and retained relevant-transfer transaction hashes. Reuse already staged
+action bundles. Fetch only missing relevant transfer-only bundles and validate
+each retained witness against its receipt with the same strict location and log
+identity checks used for actions.
+
+### 8. Relevant Transfer Decode
+
+Decode ownership events from eligible bundle receipts in canonical transaction
+order, restrict them to the frozen token set, and preserve exact log ordering.
+Action and ownership decoding have separate durable markers so a transaction in
+both populations is processed once per responsibility without duplicating its
+raw bundle. Ownership changes before, within, and after action transactions
+remain evidence through the frozen endpoint. Every retained Transfer witness
+must reconcile one-to-one with exactly one persisted ownership event using full
+log identity, token ID, previous/new owner, and canonical order. Missing,
+duplicate, or extra frozen-token ownership events fail closed.
+
+### 9. Replay Input Bind
+
+Do not rerun the completed pool-history exports. Validate the configured frozen
+`uni_base_pool_history_replay.csv` or `uni_bsc_pool_history_replay.csv` path,
+exact bytes digest, byte length, row count, first/last block, canonical order,
+pool/chain identity, and canonical sqrt-price semantics against the run
+identity. The exact frozen header is validated; each row requires block time,
+chain, pool ID, event type, transaction hash, log index, block number,
+`sqrt_price_x96`, tick, token symbols, and event source. Rows must be unique and
+strictly canonical by block/log plus deterministic row order. Only `initialize`
+and `swap` rows update carried price state, and their positive
+`sqrt_price_x96`/tick values are mandatory. The cNGN mid is derived from
+`sqrt_price_x96` with the pinned token orientation and decimals; stored
+`cngn_usd_price` is diagnostic metadata and never replay state. Commit the
+validated metadata as the replay input. A changed or malformed file makes the
+checkpoint incompatible. The parser module and price-semantics module are
+included in the run-identity source digests.
+
+The frozen artifact facts are:
+
+| Pool | SHA-256 | Bytes | Data rows | First block | Last block |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `uni-base` | `41c3d5b945abdffde32087590c21115914404f496069519c572e393b667f99b9` | 639921 | 1596 | 42926879 | 47514853 |
+| `uni-bsc` | `bf99f9a17ea2ff0048da7c7eec4fa0c8fa3b9e7e5586e6200919b66edaccd1e2` | 1330201 | 3119 | 84655203 | 105135905 |
+
+This is an explicit reuse claim, not a claim that price logs were freshly
+rescanned by the LP-ledger exporter. The final coverage sidecar binds the replay
+artifact digest and range.
+
+### 10. Price Replay
+
+Read the validated frozen replay artifact and reconstruct event-time state in
+canonical `(block_number, log_index, event_order)` order. Initialize and swap
+rows update carried state; each decoded action receives the state available at
+its exact event location. Persist one unique binding per action. Missing,
+duplicate, crossed-order, non-`sqrt_mid`, or unseedable state fails closed.
+
+The local replay may be recomputed after interruption because it performs no
+RPC reads, but a completed binding phase is reused only after all bindings and
+the replay-input digest validate.
+
+### 11. Build And Publish
 
 Load staged decoded actions, ownership events, and price bindings using explicit
 canonical ordering. Build ledger rows and render CSV bytes with the existing
-serializer. Reconstruct the full canonical candidate set from discovery
-witnesses and build the normal coverage sidecar.
+serializer. Build a versioned coverage sidecar that separately binds:
+
+- complete action-witness count, digest, and action transaction hashes;
+- frozen token-ID count, digest, and canonical IDs;
+- complete unfiltered transfer-log count and aggregate chunk digest;
+- retained relevant-transfer witness count and digest;
+- final eligible transaction count, digest, and hashes;
+- exact frozen replay-input digest, byte length, row count, and range; and
+- ledger bytes, range, chain ID, and endpoint snapshots.
+
+The final eligible hash list never implies that unrelated transfer transactions
+were fetched. The raw transfer-scan attestation and retained relevant subset are
+distinct fields. Sidecar replay identity, including digest, range, endpoint
+timestamps, parser version, and price-semantics source digest, must equal the
+replay provenance captured independently by the downstream manifest. A ledger
+bound to one replay artifact cannot be analyzed against another.
 
 Immediately before publication, recapture start/end headers and require exact
 equality with the stored initial snapshot. Commit `publish_started` plus the
@@ -395,7 +523,9 @@ UTC timestamps, and nullable rate estimates. Its top-level fields are:
 - `phase`;
 - a fixed mapping of every phase to status, unit, completed, and total;
 - last durable block, chunk, transaction, or batch identity when applicable;
-- action, ownership, candidate, replay-event, and ledger-row counters;
+- action-candidate transaction, decoded-action, frozen-token,
+  full-transfer-log, relevant-transfer witness, relevant-transfer transaction,
+  ownership-event, bound-action, and ledger-row counters;
 - current phase rate and ETA when defined;
 - `started_at`, `resumed_at`, `updated_at`, and `finished_at`;
 - `output_published`; and
@@ -404,8 +534,8 @@ UTC timestamps, and nullable rate estimates. Its top-level fields are:
 Raw exception text, RPC URLs, request bodies, response bodies, HTTP headers,
 environment variables, API keys, and full command arguments are forbidden.
 Persisted, status, and terminal failures use an allowlist-only renderer composed
-from pool, phase, stable error code, and exception class; they never interpolate
-`str(exception)`. The general RPC redactor is broadened as defense in depth for
+from pool, phase, and stable error code only; they never interpolate exception
+type or `str(exception)`. The general RPC redactor is broadened as defense in depth for
 Alchemy-style path credentials, query parameters, URL user information,
 authorization and API-key headers, bearer tokens, nested exceptions, and known
 configured secret values, but exporter safety does not depend on successfully
@@ -429,7 +559,7 @@ operational consistency markers, not research provenance.
 After each durable JSON update, stderr receives one concise line such as:
 
 ```text
-[lp-ledger][uni-bsc] phase=candidate_discovery progress=812/4097 chunks rate=0.61/s eta=01:29:45 durable_end=88710202
+[lp-ledger][uni-bsc] phase=full_transfer_scan progress=812/4097 chunks rate=0.61/s eta=01:29:45 durable_end=88710202
 ```
 
 Stdout retains its current terminal success line for script compatibility.
@@ -442,7 +572,8 @@ reports, for each:
 - pool and requested range;
 - active, interrupted, failed, or succeeded state;
 - current phase and durable progress;
-- candidate and row counts;
+- action-transaction, frozen-token, relevant-transfer, ownership-event, and row
+  counts;
 - update age, rate, and ETA;
 - whether the checkpoint is locally compatible and resumable pending RPC
   endpoint revalidation; and
@@ -517,8 +648,8 @@ into its RPC and decoding functions:
   checkpoint schema, phase transitions, exact serialization, integrity checks,
   resume queries, and progress snapshots.
 - `research/scripts/export_v4_lp_ledger.py` owns phase orchestration and adapts
-  existing discovery, decode, replay, build, and publication behavior to staged
-  inputs.
+  action discovery/decode, transfer attestation/filtering, replay-artifact
+  binding, build, and publication behavior to staged inputs.
 - `research/scripts/report_lp_ledger_export_status.py` is a thin read-only status
   CLI.
 - `research/tests/test_lp_ledger_checkpoint.py` pins storage, resume, corruption,
@@ -542,33 +673,42 @@ Implementation is test-first. Required cases include:
 3. Rejection of schema/version/source/config/range/output/chain/endpoint drift.
 4. SQLite corruption, unknown schema objects, gaps, overlaps, duplicate
    witnesses, and invalid cursors.
-5. Discovery crash injection before and after the atomic two-source chunk
-   commit, including quiet chunks.
-6. Candidate-bundle crash injection, hash/location/block mismatch, witness
+5. Action-discovery crash injection before and after atomic chunk commits,
+   including quiet chunks and complete topics/data identity.
+6. Action-bundle crash injection, hash/location/block mismatch, witness
    reconciliation, and resume skipping completed bundles.
-7. Chronological decoder continuation, token-state persistence, historical
-   resolution caching, and required action reconciliation.
-8. Replay scan continuation, quiet chunks, mixed-fork rejection, durable seed
-   reuse, canonical ordering, and exactly one price binding per action.
-9. Clean uninterrupted and crash/resumed exports producing byte-identical CSV
+7. Chronological action continuation, token-state persistence, historical
+   resolution caching, exact action-witness reconciliation, multi-mint mapping,
+   and the wrapped Base burn pattern.
+8. Token-set freeze exactness, canonical order/digest, incomplete-action
+   rejection, and resume-time recomputation.
+9. Full transfer-scan crash injection, quiet chunks, unfiltered count/digest,
+   irrelevant-transfer exclusion from candidates, relevant-token retention,
+   and pre-action/post-action ownership coverage.
+10. Relevant transfer-only bundle fetch/decode, action-bundle reuse, exact log
+    ordering, and frozen-token enforcement.
+11. Replay-artifact digest/range/price-model validation, same-block action/swap
+    ordering, and exactly one price binding per action without price-log RPC
+    reads.
+12. Clean uninterrupted and crash/resumed exports producing byte-identical CSV
    and coverage sidecars under identical RPC fixtures.
-10. Run-lock contention before any checkpoint or progress mutation.
-11. WAL recovery with live `-wal`/`-shm` siblings, bounded terminal-checkpoint
+13. Run-lock contention before any checkpoint or progress mutation.
+14. WAL recovery with live `-wal`/`-shm` siblings, bounded terminal-checkpoint
     contention, and lock-protected fresh cleanup of the complete namespace.
-12. Atomic progress replacement, controlled-clock rate/ETA behavior,
+15. Atomic progress replacement, controlled-clock rate/ETA behavior,
     generation-matched SQLite reconciliation, and missing, malformed,
     wrong-run, or stale-generation progress files.
-13. Stale-running status becoming interrupted when the lock is free, while a
+16. Stale-running status becoming interrupted when the lock is free, while a
     held lock remains active even during an old heartbeat.
-14. Injected path, query, URL-userinfo, bearer, authorization-header, API-key
+17. Injected path, query, URL-userinfo, bearer, authorization-header, API-key
     header, environment-style, nested-exception, and configured-value secrets
     never appearing in database rows, raw database/WAL bytes, progress JSON,
     status output, or stderr.
-15. Crash injection after each final rename, directory synchronization, partial
+18. Crash injection after each final rename, directory synchronization, partial
     and mixed-pair exact reconciliation, ambiguous-file rejection, and a final
     pair published before the terminal checkpoint reconciling without network
     rescans.
-16. Existing publication rollback, coverage validation, fixture, and
+19. Existing publication rollback, coverage validation, fixture, and
     candidate-list tests continuing to pass.
 
 Focused tests use deterministic fake RPC responses and controlled crash points;
@@ -580,16 +720,20 @@ resuming the full frozen exports.
 
 After implementation and verification:
 
-1. Run bounded Base and BSC smoke exports into temporary ignored outputs.
-2. Confirm their progress, interruption, automatic resume, final coverage, and
+1. Pin and report exact SHA-256 digests for the two frozen replay inputs.
+2. Run bounded Base and BSC smoke exports into temporary ignored outputs.
+3. Confirm their progress, interruption, automatic resume, final coverage, and
    credential-redaction behavior.
-3. Start the full Base and BSC exports with their frozen ranges and canonical
+4. Start the full Base and BSC exports with their frozen ranges and canonical
    output paths.
-4. Use the status reader to report both runs without relying on terminal
+5. Use the status reader to report both runs without relying on terminal
    scrollback.
-5. After both canonical pairs validate, run LP attribution QA and the frozen
+6. After both canonical pairs validate, reconcile every target action against
+   the prior precoverage rows and explain any added or changed row before
+   downstream analysis.
+7. Run LP attribution QA and the frozen
    cross-pool analysis.
-6. Continue into the portfolio-of-positions evaluation only from the validated
+8. Continue into the portfolio-of-positions evaluation only from the validated
    frozen statistical artifacts.
 
 The final public evidence remains the validated ledger/coverage pair and later
