@@ -361,6 +361,16 @@ class RunIdentity:
 
 
 @dataclass(frozen=True)
+class ActionDecodeIdentity:
+    pool: str
+    chain: str
+    pool_id: str
+    pool_manager: str
+    position_manager: str
+    wrapper_entrypoint: str
+
+
+@dataclass(frozen=True)
 class PhaseProgress:
     phase: Phase
     status: PhaseStatus
@@ -604,6 +614,22 @@ class LPLedgerCheckpoint:
 
     def snapshot(self) -> CheckpointSnapshot:
         return _snapshot_from_connection(self._connection)
+
+    def action_decode_identity(self) -> ActionDecodeIdentity:
+        payload = _identity_payload(self._connection)
+        identity = ActionDecodeIdentity(
+            pool=_required_identity_str(payload, "pool"),
+            chain=_required_identity_str(payload, "chain"),
+            pool_id=_required_identity_str(payload, "pool_id"),
+            pool_manager=_required_identity_str(payload, "pool_manager"),
+            position_manager=_required_identity_str(payload, "position_manager"),
+            wrapper_entrypoint=_required_identity_str(
+                payload,
+                "wrapper_entrypoint",
+            ),
+        )
+        _validate_action_decode_identity(identity)
+        return identity
 
     def complete_phase(self, phase: Phase) -> CheckpointSnapshot:
         """Complete a phase that has no evidence-bearing final commit."""
@@ -1006,7 +1032,6 @@ class LPLedgerCheckpoint:
             delete_values,
             action_values,
         )
-        _validate_position_key_mappings(position_key_values, action_values)
 
         def operation(connection: sqlite3.Connection, generation: int) -> None:
             first = connection.execute(
@@ -1041,6 +1066,17 @@ class LPLedgerCheckpoint:
             identity = _identity_payload(connection)
             for action in action_values:
                 _validate_action_run_identity(action, identity)
+            existing_position_key_ids = {
+                _parse_unsigned_decimal(cast(str, row[0]), "token id")
+                for row in connection.execute(
+                    "SELECT token_id FROM token_position_keys"
+                )
+            }
+            _validate_position_key_mappings(
+                position_key_values,
+                action_values,
+                existing_position_key_ids,
+            )
             required_log_indices = tuple(
                 cast(int, row[0])
                 for row in connection.execute(
@@ -4170,20 +4206,31 @@ def _validate_decode_batch(
 def _validate_position_key_mappings(
     mappings: tuple[PositionKeyMapping, ...],
     actions: tuple[DecodedLiquidityAction, ...],
+    existing_token_ids: set[int],
 ) -> None:
-    mint_actions = {
-        (action.block_number, action.log_index, action.event_order): action
+    mint_actions = tuple(
+        action
         for action in actions
         if action.action_type == "mint"
+    )
+    mint_actions_by_location = {
+        (action.block_number, action.log_index, action.event_order): action
+        for action in mint_actions
     }
-    if len(mint_actions) != sum(action.action_type == "mint" for action in actions):
+    if len(mint_actions_by_location) != len(mint_actions):
         raise CheckpointContractError("mint action identity is duplicated")
+    first_mint_by_token: dict[int, DecodedLiquidityAction] = {}
+    for action in sorted(
+        mint_actions,
+        key=lambda value: (value.block_number, value.log_index, value.event_order),
+    ):
+        first_mint_by_token.setdefault(action.token_id, action)
     seen_tokens: set[int] = set()
     seen_locations: set[tuple[int, int, int]] = set()
     for mapping in mappings:
         _validate_position_key_shape(mapping)
         location = _position_key_location(mapping)
-        action = mint_actions.get(location)
+        action = mint_actions_by_location.get(location)
         if action is None or (
             action.token_id != mapping.token_id
             or action.pool_id != mapping.pool_id
@@ -4191,12 +4238,27 @@ def _validate_position_key_mappings(
             or action.tick_upper != mapping.tick_upper
         ):
             raise CheckpointContractError("position key does not match a mint action")
-        if mapping.token_id in seen_tokens or location in seen_locations:
+        if (
+            mapping.token_id in existing_token_ids
+            or mapping.token_id in seen_tokens
+            or location in seen_locations
+        ):
             raise CheckpointContractError("position key mapping is duplicated")
+        first_action = first_mint_by_token[mapping.token_id]
+        first_location = (
+            first_action.block_number,
+            first_action.log_index,
+            first_action.event_order,
+        )
+        if location != first_location:
+            raise CheckpointContractError(
+                "position key does not anchor the token's first mint action"
+            )
         seen_tokens.add(mapping.token_id)
         seen_locations.add(location)
-    if seen_locations != set(mint_actions):
-        raise CheckpointContractError("mint action is missing a position key")
+    new_mint_tokens = set(first_mint_by_token).difference(existing_token_ids)
+    if seen_tokens != new_mint_tokens:
+        raise CheckpointContractError("new mint token is missing a position key")
 
 
 def _validate_position_key_shape(mapping: PositionKeyMapping) -> None:
@@ -4885,6 +4947,19 @@ def _validate_identity(identity: RunIdentity) -> None:
             label=f"source digest {source_name}",
             prefix=False,
         )
+
+
+def _validate_action_decode_identity(identity: ActionDecodeIdentity) -> None:
+    for label, value in (("pool", identity.pool), ("chain", identity.chain)):
+        if _SAFE_LABEL.fullmatch(value) is None:
+            raise CheckpointContractError(f"action decode {label} is invalid")
+    _require_lower_hex(identity.pool_id, 32, "action decode pool ID")
+    for label, value in (
+        ("PoolManager", identity.pool_manager),
+        ("PositionManager", identity.position_manager),
+        ("wrapper EntryPoint", identity.wrapper_entrypoint),
+    ):
+        _require_lower_hex(value, 20, f"action decode {label}")
 
 
 def _validate_replay_input_evidence(evidence: ReplayInputEvidence) -> None:
@@ -5646,7 +5721,7 @@ def _validate_staged_evidence_v2(
             )
         )
     )
-    _validate_position_key_mappings(mappings, mint_actions)
+    _validate_position_key_mappings(mappings, mint_actions, set())
 
     frozen_row = connection.execute(
         """

@@ -394,6 +394,86 @@ def test_action_decode_persists_position_key_and_freezes_token_set(
             )
 
 
+def test_action_decode_identity_is_read_from_the_frozen_run(tmp_path: Path) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            _identity(paths.output),
+            fresh=False,
+        ) as run:
+            identity = run.action_decode_identity()
+
+    assert identity.pool == "uni-base"
+    assert identity.chain == "base"
+    assert identity.pool_id == _HASH_A
+    assert identity.pool_manager == _ADDRESS_A
+    assert identity.position_manager == _ADDRESS_B
+    assert identity.wrapper_entrypoint == _ADDRESS_C
+
+
+def test_creation_mapping_covers_a_later_mint_typed_increase_in_the_same_tx(
+    tmp_path: Path,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    creation_witness = _witness(
+        source="pool_modify",
+        transaction_hash=_HASH_C,
+        block_number=101,
+        block_hash=_HASH_E,
+        transaction_index=5,
+        log_index=11,
+    )
+    increase_witness = replace(creation_witness, log_index=12)
+    bundle = _bundle(creation_witness, increase_witness)
+    creation = _action(creation_witness)
+    increase = replace(
+        creation,
+        log_index=12,
+        event_order=1,
+        liquidity_delta=25,
+    )
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            _identity(paths.output),
+            fresh=False,
+        ) as run:
+            _stage_candidate_to_decode(run, creation_witness, increase_witness)
+
+            decoded = run.commit_decoded_action_transaction(
+                bundle,
+                headers=(BlockHeader(101, _HASH_E, 1_010),),
+                resolutions=(),
+                state_upserts=(
+                    DecoderStateUpsert(
+                        token_id=77,
+                        state=LedgerPositionState(_HASH_A, -10, 10, 125),
+                        last_block_number=101,
+                        last_log_index=12,
+                        last_event_order=1,
+                    ),
+                ),
+                state_deletes=(),
+                actions=(creation, increase),
+                position_keys=(_position_key(creation),),
+            )
+
+            assert decoded.phase == "token_set_freeze"
+            assert run.load_position_keys() == (_position_key(creation),)
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            _identity(paths.output),
+            fresh=False,
+        ) as resumed:
+            assert resumed.load_position_keys() == (_position_key(creation),)
+            assert resumed.load_decoded_actions() == (creation, increase)
+
+
 def test_transfer_attestation_reuses_action_bundle_and_decodes_exact_owner(
     tmp_path: Path,
 ) -> None:
