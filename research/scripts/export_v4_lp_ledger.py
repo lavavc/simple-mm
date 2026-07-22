@@ -11,12 +11,12 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from web3 import Web3
 
@@ -32,7 +32,14 @@ from research.backtester.lp_ledger_attribution import (  # noqa: E402
     load_ledger_coverage,
     pool_attribution_orientation,
 )
-from research.backtester.lp_ledger_checkpoint import render_safe_failure  # noqa: E402
+from research.backtester.lp_ledger_checkpoint import (  # noqa: E402
+    CandidateBundle,
+    CheckpointSnapshot,
+    DiscoveryWitness,
+    LPLedgerCheckpoint,
+    candidate_payload_sha256,
+    render_safe_failure,
+)
 from research.backtester.v4_event_replay import (  # noqa: E402
     ReplayedEvent,
     ReplayEvent,
@@ -55,7 +62,6 @@ from research.backtester.v4_export import (  # noqa: E402
     decode_swap_row,
 )
 from research.backtester.v4_lp_ledger import (  # noqa: E402
-    TRANSFER_EVENT_TOPIC,
     DecodedLiquidityAction,
     LedgerPositionState,
     LPLedgerRow,
@@ -67,13 +73,46 @@ from research.backtester.v4_lp_ledger import (  # noqa: E402
 from research.cross_pool.contracts import CrossPoolContractError  # noqa: E402
 
 _LP_CANDIDATE_EVENT_TYPES = frozenset({"mint", "burn", "collect"})
-
-
-@dataclass(frozen=True)
-class RpcLPCandidateDiscovery:
-    action_transaction_hashes: tuple[str, ...]
-    ownership_transaction_hashes: tuple[str, ...]
-    all_transaction_hashes: tuple[str, ...]
+_RPC_QUANTITY_FIELDS = frozenset(
+    {
+        "baseFeePerGas",
+        "blobGasPrice",
+        "blobGasUsed",
+        "blockNumber",
+        "chainId",
+        "cumulativeGasUsed",
+        "depositNonce",
+        "depositReceiptVersion",
+        "effectiveGasPrice",
+        "gas",
+        "gasPrice",
+        "gasUsed",
+        "l1BaseFeeScalar",
+        "l1BlobBaseFee",
+        "l1BlobBaseFeeScalar",
+        "l1Fee",
+        "l1GasPrice",
+        "l1GasUsed",
+        "logIndex",
+        "maxFeePerBlobGas",
+        "maxFeePerGas",
+        "maxPriorityFeePerGas",
+        "nonce",
+        "operatorFeeConstant",
+        "operatorFeeScalar",
+        "status",
+        "transactionIndex",
+        "type",
+        "v",
+        "value",
+        "yParity",
+    }
+)
+_RPC_HASH_FIELDS = frozenset({"blockHash", "hash", "transactionHash"})
+_RPC_ADDRESS_FIELDS = frozenset(
+    {"address", "contractAddress", "creates", "from", "to"}
+)
+_RPC_DATA_FIELDS = frozenset({"data", "input", "logsBloom", "r", "s"})
 
 
 @dataclass(frozen=True)
@@ -93,68 +132,429 @@ class _RpcCoverageEndpointSnapshot:
     end_timestamp_ms: int
 
 
-def _discover_rpc_lp_candidates(
+def _stage_action_discovery(
+    run: LPLedgerCheckpoint,
     w3: Web3,
     config: Any,
     start_block: int,
     end_block: int,
-) -> RpcLPCandidateDiscovery:
-    action_hashes: set[str] = set()
-    ownership_hashes: set[str] = set()
-    for chunk_start in range(start_block, end_block + 1, config.chunk_size):
-        chunk_end = min(chunk_start + config.chunk_size - 1, end_block)
-        action_logs = _fetch_logs_with_debug(
+) -> CheckpointSnapshot:
+    _validate_frozen_range(start_block, end_block)
+    for block_range in run.incomplete_action_chunks():
+        if (
+            block_range.start_block < start_block
+            or block_range.end_block > end_block
+        ):
+            raise ValueError("checkpoint action chunk is outside the frozen range")
+        logs = _fetch_logs_with_debug(
             w3,
             {
                 "address": Web3.to_checksum_address(config.pool_manager),
                 "topics": [V4_MODIFY_LIQUIDITY_TOPIC, config.pool_id],
-                "fromBlock": chunk_start,
-                "toBlock": chunk_end,
+                "fromBlock": block_range.start_block,
+                "toBlock": block_range.end_block,
             },
             context=(
-                f"[{config.name}] pool modify-liquidity logs "
-                f"{chunk_start:,}->{chunk_end:,}"
+                f"[{config.name}] target-pool action logs "
+                f"{block_range.start_block:,}->{block_range.end_block:,}"
             ),
         )
-        transfer_logs = _fetch_logs_with_debug(
-            w3,
-            {
-                "address": Web3.to_checksum_address(config.position_manager),
-                "topics": [TRANSFER_EVENT_TOPIC],
-                "fromBlock": chunk_start,
-                "toBlock": chunk_end,
-            },
-            context=(
-                f"[{config.name}] position-manager transfer logs "
-                f"{chunk_start:,}->{chunk_end:,}"
-            ),
+        witnesses = tuple(
+            sorted(
+                (
+                    _normalize_action_discovery_witness(log, config)
+                    for log in logs
+                ),
+                key=_discovery_witness_sort_key,
+            )
         )
-        action_hashes.update(_required_log_transaction_hashes(action_logs))
-        ownership_hashes.update(_required_log_transaction_hashes(transfer_logs))
-    canonical_actions = tuple(sorted(action_hashes))
-    canonical_ownership = tuple(sorted(ownership_hashes))
-    return RpcLPCandidateDiscovery(
-        action_transaction_hashes=canonical_actions,
-        ownership_transaction_hashes=canonical_ownership,
-        all_transaction_hashes=tuple(
-            sorted(action_hashes.union(ownership_hashes))
+        run.commit_action_chunk(block_range, witnesses)
+    return run.snapshot()
+
+
+def _normalize_action_discovery_witness(
+    raw_log: object,
+    config: Any,
+) -> DiscoveryWitness:
+    if not isinstance(raw_log, Mapping):
+        raise ValueError("target-pool action log must be a mapping")
+    payload = dict(raw_log)
+    removed = payload.get("removed")
+    if removed is not None and (type(removed) is not bool or removed):
+        raise ValueError("target-pool action log is removed")
+    block_number = _required_rpc_int_field(
+        payload,
+        "blockNumber",
+        label="target-pool action log",
+    )
+    transaction_index = _required_rpc_int_field(
+        payload,
+        "transactionIndex",
+        label="target-pool action log",
+    )
+    log_index = _required_rpc_int_field(
+        payload,
+        "logIndex",
+        label="target-pool action log",
+    )
+    raw_topics = payload.get("topics")
+    if (
+        not isinstance(raw_topics, Sequence)
+        or isinstance(raw_topics, (str, bytes, bytearray, memoryview))
+        or not raw_topics
+    ):
+        raise ValueError("target-pool action log topics are invalid")
+    topics = tuple(
+        _normalize_fixed_hex(topic, 32, f"target-pool action topic {index}")
+        for index, topic in enumerate(raw_topics)
+    )
+    witness = DiscoveryWitness(
+        source="pool_modify",
+        block_number=block_number,
+        block_hash=_normalize_fixed_hex(
+            payload.get("blockHash"),
+            32,
+            "target-pool action block hash",
         ),
+        transaction_hash=_normalize_transaction_hash(
+            payload.get("transactionHash"),
+            label="target-pool action transaction hash",
+        ),
+        transaction_index=transaction_index,
+        log_index=log_index,
+        address=_normalize_fixed_hex(
+            payload.get("address"),
+            20,
+            "target-pool action address",
+        ),
+        topics=topics,
+        data=_normalize_hex_data(payload.get("data"), "target-pool action data"),
+    )
+    expected_address = _normalize_fixed_hex(
+        config.pool_manager,
+        20,
+        "configured PoolManager",
+    )
+    expected_topic = _normalize_fixed_hex(
+        V4_MODIFY_LIQUIDITY_TOPIC,
+        32,
+        "configured ModifyLiquidity topic",
+    )
+    expected_pool = _normalize_fixed_hex(
+        config.pool_id,
+        32,
+        "configured pool ID",
+    )
+    if (
+        witness.address != expected_address
+        or len(witness.topics) < 2
+        or witness.topics[0] != expected_topic
+        or witness.topics[1] != expected_pool
+    ):
+        raise ValueError("target-pool action log identity is invalid")
+    return witness
+
+
+def _stage_action_bundles(
+    run: LPLedgerCheckpoint,
+    w3: Web3,
+    start_block: int,
+    end_block: int,
+) -> CheckpointSnapshot:
+    _validate_frozen_range(start_block, end_block)
+    snapshot = run.snapshot()
+    pending_hashes = run.unfetched_action_hashes()
+    for transaction_hash in pending_hashes:
+        witnesses = run.action_witnesses(transaction_hash)
+        bundle = _fetch_and_validate_candidate_bundle(
+            w3,
+            transaction_hash,
+            witnesses,
+            start_block,
+            end_block,
+        )
+        snapshot = run.commit_action_bundle(bundle)
+    if (
+        not pending_hashes
+        and snapshot.phase == "action_fetch"
+        and not run.action_candidate_hashes()
+    ):
+        snapshot = run.complete_phase("action_fetch")
+    return snapshot
+
+
+def _fetch_and_validate_candidate_bundle(
+    w3: Web3,
+    raw_requested_hash: object,
+    witnesses: Sequence[DiscoveryWitness],
+    start_block: int,
+    end_block: int,
+) -> CandidateBundle:
+    _validate_frozen_range(start_block, end_block)
+    witness_values = tuple(witnesses)
+    if not witness_values:
+        raise ValueError("candidate bundle requires at least one discovery witness")
+    requested_hash = _normalize_transaction_hash(
+        raw_requested_hash,
+        label="candidate transaction hash",
+    )
+    transaction_raw = w3.eth.get_transaction(requested_hash)
+    receipt_raw = w3.eth.get_transaction_receipt(requested_hash)
+    if not isinstance(transaction_raw, Mapping) or not isinstance(receipt_raw, Mapping):
+        raise ValueError("candidate RPC responses must be mappings")
+    transaction = dict(transaction_raw)
+    receipt = dict(receipt_raw)
+    _require_matching_response_hash(
+        requested_hash,
+        transaction.get("hash"),
+        label="RPC transaction response",
+    )
+    _require_matching_response_hash(
+        requested_hash,
+        receipt.get("transactionHash"),
+        label="RPC receipt response",
+    )
+    block_number, transaction_index = _require_matching_transaction_location(
+        requested_hash,
+        transaction,
+        receipt,
+    )
+    if (
+        _required_rpc_int_field(
+            receipt,
+            "status",
+            label="RPC receipt response",
+        )
+        != 1
+    ):
+        raise ValueError("candidate transaction receipt is not successful")
+    if not start_block <= block_number <= end_block:
+        raise ValueError("candidate transaction is outside the frozen range")
+    transaction_block_hash = _normalize_transaction_hash(
+        transaction.get("blockHash"),
+        label="RPC transaction block hash",
+    )
+    receipt_block_hash = _normalize_transaction_hash(
+        receipt.get("blockHash"),
+        label="RPC receipt block hash",
+    )
+    if transaction_block_hash != receipt_block_hash:
+        raise ValueError("RPC transaction and receipt block hashes differ")
+
+    normalized_transaction = _normalize_rpc_payload(transaction, label="transaction")
+    normalized_receipt = _normalize_rpc_payload(receipt, label="receipt")
+    if not isinstance(normalized_transaction, dict) or not isinstance(
+        normalized_receipt,
+        dict,
+    ):
+        raise ValueError("normalized candidate responses must be mappings")
+    _validate_normalized_receipt_witnesses(
+        requested_hash,
+        normalized_receipt,
+        witness_values,
+    )
+    transaction_json = _canonical_rpc_json(normalized_transaction)
+    receipt_json = _canonical_rpc_json(normalized_receipt)
+    return CandidateBundle(
+        transaction_hash=requested_hash,
+        block_number=block_number,
+        block_hash=transaction_block_hash,
+        transaction_index=transaction_index,
+        transaction_json=transaction_json,
+        receipt_json=receipt_json,
+        payload_sha256=candidate_payload_sha256(transaction_json, receipt_json),
     )
 
 
-def _required_log_transaction_hashes(logs: Sequence[Any]) -> tuple[str, ...]:
-    transaction_hashes: list[str] = []
-    for log in logs:
-        raw_hash = log.get("transactionHash")
-        if raw_hash is None:
-            raise ValueError("verified LP discovery log is missing transactionHash")
-        transaction_hashes.append(
-            _normalize_transaction_hash(
-                raw_hash,
-                label="verified LP discovery log transactionHash",
+def _normalize_rpc_payload(
+    value: object,
+    *,
+    label: str,
+    field_name: str | None = None,
+) -> object:
+    if value is None:
+        return None
+    if field_name in _RPC_QUANTITY_FIELDS:
+        try:
+            quantity = _int_from_rpc_value(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"candidate {label} field {field_name} is invalid") from exc
+        if quantity < 0:
+            raise ValueError(f"candidate {label} field {field_name} is negative")
+        return str(quantity)
+    if field_name == "topics":
+        if (
+            not isinstance(value, Sequence)
+            or isinstance(value, (str, bytes, bytearray, memoryview))
+        ):
+            raise ValueError(f"candidate {label} topics are invalid")
+        return [
+            _normalize_fixed_hex(topic, 32, f"candidate {label} topic")
+            for topic in value
+        ]
+    if field_name in _RPC_HASH_FIELDS:
+        return _normalize_fixed_hex(value, 32, f"candidate {label} {field_name}")
+    if field_name in _RPC_ADDRESS_FIELDS:
+        return _normalize_fixed_hex(value, 20, f"candidate {label} {field_name}")
+    if field_name in _RPC_DATA_FIELDS:
+        return _normalize_hex_data(value, f"candidate {label} {field_name}")
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"candidate {label} mapping key is not a string")
+            normalized[key] = _normalize_rpc_payload(
+                item,
+                label=label,
+                field_name=key,
             )
+        return normalized
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return [
+            _normalize_rpc_payload(item, label=label)
+            for item in value
+        ]
+    if isinstance(value, bool):
+        return value
+    if type(value) is int:
+        if value < 0:
+            raise ValueError(f"candidate {label} contains a negative quantity")
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return _normalize_hex_data(value, f"candidate {label} bytes")
+    if isinstance(value, str):
+        if value.startswith(("0x", "0X")):
+            return _normalize_hex_data(value, f"candidate {label} hex value")
+        return value
+    raise ValueError(f"candidate {label} contains an unsupported value")
+
+
+def _validate_normalized_receipt_witnesses(
+    requested_hash: str,
+    receipt: dict[str, object],
+    witnesses: tuple[DiscoveryWitness, ...],
+) -> None:
+    logs = receipt.get("logs")
+    if not isinstance(logs, list):
+        raise ValueError("candidate receipt logs are invalid")
+    for log in logs:
+        if not isinstance(log, dict):
+            raise ValueError("candidate receipt log is invalid")
+        removed = log.get("removed")
+        if removed is not None and (type(removed) is not bool or removed):
+            raise ValueError("candidate receipt contains a removed log")
+    if any(len(witness.topics) < 2 for witness in witnesses):
+        raise ValueError("candidate discovery witness topics are incomplete")
+    expected_target = (
+        witnesses[0].address,
+        witnesses[0].topics[0],
+        witnesses[0].topics[1],
+    )
+    if any(
+        witness.transaction_hash != requested_hash
+        or len(witness.topics) < 2
+        or (witness.address, witness.topics[0], witness.topics[1]) != expected_target
+        for witness in witnesses
+    ):
+        raise ValueError("candidate discovery witnesses are inconsistent")
+    target_logs = [
+        log
+        for log in logs
+        if isinstance(log, dict)
+        and isinstance(log.get("topics"), list)
+        and len(log["topics"]) >= 2
+        and (
+            log.get("address"),
+            log["topics"][0],
+            log["topics"][1],
         )
-    return tuple(transaction_hashes)
+        == expected_target
+    ]
+    for witness in witnesses:
+        matches = [
+            log
+            for log in target_logs
+            if _normalized_log_matches_witness(log, witness)
+        ]
+        if len(matches) != 1:
+            raise ValueError("candidate receipt does not exactly match its action witness")
+    if len(target_logs) != len(witnesses):
+        raise ValueError("candidate receipt contains an unattested target action log")
+
+
+def _normalized_log_matches_witness(
+    log: dict[str, object],
+    witness: DiscoveryWitness,
+) -> bool:
+    return (
+        log.get("address") == witness.address
+        and log.get("blockNumber") == str(witness.block_number)
+        and log.get("blockHash") == witness.block_hash
+        and log.get("transactionHash") == witness.transaction_hash
+        and log.get("transactionIndex") == str(witness.transaction_index)
+        and log.get("logIndex") == str(witness.log_index)
+        and log.get("topics") == list(witness.topics)
+        and log.get("data") == witness.data
+    )
+
+
+def _discovery_witness_sort_key(
+    witness: DiscoveryWitness,
+) -> tuple[int, int, int, str]:
+    return (
+        witness.block_number,
+        witness.transaction_index,
+        witness.log_index,
+        witness.transaction_hash,
+    )
+
+
+def _validate_frozen_range(start_block: int, end_block: int) -> None:
+    if (
+        type(start_block) is not int
+        or type(end_block) is not int
+        or start_block < 0
+        or end_block < start_block
+    ):
+        raise ValueError("frozen block range is invalid")
+
+
+def _normalize_fixed_hex(
+    value: object,
+    byte_length: int,
+    label: str,
+) -> str:
+    normalized = _normalize_hex_data(value, label)
+    if len(normalized) != 2 + byte_length * 2:
+        raise ValueError(f"{label} must be {byte_length} bytes")
+    return normalized
+
+
+def _normalize_hex_data(value: object, label: str) -> str:
+    normalized = str(coerce_hex_str(value))
+    if not normalized.startswith("0x"):
+        raise ValueError(f"{label} must be hex data")
+    body = normalized[2:]
+    if len(body) % 2:
+        raise ValueError(f"{label} must have an even number of hex digits")
+    try:
+        bytes.fromhex(body)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be hex data") from exc
+    return normalized.lower()
+
+
+def _canonical_rpc_json(value: object) -> str:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def export_fixture_lp_ledger(
@@ -200,6 +600,11 @@ def export_rpc_lp_ledger(
     candidate_tx_hashes: Sequence[str] | None = None,
 ) -> int:
     ledger_coverage_path(output_path)
+    if candidate_tx_hashes is None:
+        raise CrossPoolContractError(
+            "verified RPC LP-ledger export is disabled until the checkpointed "
+            "action-first runner is wired"
+        )
     config = POOL_CONFIGS[pool]
     w3 = _make_web3(config)
     chain_id = _coverage_chain_id(w3, pool)
@@ -208,14 +613,8 @@ def export_rpc_lp_ledger(
         start_block,
         end_block,
     )
-    used_full_rpc_scan = candidate_tx_hashes is None
-    if candidate_tx_hashes is None:
-        discovery = _discover_rpc_lp_candidates(w3, config, start_block, end_block)
-        resolved_candidate_hashes = discovery.all_transaction_hashes
-        required_action_hashes = frozenset(discovery.action_transaction_hashes)
-    else:
-        resolved_candidate_hashes = tuple(candidate_tx_hashes)
-        required_action_hashes = frozenset()
+    resolved_candidate_hashes = tuple(candidate_tx_hashes)
+    required_action_hashes: frozenset[str] = frozenset()
     decoded_actions, ownership_events = _decode_rpc_lp_inputs(
         w3,
         config,
@@ -251,7 +650,7 @@ def export_rpc_lp_ledger(
         covered_end_block_hash=initial_endpoint.end_block_hash,
         covered_end_timestamp_ms=initial_endpoint.end_timestamp_ms,
         candidate_transaction_hashes=resolved_candidate_hashes,
-        verification_mode=("rpc_verified" if used_full_rpc_scan else "candidate_list_unverified"),
+        verification_mode="candidate_list_unverified",
     )
     _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
     return len(rows)
@@ -371,7 +770,7 @@ def _decode_rpc_lp_inputs(
 
 def _normalize_transaction_hash(value: Any, *, label: str) -> str:
     try:
-        transaction_hash = coerce_hex_str(value).lower()
+        transaction_hash = str(coerce_hex_str(value)).lower()
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} must be a 32-byte hex value") from exc
     if len(transaction_hash) != 66:
@@ -493,7 +892,7 @@ def _int_from_rpc_value(value: Any) -> int:
 
 
 def _block_timestamp_for_number(w3: Web3, block_number: int) -> int:
-    return _block_timestamp_from_raw(_raw_get_block(w3, block_number, False))
+    return int(_block_timestamp_from_raw(_raw_get_block(w3, block_number, False)))
 
 
 def _coverage_block_header(w3: Web3, block_number: int) -> tuple[str, int]:

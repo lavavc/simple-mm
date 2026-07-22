@@ -1,3 +1,4 @@
+import copy
 import csv
 import hashlib
 import json
@@ -25,6 +26,7 @@ from research.backtester.lp_ledger_attribution import (
     ledger_coverage_path,
     load_ledger_coverage,
 )
+from research.backtester.lp_ledger_checkpoint import BlockRange, DiscoveryWitness
 from research.backtester.v4_event_replay import ReplayedEvent
 from research.backtester.v4_export import (
     POOL_CONFIGS,
@@ -182,6 +184,109 @@ TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
+class _ActionDiscoveryRun:
+    def __init__(self, chunks: tuple[BlockRange, ...]) -> None:
+        self.chunks = chunks
+        self.commits: list[tuple[BlockRange, tuple[DiscoveryWitness, ...]]] = []
+
+    def incomplete_action_chunks(self) -> tuple[BlockRange, ...]:
+        return self.chunks
+
+    def commit_action_chunk(
+        self,
+        block_range: BlockRange,
+        witnesses: tuple[DiscoveryWitness, ...],
+    ) -> SimpleNamespace:
+        self.commits.append((block_range, witnesses))
+        return SimpleNamespace(phase="action_discovery")
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(phase="action_fetch")
+
+
+class _ActionBundleRun:
+    def __init__(
+        self,
+        witnesses: dict[str, tuple[DiscoveryWitness, ...]],
+        *,
+        phase: str = "action_fetch",
+        pending_hashes: tuple[str, ...] | None = None,
+    ) -> None:
+        self.witnesses = witnesses
+        self.phase = phase
+        self.pending_hashes = pending_hashes
+        self.commits = []
+        self.completed: list[str] = []
+
+    def unfetched_action_hashes(self) -> tuple[str, ...]:
+        return (
+            tuple(self.witnesses)
+            if self.pending_hashes is None
+            else self.pending_hashes
+        )
+
+    def action_witnesses(self, transaction_hash: str) -> tuple[DiscoveryWitness, ...]:
+        return self.witnesses[transaction_hash]
+
+    def action_candidate_hashes(self) -> tuple[str, ...]:
+        return tuple(self.witnesses)
+
+    def commit_action_bundle(self, bundle):
+        self.commits.append(bundle)
+        return SimpleNamespace(phase="action_decode")
+
+    def complete_phase(self, phase: str) -> SimpleNamespace:
+        self.completed.append(phase)
+        self.phase = "action_decode"
+        return SimpleNamespace(phase=self.phase)
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(phase=self.phase)
+
+
+def _raw_action_log(
+    *,
+    block_number: int = 101,
+    transaction_hash: str = "0x" + "33" * 32,
+    transaction_index: int = 5,
+    log_index: int = 11,
+) -> dict[str, object]:
+    config = POOL_CONFIGS["uni-base"]
+    return {
+        "address": Web3.to_checksum_address(config.pool_manager),
+        "blockNumber": hex(block_number),
+        "blockHash": bytes.fromhex("44" * 32),
+        "transactionHash": transaction_hash.upper().replace("0X", "0x"),
+        "transactionIndex": hex(transaction_index),
+        "logIndex": hex(log_index),
+        "topics": (
+            bytes.fromhex(V4_MODIFY_LIQUIDITY_TOPIC[2:]),
+            config.pool_id.upper().replace("0X", "0x"),
+            bytes.fromhex("55" * 32),
+        ),
+        "data": b"\x01\x02",
+    }
+
+
+def _expected_action_witness(raw: dict[str, object]) -> DiscoveryWitness:
+    config = POOL_CONFIGS["uni-base"]
+    return DiscoveryWitness(
+        source="pool_modify",
+        block_number=int(str(raw["blockNumber"]), 16),
+        block_hash="0x" + "44" * 32,
+        transaction_hash=str(raw["transactionHash"]).lower(),
+        transaction_index=int(str(raw["transactionIndex"]), 16),
+        log_index=int(str(raw["logIndex"]), 16),
+        address=config.pool_manager.lower(),
+        topics=(
+            V4_MODIFY_LIQUIDITY_TOPIC,
+            config.pool_id,
+            "0x" + "55" * 32,
+        ),
+        data="0x0102",
+    )
+
+
 def _minimal_coverage_pair_bytes(block_number: int) -> tuple[bytes, bytes]:
     config = POOL_CONFIGS["uni-base"]
     ledger_bytes = (
@@ -204,81 +309,326 @@ def _minimal_coverage_pair_bytes(block_number: int) -> tuple[bytes, bytes]:
     return ledger_bytes, coverage_bytes
 
 
-def test_verified_candidate_discovery_unions_target_pool_actions_and_transfers(
+def test_action_discovery_stages_complete_witnesses_and_quiet_chunks(
     monkeypatch,
-):
+) -> None:
     config = POOL_CONFIGS["uni-base"]
-    action_only_hash = "0x" + "AA" * 32
-    shared_hash = "0x" + "22" * 32
-    transfer_only_hash = "0x" + "11" * 32
+    later = _raw_action_log(
+        block_number=102,
+        transaction_hash="0x" + "22" * 32,
+        transaction_index=2,
+        log_index=7,
+    )
+    earlier = _raw_action_log(
+        block_number=101,
+        transaction_hash="0x" + "11" * 32,
+        transaction_index=1,
+        log_index=4,
+    )
     calls = []
 
     def fake_fetch(_w3, params, *, context):
         calls.append((params, context))
-        if params["address"] == Web3.to_checksum_address(config.pool_manager):
-            return [
-                {"transactionHash": action_only_hash},
-                {"transactionHash": shared_hash},
-            ]
-        return [
-            {"transactionHash": transfer_only_hash},
-            {"transactionHash": shared_hash},
-        ]
+        return [later, earlier] if params["fromBlock"] == 100 else []
 
     monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", fake_fetch)
+    run = _ActionDiscoveryRun(
+        (
+            BlockRange(index=0, start_block=100, end_block=104),
+            BlockRange(index=1, start_block=105, end_block=109),
+        )
+    )
 
-    discovery = lp_ledger_export._discover_rpc_lp_candidates(
+    snapshot = lp_ledger_export._stage_action_discovery(
+        run,
         object(),
         config,
-        1,
-        12_000,
+        100,
+        109,
     )
 
-    assert len(calls) == 6
+    assert snapshot.phase == "action_fetch"
+    assert len(calls) == 2
+    assert all(
+        call[0]["address"] == Web3.to_checksum_address(config.pool_manager)
+        and call[0]["topics"] == [V4_MODIFY_LIQUIDITY_TOPIC, config.pool_id]
+        for call in calls
+    )
     assert [
-        (call[0]["fromBlock"], call[0]["toBlock"]) for call in calls[::2]
-    ] == [(1, 5_000), (5_001, 10_000), (10_001, 12_000)]
-    for action_call, transfer_call in zip(calls[::2], calls[1::2], strict=True):
-        assert action_call[0]["address"] == Web3.to_checksum_address(
-            config.pool_manager
-        )
-        assert action_call[0]["topics"] == [
-            V4_MODIFY_LIQUIDITY_TOPIC,
-            config.pool_id,
-        ]
-        assert transfer_call[0]["address"] == Web3.to_checksum_address(
-            config.position_manager
-        )
-        assert transfer_call[0]["topics"] == [
-            "0x" + TRANSFER_TOPIC.removeprefix("0x")
-        ]
-    assert discovery.action_transaction_hashes == (
-        "0x" + "22" * 32,
-        "0x" + "aa" * 32,
-    )
-    assert discovery.ownership_transaction_hashes == (
-        "0x" + "11" * 32,
-        "0x" + "22" * 32,
-    )
-    assert discovery.all_transaction_hashes == (
-        "0x" + "11" * 32,
-        "0x" + "22" * 32,
-        "0x" + "aa" * 32,
-    )
+        (call[0]["fromBlock"], call[0]["toBlock"])
+        for call in calls
+    ] == [(100, 104), (105, 109)]
+    assert run.commits == [
+        (
+            BlockRange(index=0, start_block=100, end_block=104),
+            (_expected_action_witness(earlier), _expected_action_witness(later)),
+        ),
+        (BlockRange(index=1, start_block=105, end_block=109), ()),
+    ]
 
 
-def test_verified_candidate_discovery_rejects_a_log_without_transaction_hash(
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    (
+        ("blockNumber", None),
+        ("blockHash", "0x12"),
+        ("transactionHash", None),
+        ("transactionIndex", -1),
+        ("logIndex", None),
+        ("address", "0x" + "99" * 20),
+        ("topics", ("0x" + "99" * 32, "0x" + "aa" * 32)),
+        ("data", "not-hex"),
+        ("removed", True),
+    ),
+)
+def test_action_discovery_rejects_missing_or_wrong_log_identity(
     monkeypatch,
-):
+    field_name: str,
+    bad_value: object,
+) -> None:
     config = POOL_CONFIGS["uni-base"]
+    raw = _raw_action_log()
+    raw[field_name] = bad_value
     monkeypatch.setattr(
         lp_ledger_export,
         "_fetch_logs_with_debug",
-        lambda *_args, **_kwargs: [{}],
+        lambda *_args, **_kwargs: [raw],
+    )
+    run = _ActionDiscoveryRun((BlockRange(index=0, start_block=100, end_block=104),))
+
+    with pytest.raises(ValueError):
+        lp_ledger_export._stage_action_discovery(
+            run,
+            object(),
+            config,
+            100,
+            104,
+        )
+
+    assert run.commits == []
+
+
+def test_action_discovery_resume_queries_only_incomplete_chunks(monkeypatch) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    calls = []
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_logs_with_debug",
+        lambda _w3, params, *, context: calls.append((params, context)) or [],
+    )
+    run = _ActionDiscoveryRun((BlockRange(index=1, start_block=105, end_block=109),))
+
+    lp_ledger_export._stage_action_discovery(run, object(), config, 100, 109)
+
+    assert [(call[0]["fromBlock"], call[0]["toBlock"]) for call in calls] == [
+        (105, 109)
+    ]
+
+
+def _candidate_rpc_payloads(
+    witness: DiscoveryWitness,
+) -> tuple[dict[str, object], dict[str, object]]:
+    transaction = {
+        "hash": witness.transaction_hash.upper().replace("0X", "0x"),
+        "blockNumber": hex(witness.block_number),
+        "blockHash": bytes.fromhex(witness.block_hash[2:]),
+        "transactionIndex": hex(witness.transaction_index),
+        "from": "0x" + "66" * 20,
+        "to": "0x" + "77" * 20,
+        "input": b"\x12\x34",
+        "nonce": "0x0",
+        "value": 0,
+    }
+    receipt = {
+        "transactionHash": witness.transaction_hash,
+        "blockNumber": witness.block_number,
+        "blockHash": witness.block_hash,
+        "transactionIndex": witness.transaction_index,
+        "status": "0x1",
+        "l1Fee": "0x1",
+        "l1FeeScalar": "1.0",
+        "logs": [
+            {
+                "address": Web3.to_checksum_address(witness.address),
+                "blockNumber": hex(witness.block_number),
+                "blockHash": bytes.fromhex(witness.block_hash[2:]),
+                "transactionHash": witness.transaction_hash,
+                "transactionIndex": hex(witness.transaction_index),
+                "logIndex": hex(witness.log_index),
+                "topics": [bytes.fromhex(topic[2:]) for topic in witness.topics],
+                "data": bytes.fromhex(witness.data[2:]),
+                "removed": False,
+            }
+        ],
+    }
+    return transaction, receipt
+
+
+def test_action_bundle_fetch_normalizes_and_validates_exact_receipt_witness() -> None:
+    witness = _expected_action_witness(_raw_action_log())
+    transaction, receipt = _candidate_rpc_payloads(witness)
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=lambda _hash: transaction,
+            get_transaction_receipt=lambda _hash: receipt,
+        )
     )
 
-    with pytest.raises(ValueError, match="transactionHash"):
-        lp_ledger_export._discover_rpc_lp_candidates(object(), config, 1, 1)
+    bundle = lp_ledger_export._fetch_and_validate_candidate_bundle(
+        w3,
+        witness.transaction_hash,
+        (witness,),
+        100,
+        109,
+    )
+
+    normalized_transaction = json.loads(bundle.transaction_json)
+    normalized_receipt = json.loads(bundle.receipt_json)
+    assert bundle.transaction_hash == witness.transaction_hash
+    assert bundle.block_number == witness.block_number
+    assert bundle.block_hash == witness.block_hash
+    assert normalized_transaction["blockNumber"] == str(witness.block_number)
+    assert normalized_transaction["nonce"] == "0"
+    assert normalized_transaction["value"] == "0"
+    assert normalized_receipt["status"] == "1"
+    assert normalized_receipt["l1Fee"] == "1"
+    assert normalized_receipt["l1FeeScalar"] == "1.0"
+    assert normalized_receipt["logs"][0]["topics"] == list(witness.topics)
+    assert normalized_receipt["logs"][0]["removed"] is False
+    assert bundle.payload_sha256 == lp_ledger_export.candidate_payload_sha256(
+        bundle.transaction_json,
+        bundle.receipt_json,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "transaction_hash",
+        "receipt_hash",
+        "block_hash",
+        "transaction_index",
+        "out_of_range",
+        "missing_witness",
+        "float_payload",
+        "non_string_key",
+        "failed_status",
+        "removed_log",
+        "unattested_action",
+    ),
+)
+def test_action_bundle_fetch_rejects_response_disagreement(mutation: str) -> None:
+    witness = _expected_action_witness(_raw_action_log())
+    transaction, receipt = _candidate_rpc_payloads(witness)
+    transaction = copy.deepcopy(transaction)
+    receipt = copy.deepcopy(receipt)
+    if mutation == "transaction_hash":
+        transaction["hash"] = "0x" + "99" * 32
+    elif mutation == "receipt_hash":
+        receipt["transactionHash"] = "0x" + "99" * 32
+    elif mutation == "block_hash":
+        receipt["blockHash"] = "0x" + "99" * 32
+    elif mutation == "transaction_index":
+        receipt["transactionIndex"] = 6
+    elif mutation == "out_of_range":
+        transaction["blockNumber"] = 99
+        receipt["blockNumber"] = 99
+    elif mutation == "missing_witness":
+        receipt["logs"] = []
+    elif mutation == "float_payload":
+        transaction["gas"] = 1.5
+    elif mutation == "non_string_key":
+        transaction[1] = "unsupported key"
+    elif mutation == "failed_status":
+        receipt["status"] = "0x0"
+    elif mutation == "removed_log":
+        receipt["logs"][0]["removed"] = True
+    else:
+        unattested_log = copy.deepcopy(receipt["logs"][0])
+        unattested_log["logIndex"] = hex(witness.log_index + 1)
+        receipt["logs"].append(unattested_log)
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=lambda _hash: transaction,
+            get_transaction_receipt=lambda _hash: receipt,
+        )
+    )
+
+    with pytest.raises(ValueError):
+        lp_ledger_export._fetch_and_validate_candidate_bundle(
+            w3,
+            witness.transaction_hash,
+            (witness,),
+            100,
+            109,
+        )
+
+
+def test_action_bundle_staging_fetches_only_pending_and_completes_zero_work() -> None:
+    witness = _expected_action_witness(_raw_action_log())
+    transaction, receipt = _candidate_rpc_payloads(witness)
+    requested = []
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=lambda transaction_hash: requested.append(transaction_hash)
+            or transaction,
+            get_transaction_receipt=lambda _hash: receipt,
+        )
+    )
+    run = _ActionBundleRun({witness.transaction_hash: (witness,)})
+
+    snapshot = lp_ledger_export._stage_action_bundles(run, w3, 100, 109)
+
+    assert snapshot.phase == "action_decode"
+    assert requested == [witness.transaction_hash]
+    assert [bundle.transaction_hash for bundle in run.commits] == [
+        witness.transaction_hash
+    ]
+    assert run.completed == []
+
+    zero_run = _ActionBundleRun({})
+    zero_snapshot = lp_ledger_export._stage_action_bundles(
+        zero_run,
+        SimpleNamespace(eth=SimpleNamespace()),
+        100,
+        109,
+    )
+    assert zero_snapshot.phase == "action_decode"
+    assert zero_run.completed == ["action_fetch"]
+
+    reused_run = _ActionBundleRun(
+        {witness.transaction_hash: (witness,)},
+        phase="action_decode",
+        pending_hashes=(),
+    )
+    reused_snapshot = lp_ledger_export._stage_action_bundles(
+        reused_run,
+        SimpleNamespace(eth=SimpleNamespace()),
+        100,
+        109,
+    )
+    assert reused_snapshot.phase == "action_decode"
+    assert reused_run.commits == []
+    assert reused_run.completed == []
+
+
+def test_verified_rpc_entrypoint_fails_closed_before_legacy_scan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_make_web3",
+        lambda _config: (_ for _ in ()).throw(AssertionError("RPC must not start")),
+    )
+
+    with pytest.raises(CrossPoolContractError, match="action-first"):
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            100,
+            109,
+            tmp_path / "ledger.csv",
+        )
 
 
 def test_verified_decode_rejects_an_unrepresentable_target_pool_action(
@@ -750,14 +1100,6 @@ def test_rpc_header_failure_leaves_no_published_ledger_pair(
         )
     )
     monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
-    discovery_called = False
-
-    def discover(*_args):
-        nonlocal discovery_called
-        discovery_called = True
-        return lp_ledger_export.RpcLPCandidateDiscovery((), (), ())
-
-    monkeypatch.setattr(lp_ledger_export, "_discover_rpc_lp_candidates", discover)
     monkeypatch.setattr(
         lp_ledger_export,
         "_coverage_block_header",
@@ -770,9 +1112,9 @@ def test_rpc_header_failure_leaves_no_published_ledger_pair(
             100,
             100,
             output,
+            candidate_tx_hashes=(),
         )
 
-    assert not discovery_called
     assert not output.exists()
     assert not ledger_coverage_path(output).exists()
 
@@ -784,21 +1126,14 @@ def test_rpc_chain_identity_must_match_the_frozen_pool() -> None:
         lp_ledger_export._coverage_chain_id(fake_w3, "uni-base")
 
 
-def test_wrong_rpc_chain_fails_before_candidate_discovery(
+def test_candidate_list_export_rejects_the_wrong_rpc_chain(
     tmp_path,
     monkeypatch,
 ) -> None:
     output = tmp_path / "ledger.csv"
     fake_w3 = SimpleNamespace(eth=SimpleNamespace(chain_id=56))
-    discovery_called = False
-
-    def discover(*_args):
-        nonlocal discovery_called
-        discovery_called = True
-        return lp_ledger_export.RpcLPCandidateDiscovery((), (), ())
 
     monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
-    monkeypatch.setattr(lp_ledger_export, "_discover_rpc_lp_candidates", discover)
 
     with pytest.raises(ValueError, match="does not match 8453"):
         lp_ledger_export.export_rpc_lp_ledger(
@@ -806,9 +1141,9 @@ def test_wrong_rpc_chain_fails_before_candidate_discovery(
             100,
             100,
             output,
+            candidate_tx_hashes=(),
         )
 
-    assert not discovery_called
     assert not output.exists()
     assert not ledger_coverage_path(output).exists()
 
@@ -824,10 +1159,6 @@ def test_rpc_export_brackets_data_reads_with_endpoint_snapshots(
     def header(_w3, block_number):
         events.append(f"header:{block_number}")
         return f"0x{block_number:064x}", 1_700_000_000_000 + block_number
-
-    def discover(*_args):
-        events.append("discovery")
-        return lp_ledger_export.RpcLPCandidateDiscovery((), (), ())
 
     def decode(*_args, **_kwargs):
         events.append("decode")
@@ -849,19 +1180,23 @@ def test_rpc_export_brackets_data_reads_with_endpoint_snapshots(
     monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
     monkeypatch.setattr(lp_ledger_export, "_coverage_chain_id", lambda *_args: 8453)
     monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", header)
-    monkeypatch.setattr(lp_ledger_export, "_discover_rpc_lp_candidates", discover)
     monkeypatch.setattr(lp_ledger_export, "_decode_rpc_lp_inputs", decode)
     monkeypatch.setattr(lp_ledger_export, "_replayed_price_events_for_actions", replay)
     monkeypatch.setattr(lp_ledger_export, "build_rpc_ledger_coverage_bytes", build_coverage)
     monkeypatch.setattr(lp_ledger_export, "_publish_ledger_pair", publish)
 
-    count = lp_ledger_export.export_rpc_lp_ledger("uni-base", 100, 102, output)
+    count = lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        100,
+        102,
+        output,
+        candidate_tx_hashes=(),
+    )
 
     assert count == 0
     assert events == [
         "header:100",
         "header:102",
-        "discovery",
         "decode",
         "replay",
         "header:100",
@@ -914,18 +1249,19 @@ def test_rpc_export_rejects_changed_endpoint_snapshot(
     monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: object())
     monkeypatch.setattr(lp_ledger_export, "_coverage_chain_id", lambda *_args: 8453)
     monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", header)
-    monkeypatch.setattr(
-        lp_ledger_export,
-        "_discover_rpc_lp_candidates",
-        lambda *_args: lp_ledger_export.RpcLPCandidateDiscovery((), (), ()),
-    )
     monkeypatch.setattr(lp_ledger_export, "_decode_rpc_lp_inputs", lambda *_args, **_kwargs: ([], []))
     monkeypatch.setattr(lp_ledger_export, "_replayed_price_events_for_actions", lambda *_args: [])
     monkeypatch.setattr(lp_ledger_export, "build_rpc_ledger_coverage_bytes", build_coverage)
     monkeypatch.setattr(lp_ledger_export, "_publish_ledger_pair", publish)
 
     with pytest.raises(CrossPoolContractError, match="endpoint.*changed"):
-        lp_ledger_export.export_rpc_lp_ledger("uni-base", 100, 102, output)
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            100,
+            102,
+            output,
+            candidate_tx_hashes=(),
+        )
 
     assert not built_coverage
     assert not published
@@ -1724,15 +2060,6 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
     output = tmp_path / "ledger.csv"
 
     monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
-    monkeypatch.setattr(
-        lp_ledger_export,
-        "_discover_rpc_lp_candidates",
-        lambda *_args: lp_ledger_export.RpcLPCandidateDiscovery(
-            action_transaction_hashes=(tx_hash,),
-            ownership_transaction_hashes=(tx_hash,),
-            all_transaction_hashes=(tx_hash,),
-        ),
-    )
     monkeypatch.setattr(lp_ledger_export, "_block_timestamp_for_number", lambda *_args: 1_700_000_000)
     monkeypatch.setattr(
         lp_ledger_export,
@@ -1749,7 +2076,13 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
         lambda *_args: [_price_event("mint", 100, 8, 0, 2**96, 0)],
     )
 
-    count = lp_ledger_export.export_rpc_lp_ledger("uni-base", 100, 100, output)
+    count = lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        100,
+        100,
+        output,
+        candidate_tx_hashes=(tx_hash,),
+    )
 
     rows = list(csv.DictReader(output.open()))
     assert count == 1
@@ -1760,22 +2093,10 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
     assert rows[0]["amount1"] == "1.5"
     assert rows[0]["amount_attribution_status"] == "exact"
     coverage = json.loads(ledger_coverage_path(output).read_text())
-    assert coverage["verification_mode"] == "rpc_verified"
+    assert coverage["verification_mode"] == "candidate_list_unverified"
     assert coverage["covered_start_block"] == 100
     assert coverage["covered_end_block"] == 100
     assert coverage["ledger_sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
-
-    candidate_output = tmp_path / "candidate-ledger.csv"
-    lp_ledger_export.export_rpc_lp_ledger(
-        "uni-base",
-        100,
-        100,
-        candidate_output,
-        candidate_tx_hashes=[tx_hash],
-    )
-    candidate_coverage = json.loads(ledger_coverage_path(candidate_output).read_text())
-    assert candidate_coverage["verification_mode"] == "candidate_list_unverified"
-
 
 def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp_path, monkeypatch):
     config = POOL_CONFIGS["uni-base"]
@@ -1872,15 +2193,6 @@ def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp
     output = tmp_path / "ledger.csv"
 
     monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
-    monkeypatch.setattr(
-        lp_ledger_export,
-        "_discover_rpc_lp_candidates",
-        lambda *_args: lp_ledger_export.RpcLPCandidateDiscovery(
-            action_transaction_hashes=(increase_hash, mint_hash),
-            ownership_transaction_hashes=(mint_hash, transfer_hash),
-            all_transaction_hashes=(increase_hash, transfer_hash, mint_hash),
-        ),
-    )
     monkeypatch.setattr(lp_ledger_export, "_block_timestamp_for_number", lambda *_args: 1_700_000_000)
     monkeypatch.setattr(
         lp_ledger_export,
@@ -1900,7 +2212,13 @@ def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp
         ],
     )
 
-    count = lp_ledger_export.export_rpc_lp_ledger("uni-base", 100, 100, output)
+    count = lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        100,
+        100,
+        output,
+        candidate_tx_hashes=(increase_hash, transfer_hash, mint_hash),
+    )
 
     rows = list(csv.DictReader(output.open()))
     assert count == 2
