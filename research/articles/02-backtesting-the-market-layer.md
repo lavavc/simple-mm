@@ -161,15 +161,18 @@ capital paths from reset-only diagnostics, and tests candidate completeness,
 path validity, and comparator evidence as separate questions. A failed gate is
 reported as a failure rather than repaired with a replacement result.
 
-> **Portfolio results — publication gated.** This article will report an
-> outcome only after both frozen evidence packages pass completeness,
-> provenance, and independent review.
-> Results will be stated separately for each pool and only as diagnostic
-> historical evidence.
-> The missing non-pool inventory comparator remains a binding limit on any
-> economic interpretation.
+> **Portfolio result — integrity-attested non-result.** Both frozen pool-local
+> evidence packages passed integrity attestation after Base and BSC completed
+> their full evaluation horizons. The candidate reset matrices were complete,
+> and candidate-level overfitting diagnostics were computed. However, the
+> allocation-rule reset matrices and carried portfolio paths did not satisfy
+> the pre-specified completeness gate. This study therefore reports no
+> weighted-portfolio performance result. The failure is retained as a
+> diagnostic research result, not converted into a substitute claim or
+> live-promotion rationale. The missing non-pool inventory comparator remains
+> an independent limit on economic interpretation.
 
-<!-- PORTFOLIO_RESULT: PENDING_VALIDATION -->
+<!-- PORTFOLIO_RESULT: INTEGRITY_ATTESTED_NONRESULT -->
 
 ### 7. The separate cross-pool information-transfer experiment
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -343,31 +344,149 @@ def test_article_two_contains_reviewed_cross_pool_result_and_boundaries() -> Non
     ) < article.index("### 8. Why the failures are the point")
 
 
-def test_article_two_scaffolds_the_final_portfolio_test_without_a_result_claim() -> None:
+def test_article_two_records_integrity_attested_weighted_portfolio_nonresult() -> None:
     article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
-    normalized = " ".join(article.split())
-    pending_marker = "<!-- PORTFOLIO_RESULT: PENDING_VALIDATION -->"
+    section = _section_between(
+        article,
+        "#### The final portfolio test",
+        "### 7. The separate cross-pool information-transfer experiment",
+    )
+    normalized = " ".join(section.replace(">", "").split())
+    marker = "<!-- PORTFOLIO_RESULT: INTEGRITY_ATTESTED_NONRESULT -->"
 
     for phrase in (
-        "#### The final portfolio test",
         "canonical economic candidates",
         "joint portfolio accounting",
         "carried capital paths",
         "reset-only diagnostics",
-        "Portfolio results — publication gated.",
-        "separately for each pool",
+        "Portfolio result — integrity-attested non-result.",
+        "passed integrity attestation",
+        "candidate reset matrices were complete",
+        "did not satisfy the pre-specified completeness gate",
+        "no weighted-portfolio performance result",
+        "not converted into a substitute claim",
         "missing non-pool inventory comparator",
     ):
         assert phrase in normalized
     assert article.index("#### The final portfolio test") < article.index(
         "### 7. The separate cross-pool information-transfer experiment"
     )
-    assert article.count(pending_marker) == 1
+    assert article.count(marker) == 1
+    assert "PORTFOLIO_RESULT: PENDING_VALIDATION" not in article
     assert (
         article.index("#### The final portfolio test")
-        < article.index(pending_marker)
+        < article.index(marker)
         < article.index("### 7. The separate cross-pool information-transfer experiment")
     )
+
+
+def test_evidence_pack_binds_the_weighted_portfolio_nonresult() -> None:
+    evidence = Path(
+        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
+    ).read_text()
+    validator_path = Path(
+        "research/scripts/validate_parameter_portfolio_publication.py"
+    )
+    validator_sha256 = hashlib.sha256(validator_path.read_bytes()).hexdigest()
+    section = _section_between(
+        evidence,
+        "Frozen weighted-portfolio test:",
+        "Cross-pool information transfer:",
+    )
+    normalized = " ".join(section.split())
+    cpl_block = _section_between(evidence, "```text", "```")
+
+    for phrase in (
+        "Both frozen pool-local packages passed integrity attestation",
+        "candidate reset matrices were complete",
+        "did not satisfy the pre-specified completeness gate",
+        "no weighted-portfolio performance claim",
+        "WPP_EDITORIAL_STATUS: INTEGRITY_ATTESTED_NONRESULT",
+        (
+            "WPP_BASE_MANIFEST_SHA256: "
+            "6ce68fa8c0a05cb6339d223e9558aa9f5a425a5205de6d5b8bdddce252241ac4"
+        ),
+        (
+            "WPP_BSC_MANIFEST_SHA256: "
+            "81c3f01c496f137dcaf1eb7c25b425b05eb5c93adc08fd20f5397cedcf893dc7"
+        ),
+        "WPP_FROZEN_SOURCE_COMMIT: b331b432bf612ed21413d54a0fd6c0eb76b7c38f",
+        f"WPP_VALIDATOR_SHA256: {validator_sha256}",
+        "WPP_DEFAULT_CLAIM_GATE: fail_both",
+        "WPP_INTEGRITY_STATUS: pass_both",
+        "WPP_EVIDENCE_STATUS: not_publishable_both",
+        "research/results/parameter_portfolio/uni_base/run_manifest.json",
+        "research/results/parameter_portfolio/uni_bsc/run_manifest.json",
+        "research/scripts/validate_parameter_portfolio_publication.py",
+    ):
+        assert phrase in evidence or phrase in normalized
+    assert "WPP_" not in cpl_block
+    assert "Automated integrity attestation only" in evidence
+    assert evidence.index("Human review authority lives only") < evidence.index(
+        "Automated integrity attestation only"
+    )
+    assert (
+        "It does not report or support a weighted-portfolio performance result"
+        in evidence
+    )
+
+
+def test_public_weighted_portfolio_nonresult_withholds_private_results() -> None:
+    article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
+    evidence = Path(
+        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
+    ).read_text()
+    readme = Path("research/articles/README.md").read_text()
+    public_nonresult = "\n".join(
+        (
+            _section_between(
+                article,
+                "#### The final portfolio test",
+                "### 7. The separate cross-pool information-transfer experiment",
+            ),
+            _section_between(
+                evidence,
+                "Frozen weighted-portfolio test:",
+                "Cross-pool information transfer:",
+            ),
+            _section_between(
+                evidence,
+                "Automated integrity attestation only:",
+                "## Source Map",
+            ),
+            _section_between(
+                readme,
+                "- The final weighted-portfolio packages",
+                "Supporting evidence:",
+            ),
+        )
+    )
+
+    assert re.search(r"\d+(?:\.\d+)?\s*%", public_nonresult) is None
+    for pattern in (
+        r"\beconomic_id\b",
+        r"\bselected identifiers?\b",
+        r"\bselected\b",
+        r"\bconfigurations?\b",
+        r"\bweights?\b",
+        r"\bcoefficients?\b",
+        r"\bleverage\b",
+        r"\bsizing\b",
+        r"\breturns?\b",
+        r"\bdrawdowns?\b",
+        r"\bpnl\b",
+        r"\bfees?\b",
+        r"\bcosts?\b",
+        r"\bthresholds?\b",
+        r"\bsignals?\b",
+        r"\bexecution\b",
+        r"\btactics?\b",
+        r"\bparameters?\b",
+        r"\bidentifiers?\b",
+        r"\bbps\b",
+        r"\bbasis points?\b",
+    ):
+        assert re.search(pattern, public_nonresult, flags=re.IGNORECASE) is None
 
 
 @pytest.mark.parametrize("path", REVIEWED_ARTICLE_PATHS)

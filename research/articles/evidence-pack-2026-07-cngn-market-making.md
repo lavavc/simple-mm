@@ -4,6 +4,8 @@ Date: 2026-07-10
 
 Cross-pool evidence reviewed: 2026-07-23
 
+Weighted-portfolio evidence attested: 2026-07-23
+
 Purpose: collect the source-backed claims that can support the next two Lava
 cNGN articles without implying live promotion of Fair Price or DEX LP research.
 
@@ -33,6 +35,22 @@ CPL_INPUT_SHA256_BSC_LEDGER: 8435d0d1924ff7906af9d8290d21884027109cf279fde478eb7
 Generated reports retain their generation-time `generated and unreviewed`
 label. Human review authority lives only in the reviewed manifest above, which
 binds those unchanged report bytes by hash.
+
+Automated integrity attestation only: the weighted-portfolio metadata below
+records validator-confirmed artifact integrity. It does not extend the
+cross-pool human review to these packages and does not authorize performance
+claims.
+
+```text
+WPP_EDITORIAL_STATUS: INTEGRITY_ATTESTED_NONRESULT
+WPP_BASE_MANIFEST_SHA256: 6ce68fa8c0a05cb6339d223e9558aa9f5a425a5205de6d5b8bdddce252241ac4
+WPP_BSC_MANIFEST_SHA256: 81c3f01c496f137dcaf1eb7c25b425b05eb5c93adc08fd20f5397cedcf893dc7
+WPP_FROZEN_SOURCE_COMMIT: b331b432bf612ed21413d54a0fd6c0eb76b7c38f
+WPP_VALIDATOR_SHA256: f61edb91bff128df0cda50494d7f47d7c207dc4345e837fcbd330cf09524e1a0
+WPP_DEFAULT_CLAIM_GATE: fail_both
+WPP_INTEGRITY_STATUS: pass_both
+WPP_EVIDENCE_STATUS: not_publishable_both
+```
 
 ## Source Map
 
@@ -64,6 +82,9 @@ Local artifacts:
 - `research/results/cross_pool_lead_lag/article_manifest.json`
 - `research/results/cross_pool_lead_lag/statistical_report.md`
 - `research/results/cross_pool_lead_lag/frozen_policy_report.md`
+- `research/results/parameter_portfolio/uni_base/run_manifest.json`
+- `research/results/parameter_portfolio/uni_bsc/run_manifest.json`
+- `research/scripts/validate_parameter_portfolio_publication.py`
 
 ## What The First Lava Article Argued
 
@@ -141,6 +162,17 @@ That transfer finding does not answer whether either pool contributes stable
 incremental information about the other. No live LP promotion is justified
 without a non-pool inventory comparator.
 
+Frozen weighted-portfolio test:
+
+- Both frozen pool-local packages passed integrity attestation after their full
+  Base and BSC evaluation horizons completed.
+- The candidate reset matrices were complete, and candidate-level overfitting
+  diagnostics were computed.
+- The allocation-rule reset matrices and carried portfolio paths did not satisfy
+  the pre-specified completeness gate.
+- This is an integrity-attested non-result: no weighted-portfolio performance
+  claim, substitute claim, or live-promotion conclusion is permitted.
+
 Cross-pool information transfer:
 
 - The sealed statistical run passed data and causal-alignment QA.
@@ -179,6 +211,8 @@ Frozen Base economics:
 - It does not prove an affirmative null or establish that no material
   cross-pool lead exists.
 - It does not prove that the frozen forecast gate improves LP economics.
+- It does not report or support a weighted-portfolio performance result, because
+  neither frozen pool package satisfied the claim gate.
 - It does not identify causal price discovery, toxic flow, or any external LP's
   profitability.
 

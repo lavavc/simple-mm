@@ -23,6 +23,9 @@ Active July 2026 sequence:
    - The reviewed cross-pool conclusion is `leadership_unresolved`; the frozen
      economic result is `no_net_return_improvement`. Both remain diagnostic
      research rather than live promotion.
+   - The final weighted-portfolio packages passed integrity attestation, but
+     both failed the pre-specified claim gate. The article records an
+     integrity-attested non-result and reports no portfolio performance.
 
 Supporting evidence:
 
@@ -38,7 +41,8 @@ classification `no_net_return_improvement`. It forbids claims of either
 directional lead, bidirectional incremental evidence, an affirmative no-lead
 result, causal price discovery, toxic flow, external-LP profitability, or
 deployable alpha. Implementation-specific parameters and execution details stay
-out of the article.
+out of the article. The weighted-portfolio integrity attestation does not
+authorize a performance, comparator, economic, or promotion conclusion.
 
 Archived source material:
 
