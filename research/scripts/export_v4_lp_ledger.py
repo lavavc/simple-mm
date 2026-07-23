@@ -17,8 +17,18 @@ from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
+from requests import ConnectionError as RequestsConnectionError
+from requests import Timeout as RequestsTimeout
 from web3 import Web3
+from web3.exceptions import (
+    MultipleFailedRequests,
+    ProviderConnectionError,
+    RequestTimedOut,
+    TooManyRequests,
+    Web3RPCError,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -126,6 +136,11 @@ _RPC_ADDRESS_FIELDS = frozenset(
     {"address", "contractAddress", "creates", "from", "to"}
 )
 _RPC_DATA_FIELDS = frozenset({"data", "input", "logsBloom", "r", "s"})
+_POSITION_MANAGER_TRANSFER_TOPIC = str(
+    coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex())
+).lower()
+_MAX_TRANSFER_LOG_QUERY_BLOCKS = 2_000
+_TRANSFER_LOG_RETRY_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -426,6 +441,421 @@ def _freeze_action_token_set(run: LPLedgerCheckpoint) -> CheckpointSnapshot:
     if run.undecoded_action_bundles():
         raise ValueError("action token set cannot freeze with undecoded bundles")
     return run.freeze_action_token_set()
+
+
+def _stage_full_transfer_scan(
+    run: LPLedgerCheckpoint,
+    w3: Web3,
+    config: ExportPoolConfig,
+    start_block: int,
+    end_block: int,
+) -> CheckpointSnapshot:
+    _validate_frozen_range(start_block, end_block)
+    transfer_w3 = _transfer_scan_web3(w3, config)
+    frozen_token_ids = frozenset(run.frozen_token_ids())
+    snapshot = run.snapshot()
+    for block_range in run.incomplete_transfer_chunks():
+        if (
+            block_range.start_block < start_block
+            or block_range.end_block > end_block
+        ):
+            raise ValueError("checkpoint transfer chunk is outside the frozen range")
+        raw_logs = _fetch_bounded_position_transfer_logs(
+            transfer_w3,
+            config,
+            block_range.start_block,
+            block_range.end_block,
+        )
+        witnesses = tuple(
+            sorted(
+                (
+                    _normalize_position_transfer_witness(raw_log, config)
+                    for raw_log in raw_logs
+                ),
+                key=_discovery_witness_sort_key,
+            )
+        )
+        _validate_complete_transfer_witnesses(
+            witnesses,
+            block_range.start_block,
+            block_range.end_block,
+        )
+        relevant_witnesses = tuple(
+            witness
+            for witness in witnesses
+            if int(witness.topics[3], 16) in frozen_token_ids
+        )
+        snapshot = run.commit_transfer_chunk(
+            block_range,
+            unfiltered_count=len(witnesses),
+            unfiltered_sha256=_transfer_witnesses_sha256(witnesses),
+            relevant_witnesses=relevant_witnesses,
+        )
+    return snapshot
+
+
+def _transfer_scan_web3(
+    w3: Web3,
+    config: ExportPoolConfig,
+) -> Web3:
+    provider = getattr(w3, "provider", None)
+    if provider is None:
+        return w3
+    if not isinstance(provider, Web3.HTTPProvider):
+        raise ValueError("transfer scan requires an HTTP provider")
+    if _rpc_provider_origin(str(provider.endpoint_uri)) != _rpc_provider_origin(
+        config.rpc_url
+    ):
+        raise ValueError("transfer scan provider origin does not match its config")
+    if provider.exception_retry_configuration is None:
+        return w3
+    return Web3(
+        Web3.HTTPProvider(
+            config.rpc_url,
+            exception_retry_configuration=None,
+        )
+    )
+
+
+def _rpc_provider_origin(rpc_url: str) -> str:
+    parsed = urlsplit(rpc_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("RPC provider URL is invalid") from exc
+    hostname = parsed.hostname
+    effective_port = 443 if port is None else port
+    if (
+        parsed.scheme not in ("http", "https")
+        or hostname is None
+        or not 1 <= effective_port <= 65_535
+        or ":" in hostname
+    ):
+        raise ValueError("RPC provider URL is invalid")
+    origin = f"{parsed.scheme}://{hostname.lower()}"
+    return origin if port is None else f"{origin}:{port}"
+
+
+def _fetch_bounded_position_transfer_logs(
+    w3: Web3,
+    config: ExportPoolConfig,
+    start_block: int,
+    end_block: int,
+) -> list[object]:
+    logs: list[object] = []
+    query_start = start_block
+    while query_start <= end_block:
+        query_end = min(
+            query_start + _MAX_TRANSFER_LOG_QUERY_BLOCKS - 1,
+            end_block,
+        )
+        logs.extend(
+            _fetch_position_transfer_query_with_subdivision(
+                w3,
+                config,
+                query_start,
+                query_end,
+            )
+        )
+        query_start = query_end + 1
+    return logs
+
+
+def _fetch_position_transfer_query_with_subdivision(
+    w3: Web3,
+    config: ExportPoolConfig,
+    start_block: int,
+    end_block: int,
+) -> list[object]:
+    failure: Exception | None = None
+    for _attempt in range(_TRANSFER_LOG_RETRY_ATTEMPTS):
+        try:
+            response = _fetch_logs_with_debug(
+                w3,
+                {
+                    "address": Web3.to_checksum_address(config.position_manager),
+                    "topics": [_POSITION_MANAGER_TRANSFER_TOPIC],
+                    "fromBlock": start_block,
+                    "toBlock": end_block,
+                },
+                context=(
+                    f"[{config.name}] PositionManager Transfer logs "
+                    f"{start_block:,}->{end_block:,}"
+                ),
+            )
+        except Exception as exc:
+            if not _is_retryable_transfer_log_error(exc):
+                raise
+            failure = exc
+            continue
+        if not isinstance(response, list):
+            raise ValueError(
+                "PositionManager Transfer response is malformed or explicitly truncated"
+            )
+        return cast(list[object], response)
+    if failure is None:
+        raise AssertionError("transfer log retry loop ended without a result")
+    if start_block == end_block:
+        raise failure
+    midpoint = start_block + (end_block - start_block) // 2
+    return _fetch_position_transfer_query_with_subdivision(
+        w3,
+        config,
+        start_block,
+        midpoint,
+    ) + _fetch_position_transfer_query_with_subdivision(
+        w3,
+        config,
+        midpoint + 1,
+        end_block,
+    )
+
+
+def _is_retryable_transfer_log_error(exc: Exception) -> bool:
+    if isinstance(
+        exc,
+        (
+            RequestsConnectionError,
+            RequestsTimeout,
+            ConnectionError,
+            TimeoutError,
+            MultipleFailedRequests,
+            ProviderConnectionError,
+            RequestTimedOut,
+            TooManyRequests,
+        ),
+    ):
+        return True
+    message = str(exc).lower()
+    retryable_markers = (
+        "timeout",
+        "timed out",
+        "rate limit",
+        "too many requests",
+        "response size",
+        "result limit",
+        "query returned more than",
+        "block range",
+        "capacity",
+        "status=408",
+        "status=400",
+        "status=413",
+        "status=429",
+        "status=500",
+        "status=502",
+        "status=503",
+        "status=504",
+        "status=unavailable",
+    )
+    if isinstance(exc, Web3RPCError):
+        return any(marker in message for marker in retryable_markers)
+    if isinstance(exc, RuntimeError) and message.startswith(
+        "rpc log request failed"
+    ):
+        return any(marker in message for marker in retryable_markers)
+    return False
+
+
+def _normalize_position_transfer_witness(
+    raw_log: object,
+    config: ExportPoolConfig,
+) -> DiscoveryWitness:
+    if not isinstance(raw_log, Mapping):
+        raise ValueError("PositionManager Transfer log must be a mapping")
+    payload = dict(raw_log)
+    removed = payload.get("removed")
+    if removed is not None and (type(removed) is not bool or removed):
+        raise ValueError("PositionManager Transfer log is removed")
+    raw_topics = payload.get("topics")
+    if (
+        not isinstance(raw_topics, Sequence)
+        or isinstance(raw_topics, (str, bytes, bytearray, memoryview))
+        or len(raw_topics) != 4
+    ):
+        raise ValueError("PositionManager Transfer log topics are invalid")
+    topics = tuple(
+        _normalize_fixed_hex(topic, 32, f"PositionManager Transfer topic {index}")
+        for index, topic in enumerate(raw_topics)
+    )
+    witness = DiscoveryWitness(
+        source="position_transfer",
+        block_number=_required_rpc_int_field(
+            payload,
+            "blockNumber",
+            label="PositionManager Transfer log",
+        ),
+        block_hash=_normalize_fixed_hex(
+            payload.get("blockHash"),
+            32,
+            "PositionManager Transfer block hash",
+        ),
+        transaction_hash=_normalize_transaction_hash(
+            payload.get("transactionHash"),
+            label="PositionManager Transfer transaction hash",
+        ),
+        transaction_index=_required_rpc_int_field(
+            payload,
+            "transactionIndex",
+            label="PositionManager Transfer log",
+        ),
+        log_index=_required_rpc_int_field(
+            payload,
+            "logIndex",
+            label="PositionManager Transfer log",
+        ),
+        address=_normalize_fixed_hex(
+            payload.get("address"),
+            20,
+            "PositionManager Transfer address",
+        ),
+        topics=topics,
+        data=_normalize_hex_data(
+            payload.get("data"),
+            "PositionManager Transfer data",
+        ),
+    )
+    if (
+        witness.address
+        != _normalize_fixed_hex(
+            config.position_manager,
+            20,
+            "configured PositionManager",
+        )
+        or witness.topics[0] != _POSITION_MANAGER_TRANSFER_TOPIC
+        or witness.data != "0x"
+    ):
+        raise ValueError("PositionManager Transfer log identity is invalid")
+    if witness.topics[1][2:26] != "0" * 24 or witness.topics[2][2:26] != "0" * 24:
+        raise ValueError("PositionManager Transfer owner topic is not canonical")
+    return witness
+
+
+def _validate_complete_transfer_witnesses(
+    witnesses: tuple[DiscoveryWitness, ...],
+    start_block: int,
+    end_block: int,
+) -> None:
+    if witnesses != tuple(sorted(witnesses, key=_discovery_witness_sort_key)):
+        raise ValueError("PositionManager Transfer logs are not canonically ordered")
+    identities: set[tuple[str, int]] = set()
+    locations: set[tuple[int, int]] = set()
+    block_hashes: dict[int, str] = {}
+    transaction_locations: dict[str, tuple[int, str, int]] = {}
+    transaction_slots: dict[tuple[int, int], str] = {}
+    for witness in witnesses:
+        if not start_block <= witness.block_number <= end_block:
+            raise ValueError("PositionManager Transfer log is outside its query range")
+        identity = (witness.transaction_hash, witness.log_index)
+        location = (witness.block_number, witness.log_index)
+        if identity in identities or location in locations:
+            raise ValueError("PositionManager Transfer log identity is duplicated")
+        identities.add(identity)
+        locations.add(location)
+        prior_hash = block_hashes.setdefault(
+            witness.block_number,
+            witness.block_hash,
+        )
+        if prior_hash != witness.block_hash:
+            raise ValueError("PositionManager Transfer block has conflicting hashes")
+        transaction_location = (
+            witness.block_number,
+            witness.block_hash,
+            witness.transaction_index,
+        )
+        prior_location = transaction_locations.setdefault(
+            witness.transaction_hash,
+            transaction_location,
+        )
+        if prior_location != transaction_location:
+            raise ValueError("PositionManager Transfer transaction location conflicts")
+        transaction_slot = (witness.block_number, witness.transaction_index)
+        prior_transaction_hash = transaction_slots.setdefault(
+            transaction_slot,
+            witness.transaction_hash,
+        )
+        if prior_transaction_hash != witness.transaction_hash:
+            raise ValueError("PositionManager Transfer transaction slot conflicts")
+
+
+def _transfer_witnesses_sha256(
+    witnesses: tuple[DiscoveryWitness, ...],
+) -> str:
+    payload = _canonical_rpc_json([asdict(witness) for witness in witnesses])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stage_relevant_transfer_bundles(
+    run: LPLedgerCheckpoint,
+    w3: Web3,
+    start_block: int,
+    end_block: int,
+) -> CheckpointSnapshot:
+    _validate_frozen_range(start_block, end_block)
+    pending_hashes = run.unfetched_relevant_transfer_hashes()
+    snapshot = run.snapshot()
+    for transaction_hash in pending_hashes:
+        reused = run.reuse_staged_bundle_for_relevant_transfer(transaction_hash)
+        if reused is not None:
+            snapshot = reused
+            continue
+        bundle = _fetch_and_validate_candidate_bundle(
+            w3,
+            transaction_hash,
+            run.relevant_transfer_witnesses(transaction_hash),
+            start_block,
+            end_block,
+        )
+        snapshot = run.commit_relevant_transfer_bundle(bundle)
+    if (
+        not pending_hashes
+        and snapshot.phase == "relevant_transfer_fetch"
+        and not run.relevant_transfer_transaction_hashes()
+    ):
+        snapshot = run.complete_phase("relevant_transfer_fetch")
+    return snapshot
+
+
+def _stage_relevant_transfer_decode(
+    run: LPLedgerCheckpoint,
+    config: ExportPoolConfig,
+) -> CheckpointSnapshot:
+    frozen_token_ids = frozenset(run.frozen_token_ids())
+    pending_bundles = run.undecoded_relevant_transfer_bundles()
+    snapshot = run.snapshot()
+    for bundle in pending_bundles:
+        receipt = _canonical_bundle_mapping(
+            bundle.receipt_json,
+            "candidate receipt JSON",
+        )
+        owners = tuple(
+            sorted(
+                (
+                    owner
+                    for owner in decode_ownership_events_from_receipt(
+                        receipt,
+                        config.position_manager,
+                    )
+                    if owner.token_id in frozen_token_ids
+                ),
+                key=lambda owner: (
+                    owner.block_number,
+                    owner.log_index,
+                    owner.event_order,
+                    owner.token_id,
+                ),
+            )
+        )
+        snapshot = run.commit_decoded_relevant_transfer_transaction(
+            bundle,
+            owners=owners,
+        )
+    if (
+        not pending_bundles
+        and snapshot.phase == "relevant_transfer_decode"
+        and not run.relevant_transfer_transaction_hashes()
+    ):
+        snapshot = run.complete_phase("relevant_transfer_decode")
+    return snapshot
 
 
 def _require_matching_action_decode_identity(
@@ -763,17 +1193,44 @@ def _validate_normalized_receipt_witnesses(
         removed = log.get("removed")
         if removed is not None and (type(removed) is not bool or removed):
             raise ValueError("candidate receipt contains a removed log")
-    if any(len(witness.topics) < 2 for witness in witnesses):
+    sources = {witness.source for witness in witnesses}
+    if len(sources) != 1 or any(
+        witness.transaction_hash != requested_hash for witness in witnesses
+    ):
+        raise ValueError("candidate discovery witnesses are inconsistent")
+    source = next(iter(sources))
+    if source == "position_transfer":
+        transfer_target = (witnesses[0].address, witnesses[0].topics[0])
+        if any(
+            len(witness.topics) != 4
+            or witness.data != "0x"
+            or (witness.address, witness.topics[0]) != transfer_target
+            for witness in witnesses
+        ):
+            raise ValueError("candidate transfer witnesses are inconsistent")
+        for witness in witnesses:
+            matches = [
+                log
+                for log in logs
+                if isinstance(log, dict)
+                and _normalized_log_matches_witness(log, witness)
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "candidate receipt does not exactly match its transfer witness"
+                )
+        return
+    if source != "pool_modify" or any(
+        len(witness.topics) < 2 for witness in witnesses
+    ):
         raise ValueError("candidate discovery witness topics are incomplete")
-    expected_target = (
+    action_target = (
         witnesses[0].address,
         witnesses[0].topics[0],
         witnesses[0].topics[1],
     )
     if any(
-        witness.transaction_hash != requested_hash
-        or len(witness.topics) < 2
-        or (witness.address, witness.topics[0], witness.topics[1]) != expected_target
+        (witness.address, witness.topics[0], witness.topics[1]) != action_target
         for witness in witnesses
     ):
         raise ValueError("candidate discovery witnesses are inconsistent")
@@ -788,7 +1245,7 @@ def _validate_normalized_receipt_witnesses(
             log["topics"][0],
             log["topics"][1],
         )
-        == expected_target
+        == action_target
     ]
     for witness in witnesses:
         matches = [
@@ -851,6 +1308,8 @@ def _normalize_fixed_hex(
 
 
 def _normalize_hex_data(value: object, label: str) -> str:
+    if isinstance(value, (bytes, bytearray, memoryview)) and not bytes(value):
+        return "0x"
     normalized = str(coerce_hex_str(value))
     if not normalized.startswith("0x"):
         raise ValueError(f"{label} must be hex data")

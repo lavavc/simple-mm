@@ -131,6 +131,7 @@ def test_schema_v2_public_contract_is_action_first_and_replay_bound() -> None:
     assert "wrapper_entrypoint" in identity_fields
     assert "action_topic" in identity_fields
     assert "transfer_topic" in identity_fields
+    assert "rpc_provider_origin" in identity_fields
     assert "replay_input" in identity_fields
     build_fields = tuple(field.name for field in fields(checkpoint_module.BuildInputs))
     assert build_fields == (
@@ -305,6 +306,61 @@ def test_action_bundle_missing_a_full_witness_rolls_back(tmp_path: Path) -> None
 
             with pytest.raises(CheckpointContractError, match="missing"):
                 run.commit_action_bundle(missing)
+
+            assert run.snapshot() == before
+            assert run.unfetched_action_hashes() == (_HASH_C,)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("wrong_block_number", "duplicate_log", "removed_log"),
+)
+def test_action_bundle_requires_one_exact_receipt_match(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    witness = _witness(
+        source="pool_modify",
+        transaction_hash=_HASH_C,
+        block_number=101,
+        block_hash=_HASH_E,
+        transaction_index=5,
+        log_index=11,
+    )
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            _identity(paths.output),
+            fresh=False,
+        ) as run:
+            run.complete_phase("preflight")
+            first, second = run.incomplete_action_chunks()
+            run.commit_action_chunk(first, (witness,))
+            run.commit_action_chunk(second, ())
+            valid = _bundle(witness)
+            receipt = json.loads(valid.receipt_json)
+            logs = receipt["logs"]
+            if mutation == "wrong_block_number":
+                logs[0]["blockNumber"] = "100"
+            elif mutation == "duplicate_log":
+                logs.append(dict(logs[0]))
+            else:
+                logs[0]["removed"] = True
+            receipt_json = _canonical_json(receipt)
+            invalid = replace(
+                valid,
+                receipt_json=receipt_json,
+                payload_sha256=candidate_payload_sha256(
+                    valid.transaction_json,
+                    receipt_json,
+                ),
+            )
+            before = run.snapshot()
+
+            with pytest.raises(CheckpointContractError, match="exactly once"):
+                run.commit_action_bundle(invalid)
 
             assert run.snapshot() == before
             assert run.unfetched_action_hashes() == (_HASH_C,)
@@ -565,11 +621,19 @@ def test_transfer_attestation_reuses_action_bundle_and_decodes_exact_owner(
             assert run.relevant_transfer_witnesses(_HASH_C) == (transfer_witness,)
             assert run.unfetched_relevant_transfer_hashes() == (_HASH_C,)
 
-            run.commit_relevant_transfer_bundle(bundle)
+            reused = run.reuse_staged_bundle_for_relevant_transfer(_HASH_C)
+            assert reused is not None
+            assert reused.phase == "relevant_transfer_decode"
             assert run.unfetched_relevant_transfer_hashes() == ()
             assert len(run.undecoded_relevant_transfer_bundles()) == 1
             assert run._connection.execute(
                 "SELECT COUNT(*) FROM transaction_bundles"
+            ).fetchone()[0] == 1
+            assert run._connection.execute(
+                "SELECT COUNT(*) FROM action_bundle_fetches"
+            ).fetchone()[0] == 1
+            assert run._connection.execute(
+                "SELECT COUNT(*) FROM relevant_transfer_bundle_fetches"
             ).fetchone()[0] == 1
 
             decoded = run.commit_decoded_relevant_transfer_transaction(
@@ -628,6 +692,141 @@ def test_transfer_attestation_reuses_action_bundle_and_decodes_exact_owner(
             relevant_count=0,
         ),
     )
+
+
+def test_reused_bundle_rejects_unretained_frozen_position_manager_transfer(
+    tmp_path: Path,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    action_witness = _witness(
+        source="pool_modify",
+        transaction_hash=_HASH_C,
+        block_number=101,
+        block_hash=_HASH_E,
+        transaction_index=5,
+        log_index=11,
+    )
+    owner_c_topic = f"0x{'0' * 24}{_ADDRESS_C[2:]}"
+    owner_d_topic = f"0x{'0' * 24}{_ADDRESS_D[2:]}"
+    transfer_witness = replace(
+        _witness(
+            source="position_transfer",
+            transaction_hash=_HASH_C,
+            block_number=101,
+            block_hash=_HASH_E,
+            transaction_index=5,
+            log_index=12,
+        ),
+        topics=(_HASH_B, f"0x{'0' * 64}", owner_c_topic, f"0x{77:064x}"),
+    )
+    omitted_frozen_transfer = replace(
+        transfer_witness,
+        log_index=13,
+        topics=(_HASH_B, owner_c_topic, owner_d_topic, f"0x{77:064x}"),
+    )
+    bundle = _bundle(action_witness, transfer_witness, omitted_frozen_transfer)
+    action = _action(action_witness)
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            _identity(paths.output),
+            fresh=False,
+        ) as run:
+            run.complete_phase("preflight")
+            first, second = run.incomplete_action_chunks()
+            run.commit_action_chunk(first, (action_witness,))
+            run.commit_action_chunk(second, ())
+            run.commit_action_bundle(bundle)
+            run.commit_decoded_action_transaction(
+                bundle,
+                headers=(BlockHeader(101, _HASH_E, 1_010),),
+                resolutions=(),
+                state_upserts=(
+                    DecoderStateUpsert(
+                        77,
+                        LedgerPositionState(_HASH_A, -10, 10, 100),
+                        101,
+                        11,
+                        0,
+                    ),
+                ),
+                state_deletes=(),
+                actions=(action,),
+                position_keys=(_position_key(action),),
+            )
+            run.freeze_action_token_set()
+            transfer_first, transfer_second = run.incomplete_transfer_chunks()
+            run.commit_transfer_chunk(
+                transfer_first,
+                unfiltered_count=2,
+                unfiltered_sha256=hashlib.sha256(b"two transfer logs").hexdigest(),
+                relevant_witnesses=(transfer_witness,),
+            )
+            run.commit_transfer_chunk(
+                transfer_second,
+                unfiltered_count=0,
+                unfiltered_sha256=hashlib.sha256(b"[]").hexdigest(),
+                relevant_witnesses=(),
+            )
+            before = run.snapshot()
+
+            with pytest.raises(
+                CheckpointContractError,
+                match="unretained frozen transfer",
+            ):
+                run.reuse_staged_bundle_for_relevant_transfer(_HASH_C)
+
+            assert run.snapshot() == before
+            assert run.unfetched_relevant_transfer_hashes() == (_HASH_C,)
+
+
+@pytest.mark.parametrize(
+    ("extra_token_id", "resume_rejected"),
+    ((77, True), (999, False)),
+)
+def test_resume_revalidates_frozen_transfer_receipt_closure(
+    tmp_path: Path,
+    extra_token_id: int,
+    resume_rejected: bool,
+) -> None:
+    paths, identity, bundle = _stage_cached_relevant_transfer_checkpoint(tmp_path)
+    receipt = json.loads(bundle.receipt_json)
+    extra_log = dict(receipt["logs"][1])
+    extra_log["logIndex"] = "13"
+    extra_log["topics"] = [
+        _HASH_B,
+        f"0x{'0' * 24}{_ADDRESS_C[2:]}",
+        f"0x{'0' * 24}{_ADDRESS_D[2:]}",
+        f"0x{extra_token_id:064x}",
+    ]
+    receipt["logs"].append(extra_log)
+    receipt_json = _canonical_json(receipt)
+    payload_sha256 = candidate_payload_sha256(
+        bundle.transaction_json,
+        receipt_json,
+    )
+    with sqlite3.connect(paths.database) as connection:
+        connection.execute(
+            """
+            UPDATE transaction_bundles
+            SET receipt_json = ?, payload_sha256 = ?
+            WHERE transaction_hash = ?
+            """,
+            (receipt_json, payload_sha256, bundle.transaction_hash),
+        )
+
+    with acquire_run_lock(paths):
+        if resume_rejected:
+            with pytest.raises(CheckpointContractError, match="staged evidence"):
+                LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False)
+        else:
+            with LPLedgerCheckpoint.create_or_resume(
+                paths,
+                identity,
+                fresh=False,
+            ) as resumed:
+                assert resumed.snapshot().phase == "relevant_transfer_decode"
 
 
 def test_zero_action_and_zero_relevant_transfer_phases_complete_explicitly(
@@ -989,6 +1188,46 @@ def test_large_evm_values_round_trip_without_sqlite_numeric_coercion(
         ).fetchone()[0] == str(huge)
 
 
+def test_max_uint256_frozen_token_ownership_round_trips_on_resume(
+    tmp_path: Path,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _identity(paths.output)
+    token_id = 2**256 - 1
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            bundle, transfer_witness = _stage_frozen_transfer_fixture(
+                run,
+                token_id=token_id,
+            )
+            assert run.frozen_token_ids() == (token_id,)
+            first, second = run.incomplete_transfer_chunks()
+            run.commit_transfer_chunk(
+                first,
+                unfiltered_count=1,
+                unfiltered_sha256=hashlib.sha256(b"max token transfer").hexdigest(),
+                relevant_witnesses=(transfer_witness,),
+            )
+            run.commit_transfer_chunk(
+                second,
+                unfiltered_count=0,
+                unfiltered_sha256=hashlib.sha256(b"[]").hexdigest(),
+                relevant_witnesses=(),
+            )
+            assert run.reuse_staged_bundle_for_relevant_transfer(_HASH_C) is not None
+            run.commit_decoded_relevant_transfer_transaction(
+                bundle,
+                owners=(OwnershipEvent(101, 12, token_id, None, _ADDRESS_C),),
+            )
+
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as resumed:
+            assert resumed.frozen_token_ids() == (token_id,)
+            assert resumed.load_ownership_events() == (
+                OwnershipEvent(101, 12, token_id, None, _ADDRESS_C),
+            )
+
+
 def test_precommit_failure_rolls_back_entire_action_discovery_unit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1172,6 +1411,67 @@ def test_postcommit_failure_preserves_entire_action_decode_on_reopen(
             assert reopened.load_decoded_actions() == (action,)
             assert reopened.load_ownership_events() == ()
             assert reopened.load_decoder_state() == {77: state}
+
+
+def test_transfer_scan_fetch_and_decode_resume_after_postcommit_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _identity(paths.output)
+
+    def fail_after_commit(stage: str) -> None:
+        if stage == "after_commit":
+            raise RuntimeError("injected transfer postcommit crash")
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            bundle, transfer_witness = _stage_frozen_transfer_fixture(run)
+            transfer_first, transfer_second = run.incomplete_transfer_chunks()
+            monkeypatch.setattr(checkpoint_module, "_mutation_hook", fail_after_commit)
+
+            with pytest.raises(RuntimeError, match="transfer postcommit"):
+                run.commit_transfer_chunk(
+                    transfer_first,
+                    unfiltered_count=1,
+                    unfiltered_sha256=hashlib.sha256(b"one transfer log").hexdigest(),
+                    relevant_witnesses=(transfer_witness,),
+                )
+
+        monkeypatch.setattr(checkpoint_module, "_mutation_hook", lambda _stage: None)
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            assert run.incomplete_transfer_chunks() == (transfer_second,)
+            run.commit_transfer_chunk(
+                transfer_second,
+                unfiltered_count=0,
+                unfiltered_sha256=hashlib.sha256(b"[]").hexdigest(),
+                relevant_witnesses=(),
+            )
+            monkeypatch.setattr(checkpoint_module, "_mutation_hook", fail_after_commit)
+
+            with pytest.raises(RuntimeError, match="transfer postcommit"):
+                run.reuse_staged_bundle_for_relevant_transfer(_HASH_C)
+
+        monkeypatch.setattr(checkpoint_module, "_mutation_hook", lambda _stage: None)
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            assert run.snapshot().phase == "relevant_transfer_decode"
+            assert run.unfetched_relevant_transfer_hashes() == ()
+            assert run.undecoded_relevant_transfer_bundles() == (bundle,)
+            monkeypatch.setattr(checkpoint_module, "_mutation_hook", fail_after_commit)
+
+            with pytest.raises(RuntimeError, match="transfer postcommit"):
+                run.commit_decoded_relevant_transfer_transaction(
+                    bundle,
+                    owners=(OwnershipEvent(101, 12, 77, None, _ADDRESS_C),),
+                )
+
+        monkeypatch.setattr(checkpoint_module, "_mutation_hook", lambda _stage: None)
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            assert run.snapshot().phase == "replay_input_bind"
+            assert run.undecoded_relevant_transfer_bundles() == ()
+            assert run.load_ownership_events() == (
+                OwnershipEvent(101, 12, 77, None, _ADDRESS_C),
+            )
 
 
 def test_decode_rejects_candidate_header_fork_without_partial_state(tmp_path: Path) -> None:
@@ -2220,7 +2520,10 @@ def test_compatible_resume_increments_attempt_and_generation(tmp_path: Path) -> 
     assert resumed.generation == first.generation + 1
 
 
-@pytest.mark.parametrize("mutation", ("range", "endpoint", "source", "output"))
+@pytest.mark.parametrize(
+    "mutation",
+    ("range", "endpoint", "source", "output", "provider"),
+)
 def test_incompatible_resume_fails_without_mutating_state(
     tmp_path: Path,
     mutation: str,
@@ -2239,6 +2542,20 @@ def test_incompatible_resume_fails_without_mutating_state(
             )
         with LPLedgerCheckpoint.open_status(paths) as run:
             assert run.snapshot() == before
+
+
+def test_checkpoint_identity_rejects_credential_bearing_provider_origin(
+    tmp_path: Path,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = replace(
+        _identity(paths.output),
+        rpc_provider_origin="https://base-mainnet.g.alchemy.com/v2/fixture-secret",
+    )
+
+    with acquire_run_lock(paths):
+        with pytest.raises(CheckpointContractError, match="provider origin"):
+            LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False)
 
 
 def test_run_lock_contention_precedes_checkpoint_and_progress_mutation(
@@ -3391,6 +3708,7 @@ def _bundle(
                 {
                     "address": value.address,
                     "blockHash": value.block_hash,
+                    "blockNumber": str(value.block_number),
                     "data": value.data,
                     "logIndex": str(value.log_index),
                     "topics": list(value.topics),
@@ -3442,6 +3760,90 @@ def _stage_candidate_to_decode(
     bundle = _bundle(witnesses[0], *witnesses[1:])
     run.commit_action_bundle(bundle)
     return bundle
+
+
+def _stage_frozen_transfer_fixture(
+    run: LPLedgerCheckpoint,
+    *,
+    token_id: int = 77,
+) -> tuple[CandidateBundle, DiscoveryWitness]:
+    action_witness = _witness(
+        source="pool_modify",
+        transaction_hash=_HASH_C,
+        block_number=101,
+        block_hash=_HASH_E,
+        transaction_index=5,
+        log_index=11,
+    )
+    transfer_witness = replace(
+        _witness(
+            source="position_transfer",
+            transaction_hash=_HASH_C,
+            block_number=101,
+            block_hash=_HASH_E,
+            transaction_index=5,
+            log_index=12,
+        ),
+        topics=(
+            _HASH_B,
+            f"0x{'0' * 64}",
+            f"0x{'0' * 24}{_ADDRESS_C[2:]}",
+            f"0x{token_id:064x}",
+        ),
+    )
+    bundle = _bundle(action_witness, transfer_witness)
+    action = replace(_action(action_witness), token_id=token_id)
+    run.complete_phase("preflight")
+    first, second = run.incomplete_action_chunks()
+    run.commit_action_chunk(first, (action_witness,))
+    run.commit_action_chunk(second, ())
+    run.commit_action_bundle(bundle)
+    run.commit_decoded_action_transaction(
+        bundle,
+        headers=(BlockHeader(101, _HASH_E, 1_010),),
+        resolutions=(),
+        state_upserts=(
+            DecoderStateUpsert(
+                token_id,
+                LedgerPositionState(_HASH_A, -10, 10, 100),
+                101,
+                11,
+                0,
+            ),
+        ),
+        state_deletes=(),
+        actions=(action,),
+        position_keys=(_position_key(action),),
+    )
+    run.freeze_action_token_set()
+    return bundle, transfer_witness
+
+
+def _stage_cached_relevant_transfer_checkpoint(
+    tmp_path: Path,
+) -> tuple[CheckpointPaths, RunIdentity, CandidateBundle]:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _identity(paths.output)
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            bundle, transfer_witness = _stage_frozen_transfer_fixture(run)
+            transfer_first, transfer_second = run.incomplete_transfer_chunks()
+            run.commit_transfer_chunk(
+                transfer_first,
+                unfiltered_count=1,
+                unfiltered_sha256=hashlib.sha256(b"one transfer log").hexdigest(),
+                relevant_witnesses=(transfer_witness,),
+            )
+            run.commit_transfer_chunk(
+                transfer_second,
+                unfiltered_count=0,
+                unfiltered_sha256=hashlib.sha256(b"[]").hexdigest(),
+                relevant_witnesses=(),
+            )
+            reused = run.reuse_staged_bundle_for_relevant_transfer(_HASH_C)
+            if reused is None:
+                raise AssertionError("action bundle was not reused")
+    return paths, identity, bundle
 
 
 def _position_key(action: DecodedLiquidityAction) -> checkpoint_module.PositionKeyMapping:
@@ -3523,6 +3925,7 @@ def _identity(output: Path) -> RunIdentity:
         chunk_size=5,
         action_topic=_HASH_A,
         transfer_topic=_HASH_B,
+        rpc_provider_origin="https://base-mainnet.g.alchemy.com",
         replay_input=checkpoint_module.ReplayInputEvidence(
             path=os.path.abspath(output.with_name("replay.csv")),
             sha256="b" * 64,
@@ -3566,6 +3969,8 @@ def _mutated_identity(identity: RunIdentity, mutation: str) -> RunIdentity:
         return replace(identity, source_sha256=(("export_v4_lp_ledger.py", "b" * 64),))
     if mutation == "output":
         return replace(identity, output_path=f"{identity.output_path}.other")
+    if mutation == "provider":
+        return replace(identity, rpc_provider_origin="https://bsc-mainnet.g.alchemy.com")
     raise AssertionError(f"unsupported identity mutation: {mutation}")
 
 

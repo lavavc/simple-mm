@@ -20,6 +20,7 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
 from web3 import Web3
 
@@ -339,6 +340,7 @@ class RunIdentity:
     chunk_size: int
     action_topic: str
     transfer_topic: str
+    rpc_provider_origin: str
     replay_input: ReplayInputEvidence
     output_path: str
     endpoint: EndpointSnapshot
@@ -1517,6 +1519,25 @@ class LPLedgerCheckpoint:
             )
         )
 
+    def reuse_staged_bundle_for_relevant_transfer(
+        self,
+        transaction_hash: str,
+    ) -> CheckpointSnapshot | None:
+        normalized = _require_lower_hex(transaction_hash, 32, "transaction hash")
+        row = self._connection.execute(
+            """
+            SELECT transaction_hash, block_number, block_hash,
+                   transaction_index, transaction_json, receipt_json,
+                   payload_sha256
+            FROM transaction_bundles
+            WHERE transaction_hash = ?
+            """,
+            (normalized,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.commit_relevant_transfer_bundle(_bundle_from_row(row))
+
     def commit_relevant_transfer_bundle(
         self,
         bundle: CandidateBundle,
@@ -1541,6 +1562,18 @@ class LPLedgerCheckpoint:
             if not witnesses:
                 raise CheckpointContractError("relevant transfer was not discovered")
             _validate_bundle_against_witnesses(bundle, witnesses)
+            identity = _identity_payload(connection)
+            frozen_ids = {
+                _parse_unsigned_decimal(cast(str, row[0]), "token id")
+                for row in connection.execute("SELECT token_id FROM frozen_token_ids")
+            }
+            _validate_relevant_transfer_receipt_closure(
+                bundle,
+                witnesses,
+                position_manager=_required_identity_str(identity, "position_manager"),
+                transfer_topic=_required_identity_str(identity, "transfer_topic"),
+                frozen_token_ids=frozen_ids,
+            )
             _upsert_chain_block(
                 connection,
                 bundle.block_number,
@@ -4020,8 +4053,120 @@ def _validate_bundle_against_witnesses(
             or witness.transaction_index != bundle.transaction_index
         ):
             raise CheckpointContractError("candidate witness location does not match")
-        if not any(_receipt_log_matches_witness(log, witness) for log in logs):
-            raise CheckpointContractError("candidate receipt is missing a discovery witness")
+        match_count = sum(
+            _receipt_log_matches_witness(log, witness) for log in logs
+        )
+        if match_count == 0:
+            raise CheckpointContractError(
+                "candidate receipt is missing a discovery witness; "
+                "each witness must match exactly once"
+            )
+        if match_count != 1:
+            raise CheckpointContractError(
+                "candidate receipt discovery witness must match exactly once"
+            )
+
+
+def _validate_relevant_transfer_receipt_closure(
+    bundle: CandidateBundle,
+    witnesses: tuple[DiscoveryWitness, ...],
+    *,
+    position_manager: str,
+    transfer_topic: str,
+    frozen_token_ids: set[int],
+) -> None:
+    receipt = _require_json_mapping(
+        _parse_canonical_json(bundle.receipt_json, "receipt JSON"),
+        "receipt JSON",
+    )
+    logs = receipt.get("logs")
+    if not isinstance(logs, list):
+        raise CheckpointContractError("candidate receipt logs are invalid")
+    receipt_witnesses: list[DiscoveryWitness] = []
+    for raw_log in logs:
+        if not isinstance(raw_log, dict):
+            raise CheckpointContractError("candidate receipt log is invalid")
+        log = cast(dict[str, object], raw_log)
+        topics = log.get("topics")
+        if log.get("address") != position_manager:
+            continue
+        if not isinstance(topics, list) or not topics or topics[0] != transfer_topic:
+            continue
+        receipt_witness = _transfer_witness_from_receipt_log(log)
+        if _transfer_witness_token_id(receipt_witness) in frozen_token_ids:
+            receipt_witnesses.append(receipt_witness)
+    canonical = tuple(
+        sorted(
+            receipt_witnesses,
+            key=lambda witness: (
+                witness.block_number,
+                witness.transaction_index,
+                witness.log_index,
+                witness.transaction_hash,
+            ),
+        )
+    )
+    if canonical != witnesses:
+        raise CheckpointContractError(
+            "candidate receipt contains an unretained frozen transfer"
+        )
+
+
+def _transfer_witness_from_receipt_log(
+    log: dict[str, object],
+) -> DiscoveryWitness:
+    raw_topics = log.get("topics")
+    if not isinstance(raw_topics, list) or not all(
+        isinstance(topic, str) for topic in raw_topics
+    ):
+        raise CheckpointContractError(
+            "candidate receipt PositionManager Transfer topics are invalid"
+        )
+    witness = DiscoveryWitness(
+        source="position_transfer",
+        block_number=_require_nonnegative_int(
+            _parse_unsigned_decimal(
+                _receipt_log_string(log, "blockNumber"),
+                "receipt log block number",
+            ),
+            "receipt log block number",
+        ),
+        block_hash=_receipt_log_string(log, "blockHash"),
+        transaction_hash=_receipt_log_string(log, "transactionHash"),
+        transaction_index=_require_nonnegative_int(
+            _parse_unsigned_decimal(
+                _receipt_log_string(log, "transactionIndex"),
+                "receipt log transaction index",
+            ),
+            "receipt log transaction index",
+        ),
+        log_index=_require_nonnegative_int(
+            _parse_unsigned_decimal(
+                _receipt_log_string(log, "logIndex"),
+                "receipt log index",
+            ),
+            "receipt log index",
+        ),
+        address=_receipt_log_string(log, "address"),
+        topics=tuple(cast(list[str], raw_topics)),
+        data=_receipt_log_string(log, "data", allow_empty=True),
+    )
+    _validate_witness_shape(witness, expected_source="position_transfer")
+    _transfer_witness_token_id(witness)
+    _transfer_witness_owners(witness)
+    return witness
+
+
+def _receipt_log_string(
+    log: dict[str, object],
+    field: str,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    value = log.get(field)
+    if not isinstance(value, str) or not allow_empty and not value:
+        raise CheckpointContractError(f"candidate receipt log {field} is invalid")
+    return value
 
 
 def _validate_ownership_reconciliation(
@@ -4097,9 +4242,12 @@ def _receipt_log_matches_witness(log: object, witness: DiscoveryWitness) -> bool
     if not isinstance(log, dict):
         return False
     topics = log.get("topics")
+    removed = log.get("removed")
     return (
-        log.get("address") == witness.address
+        (removed is None or removed is False)
+        and log.get("address") == witness.address
         and log.get("blockHash") == witness.block_hash
+        and log.get("blockNumber") == str(witness.block_number)
         and log.get("data") == witness.data
         and log.get("transactionHash") == witness.transaction_hash
         and log.get("transactionIndex") == str(witness.transaction_index)
@@ -4901,6 +5049,7 @@ def _validate_identity(identity: RunIdentity) -> None:
             raise CheckpointContractError(f"checkpoint identity {label} is invalid")
     if identity.verification_mode != "rpc_verified":
         raise CheckpointContractError("checkpoint identity verification mode is invalid")
+    _require_rpc_provider_origin(identity.rpc_provider_origin)
     if identity.chain_id <= 0:
         raise CheckpointContractError("checkpoint identity chain ID must be positive")
     for label, value in (
@@ -4979,6 +5128,38 @@ def _validate_identity(identity: RunIdentity) -> None:
             label=f"source digest {source_name}",
             prefix=False,
         )
+
+
+def _require_rpc_provider_origin(value: str) -> str:
+    if not isinstance(value, str):
+        raise CheckpointContractError("checkpoint RPC provider origin is invalid")
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise CheckpointContractError(
+            "checkpoint RPC provider origin is invalid"
+        ) from exc
+    hostname = parsed.hostname
+    effective_port = 443 if port is None else port
+    if (
+        parsed.scheme not in ("http", "https")
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or not 1 <= effective_port <= 65_535
+        or ":" in hostname
+    ):
+        raise CheckpointContractError("checkpoint RPC provider origin is invalid")
+    expected = f"{parsed.scheme}://{hostname.lower()}"
+    if port is not None:
+        expected = f"{expected}:{port}"
+    if value != expected:
+        raise CheckpointContractError("checkpoint RPC provider origin is invalid")
+    return value
 
 
 def _validate_action_decode_identity(identity: ActionDecodeIdentity) -> None:
@@ -5999,6 +6180,13 @@ def _validate_v2_bundle_and_decode_relations(
             )
         )
         _validate_bundle_against_witnesses(bundle, witnesses)
+        _validate_relevant_transfer_receipt_closure(
+            bundle,
+            witnesses,
+            position_manager=expected_manager,
+            transfer_topic=expected_topic,
+            frozen_token_ids=frozen_set,
+        )
 
     transfer_bundle_order = tuple(
         cast(str, row[0])

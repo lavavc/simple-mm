@@ -39,8 +39,8 @@ research-only RPC helpers.
   Decimal accounting values use validated canonical text; SQLite `REAL` is
   forbidden.
 - The checkpoint binds exact pool/config/range/output/endpoint/runtime/source
-  identity and never stores an RPC URL, credential, header, raw exception, or
-  command line.
+  identity plus a sanitized RPC provider origin, and never stores a full RPC
+  URL, credential, header, raw exception, or command line.
 - Target-action discovery and full-transfer attestation use independent fixed
   range partitions; quiet ranges are durable evidence in each stream.
 - Every target-pool action is fetched and reconciled before the canonical token
@@ -1099,8 +1099,8 @@ require the entire topics tuple and log data.
 
 Replace `RunIdentity.state_view` and the vague combined `discovery_topics` with
 the accepted wrapper EntryPoint, explicit action topic, explicit Transfer topic,
-and the complete frozen replay identity. Add an immutable
-`token_position_keys` table now so Task 6 can persist mint-derived
+sanitized RPC provider origin, and the complete frozen replay identity. Add an
+immutable `token_position_keys` table now so Task 6 can persist mint-derived
 `PositionKeyMapping` rows without a later schema change; it is never a
 salt-to-token inference fallback.
 
@@ -1138,7 +1138,9 @@ git commit -m "feat: checkpoint action-first LP ledger progress"
 ### Task 5: Stage Complete Target-Action Discovery And Bundles
 
 **Files:**
+- Modify: `research/backtester/lp_ledger_checkpoint.py`
 - Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/tests/test_lp_ledger_checkpoint.py`
 - Modify: `research/tests/test_v4_lp_ledger.py`
 
 **Interfaces:**
@@ -1311,7 +1313,9 @@ git commit -m "feat: reconcile wrapped LP actions"
 ### Task 7: Attest All Transfers And Fetch Only Relevant Ownership Bundles
 
 **Files:**
+- Modify: `research/backtester/lp_ledger_checkpoint.py`
 - Modify: `research/scripts/export_v4_lp_ledger.py`
+- Modify: `research/tests/test_lp_ledger_checkpoint.py`
 - Modify: `research/tests/test_v4_lp_ledger.py`
 
 **Interfaces:**
@@ -1319,9 +1323,10 @@ git commit -m "feat: reconcile wrapped LP actions"
   schema-v2 transfer chunks, shared bundle validator, and ownership decoder.
 - Produces: `_stage_full_transfer_scan(...)`,
   `_stage_relevant_transfer_bundles(...)`, and
-  `_stage_relevant_transfer_decode(...)`.
+  `_stage_relevant_transfer_decode(...)`, plus the narrow checkpoint transition
+  `reuse_staged_bundle_for_relevant_transfer(...)`.
 
-- [ ] **Step 1: Write failing transfer-attestation/filter tests**
+- [x] **Step 1: Write failing transfer-attestation/filter tests**
 
 For each fake chunk include relevant, irrelevant, mint, burn, transfer-only,
 same-action-transaction, and quiet cases. Assert canonical unfiltered
@@ -1334,9 +1339,21 @@ than trusted from an injected scalar, and reject a count below relevant count,
 duplicate retained witnesses, or any retained witness absent from that full
 response.
 
+Define the unfiltered digest preimage exactly as canonical JSON of the complete
+ordered list of normalized witness objects with fields `source`,
+`block_number`, `block_hash`, `transaction_hash`, `transaction_index`,
+`log_index`, `address`, `topics`, and `data`; JSON uses sorted object keys,
+ASCII escaping, and separators `(",", ":")`. Sort by
+`(block_number, transaction_index, log_index, transaction_hash)` and reject
+duplicate locations or identities before hashing. Task 8 aggregates chunk
+attestations by hashing the same canonical JSON encoding of ordered objects
+with fields `index`, `start_block`, `end_block`, `unfiltered_count`, and
+`unfiltered_sha256`.
+
 Add deterministic provider subdivision tests: an oversized/error response does
 not commit a chunk, subdivided children cover the exact parent interval without
-gaps/overlap, and no response is accepted as silently truncated. Test ownership
+gaps/overlap, and explicit truncation or a provider result-ceiling response is
+never committed. Test ownership
 ordering within the same transaction, ownership changes before first action and
 after final action, zero-address endpoints, unfrozen-token rejection, and
 crash/resume for scan, fetch, and decode independently. An empty frozen-token
@@ -1347,13 +1364,20 @@ one-to-one to one ownership event with identical full log identity, token ID,
 from/to addresses, and canonical order; missing, duplicate, or extra relevant
 ownership events fail.
 
-- [ ] **Step 2: Run RED**
+Add direct checkpoint tests for cached action-bundle reuse and receipt closure.
+The reuse transition must revalidate retained transfer witnesses, add only the
+separate relevant-fetch relation, and perform no RPC read. Receipt closure must
+require each witness exactly once, include log block number in full identity,
+and reject any additional configured-PositionManager `Transfer` for a frozen
+token that the scan did not retain.
+
+- [x] **Step 2: Run RED**
 
 ```bash
 python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "transfer_scan or relevant_transfer or ownership_decode"
 ```
 
-- [ ] **Step 3: Implement full attestation and relevant-only point reads**
+- [x] **Step 3: Implement full attestation and relevant-only point reads**
 
 For each configured parent chunk, normalize all Transfer logs before computing
 its canonical digest. After three retryable transport, rate-limit, or
@@ -1370,18 +1394,31 @@ reconcile them exactly to retained witnesses. Preserve one raw bundle when a
 transaction belongs to both populations and separate action/ownership decode
 markers.
 
-- [ ] **Step 4: Run GREEN and prove no unrelated point reads**
+This is a provider-conditioned full-RPC attestation, not proof against an
+undisclosed provider omission. Alchemy documents a 10,000-log cap for arbitrary
+ranges, or an uncapped log count for ranges of at most 2,000 blocks subject to a
+150 MB response limit. Therefore every transient query is proactively bounded
+to at most 2,000 inclusive blocks before the retry/subdivision policy applies.
+The transfer-scan client disables Web3's hidden provider retry loop so three
+attempts mean three transport requests. A surfaced HTTP 400 from the validated
+fixed Transfer query is treated as a provider range/result-limit failure and
+subdivided; authentication failures such as 401/403 remain non-retryable.
+A stronger claim requires an independent-provider or exhaustive smaller-range
+audit. Bind the sanitized provider origin—scheme, hostname, and optional port,
+never path/query/user information or credentials—in the run identity.
+
+- [x] **Step 4: Run GREEN and prove no unrelated point reads**
 
 ```bash
-python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "transfer or ownership or candidate"
+python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py research/tests/test_v4_lp_ledger.py -k "transfer or ownership or candidate"
 python3 -m py_compile research/scripts/export_v4_lp_ledger.py
 git diff --check
 ```
 
-- [ ] **Step 5: Commit Task 7**
+- [x] **Step 5: Commit Task 7**
 
 ```bash
-git add research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py
+git add docs/superpowers/plans/2026-07-22-v4-lp-ledger-checkpoint-progress.md docs/superpowers/specs/2026-07-21-v4-lp-ledger-checkpoint-progress-design.md research/backtester/lp_ledger_checkpoint.py research/scripts/export_v4_lp_ledger.py research/tests/test_lp_ledger_checkpoint.py research/tests/test_v4_lp_ledger.py
 git commit -m "feat: filter LP ownership bundle reads"
 ```
 
@@ -1419,8 +1456,9 @@ RPC calls.
 Pin coverage mutations independently for action witness count/digest/hashes,
 frozen token IDs/digest, unfiltered transfer count/digest, relevant witness
 count/digest/hashes, eligible bundle hashes/digest, reconciliation facts,
-replay input digest/range/counts, endpoint facts, and ledger bytes. Every
-mutation must fail the strict loader and manifest gate.
+replay input digest/range/counts, endpoint facts, sanitized provider origin,
+acquisition query/retry policy, and ledger bytes. Every mutation must fail the
+strict loader and manifest gate.
 
 All set digests are SHA-256 over UTF-8 canonical JSON with sorted keys and no
 insignificant whitespace. Action/relevant witnesses use full normalized log
@@ -1457,11 +1495,12 @@ from explicit canonical actions/ownership/bindings.
 
 Bump the sidecar schema and replace the ambiguous scan-source field with named
 action, token, full-transfer, relevant-transfer, eligible-bundle, replay-input,
-and reconciliation evidence. Update strict parsing/serialization, distilled
-verified evidence, manifest JSON/schema, and test fixtures. Do not accept v1 as
-verified through a compatibility shim. The manifest gate compares each ledger's
-replay-input digest, range, and timestamps to the exact replay artifact consumed
-by the cross-pool analysis and fails on any mismatch.
+reconciliation, sanitized-provider-origin, and acquisition-policy evidence.
+Update strict parsing/serialization, distilled verified evidence, manifest
+JSON/schema, and test fixtures. Do not accept v1 as verified through a
+compatibility shim. The manifest gate compares each ledger's replay-input
+digest, range, and timestamps to the exact replay artifact consumed by the
+cross-pool analysis and fails on any mismatch.
 
 - [ ] **Step 4: Run GREEN and integrated research regressions**
 

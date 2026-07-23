@@ -68,6 +68,13 @@ observable, and scoped to the research population.
   response, explicit truncation signal, or failure at a single-block leaf stops
   the run without committing the parent.
 
+Alchemy documents either a 10,000-log cap for an arbitrary block range or an
+uncapped log count for a range of at most 2,000 inclusive blocks, subject to a
+150 MB response limit. Every transient `eth_getLogs` query is therefore
+proactively bounded to at most 2,000 inclusive blocks before the retry and
+subdivision policy applies. This bound is an acquisition invariant, not a
+performance hint.
+
 ## Existing Evidence Boundary
 
 The July 15 design requires each verified ledger to bind exact CSV bytes to a
@@ -99,6 +106,12 @@ Those rules remain authoritative. Checkpointing operates strictly before the
 final pair-publication boundary. A completed checkpoint can reconstruct a
 proposed pair, but only successful coverage construction, staged validation,
 and final pair publication create canonical evidence.
+
+This evidence is provider-conditioned: complete normalization and durable
+attestation prove what the configured RPC returned under the bounded query
+contract, but cannot disprove an undisclosed provider omission. A stronger
+claim requires an independent-provider comparison or an exhaustive audit over
+smaller ranges.
 
 ## Selected Architecture
 
@@ -167,14 +180,19 @@ binds:
 - inclusive requested start and end blocks;
 - configured block chunk size, the explicit target-action topic, and the
   explicit PositionManager Transfer topic;
+- sanitized RPC provider origin containing only scheme, hostname, and optional
+  port; endpoint paths, user information, queries, fragments, and credentials
+  are forbidden;
 - normalized absolute frozen replay-artifact path, SHA-256 digest, byte length,
   row count, exact header digest, parser version, price-semantics source digest,
   first/last block, first/last timestamp, chain, and pool ID;
 - normalized absolute output path; and
 - initial start/end block hashes and timestamps.
 
-RPC URLs, API keys, HTTP headers, command-line strings, exception messages, and
-response diagnostics are forbidden from the database and fingerprint payload.
+Full RPC URLs, API keys, HTTP headers, command-line strings, exception messages,
+and response diagnostics are forbidden from the database and fingerprint
+payload. The sanitized provider origin is required so the provider-conditioned
+attestation remains identifiable without retaining credentials.
 
 On a new run, the exporter validates arguments and chain identity, captures the
 endpoint snapshot, computes and validates the frozen replay identity, creates
@@ -384,6 +402,16 @@ unfiltered count/digest, relevant count, relevant witnesses, and chunk
 completion atomically. Retain a witness when indexed `topic3` is in the frozen
 token set, including zero-address mint and burn transfers. Unrelated witnesses
 are covered by the unfiltered attestation but do not become candidates.
+
+The chunk digest preimage is canonical JSON for the complete ordered list of
+normalized witness objects with fields `source`, `block_number`, `block_hash`,
+`transaction_hash`, `transaction_index`, `log_index`, `address`, `topics`, and
+`data`. Objects sort by `(block_number, transaction_index, log_index,
+transaction_hash)`; duplicate locations or identities are rejected. JSON uses
+sorted object keys, ASCII escaping, and separators `(",", ":")`. The aggregate
+digest hashes the same canonical JSON encoding of ordered chunk-attestation
+objects with fields `index`, `start_block`, `end_block`, `unfiltered_count`,
+and `unfiltered_sha256`.
 
 Filtering applies across the full range, not from a token's first observed
 action. Provider errors, oversized responses, or ambiguity trigger deterministic

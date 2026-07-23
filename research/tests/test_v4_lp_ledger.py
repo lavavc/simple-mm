@@ -4,8 +4,10 @@ import hashlib
 import json
 import subprocess
 import sys
-from dataclasses import replace
+import threading
+from dataclasses import asdict, replace
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,6 +106,18 @@ def test_pool_config_repr_omits_rpc_url() -> None:
 
     assert "rpc_url=" not in rendered
     assert "fixture-secret" not in rendered
+
+
+def test_rpc_provider_origin_excludes_credentials_and_endpoint_path() -> None:
+    secret = "fixture-provider-secret"
+    origin = lp_ledger_export._rpc_provider_origin(
+        "https://user:password@base-mainnet.g.alchemy.com/"
+        f"v2/{secret}?api_key={secret}#fragment"
+    )
+
+    assert origin == "https://base-mainnet.g.alchemy.com"
+    assert secret not in origin
+    assert "password" not in origin
 
 
 def test_lp_ledger_cli_boundary_never_renders_bare_exception_secrets(
@@ -353,6 +367,143 @@ class _ActionDecodeRun:
         return SimpleNamespace(phase=self.phase)
 
 
+class _TransferScanRun:
+    def __init__(
+        self,
+        chunks: tuple[BlockRange, ...],
+        frozen_token_ids: tuple[int, ...],
+    ) -> None:
+        self.chunks = chunks
+        self.tokens = frozen_token_ids
+        self.commits: list[
+            tuple[BlockRange, int, str, tuple[DiscoveryWitness, ...]]
+        ] = []
+
+    def incomplete_transfer_chunks(self) -> tuple[BlockRange, ...]:
+        return self.chunks
+
+    def frozen_token_ids(self) -> tuple[int, ...]:
+        return self.tokens
+
+    def commit_transfer_chunk(
+        self,
+        block_range: BlockRange,
+        *,
+        unfiltered_count: int,
+        unfiltered_sha256: str,
+        relevant_witnesses: tuple[DiscoveryWitness, ...],
+    ) -> SimpleNamespace:
+        self.commits.append(
+            (
+                block_range,
+                unfiltered_count,
+                unfiltered_sha256,
+                relevant_witnesses,
+            )
+        )
+        return SimpleNamespace(phase="relevant_transfer_fetch")
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            phase="full_transfer_scan" if not self.commits else "relevant_transfer_fetch"
+        )
+
+
+class _RelevantTransferBundleRun:
+    def __init__(
+        self,
+        witnesses: dict[str, tuple[DiscoveryWitness, ...]],
+        cached_hashes: frozenset[str] = frozenset(),
+        *,
+        phase: str = "relevant_transfer_fetch",
+    ) -> None:
+        self.witnesses = witnesses
+        self.cached_hashes = cached_hashes
+        self.phase = phase
+        self.reuse_calls: list[str] = []
+        self.commits: list[CandidateBundle] = []
+        self.completed: list[str] = []
+
+    def unfetched_relevant_transfer_hashes(self) -> tuple[str, ...]:
+        return tuple(self.witnesses)
+
+    def relevant_transfer_transaction_hashes(self) -> tuple[str, ...]:
+        return tuple(self.witnesses)
+
+    def relevant_transfer_witnesses(
+        self,
+        transaction_hash: str,
+    ) -> tuple[DiscoveryWitness, ...]:
+        return self.witnesses[transaction_hash]
+
+    def reuse_staged_bundle_for_relevant_transfer(
+        self,
+        transaction_hash: str,
+    ) -> SimpleNamespace | None:
+        self.reuse_calls.append(transaction_hash)
+        if transaction_hash not in self.cached_hashes:
+            return None
+        return SimpleNamespace(phase=self.phase)
+
+    def commit_relevant_transfer_bundle(
+        self,
+        bundle: CandidateBundle,
+    ) -> SimpleNamespace:
+        self.commits.append(bundle)
+        self.phase = "relevant_transfer_decode"
+        return SimpleNamespace(phase=self.phase)
+
+    def complete_phase(self, phase: str) -> SimpleNamespace:
+        self.completed.append(phase)
+        self.phase = "relevant_transfer_decode"
+        return SimpleNamespace(phase=self.phase)
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(phase=self.phase)
+
+
+class _RelevantTransferDecodeRun:
+    def __init__(
+        self,
+        bundles: tuple[CandidateBundle, ...],
+        frozen_token_ids: tuple[int, ...],
+        *,
+        phase: str = "relevant_transfer_decode",
+    ) -> None:
+        self.bundles = bundles
+        self.tokens = frozen_token_ids
+        self.phase = phase
+        self.commits: list[tuple[CandidateBundle, tuple[OwnershipEvent, ...]]] = []
+        self.completed: list[str] = []
+
+    def undecoded_relevant_transfer_bundles(self) -> tuple[CandidateBundle, ...]:
+        return self.bundles
+
+    def frozen_token_ids(self) -> tuple[int, ...]:
+        return self.tokens
+
+    def relevant_transfer_transaction_hashes(self) -> tuple[str, ...]:
+        return tuple(bundle.transaction_hash for bundle in self.bundles)
+
+    def commit_decoded_relevant_transfer_transaction(
+        self,
+        bundle: CandidateBundle,
+        *,
+        owners: tuple[OwnershipEvent, ...],
+    ) -> SimpleNamespace:
+        self.commits.append((bundle, owners))
+        self.phase = "replay_input_bind"
+        return SimpleNamespace(phase=self.phase)
+
+    def complete_phase(self, phase: str) -> SimpleNamespace:
+        self.completed.append(phase)
+        self.phase = "replay_input_bind"
+        return SimpleNamespace(phase=self.phase)
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(phase=self.phase)
+
+
 def _action_decode_checkpoint_identity(output: Path, config) -> RunIdentity:
     return RunIdentity(
         schema_version=2,
@@ -376,6 +527,7 @@ def _action_decode_checkpoint_identity(output: Path, config) -> RunIdentity:
         chunk_size=5,
         action_topic=V4_MODIFY_LIQUIDITY_TOPIC.lower(),
         transfer_topic=("0x" + TRANSFER_TOPIC.removeprefix("0x")).lower(),
+        rpc_provider_origin="https://base-mainnet.g.alchemy.com",
         replay_input=ReplayInputEvidence(
             path=str(output.with_name("replay.csv").resolve()),
             sha256="b" * 64,
@@ -428,6 +580,56 @@ def _raw_action_log(
         ),
         "data": b"\x01\x02",
     }
+
+
+def _raw_position_transfer_log(
+    *,
+    block_number: int = 101,
+    transaction_hash: str = "0x" + "33" * 32,
+    transaction_index: int = 5,
+    log_index: int = 12,
+    token_id: int = 77,
+    from_address: str = ZERO_ADDRESS,
+    to_address: str = "0x" + "aa" * 20,
+) -> dict[str, object]:
+    config = POOL_CONFIGS["uni-base"]
+    block_hash_byte = block_number % 256
+    return {
+        "address": Web3.to_checksum_address(config.position_manager),
+        "blockNumber": hex(block_number),
+        "blockHash": bytes([block_hash_byte]) * 32,
+        "transactionHash": transaction_hash.upper().replace("0X", "0x"),
+        "transactionIndex": hex(transaction_index),
+        "logIndex": hex(log_index),
+        "topics": (
+            bytes.fromhex(TRANSFER_TOPIC.removeprefix("0x")),
+            bytes.fromhex(_topic_address(from_address)[2:]),
+            bytes.fromhex(_topic_address(to_address)[2:]),
+            token_id.to_bytes(32, "big"),
+        ),
+        "data": b"",
+        "removed": False,
+    }
+
+
+def _expected_position_transfer_witness(
+    raw: dict[str, object],
+) -> DiscoveryWitness:
+    config = POOL_CONFIGS["uni-base"]
+    topics = tuple(
+        "0x" + bytes(topic).hex() for topic in raw["topics"]  # type: ignore[arg-type]
+    )
+    return DiscoveryWitness(
+        source="position_transfer",
+        block_number=int(str(raw["blockNumber"]), 16),
+        block_hash="0x" + bytes(raw["blockHash"]).hex(),
+        transaction_hash=str(raw["transactionHash"]).lower(),
+        transaction_index=int(str(raw["transactionIndex"]), 16),
+        log_index=int(str(raw["logIndex"]), 16),
+        address=config.position_manager.lower(),
+        topics=topics,
+        data="0x",
+    )
 
 
 def _expected_action_witness(raw: dict[str, object]) -> DiscoveryWitness:
@@ -585,6 +787,384 @@ def test_action_discovery_resume_queries_only_incomplete_chunks(monkeypatch) -> 
     assert [(call[0]["fromBlock"], call[0]["toBlock"]) for call in calls] == [
         (105, 109)
     ]
+
+
+def test_full_transfer_scan_canonicalizes_all_logs_before_filtering(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    relevant_raw = _raw_position_transfer_log(
+        block_number=101,
+        transaction_hash="0x" + "11" * 32,
+        transaction_index=1,
+        log_index=4,
+        token_id=77,
+    )
+    irrelevant_raw = _raw_position_transfer_log(
+        block_number=102,
+        transaction_hash="0x" + "22" * 32,
+        transaction_index=2,
+        log_index=7,
+        token_id=2**255 + 9,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_fetch(_w3, params, *, context):
+        del context
+        calls.append(params)
+        return [irrelevant_raw, relevant_raw] if params["fromBlock"] == 100 else []
+
+    monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", fake_fetch)
+    run = _TransferScanRun(
+        (
+            BlockRange(index=0, start_block=100, end_block=104),
+            BlockRange(index=1, start_block=105, end_block=109),
+        ),
+        (77,),
+    )
+
+    snapshot = lp_ledger_export._stage_full_transfer_scan(
+        run,
+        object(),
+        config,
+        100,
+        109,
+    )
+
+    relevant = _expected_position_transfer_witness(relevant_raw)
+    irrelevant = _expected_position_transfer_witness(irrelevant_raw)
+    unfiltered = (relevant, irrelevant)
+    digest_payload = json.dumps(
+        [asdict(witness) for witness in unfiltered],
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    assert snapshot.phase == "relevant_transfer_fetch"
+    assert all(
+        call["address"] == Web3.to_checksum_address(config.position_manager)
+        and call["topics"] == [lp_ledger_export._POSITION_MANAGER_TRANSFER_TOPIC]
+        and len(call["topics"]) == 1  # type: ignore[arg-type]
+        for call in calls
+    )
+    assert [(call["fromBlock"], call["toBlock"]) for call in calls] == [
+        (100, 104),
+        (105, 109),
+    ]
+    assert run.commits == [
+        (
+            BlockRange(index=0, start_block=100, end_block=104),
+            2,
+            hashlib.sha256(digest_payload).hexdigest(),
+            (relevant,),
+        ),
+        (
+            BlockRange(index=1, start_block=105, end_block=109),
+            0,
+            hashlib.sha256(b"[]").hexdigest(),
+            (),
+        ),
+    ]
+
+
+def test_full_transfer_scan_bounds_queries_and_splits_after_three_failures(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    calls: list[tuple[int, int]] = []
+    failed_attempts = 0
+
+    def fake_fetch(_w3, params, *, context):
+        nonlocal failed_attempts
+        del context
+        query = (params["fromBlock"], params["toBlock"])
+        calls.append(query)
+        if query == (100, 2099) and failed_attempts < 3:
+            failed_attempts += 1
+            raise RequestsConnectionError("fixture transport failure")
+        return []
+
+    monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", fake_fetch)
+    parent = BlockRange(index=0, start_block=100, end_block=2100)
+    run = _TransferScanRun((parent,), ())
+
+    lp_ledger_export._stage_full_transfer_scan(
+        run,
+        object(),
+        config,
+        100,
+        2100,
+    )
+
+    assert calls == [
+        (100, 2099),
+        (100, 2099),
+        (100, 2099),
+        (100, 1099),
+        (1100, 2099),
+        (2100, 2100),
+    ]
+    assert all(end - start + 1 <= 2_000 for start, end in calls)
+    assert run.commits == [
+        (parent, 0, hashlib.sha256(b"[]").hexdigest(), ()),
+    ]
+
+
+def test_transfer_parent_digest_is_invariant_to_result_limit_subdivision(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    relevant = _raw_position_transfer_log(
+        block_number=101,
+        transaction_hash="0x" + "11" * 32,
+        transaction_index=1,
+        log_index=4,
+        token_id=77,
+    )
+    irrelevant = _raw_position_transfer_log(
+        block_number=2100,
+        transaction_hash="0x" + "22" * 32,
+        transaction_index=2,
+        log_index=7,
+        token_id=999,
+    )
+    parent = BlockRange(index=0, start_block=100, end_block=2100)
+
+    def successful_fetch(_w3, params, *, context):
+        del context
+        return [
+            log
+            for log in (irrelevant, relevant)
+            if params["fromBlock"] <= int(str(log["blockNumber"]), 16)
+            <= params["toBlock"]
+        ]
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_logs_with_debug",
+        successful_fetch,
+    )
+    direct = _TransferScanRun((parent,), (77,))
+    lp_ledger_export._stage_full_transfer_scan(
+        direct,
+        object(),
+        config,
+        100,
+        2100,
+    )
+
+    attempts = 0
+
+    def subdivided_fetch(_w3, params, *, context):
+        nonlocal attempts
+        del context
+        if (params["fromBlock"], params["toBlock"]) == (100, 2099):
+            attempts += 1
+            raise lp_ledger_export.Web3RPCError(
+                "Log response size exceeded the provider result limit"
+            )
+        return successful_fetch(_w3, params, context="fixture")
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_logs_with_debug",
+        subdivided_fetch,
+    )
+    subdivided = _TransferScanRun((parent,), (77,))
+    lp_ledger_export._stage_full_transfer_scan(
+        subdivided,
+        object(),
+        config,
+        100,
+        2100,
+    )
+
+    assert attempts == 3
+    assert subdivided.commits == direct.commits
+
+
+def test_transfer_log_retry_classification_is_fail_closed() -> None:
+    assert lp_ledger_export._is_retryable_transfer_log_error(
+        lp_ledger_export.Web3RPCError(
+            "Log response size exceeded the provider result limit"
+        )
+    )
+    assert lp_ledger_export._is_retryable_transfer_log_error(
+        RuntimeError("RPC log request failed status=429 reason=fixture")
+    )
+    assert lp_ledger_export._is_retryable_transfer_log_error(
+        RuntimeError("RPC log request failed status=400 reason=fixture")
+    )
+    assert not lp_ledger_export._is_retryable_transfer_log_error(
+        lp_ledger_export.Web3RPCError("execution reverted")
+    )
+    assert not lp_ledger_export._is_retryable_transfer_log_error(
+        RuntimeError("RPC log request failed status=401 reason=fixture")
+    )
+
+
+def test_transfer_scan_uses_a_provider_without_hidden_retries() -> None:
+    config = replace(
+        POOL_CONFIGS["uni-base"],
+        rpc_url="http://127.0.0.1:1",
+    )
+    retrying = _make_web3(config)
+
+    transfer_w3 = lp_ledger_export._transfer_scan_web3(retrying, config)
+
+    assert transfer_w3 is not retrying
+    assert transfer_w3.provider.endpoint_uri == retrying.provider.endpoint_uri
+    assert transfer_w3.provider.exception_retry_configuration is None
+    assert retrying.provider.exception_retry_configuration is not None
+
+    mismatched = _make_web3(
+        replace(config, rpc_url="https://bsc-mainnet.g.alchemy.com/v2/fixture")
+    )
+    with pytest.raises(ValueError, match="provider origin"):
+        lp_ledger_export._transfer_scan_web3(mismatched, config)
+
+
+def test_transfer_scan_three_attempts_are_three_http_requests() -> None:
+    request_count = 0
+
+    class FailingHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            nonlocal request_count
+            request_count += 1
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FailingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        config = replace(
+            POOL_CONFIGS["uni-base"],
+            rpc_url=f"http://{host}:{port}",
+        )
+        transfer_w3 = lp_ledger_export._transfer_scan_web3(
+            _make_web3(config),
+            config,
+        )
+
+        with pytest.raises(RuntimeError, match="status=503"):
+            lp_ledger_export._fetch_position_transfer_query_with_subdivision(
+                transfer_w3,
+                config,
+                100,
+                100,
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    assert request_count == 3
+
+
+@pytest.mark.parametrize("failure", ("truncated", "single_block_transport"))
+def test_full_transfer_scan_never_commits_incomplete_responses(
+    monkeypatch,
+    failure: str,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+
+    def fake_fetch(*_args, **_kwargs):
+        if failure == "truncated":
+            return {"logs": [], "truncated": True}
+        raise RequestsConnectionError("fixture transport failure")
+
+    monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", fake_fetch)
+    run = _TransferScanRun(
+        (BlockRange(index=0, start_block=100, end_block=100),),
+        (),
+    )
+
+    with pytest.raises((ValueError, RequestsConnectionError)):
+        lp_ledger_export._stage_full_transfer_scan(
+            run,
+            object(),
+            config,
+            100,
+            100,
+        )
+
+    assert run.commits == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("duplicate", "out_of_range", "noncanonical_owner", "conflicting_tx_slot"),
+)
+def test_full_transfer_scan_rejects_invalid_unfiltered_evidence(
+    monkeypatch,
+    mutation: str,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    raw = _raw_position_transfer_log(
+        block_number=101,
+        transaction_hash="0x" + "11" * 32,
+        transaction_index=5,
+        log_index=4,
+        token_id=77,
+    )
+    if mutation == "duplicate":
+        response = [raw, copy.deepcopy(raw)]
+    elif mutation == "out_of_range":
+        response = [
+            _raw_position_transfer_log(
+                block_number=99,
+                transaction_hash="0x" + "11" * 32,
+                transaction_index=5,
+                log_index=4,
+                token_id=77,
+            )
+        ]
+    elif mutation == "noncanonical_owner":
+        malformed = copy.deepcopy(raw)
+        topics = list(malformed["topics"])
+        topics[1] = bytes.fromhex("01" + "00" * 31)
+        malformed["topics"] = tuple(topics)
+        response = [malformed]
+    else:
+        response = [
+            raw,
+            _raw_position_transfer_log(
+                block_number=101,
+                transaction_hash="0x" + "22" * 32,
+                transaction_index=5,
+                log_index=7,
+                token_id=999,
+            ),
+        ]
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_logs_with_debug",
+        lambda *_args, **_kwargs: response,
+    )
+    run = _TransferScanRun(
+        (BlockRange(index=0, start_block=100, end_block=104),),
+        (77,),
+    )
+
+    with pytest.raises(ValueError):
+        lp_ledger_export._stage_full_transfer_scan(
+            run,
+            object(),
+            config,
+            100,
+            104,
+        )
+
+    assert run.commits == []
 
 
 def _candidate_rpc_payloads(
@@ -772,6 +1352,176 @@ def test_action_bundle_staging_fetches_only_pending_and_completes_zero_work() ->
     assert reused_snapshot.phase == "action_decode"
     assert reused_run.commits == []
     assert reused_run.completed == []
+
+
+def test_relevant_transfer_bundles_reuse_cache_and_fetch_only_missing_hashes() -> None:
+    cached_witness = _expected_position_transfer_witness(
+        _raw_position_transfer_log(
+            block_number=101,
+            transaction_hash="0x" + "11" * 32,
+            transaction_index=1,
+            log_index=4,
+            token_id=77,
+        )
+    )
+    missing_witness = _expected_position_transfer_witness(
+        _raw_position_transfer_log(
+            block_number=102,
+            transaction_hash="0x" + "22" * 32,
+            transaction_index=2,
+            log_index=7,
+            token_id=77,
+        )
+    )
+    transaction, receipt = _candidate_rpc_payloads(missing_witness)
+    requested: list[tuple[str, str]] = []
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=lambda transaction_hash: requested.append(
+                ("transaction", str(transaction_hash))
+            )
+            or transaction,
+            get_transaction_receipt=lambda transaction_hash: requested.append(
+                ("receipt", str(transaction_hash))
+            )
+            or receipt,
+        )
+    )
+    run = _RelevantTransferBundleRun(
+        {
+            cached_witness.transaction_hash: (cached_witness,),
+            missing_witness.transaction_hash: (missing_witness,),
+        },
+        frozenset({cached_witness.transaction_hash}),
+    )
+
+    snapshot = lp_ledger_export._stage_relevant_transfer_bundles(
+        run,
+        w3,
+        100,
+        109,
+    )
+
+    assert snapshot.phase == "relevant_transfer_decode"
+    assert run.reuse_calls == [
+        cached_witness.transaction_hash,
+        missing_witness.transaction_hash,
+    ]
+    assert requested == [
+        ("transaction", missing_witness.transaction_hash),
+        ("receipt", missing_witness.transaction_hash),
+    ]
+    assert [bundle.transaction_hash for bundle in run.commits] == [
+        missing_witness.transaction_hash
+    ]
+
+
+def test_relevant_transfer_decode_filters_and_orders_frozen_ownership() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    owner = "0x" + "aa" * 20
+    receipt = {
+        "blockNumber": "101",
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=owner,
+                to_address=ZERO_ADDRESS,
+                token_or_amount=77,
+                log_index=9,
+            ),
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=owner,
+                token_or_amount=999,
+                log_index=7,
+            ),
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=owner,
+                token_or_amount=77,
+                log_index=5,
+            ),
+        ],
+    }
+    transaction_json = lp_ledger_export._canonical_rpc_json({})
+    normalized_receipt = lp_ledger_export._normalize_rpc_payload(
+        receipt,
+        label="receipt",
+    )
+    assert isinstance(normalized_receipt, dict)
+    receipt_json = lp_ledger_export._canonical_rpc_json(normalized_receipt)
+    bundle = CandidateBundle(
+        transaction_hash="0x" + "33" * 32,
+        block_number=101,
+        block_hash="0x" + "44" * 32,
+        transaction_index=5,
+        transaction_json=transaction_json,
+        receipt_json=receipt_json,
+        payload_sha256=lp_ledger_export.candidate_payload_sha256(
+            transaction_json,
+            receipt_json,
+        ),
+    )
+    run = _RelevantTransferDecodeRun((bundle,), (77,))
+
+    snapshot = lp_ledger_export._stage_relevant_transfer_decode(run, config)
+
+    checksum_owner = Web3.to_checksum_address(owner)
+    assert snapshot.phase == "replay_input_bind"
+    assert run.commits == [
+        (
+            bundle,
+            (
+                OwnershipEvent(101, 5, 77, None, checksum_owner),
+                OwnershipEvent(101, 9, 77, checksum_owner, None),
+            ),
+        )
+    ]
+
+
+def test_empty_frozen_set_attests_scan_and_completes_transfer_zero_work(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    unrelated = _raw_position_transfer_log(token_id=999)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_logs_with_debug",
+        lambda *_args, **_kwargs: [unrelated],
+    )
+    scan_run = _TransferScanRun(
+        (BlockRange(index=0, start_block=100, end_block=109),),
+        (),
+    )
+
+    lp_ledger_export._stage_full_transfer_scan(
+        scan_run,
+        object(),
+        config,
+        100,
+        109,
+    )
+    bundle_run = _RelevantTransferBundleRun({})
+    bundle_snapshot = lp_ledger_export._stage_relevant_transfer_bundles(
+        bundle_run,
+        SimpleNamespace(eth=SimpleNamespace()),
+        100,
+        109,
+    )
+    decode_run = _RelevantTransferDecodeRun((), ())
+    decode_snapshot = lp_ledger_export._stage_relevant_transfer_decode(
+        decode_run,
+        config,
+    )
+
+    assert scan_run.commits[0][1] == 1
+    assert scan_run.commits[0][3] == ()
+    assert bundle_snapshot.phase == "relevant_transfer_decode"
+    assert bundle_run.completed == ["relevant_transfer_fetch"]
+    assert decode_snapshot.phase == "replay_input_bind"
+    assert decode_run.completed == ["relevant_transfer_decode"]
 
 
 def test_action_decode_stages_state_key_header_and_reconciled_action(
