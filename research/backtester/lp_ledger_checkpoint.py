@@ -1099,6 +1099,7 @@ class LPLedgerCheckpoint:
                 upsert_values,
                 delete_values,
                 action_values,
+                resolution_query_block=max(bundle.block_number - 1, 0),
             )
             for header in header_values:
                 _upsert_chain_block(
@@ -4146,10 +4147,15 @@ def _validate_decode_batch(
     if bundle.block_number not in header_numbers:
         raise CheckpointContractError("decoded transaction header is missing")
     resolution_keys: set[tuple[int, int]] = set()
+    expected_resolution_block = max(bundle.block_number - 1, 0)
     for resolution in resolutions:
         _validate_position_resolution(resolution)
         key = (resolution.token_id, resolution.query_block)
-        if key in resolution_keys or resolution.query_block not in header_numbers:
+        if (
+            key in resolution_keys
+            or resolution.query_block != expected_resolution_block
+            or resolution.query_block not in header_numbers
+        ):
             raise CheckpointContractError("position resolution header or identity is invalid")
         resolution_keys.add(key)
     upsert_ids: set[int] = set()
@@ -4230,12 +4236,12 @@ def _validate_position_key_mappings(
     for mapping in mappings:
         _validate_position_key_shape(mapping)
         location = _position_key_location(mapping)
-        action = mint_actions_by_location.get(location)
-        if action is None or (
-            action.token_id != mapping.token_id
-            or action.pool_id != mapping.pool_id
-            or action.tick_lower != mapping.tick_lower
-            or action.tick_upper != mapping.tick_upper
+        mapped_action = mint_actions_by_location.get(location)
+        if mapped_action is None or (
+            mapped_action.token_id != mapping.token_id
+            or mapped_action.pool_id != mapping.pool_id
+            or mapped_action.tick_lower != mapping.tick_lower
+            or mapped_action.tick_upper != mapping.tick_upper
         ):
             raise CheckpointContractError("position key does not match a mint action")
         if (
@@ -4351,6 +4357,8 @@ def _validate_decoder_state_transition(
     state_upserts: Sequence[DecoderStateUpsert],
     state_deletes: Sequence[int],
     actions: Sequence[DecodedLiquidityAction],
+    *,
+    resolution_query_block: int,
 ) -> None:
     prior_states = {
         _parse_unsigned_decimal(cast(str, row["token_id"]), "token id"): (
@@ -4371,7 +4379,31 @@ def _validate_decoder_state_transition(
             """
         )
     }
-    resolved_states: dict[int, LedgerPositionState] = {}
+    resolved_states = {
+        _parse_unsigned_decimal(cast(str, row["token_id"]), "token id"): (
+            LedgerPositionState(
+                pool_id=_require_lower_hex(
+                    cast(str, row["pool_id"]),
+                    32,
+                    "pool id",
+                ),
+                tick_lower=cast(int, row["tick_lower"]),
+                tick_upper=cast(int, row["tick_upper"]),
+                liquidity_after=_parse_unsigned_decimal(
+                    cast(str, row["liquidity_after"]),
+                    "liquidity",
+                ),
+            )
+        )
+        for row in connection.execute(
+            """
+            SELECT token_id, pool_id, tick_lower, tick_upper, liquidity_after
+            FROM position_resolutions
+            WHERE query_block = ? AND found = 1
+            """,
+            (resolution_query_block,),
+        )
+    }
     for resolution in sorted(resolutions, key=lambda value: value.query_block):
         if resolution.state is not None:
             resolved_states[resolution.token_id] = resolution.state

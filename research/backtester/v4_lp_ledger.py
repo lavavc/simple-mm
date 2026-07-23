@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Sequence
 
-from eth_abi import decode  # type: ignore[attr-defined]
-from eth_abi.exceptions import DecodingError  # type: ignore[attr-defined]
+from eth_abi.abi import decode, encode
+from eth_abi.exceptions import DecodingError
 from web3 import Web3
 
-from research.backtester.clmm_math import cngn_price_from_sqrt_price_x96
-from research.backtester.v4_event_replay import ReplayedEvent
-from research.backtester.v4_export import POOL_CONFIGS, V4_MODIFY_LIQUIDITY_TOPIC, ExportPoolConfig
 from engine.config import settings
 from engine.lp.types import (
     _V4_LP_BURN_POSITION,
@@ -27,10 +23,28 @@ from engine.lp.types import (
     _V4_LP_TAKE_PAIR,
 )
 from engine.web3_utils import coerce_hex_str
+from research.backtester.clmm_math import cngn_price_from_sqrt_price_x96
+from research.backtester.v4_event_replay import ReplayedEvent
+from research.backtester.v4_export import POOL_CONFIGS, V4_MODIFY_LIQUIDITY_TOPIC, ExportPoolConfig
 
 TRANSFER_EVENT_TOPIC = coerce_hex_str(Web3.keccak(text="Transfer(address,address,uint256)").hex()).lower()
 MODIFY_LIQUIDITIES_SELECTOR = coerce_hex_str(Web3.keccak(text="modifyLiquidities(bytes,uint256)")[:4].hex()).lower()
 MULTICALL_SELECTOR = coerce_hex_str(Web3.keccak(text="multicall(bytes[])")[:4].hex()).lower()
+HANDLE_OPS_SELECTOR = coerce_hex_str(
+    Web3.keccak(
+        text=(
+            "handleOps((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[],"
+            "address)"
+        )
+    )[:4].hex()
+).lower()
+ACCOUNT_EXECUTE_SELECTOR = coerce_hex_str(
+    Web3.keccak(text="execute(bytes32,bytes)")[:4].hex()
+).lower()
+_PACKED_USER_OPERATIONS_TYPE = (
+    "(address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[]"
+)
+_BATCH_EXECUTION_MODE = b"\x01" + b"\x00" * 31
 OPENING_ATTRIBUTION_EXACT = "exact"
 OPENING_ATTRIBUTION_PENDING = "pending_receipt_attribution"
 OPENING_ATTRIBUTION_NOT_APPLICABLE = "not_applicable"
@@ -41,6 +55,8 @@ OPENING_ATTRIBUTION_SOURCE_TRANSFER = "erc20_transfer_to_settlement"
 OPENING_ATTRIBUTION_SOURCE_AMBIGUOUS = "ambiguous"
 OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE = "not_applicable"
 ACTION_RECIPIENT_MSG_SENDER = Web3.to_checksum_address("0x0000000000000000000000000000000000000001")
+ACTION_RECIPIENT_ADDRESS_THIS = Web3.to_checksum_address("0x0000000000000000000000000000000000000002")
+ENTRYPOINT_V08_ADDRESS = "0x4337084d9e255ff0702461cf8895ce9e3b5ff108"
 
 
 @dataclass(frozen=True)
@@ -89,6 +105,42 @@ class LedgerPositionState:
     tick_lower: int
     tick_upper: int
     liquidity_after: int
+
+
+@dataclass(frozen=True)
+class PoolPositionKey:
+    pool_id: str
+    tick_lower: int
+    tick_upper: int
+    salt: str
+
+
+@dataclass(frozen=True)
+class PositionManagerCallContext:
+    input_data: str
+    effective_sender: str
+    wrapper_source: str
+    user_operation_index: int | None
+    batch_index: int | None
+    outer_transaction_hash: str
+
+
+@dataclass(frozen=True)
+class _ModifyLiquidityWitness:
+    log_index: int
+    pool_id: str
+    sender: str
+    tick_lower: int
+    tick_upper: int
+    liquidity_delta: int
+    salt: str
+
+
+@dataclass(frozen=True)
+class _MintTransferWitness:
+    log_index: int
+    token_id: int
+    recipient: str
 
 
 @dataclass(frozen=True)
@@ -160,64 +212,191 @@ def decode_ownership_events_from_receipt(
     return events
 
 
+def position_manager_calls_for_transaction(
+    tx: dict[str, Any],
+    position_manager: str,
+    wrapper_entrypoint: str,
+) -> tuple[PositionManagerCallContext, ...]:
+    position_manager_address = Web3.to_checksum_address(position_manager)
+    entrypoint_address = Web3.to_checksum_address(wrapper_entrypoint)
+    outer_target = _required_checksum_address(tx.get("to"), "transaction target")
+    outer_sender = _required_checksum_address(tx.get("from"), "transaction sender")
+    transaction_hash = coerce_hex_str(tx.get("hash")).lower()
+    input_data = _canonical_calldata(tx.get("input"), "transaction input")
+    selector = input_data[:10]
+
+    if outer_target == position_manager_address:
+        return (
+            PositionManagerCallContext(
+                input_data=input_data,
+                effective_sender=outer_sender,
+                wrapper_source="direct",
+                user_operation_index=None,
+                batch_index=None,
+                outer_transaction_hash=transaction_hash,
+            ),
+        )
+    if selector == HANDLE_OPS_SELECTOR and outer_target != entrypoint_address:
+        raise ValueError("handleOps transaction targets the wrong EntryPoint")
+    if outer_target != entrypoint_address:
+        return ()
+    if selector != HANDLE_OPS_SELECTOR:
+        raise ValueError("configured EntryPoint transaction has an unsupported selector")
+
+    user_operations, _beneficiary = _decode_canonical_abi(
+        [_PACKED_USER_OPERATIONS_TYPE, "address"],
+        bytes.fromhex(input_data[10:]),
+        "EntryPoint handleOps",
+    )
+    if len(user_operations) != 1:
+        raise ValueError("wrapped LP transaction must contain exactly one user operation")
+    user_operation = user_operations[0]
+    effective_sender = Web3.to_checksum_address(str(user_operation[0]))
+    account_call = bytes(user_operation[3])
+    if len(account_call) < 4 or _selector_hex(account_call) != ACCOUNT_EXECUTE_SELECTOR:
+        raise ValueError("user operation has an unsupported account call")
+    mode, execution_data = _decode_canonical_abi(
+        ["bytes32", "bytes"],
+        account_call[4:],
+        "account execute",
+    )
+    if bytes(mode) != _BATCH_EXECUTION_MODE:
+        raise ValueError("account execute mode is unsupported")
+    batch_calls, = _decode_canonical_abi(
+        ["(address,uint256,bytes)[]"],
+        bytes(execution_data),
+        "account batch",
+    )
+    matching_calls = [
+        (index, bytes(call_data))
+        for index, (target, _value, call_data) in enumerate(batch_calls)
+        if Web3.to_checksum_address(str(target)) == position_manager_address
+    ]
+    if len(matching_calls) != 1:
+        raise ValueError(
+            "wrapped LP transaction must contain exactly one PositionManager call"
+        )
+    batch_index, position_manager_input = matching_calls[0]
+    _validate_position_manager_multicall(position_manager_input)
+    return (
+        PositionManagerCallContext(
+            input_data="0x" + position_manager_input.hex(),
+            effective_sender=effective_sender,
+            wrapper_source="entrypoint_handle_ops",
+            user_operation_index=0,
+            batch_index=batch_index,
+            outer_transaction_hash=transaction_hash,
+        ),
+    )
+
+
 def decode_liquidity_actions_for_tx(
     tx: dict[str, Any],
     receipt: dict[str, Any],
     block_timestamp: int,
     config: ExportPoolConfig,
     token_state: dict[int, LedgerPositionState],
+    position_keys: dict[int, PoolPositionKey],
     *,
+    wrapper_entrypoint: str,
     position_resolver: Callable[[int, int], LedgerPositionState | None] | None = None,
 ) -> list[DecodedLiquidityAction]:
-    actions, params = _decode_modify_liquidities_payload(tx["input"])
+    call_contexts = position_manager_calls_for_transaction(
+        tx,
+        config.position_manager,
+        wrapper_entrypoint,
+    )
+    witnesses = _target_pool_modify_witnesses(receipt, config)
+    if not call_contexts:
+        if witnesses:
+            raise ValueError("target-pool ModifyLiquidity witness has no PositionManager call")
+        return []
+    if len(call_contexts) != 1:
+        raise ValueError("LP transaction has multiple PositionManager call contexts")
+    context = call_contexts[0]
+    actions, params = _decode_modify_liquidities_payload(context.input_data)
     if not actions:
+        if witnesses:
+            raise ValueError("target-pool ModifyLiquidity witness has no decoded action")
         return []
 
+    working_state = dict(token_state)
+    working_keys = dict(position_keys)
     decoded_actions: list[DecodedLiquidityAction] = []
     block_number = _int_from_rpc(tx["blockNumber"])
     timestamp_ms = block_timestamp * 1000
     block_time = datetime.fromtimestamp(block_timestamp, tz=timezone.utc).isoformat()
-    tx_hash = coerce_hex_str(tx["hash"])
-    modify_log_indices = deque(_pool_modify_log_indices(receipt, config))
+    tx_hash = context.outer_transaction_hash
     tx_targets_pool = False
-    active_token_id: int | None = None
-    pending_negative_index: int | None = None
-    tx_sender = _checksum_address_or_none(tx.get("from"))
+    pending_take_index: int | None = None
+    effective_sender = context.effective_sender
     add_action_indices: list[int] = []
     add_action_allowed_senders: dict[int, set[str]] = {}
     add_action_settled_currencies: dict[int, set[str]] = {}
     last_add_action_index: int | None = None
+    mint_transfers = iter(
+        _paired_mint_transfers(actions, receipt, config.position_manager)
+    )
+    _validate_take_pair_attribution(
+        actions,
+        params,
+        effective_sender,
+        config,
+    )
 
-    try:
-        for event_order, (action, raw) in enumerate(zip(actions, params)):
-            action_code = _action_code(action)
-            settlement_candidate_index = (
-                last_add_action_index
-                if action_code in {_V4_LP_SETTLE_PAIR, _V4_LP_SETTLE}
-                else None
+    for event_order, (action, raw) in enumerate(zip(actions, params, strict=True)):
+        action_code = _action_code(action)
+        settlement_candidate_index = (
+            last_add_action_index
+            if action_code in {_V4_LP_SETTLE_PAIR, _V4_LP_SETTLE}
+            else None
+        )
+        if action_code not in {_V4_LP_SETTLE_PAIR, _V4_LP_SETTLE}:
+            last_add_action_index = None
+
+        if action_code == _V4_LP_MINT_POSITION:
+            mint_transfer = next(mint_transfers)
+            token_id = mint_transfer.token_id
+            (
+                pool_key,
+                tick_lower,
+                tick_upper,
+                liquidity_delta,
+                _amount0_max,
+                _amount1_max,
+                recipient,
+            ) = _decode_mint_param(raw)
+            actual_recipient = _resolve_action_recipient(
+                recipient,
+                effective_sender,
+                config.position_manager,
             )
-            if action_code not in {_V4_LP_SETTLE_PAIR, _V4_LP_SETTLE}:
-                last_add_action_index = None
-            if action_code == _V4_LP_MINT_POSITION:
-                (
-                    pool_key,
-                    tick_lower,
-                    tick_upper,
-                    liquidity_delta,
-                    _amount0_max,
-                    _amount1_max,
-                    recipient,
-                ) = _decode_mint_param(raw)
-                if not _pool_key_matches(pool_key, config):
-                    continue
-                token_id = _find_minted_token_id(receipt, config.position_manager)
-                if token_id is None:
-                    raise ValueError(f"target-pool mint missing ERC-721 token id in tx {tx_hash}")
-                log_index = _next_modify_log_index(modify_log_indices, receipt)
-                action_row = _decoded_action(
+            if mint_transfer.recipient != actual_recipient:
+                raise ValueError(
+                    "MINT_POSITION recipient does not match its creation Transfer"
+                )
+            if not _pool_key_matches(pool_key, config):
+                continue
+            if token_id in working_state or token_id in working_keys:
+                raise ValueError(f"minted token id is already known: {token_id}")
+            position_key = PoolPositionKey(
+                pool_id=config.pool_id.lower(),
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                salt=_position_salt(token_id),
+            )
+            working_keys[token_id] = position_key
+            working_state[token_id] = LedgerPositionState(
+                pool_id=config.pool_id.lower(),
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                liquidity_after=liquidity_delta,
+            )
+            decoded_actions.append(
+                _decoded_action(
                     action_type="mint",
                     block_number=block_number,
-                    log_index=log_index,
+                    log_index=-1,
                     event_order=event_order,
                     token_id=token_id,
                     tick_lower=tick_lower,
@@ -235,52 +414,71 @@ def decode_liquidity_actions_for_tx(
                     amount1_attribution_source=OPENING_ATTRIBUTION_PENDING,
                     amount_attribution_status=OPENING_ATTRIBUTION_PENDING,
                 )
-                decoded_actions.append(action_row)
-                add_index = len(decoded_actions) - 1
-                add_action_indices.append(add_index)
-                add_action_allowed_senders[add_index] = _non_none_addresses(tx_sender, recipient)
-                token_state[token_id] = LedgerPositionState(
-                    pool_id=config.pool_id,
-                    tick_lower=tick_lower,
-                    tick_upper=tick_upper,
-                    liquidity_after=liquidity_delta,
-                )
-                tx_targets_pool = True
-                active_token_id = token_id
-                pending_negative_index = None
-                last_add_action_index = add_index
-                continue
+            )
+            add_index = len(decoded_actions) - 1
+            add_action_indices.append(add_index)
+            add_action_allowed_senders[add_index] = {
+                effective_sender,
+                actual_recipient,
+            }
+            tx_targets_pool = True
+            last_add_action_index = add_index
+            continue
 
-            if action_code in {_V4_LP_INCREASE_LIQUIDITY, _V4_LP_DECREASE_LIQUIDITY}:
-                token_id, liquidity_delta, _amount0_max, _amount1_max = _decode_increase_or_decrease_param(raw)
-                position = token_state.get(token_id)
-                if position is None and position_resolver is not None:
-                    position = position_resolver(token_id, max(block_number - 1, 0))
-                    if position is not None:
-                        token_state[token_id] = position
-                if position is None or position.pool_id.lower() != config.pool_id.lower():
-                    continue
-                event_type = "mint" if action_code == _V4_LP_INCREASE_LIQUIDITY else "burn"
-                signed_delta = liquidity_delta if event_type == "mint" else -liquidity_delta
-                log_index = _next_modify_log_index(modify_log_indices, receipt)
-                amount_source = (
-                    OPENING_ATTRIBUTION_PENDING
-                    if event_type == "mint"
-                    else OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE
-                )
-                amount_status = (
-                    OPENING_ATTRIBUTION_PENDING
-                    if event_type == "mint"
-                    else OPENING_ATTRIBUTION_NOT_APPLICABLE
-                )
-                action_row = _decoded_action(
+        if action_code in {
+            _V4_LP_INCREASE_LIQUIDITY,
+            _V4_LP_DECREASE_LIQUIDITY,
+        }:
+            (
+                token_id,
+                liquidity_delta,
+                _amount0_max,
+                _amount1_max,
+            ) = _decode_increase_or_decrease_param(raw)
+            position = _resolve_position_state(
+                token_id,
+                block_number,
+                config,
+                working_state,
+                working_keys,
+                position_resolver,
+            )
+            if position is None or position.pool_id.lower() != config.pool_id.lower():
+                continue
+            position_key = _required_matching_position_key(
+                token_id,
+                position,
+                working_keys,
+            )
+            signed_delta = (
+                liquidity_delta
+                if action_code == _V4_LP_INCREASE_LIQUIDITY
+                else -liquidity_delta
+            )
+            liquidity_after = position.liquidity_after + signed_delta
+            if liquidity_after < 0:
+                raise ValueError(f"liquidity_after below zero for token_id={token_id}")
+            if signed_delta > 0:
+                event_type = "mint"
+                amount_source = OPENING_ATTRIBUTION_PENDING
+                amount_status = OPENING_ATTRIBUTION_PENDING
+            elif signed_delta < 0:
+                event_type = "burn"
+                amount_source = OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE
+                amount_status = OPENING_ATTRIBUTION_NOT_APPLICABLE
+            else:
+                event_type = "collect"
+                amount_source = OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE
+                amount_status = OPENING_ATTRIBUTION_NOT_APPLICABLE
+            decoded_actions.append(
+                _decoded_action(
                     action_type=event_type,
                     block_number=block_number,
-                    log_index=log_index,
+                    log_index=-1,
                     event_order=event_order,
                     token_id=token_id,
-                    tick_lower=position.tick_lower,
-                    tick_upper=position.tick_upper,
+                    tick_lower=position_key.tick_lower,
+                    tick_upper=position_key.tick_upper,
                     liquidity_delta=signed_delta,
                     amount0_raw=0,
                     amount1_raw=0,
@@ -294,43 +492,58 @@ def decode_liquidity_actions_for_tx(
                     amount1_attribution_source=amount_source,
                     amount_attribution_status=amount_status,
                 )
-                decoded_actions.append(action_row)
-                if event_type == "mint":
-                    add_index = len(decoded_actions) - 1
-                    add_action_indices.append(add_index)
-                    add_action_allowed_senders[add_index] = _non_none_addresses(tx_sender)
-                    last_add_action_index = add_index
-                token_state[token_id] = replace(
-                    position,
-                    liquidity_after=max(position.liquidity_after + signed_delta, 0),
-                )
-                tx_targets_pool = True
-                active_token_id = token_id
-                pending_negative_index = len(decoded_actions) - 1 if signed_delta < 0 else None
-                if event_type != "mint":
-                    last_add_action_index = None
-                continue
+            )
+            working_state[token_id] = replace(
+                position,
+                liquidity_after=liquidity_after,
+            )
+            tx_targets_pool = True
+            if signed_delta > 0:
+                add_index = len(decoded_actions) - 1
+                add_action_indices.append(add_index)
+                add_action_allowed_senders[add_index] = {effective_sender}
+                last_add_action_index = add_index
+            else:
+                if pending_take_index is not None:
+                    raise ValueError(
+                        "multiple unresolved target-pool liquidity withdrawals are "
+                        "ambiguous"
+                    )
+                pending_take_index = len(decoded_actions) - 1
+            continue
 
-            if action_code == _V4_LP_BURN_POSITION:
-                token_id = _decode_burn_param(raw)
-                position = token_state.get(token_id)
-                if position is None and position_resolver is not None:
-                    position = position_resolver(token_id, max(block_number - 1, 0))
-                    if position is not None:
-                        token_state[token_id] = position
-                if position is None or position.pool_id.lower() != config.pool_id.lower():
-                    continue
-                tx_targets_pool = True
-                active_token_id = token_id
-                if position.liquidity_after > 0:
-                    action_row = _decoded_action(
+        if action_code == _V4_LP_BURN_POSITION:
+            token_id = _decode_burn_param(raw)
+            position = _resolve_position_state(
+                token_id,
+                block_number,
+                config,
+                working_state,
+                working_keys,
+                position_resolver,
+            )
+            if position is None or position.pool_id.lower() != config.pool_id.lower():
+                continue
+            position_key = _required_matching_position_key(
+                token_id,
+                position,
+                working_keys,
+            )
+            if position.liquidity_after > 0:
+                if pending_take_index is not None:
+                    raise ValueError(
+                        "multiple unresolved target-pool liquidity withdrawals are "
+                        "ambiguous"
+                    )
+                decoded_actions.append(
+                    _decoded_action(
                         action_type="burn",
                         block_number=block_number,
-                        log_index=_next_modify_log_index(modify_log_indices, receipt),
+                        log_index=-1,
                         event_order=event_order,
                         token_id=token_id,
-                        tick_lower=position.tick_lower,
-                        tick_upper=position.tick_upper,
+                        tick_lower=position_key.tick_lower,
+                        tick_upper=position_key.tick_upper,
                         liquidity_delta=-position.liquidity_after,
                         amount0_raw=0,
                         amount1_raw=0,
@@ -340,90 +553,99 @@ def decode_liquidity_actions_for_tx(
                         timestamp_ms=timestamp_ms,
                         tx_hash=tx_hash,
                         config=config,
-                        amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
-                        amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
-                        amount_attribution_status=OPENING_ATTRIBUTION_NOT_APPLICABLE,
-                    )
-                    decoded_actions.append(action_row)
-                    pending_negative_index = len(decoded_actions) - 1
-                token_state.pop(token_id, None)
-                last_add_action_index = None
-                continue
-
-            if action_code == _V4_LP_SETTLE_PAIR:
-                if settlement_candidate_index is None:
-                    continue
-                currency0, currency1 = _decode_settle_pair_param(raw)
-                if _settle_pair_matches(currency0, currency1, config):
-                    add_action_settled_currencies.setdefault(settlement_candidate_index, set()).update(
-                        _required_settlement_currencies(config)
-                    )
-                last_add_action_index = None
-                continue
-
-            if action_code == _V4_LP_SETTLE:
-                if settlement_candidate_index is None:
-                    continue
-                currency = _decode_settle_param(raw)
-                if _settle_currency_matches(currency, config):
-                    add_action_settled_currencies.setdefault(settlement_candidate_index, set()).add(
-                        Web3.to_checksum_address(currency)
-                    )
-                last_add_action_index = settlement_candidate_index
-                continue
-
-            if action_code == _V4_LP_TAKE_PAIR:
-                if not tx_targets_pool:
-                    continue
-                _currency0, _currency1, recipient = _decode_take_pair_param(raw)
-                transfer_recipient = _resolve_action_recipient(recipient, tx_sender)
-                collect_amount0, collect_amount1 = _extract_take_pair_amounts(receipt, transfer_recipient, config)
-                if pending_negative_index is not None:
-                    decoded_actions[pending_negative_index] = replace(
-                        decoded_actions[pending_negative_index],
-                        action_type="burn_collect",
-                        collect_amount0=collect_amount0,
-                        collect_amount1=collect_amount1,
-                    )
-                    pending_negative_index = None
-                    continue
-                if active_token_id is None:
-                    continue
-                position = token_state.get(active_token_id)
-                decoded_actions.append(
-                    _decoded_action(
-                        action_type="collect",
-                        block_number=block_number,
-                        log_index=_last_transfer_log_index_to_recipient(receipt, transfer_recipient, config),
-                        event_order=event_order,
-                        token_id=active_token_id,
-                        tick_lower=position.tick_lower if position is not None else None,
-                        tick_upper=position.tick_upper if position is not None else None,
-                        liquidity_delta=0,
-                        amount0_raw=0,
-                        amount1_raw=0,
-                        collect_amount0=collect_amount0,
-                        collect_amount1=collect_amount1,
-                        block_time=block_time,
-                        timestamp_ms=timestamp_ms,
-                        tx_hash=tx_hash,
-                        config=config,
-                        amount0_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
-                        amount1_attribution_source=OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE,
+                        amount0_attribution_source=(
+                            OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE
+                        ),
+                        amount1_attribution_source=(
+                            OPENING_ATTRIBUTION_SOURCE_NOT_APPLICABLE
+                        ),
                         amount_attribution_status=OPENING_ATTRIBUTION_NOT_APPLICABLE,
                     )
                 )
-                last_add_action_index = None
-    except DecodingError:
-        return []
-    return _apply_opening_amount_attribution(
+                pending_take_index = len(decoded_actions) - 1
+            working_state.pop(token_id)
+            tx_targets_pool = True
+            last_add_action_index = None
+            continue
+
+        if action_code == _V4_LP_SETTLE_PAIR:
+            if settlement_candidate_index is None:
+                continue
+            currency0, currency1 = _decode_settle_pair_param(raw)
+            if _settle_pair_matches(currency0, currency1, config):
+                add_action_settled_currencies.setdefault(
+                    settlement_candidate_index,
+                    set(),
+                ).update(_required_settlement_currencies(config))
+            last_add_action_index = None
+            continue
+
+        if action_code == _V4_LP_SETTLE:
+            if settlement_candidate_index is None:
+                continue
+            currency = _decode_settle_param(raw)
+            if _settle_currency_matches(currency, config):
+                add_action_settled_currencies.setdefault(
+                    settlement_candidate_index,
+                    set(),
+                ).add(Web3.to_checksum_address(currency))
+            last_add_action_index = settlement_candidate_index
+            continue
+
+        if action_code == _V4_LP_TAKE_PAIR:
+            if not tx_targets_pool or pending_take_index is None:
+                continue
+            currency0, currency1, recipient = _decode_take_pair_param(raw)
+            if not _settle_pair_matches(currency0, currency1, config):
+                continue
+            transfer_recipient = _resolve_action_recipient(
+                recipient,
+                effective_sender,
+                config.position_manager,
+            )
+            collect_amount0, collect_amount1 = _extract_take_pair_amounts(
+                receipt,
+                transfer_recipient,
+                config,
+            )
+            prior_action = decoded_actions[pending_take_index]
+            decoded_actions[pending_take_index] = replace(
+                prior_action,
+                action_type=(
+                    "burn_collect"
+                    if prior_action.liquidity_delta < 0
+                    else "collect"
+                ),
+                collect_amount0=collect_amount0,
+                collect_amount1=collect_amount1,
+            )
+            pending_take_index = None
+            last_add_action_index = None
+
+    if pending_take_index is not None:
+        raise ValueError(
+            "target-pool liquidity withdrawal has no supported TAKE_PAIR attribution"
+        )
+
+    reconciled_actions = _reconcile_modify_liquidity_witnesses(
         decoded_actions,
+        working_keys,
+        witnesses,
+        config,
+    )
+    attributed_actions = _apply_opening_amount_attribution(
+        reconciled_actions,
         add_action_indices,
         add_action_allowed_senders,
         add_action_settled_currencies,
         receipt,
         config,
     )
+    token_state.clear()
+    token_state.update(working_state)
+    position_keys.clear()
+    position_keys.update(working_keys)
+    return attributed_actions
 
 
 def build_lp_ledger_rows(
@@ -793,20 +1015,24 @@ def _settlement_sink_addresses(config: ExportPoolConfig) -> set[str]:
 
 
 def _decode_settle_pair_param(raw: bytes) -> tuple[str, str]:
-    currency0, currency1 = decode(["address", "address"], raw)
+    currency0, currency1 = _decode_canonical_abi(
+        ["address", "address"],
+        raw,
+        "SETTLE_PAIR parameter",
+    )
     return Web3.to_checksum_address(str(currency0)), Web3.to_checksum_address(str(currency1))
 
 
 def _decode_settle_param(raw: bytes) -> str:
-    currency, = decode(["address"], raw)
+    currency, = _decode_canonical_abi(["address"], raw, "SETTLE parameter")
     return Web3.to_checksum_address(str(currency))
 
 
 def _settle_pair_matches(currency0: str, currency1: str, config: ExportPoolConfig) -> bool:
-    return (
-        Web3.to_checksum_address(currency0) == Web3.to_checksum_address(config.token0_address)
-        and Web3.to_checksum_address(currency1) == Web3.to_checksum_address(config.token1_address)
-    )
+    return {
+        Web3.to_checksum_address(currency0),
+        Web3.to_checksum_address(currency1),
+    } == _required_settlement_currencies(config)
 
 
 def _settle_currency_matches(currency: str, config: ExportPoolConfig) -> bool:
@@ -820,39 +1046,89 @@ def _required_settlement_currencies(config: ExportPoolConfig) -> set[str]:
     }
 
 
-def _checksum_address_or_none(value: Any) -> str | None:
-    if value is None:
-        return None
-    return Web3.to_checksum_address(str(value))
-
-
-def _resolve_action_recipient(recipient: str, tx_sender: str | None) -> str:
+def _resolve_action_recipient(
+    recipient: str,
+    tx_sender: str,
+    action_router: str,
+) -> str:
     recipient = Web3.to_checksum_address(recipient)
     if recipient == ACTION_RECIPIENT_MSG_SENDER:
-        if tx_sender is None:
-            raise ValueError("TAKE_PAIR MSG_SENDER recipient requires tx.from")
         return tx_sender
+    if recipient == ACTION_RECIPIENT_ADDRESS_THIS:
+        return Web3.to_checksum_address(action_router)
     return recipient
 
 
-def _non_none_addresses(*addresses: str | None) -> set[str]:
-    return {address for address in addresses if address is not None}
+def _required_checksum_address(value: object, label: str) -> str:
+    if not isinstance(value, str) or not Web3.is_address(value):
+        raise ValueError(f"{label} is invalid")
+    return Web3.to_checksum_address(value)
+
+
+def _canonical_calldata(value: object, label: str) -> str:
+    try:
+        normalized = coerce_hex_str(value).lower()
+        raw = bytes.fromhex(normalized.removeprefix("0x"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is invalid") from exc
+    if len(raw) < 4 or normalized != "0x" + raw.hex():
+        raise ValueError(f"{label} is invalid")
+    return normalized
+
+
+def _selector_hex(calldata: bytes) -> str:
+    return "0x" + calldata[:4].hex()
+
+
+def _decode_canonical_abi(
+    types: Sequence[str],
+    payload: bytes,
+    label: str,
+) -> tuple[Any, ...]:
+    try:
+        values = decode(types, payload, strict=True)
+        canonical = encode(types, values)
+    except (DecodingError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} ABI payload is invalid") from exc
+    if canonical != payload:
+        raise ValueError(f"{label} ABI payload is not canonical")
+    return values
+
+
+def _validate_position_manager_multicall(calldata: bytes) -> None:
+    if len(calldata) < 4 or _selector_hex(calldata) != MULTICALL_SELECTOR:
+        raise ValueError("wrapped PositionManager call is not multicall(bytes[])")
+    calls, = _decode_canonical_abi(
+        ["bytes[]"],
+        calldata[4:],
+        "PositionManager multicall",
+    )
+    if any(
+        len(call) >= 4 and _selector_hex(bytes(call)) == MULTICALL_SELECTOR
+        for call in calls
+    ):
+        raise ValueError("nested PositionManager multicall is unsupported")
 
 
 def _decode_modify_liquidities_payload(input_data: str) -> tuple[bytes, list[bytes]]:
-    input_hex = coerce_hex_str(input_data)
+    input_hex = _canonical_calldata(input_data, "PositionManager input")
     selector = input_hex[:10].lower()
     raw = bytes.fromhex(input_hex[10:])
     if selector == MULTICALL_SELECTOR:
-        try:
-            calls, = decode(["bytes[]"], raw)
-        except DecodingError:
-            return b"", []
+        calls, = _decode_canonical_abi(
+            ["bytes[]"],
+            raw,
+            "PositionManager multicall",
+        )
         actions = b""
         params: list[bytes] = []
         for call in calls:
             call_bytes = bytes(call)
-            call_selector = coerce_hex_str(call_bytes[:4].hex()).lower()
+            if len(call_bytes) < 4:
+                continue
+            call_selector = _selector_hex(call_bytes)
+            if call_selector == MULTICALL_SELECTOR:
+                raise ValueError("nested PositionManager multicall is unsupported")
             if call_selector != MODIFY_LIQUIDITIES_SELECTOR:
                 continue
             call_actions, call_params = _decode_modify_liquidities_call(call_bytes[4:])
@@ -865,18 +1141,46 @@ def _decode_modify_liquidities_payload(input_data: str) -> tuple[bytes, list[byt
 
 
 def _decode_modify_liquidities_call(raw: bytes) -> tuple[bytes, list[bytes]]:
-    try:
-        unlock_data, _deadline = decode(["bytes", "uint256"], raw)
-        actions, params = decode(["bytes", "bytes[]"], unlock_data)
-    except DecodingError:
-        return b"", []
-    return actions, list(params)
+    unlock_data, _deadline = _decode_canonical_abi(
+        ["bytes", "uint256"],
+        raw,
+        "modifyLiquidities",
+    )
+    actions, params = _decode_canonical_abi(
+        ["bytes", "bytes[]"],
+        bytes(unlock_data),
+        "modifyLiquidities unlock data",
+    )
+    action_bytes = bytes(actions)
+    parameter_bytes = [bytes(param) for param in params]
+    if len(action_bytes) != len(parameter_bytes):
+        raise ValueError("modifyLiquidities action and parameter counts differ")
+    return action_bytes, parameter_bytes
 
 
 def _decode_mint_param(raw: bytes) -> tuple[tuple[Any, ...], int, int, int, int, int, str]:
-    pool_key, tick_lower, tick_upper, liquidity, amount0_max, amount1_max, recipient, _hook = decode(
-        ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
+    (
+        pool_key,
+        tick_lower,
+        tick_upper,
+        liquidity,
+        amount0_max,
+        amount1_max,
+        recipient,
+        _hook,
+    ) = _decode_canonical_abi(
+        [
+            "(address,address,uint24,int24,address)",
+            "int24",
+            "int24",
+            "uint256",
+            "uint128",
+            "uint128",
+            "address",
+            "bytes",
+        ],
         raw,
+        "MINT_POSITION parameter",
     )
     return (
         pool_key,
@@ -890,33 +1194,56 @@ def _decode_mint_param(raw: bytes) -> tuple[tuple[Any, ...], int, int, int, int,
 
 
 def _decode_increase_or_decrease_param(raw: bytes) -> tuple[int, int, int, int]:
-    token_id, liquidity_delta, amount0, amount1, _hook = decode(
+    token_id, liquidity_delta, amount0, amount1, _hook = _decode_canonical_abi(
         ["uint256", "uint256", "uint128", "uint128", "bytes"],
         raw,
+        "liquidity-change parameter",
     )
     return int(token_id), int(liquidity_delta), int(amount0), int(amount1)
 
 
 def _decode_burn_param(raw: bytes) -> int:
-    token_id, _amount0, _amount1, _hook = decode(["uint256", "uint128", "uint128", "bytes"], raw)
+    token_id, _amount0, _amount1, _hook = _decode_canonical_abi(
+        ["uint256", "uint128", "uint128", "bytes"],
+        raw,
+        "BURN_POSITION parameter",
+    )
     return int(token_id)
 
 
 def _decode_take_pair_param(raw: bytes) -> tuple[str, str, str]:
-    currency0, currency1, recipient = decode(["address", "address", "address"], raw)
+    currency0, currency1, recipient = _decode_canonical_abi(
+        ["address", "address", "address"],
+        raw,
+        "TAKE_PAIR parameter",
+    )
     return str(currency0), str(currency1), Web3.to_checksum_address(str(recipient))
 
 
 def _pool_key_matches(pool_key: tuple[Any, ...], config: ExportPoolConfig) -> bool:
-    return (
-        Web3.to_checksum_address(pool_key[0]) == Web3.to_checksum_address(config.token0_address)
-        and Web3.to_checksum_address(pool_key[1]) == Web3.to_checksum_address(config.token1_address)
-        and int(pool_key[2]) == int(config.fee_rate * 1_000_000)
+    if len(pool_key) != 5:
+        raise ValueError("decoded PoolKey has the wrong field count")
+    encoded = encode(
+        ["(address,address,uint24,int24,address)"],
+        [
+            (
+                Web3.to_checksum_address(str(pool_key[0])),
+                Web3.to_checksum_address(str(pool_key[1])),
+                int(pool_key[2]),
+                int(pool_key[3]),
+                Web3.to_checksum_address(str(pool_key[4])),
+            )
+        ],
     )
+    pool_id = "0x" + Web3.keccak(encoded).hex().removeprefix("0x")
+    return pool_id.lower() == config.pool_id.lower()
 
 
-def _pool_modify_log_indices(receipt: dict[str, Any], config: ExportPoolConfig) -> list[int]:
-    indices: list[int] = []
+def _target_pool_modify_witnesses(
+    receipt: dict[str, Any],
+    config: ExportPoolConfig,
+) -> tuple[_ModifyLiquidityWitness, ...]:
+    witnesses: list[_ModifyLiquidityWitness] = []
     pool_manager = Web3.to_checksum_address(config.pool_manager)
     expected_pool_id = coerce_hex_str(config.pool_id).lower()
     for log in receipt.get("logs", []):
@@ -925,34 +1252,245 @@ def _pool_modify_log_indices(receipt: dict[str, Any], config: ExportPoolConfig) 
         topics = log.get("topics", [])
         if len(topics) < 2:
             continue
-        if coerce_hex_str(topics[0]).lower() != coerce_hex_str(V4_MODIFY_LIQUIDITY_TOPIC).lower():
+        if (
+            coerce_hex_str(topics[0]).lower()
+            != coerce_hex_str(V4_MODIFY_LIQUIDITY_TOPIC).lower()
+        ):
             continue
         if coerce_hex_str(topics[1]).lower() != expected_pool_id:
             continue
-        indices.append(_int_from_rpc(log["logIndex"]))
-    return sorted(indices)
+        if len(topics) != 3:
+            raise ValueError("target-pool ModifyLiquidity topics are malformed")
+        data = _required_hex_bytes(log.get("data"), 128, "ModifyLiquidity data")
+        tick_lower, tick_upper, liquidity_delta, salt = _decode_canonical_abi(
+            ["int24", "int24", "int256", "bytes32"],
+            data,
+            "ModifyLiquidity log",
+        )
+        witnesses.append(
+            _ModifyLiquidityWitness(
+                log_index=_int_from_rpc(log["logIndex"]),
+                pool_id=expected_pool_id,
+                sender=_address_from_topic(topics[2]),
+                tick_lower=int(tick_lower),
+                tick_upper=int(tick_upper),
+                liquidity_delta=int(liquidity_delta),
+                salt="0x" + bytes(salt).hex(),
+            )
+        )
+    ordered = tuple(sorted(witnesses, key=lambda witness: witness.log_index))
+    if len({witness.log_index for witness in ordered}) != len(ordered):
+        raise ValueError("target-pool ModifyLiquidity log index is duplicated")
+    return ordered
 
 
-def _next_modify_log_index(indices: deque[int], receipt: dict[str, Any]) -> int:
-    if indices:
-        return indices.popleft()
-    if receipt.get("logs"):
-        return _int_from_rpc(receipt["logs"][-1]["logIndex"])
-    return 0
-
-
-def _find_minted_token_id(receipt: dict[str, Any], position_manager: str) -> int | None:
+def _paired_mint_transfers(
+    actions: bytes,
+    receipt: dict[str, Any],
+    position_manager: str,
+) -> tuple[_MintTransferWitness, ...]:
+    mint_count = sum(
+        action_code == _V4_LP_MINT_POSITION for action_code in actions
+    )
     position_manager_address = Web3.to_checksum_address(position_manager)
+    minted: list[_MintTransferWitness] = []
     for log in receipt.get("logs", []):
         if Web3.to_checksum_address(log["address"]) != position_manager_address:
             continue
         topics = log.get("topics", [])
-        if len(topics) < 4 or coerce_hex_str(topics[0]).lower() != TRANSFER_EVENT_TOPIC:
+        if not topics or coerce_hex_str(topics[0]).lower() != TRANSFER_EVENT_TOPIC:
             continue
+        if len(topics) != 4:
+            raise ValueError("PositionManager Transfer topics are malformed")
+        _required_hex_bytes(log.get("data"), 0, "PositionManager Transfer data")
         if _none_if_zero_address(_address_from_topic(topics[1])) is not None:
             continue
-        return int(coerce_hex_str(topics[3]), 16)
-    return None
+        minted.append(
+            _MintTransferWitness(
+                log_index=_int_from_rpc(log["logIndex"]),
+                token_id=int(
+                    _required_word_hex(topics[3], "minted token id"),
+                    16,
+                ),
+                recipient=_address_from_topic(topics[2]),
+            )
+        )
+    minted.sort(key=lambda witness: witness.log_index)
+    if len(minted) != mint_count:
+        raise ValueError(
+            "MINT_POSITION count does not match zero-address PositionManager Transfers"
+        )
+    if len({witness.log_index for witness in minted}) != len(minted):
+        raise ValueError("mint creation Transfer log index is duplicated")
+    if len({witness.token_id for witness in minted}) != len(minted):
+        raise ValueError("minted token id is duplicated")
+    return tuple(minted)
+
+
+def _validate_take_pair_attribution(
+    actions: bytes,
+    params: Sequence[bytes],
+    effective_sender: str,
+    config: ExportPoolConfig,
+) -> None:
+    target_currencies = _required_settlement_currencies(config)
+    take_pairs: list[tuple[set[str], str]] = []
+    for action, raw in zip(actions, params, strict=True):
+        if _action_code(action) != _V4_LP_TAKE_PAIR:
+            continue
+        currency0, currency1, recipient = _decode_take_pair_param(raw)
+        take_pairs.append(
+            (
+                {
+                    Web3.to_checksum_address(currency0),
+                    Web3.to_checksum_address(currency1),
+                },
+                _resolve_action_recipient(
+                    recipient,
+                    effective_sender,
+                    config.position_manager,
+                ),
+            )
+        )
+
+    target_indices = [
+        index
+        for index, (currencies, _recipient) in enumerate(take_pairs)
+        if currencies == target_currencies
+    ]
+    if len(target_indices) > 1:
+        raise ValueError("multiple target-pool TAKE_PAIR actions are ambiguous")
+    if not target_indices:
+        return
+
+    target_index = target_indices[0]
+    target_recipient = take_pairs[target_index][1]
+    for index, (currencies, recipient) in enumerate(take_pairs):
+        if index == target_index:
+            continue
+        if recipient == target_recipient and not currencies.isdisjoint(target_currencies):
+            raise ValueError("TAKE_PAIR receipt attribution is ambiguous")
+
+
+def _resolve_position_state(
+    token_id: int,
+    block_number: int,
+    config: ExportPoolConfig,
+    token_state: dict[int, LedgerPositionState],
+    position_keys: dict[int, PoolPositionKey],
+    position_resolver: Callable[[int, int], LedgerPositionState | None] | None,
+) -> LedgerPositionState | None:
+    position = token_state.get(token_id)
+    if position is not None or position_resolver is None:
+        return position
+    position = position_resolver(token_id, max(block_number - 1, 0))
+    if position is None:
+        return None
+    if position.liquidity_after < 0:
+        raise ValueError(f"resolved liquidity is negative for token_id={token_id}")
+    token_state[token_id] = position
+    if position.pool_id.lower() == config.pool_id.lower():
+        position_keys.setdefault(
+            token_id,
+            PoolPositionKey(
+                pool_id=position.pool_id.lower(),
+                tick_lower=position.tick_lower,
+                tick_upper=position.tick_upper,
+                salt=_position_salt(token_id),
+            ),
+        )
+    return position
+
+
+def _required_matching_position_key(
+    token_id: int,
+    position: LedgerPositionState,
+    position_keys: dict[int, PoolPositionKey],
+) -> PoolPositionKey:
+    position_key = position_keys.get(token_id)
+    if position_key is None:
+        raise ValueError(f"missing PoolPositionKey for token_id={token_id}")
+    if (
+        position_key.pool_id.lower() != position.pool_id.lower()
+        or position_key.tick_lower != position.tick_lower
+        or position_key.tick_upper != position.tick_upper
+        or position_key.salt.lower() != _position_salt(token_id)
+    ):
+        raise ValueError(f"PoolPositionKey does not match token state for token_id={token_id}")
+    return position_key
+
+
+def _reconcile_modify_liquidity_witnesses(
+    actions: Sequence[DecodedLiquidityAction],
+    position_keys: dict[int, PoolPositionKey],
+    witnesses: Sequence[_ModifyLiquidityWitness],
+    config: ExportPoolConfig,
+) -> list[DecodedLiquidityAction]:
+    remaining = list(witnesses)
+    reconciled: list[DecodedLiquidityAction] = []
+    expected_sender = Web3.to_checksum_address(config.position_manager)
+    expected_pool_id = config.pool_id.lower()
+    for action in actions:
+        position_key = position_keys.get(action.token_id)
+        if position_key is None:
+            raise ValueError(
+                "decoded action is missing a PoolPositionKey before ModifyLiquidity "
+                "reconciliation"
+            )
+        if (
+            action.pool_id.lower() != expected_pool_id
+            or position_key.pool_id.lower() != expected_pool_id
+            or action.tick_lower != position_key.tick_lower
+            or action.tick_upper != position_key.tick_upper
+        ):
+            raise ValueError(
+                "decoded action position does not match its PoolPositionKey"
+            )
+        match_index = next(
+            (
+                index
+                for index, witness in enumerate(remaining)
+                if witness.pool_id == expected_pool_id
+                and witness.sender == expected_sender
+                and witness.tick_lower == position_key.tick_lower
+                and witness.tick_upper == position_key.tick_upper
+                and witness.liquidity_delta == action.liquidity_delta
+                and witness.salt == position_key.salt.lower()
+            ),
+            None,
+        )
+        if match_index is None:
+            raise ValueError(
+                "decoded action has no matching target-pool ModifyLiquidity witness"
+            )
+        witness = remaining.pop(match_index)
+        reconciled.append(replace(action, log_index=witness.log_index))
+    if remaining:
+        raise ValueError(
+            "target-pool ModifyLiquidity witness has no matching decoded action"
+        )
+    return reconciled
+
+
+def _position_salt(token_id: int) -> str:
+    if token_id < 0 or token_id >= 2**256:
+        raise ValueError("token id is outside uint256")
+    return "0x" + token_id.to_bytes(32, "big").hex()
+
+
+def _required_hex_bytes(value: object, length: int, label: str) -> bytes:
+    try:
+        normalized = coerce_hex_str(value).lower()
+        raw = bytes.fromhex(normalized.removeprefix("0x"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is invalid") from exc
+    if len(raw) != length or normalized != "0x" + raw.hex():
+        raise ValueError(f"{label} is invalid")
+    return raw
+
+
+def _required_word_hex(value: object, label: str) -> str:
+    return "0x" + _required_hex_bytes(value, 32, label).hex()
 
 
 def _extract_take_pair_amounts(
@@ -960,51 +1498,42 @@ def _extract_take_pair_amounts(
     recipient: str,
     config: ExportPoolConfig,
 ) -> tuple[Decimal, Decimal]:
-    amount0_raw = 0
-    amount1_raw = 0
     token0 = Web3.to_checksum_address(config.token0_address)
     token1 = Web3.to_checksum_address(config.token1_address)
     recipient = Web3.to_checksum_address(recipient)
+    raw_amounts: dict[str, list[int]] = {token0: [], token1: []}
     for log in receipt.get("logs", []):
-        if not _is_erc20_transfer_to(log, recipient):
+        if not _is_erc20_transfer_from_to(
+            log,
+            config.pool_manager,
+            recipient,
+        ):
             continue
         token_addr = Web3.to_checksum_address(log["address"])
-        amount_raw = _int_from_rpc(log["data"])
-        if token_addr == token0:
-            amount0_raw += amount_raw
-        elif token_addr == token1:
-            amount1_raw += amount_raw
+        if token_addr in raw_amounts:
+            raw_amounts[token_addr].append(_int_from_rpc(log["data"]))
+    if any(len(amounts) > 1 for amounts in raw_amounts.values()):
+        raise ValueError("TAKE_PAIR receipt attribution is ambiguous")
+    amount0_raw = raw_amounts[token0][0] if raw_amounts[token0] else 0
+    amount1_raw = raw_amounts[token1][0] if raw_amounts[token1] else 0
     return (
         _token_amount(amount0_raw, config.token0_decimals),
         _token_amount(amount1_raw, config.token1_decimals),
     )
 
 
-def _last_transfer_log_index_to_recipient(
-    receipt: dict[str, Any],
+def _is_erc20_transfer_from_to(
+    log: dict[str, Any],
+    sender: str,
     recipient: str,
-    config: ExportPoolConfig,
-) -> int:
-    token_addresses = {
-        Web3.to_checksum_address(config.token0_address),
-        Web3.to_checksum_address(config.token1_address),
-    }
-    recipient = Web3.to_checksum_address(recipient)
-    last_index: int | None = None
-    for log in receipt.get("logs", []):
-        if Web3.to_checksum_address(log["address"]) not in token_addresses:
-            continue
-        if not _is_erc20_transfer_to(log, recipient):
-            continue
-        last_index = _int_from_rpc(log["logIndex"])
-    return last_index if last_index is not None else _next_modify_log_index(deque(), receipt)
-
-
-def _is_erc20_transfer_to(log: dict[str, Any], recipient: str) -> bool:
+) -> bool:
     topics = log.get("topics", [])
-    if len(topics) < 3 or coerce_hex_str(topics[0]).lower() != TRANSFER_EVENT_TOPIC:
+    if len(topics) != 3 or coerce_hex_str(topics[0]).lower() != TRANSFER_EVENT_TOPIC:
         return False
-    return _address_from_topic(topics[2]) == Web3.to_checksum_address(recipient)
+    return (
+        _address_from_topic(topics[1]) == Web3.to_checksum_address(sender)
+        and _address_from_topic(topics[2]) == Web3.to_checksum_address(recipient)
+    )
 
 
 def _address_from_topic(topic: Any) -> str:

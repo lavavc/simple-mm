@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from web3 import Web3
 
 import research.scripts.export_v4_lp_ledger as lp_ledger_export
 from engine.lp.types import (
+    _V4_LP_BURN_POSITION,
     _V4_LP_DECREASE_LIQUIDITY,
     _V4_LP_INCREASE_LIQUIDITY,
     _V4_LP_MINT_POSITION,
@@ -26,7 +28,21 @@ from research.backtester.lp_ledger_attribution import (
     ledger_coverage_path,
     load_ledger_coverage,
 )
-from research.backtester.lp_ledger_checkpoint import BlockRange, DiscoveryWitness
+from research.backtester.lp_ledger_checkpoint import (
+    CHECKPOINT_SOURCE_PATHS,
+    BlockHeader,
+    BlockRange,
+    CandidateBundle,
+    CheckpointPaths,
+    DecoderStateUpsert,
+    DiscoveryWitness,
+    EndpointSnapshot,
+    LPLedgerCheckpoint,
+    PositionKeyMapping,
+    ReplayInputEvidence,
+    RunIdentity,
+    acquire_run_lock,
+)
 from research.backtester.v4_event_replay import ReplayedEvent
 from research.backtester.v4_export import (
     POOL_CONFIGS,
@@ -34,12 +50,15 @@ from research.backtester.v4_export import (
     _make_web3,
 )
 from research.backtester.v4_lp_ledger import (
+    ACTION_RECIPIENT_MSG_SENDER,
     DecodedLiquidityAction,
     LedgerPositionState,
     OwnershipEvent,
+    PoolPositionKey,
     build_lp_ledger_rows,
     decode_liquidity_actions_for_tx,
     decode_ownership_events_from_receipt,
+    position_manager_calls_for_transaction,
 )
 from research.cross_pool.contracts import CrossPoolContractError
 
@@ -73,6 +92,18 @@ def test_lp_ledger_cli_boundary_redacts_uncaught_rpc_credentials(
     assert exit_code == 1
     assert secret not in captured.err
     assert captured.err == "[lp-ledger][uni-base] phase=preflight error=unknown_error\n"
+
+
+def test_pool_config_repr_omits_rpc_url() -> None:
+    config = replace(
+        POOL_CONFIGS["uni-base"],
+        rpc_url="https://base-mainnet.g.alchemy.com/v2/fixture-secret",
+    )
+
+    rendered = repr(config)
+
+    assert "rpc_url=" not in rendered
+    assert "fixture-secret" not in rendered
 
 
 def test_lp_ledger_cli_boundary_never_renders_bare_exception_secrets(
@@ -242,6 +273,137 @@ class _ActionBundleRun:
 
     def snapshot(self) -> SimpleNamespace:
         return SimpleNamespace(phase=self.phase)
+
+
+class _ActionDecodeRun:
+    def __init__(
+        self,
+        config,
+        bundles: tuple[CandidateBundle, ...],
+        *,
+        phase: str = "action_decode",
+    ) -> None:
+        self.config = config
+        self.bundles = bundles
+        self.phase = phase
+        self.commits: list[dict[str, object]] = []
+        self.completed: list[str] = []
+        self.freeze_calls = 0
+
+    def action_decode_identity(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            pool=self.config.name,
+            chain=self.config.chain,
+            pool_id=self.config.pool_id.lower(),
+            pool_manager=self.config.pool_manager.lower(),
+            position_manager=self.config.position_manager.lower(),
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    def undecoded_action_bundles(self) -> tuple[CandidateBundle, ...]:
+        return self.bundles
+
+    def load_decoder_state(self) -> dict[int, LedgerPositionState]:
+        return {}
+
+    def load_position_keys(self) -> tuple[PositionKeyMapping, ...]:
+        return ()
+
+    def load_header(self, _block_number: int) -> None:
+        return None
+
+    def load_position_resolution(self, _token_id: int, _query_block: int) -> None:
+        return None
+
+    def commit_decoded_action_transaction(
+        self,
+        bundle: CandidateBundle,
+        headers,
+        resolutions,
+        state_upserts,
+        state_deletes,
+        actions,
+        position_keys,
+    ) -> SimpleNamespace:
+        self.commits.append(
+            {
+                "bundle": bundle,
+                "headers": tuple(headers),
+                "resolutions": tuple(resolutions),
+                "state_upserts": tuple(state_upserts),
+                "state_deletes": tuple(state_deletes),
+                "actions": tuple(actions),
+                "position_keys": tuple(position_keys),
+            }
+        )
+        self.phase = "token_set_freeze"
+        return SimpleNamespace(phase=self.phase)
+
+    def complete_phase(self, phase: str) -> SimpleNamespace:
+        self.completed.append(phase)
+        self.phase = "token_set_freeze"
+        return SimpleNamespace(phase=self.phase)
+
+    def freeze_action_token_set(self) -> SimpleNamespace:
+        self.freeze_calls += 1
+        self.phase = "full_transfer_scan"
+        return SimpleNamespace(phase=self.phase)
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(phase=self.phase)
+
+
+def _action_decode_checkpoint_identity(output: Path, config) -> RunIdentity:
+    return RunIdentity(
+        schema_version=2,
+        exporter_version="lp-ledger-checkpoint-v2",
+        verification_mode="rpc_verified",
+        pool=config.name,
+        chain=config.chain,
+        chain_id=8453,
+        pool_id=config.pool_id.lower(),
+        pool_manager=config.pool_manager.lower(),
+        position_manager=config.position_manager.lower(),
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+        token0_address=config.token0_address.lower(),
+        token1_address=config.token1_address.lower(),
+        token0_decimals=config.token0_decimals,
+        token1_decimals=config.token1_decimals,
+        fee_rate=str(config.fee_rate),
+        invert_price=config.invert_price,
+        start_block=100,
+        end_block=109,
+        chunk_size=5,
+        action_topic=V4_MODIFY_LIQUIDITY_TOPIC.lower(),
+        transfer_topic=("0x" + TRANSFER_TOPIC.removeprefix("0x")).lower(),
+        replay_input=ReplayInputEvidence(
+            path=str(output.with_name("replay.csv").resolve()),
+            sha256="b" * 64,
+            byte_length=1_000,
+            row_count=10,
+            header_sha256="c" * 64,
+            parser_version="pool-history-replay-v1",
+            price_semantics_sha256="d" * 64,
+            chain=config.chain,
+            pool_id=config.pool_id.lower(),
+            first_block=100,
+            last_block=109,
+            first_timestamp_ms=100_000,
+            last_timestamp_ms=109_000,
+            price_event_count=4,
+            price_events_sha256="e" * 64,
+        ),
+        output_path=str(output.resolve()),
+        endpoint=EndpointSnapshot(
+            start=BlockHeader(100, "0x" + "10" * 32, 100_000),
+            end=BlockHeader(109, "0x" + "19" * 32, 109_000),
+        ),
+        python_version="3.12.0",
+        web3_version="7.0.0",
+        source_sha256=tuple(
+            (path, "a" * 64) for path in CHECKPOINT_SOURCE_PATHS
+        ),
+    )
 
 
 def _raw_action_log(
@@ -612,6 +774,427 @@ def test_action_bundle_staging_fetches_only_pending_and_completes_zero_work() ->
     assert reused_run.completed == []
 
 
+def test_action_decode_stages_state_key_header_and_reconciled_action(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    transaction_hash = "0x" + "33" * 32
+    block_hash = "0x" + "44" * 32
+    transaction = {
+        "to": config.position_manager,
+        "from": recipient,
+        "hash": transaction_hash,
+        "blockNumber": "101",
+        "transactionIndex": "5",
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION]),
+            [
+                _build_mint_param(
+                    config,
+                    tick_lower=-120,
+                    tick_upper=120,
+                    liquidity_delta=999,
+                    recipient=recipient,
+                )
+            ],
+        ),
+    }
+    receipt = {
+        "blockNumber": "101",
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _modify_liquidity_log(11),
+        ]
+    }
+    transaction_json = lp_ledger_export._canonical_rpc_json(
+        lp_ledger_export._normalize_rpc_payload(transaction, label="transaction")
+    )
+    receipt_json = lp_ledger_export._canonical_rpc_json(
+        lp_ledger_export._normalize_rpc_payload(receipt, label="receipt")
+    )
+    bundle = CandidateBundle(
+        transaction_hash=transaction_hash,
+        block_number=101,
+        block_hash=block_hash,
+        transaction_index=5,
+        transaction_json=transaction_json,
+        receipt_json=receipt_json,
+        payload_sha256=lp_ledger_export.candidate_payload_sha256(
+            transaction_json,
+            receipt_json,
+        ),
+    )
+    run = _ActionDecodeRun(config, (bundle,))
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_coverage_block_header",
+        lambda _w3, block_number: (block_hash, block_number * 1_000),
+    )
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(contract=lambda **_kwargs: object())
+    )
+
+    snapshot = lp_ledger_export._stage_action_decode(run, w3, config)
+
+    assert snapshot.phase == "token_set_freeze"
+    assert len(run.commits) == 1
+    commit = run.commits[0]
+    assert commit["headers"] == (BlockHeader(101, block_hash, 101_000),)
+    assert commit["resolutions"] == ()
+    assert commit["state_upserts"] == (
+        DecoderStateUpsert(
+            77,
+            LedgerPositionState(config.pool_id, -120, 120, 999),
+            101,
+            11,
+            0,
+        ),
+    )
+    assert commit["state_deletes"] == ()
+    actions = commit["actions"]
+    assert [(action.token_id, action.log_index) for action in actions] == [(77, 11)]
+    assert commit["position_keys"] == (
+        PositionKeyMapping(
+            token_id=77,
+            pool_id=config.pool_id,
+            tick_lower=-120,
+            tick_upper=120,
+            salt="0x" + f"{77:064x}",
+            mint_block_number=101,
+            mint_log_index=11,
+            mint_event_order=0,
+        ),
+    )
+
+
+def test_action_decode_real_checkpoint_resumes_without_duplicate_work(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    transaction_hash = "0x" + "71" * 32
+    block_hash = "0x" + "72" * 32
+    modify_log = _modify_liquidity_log(11)
+    modify_log.update(
+        {
+            "blockNumber": "101",
+            "blockHash": block_hash,
+            "transactionHash": transaction_hash,
+            "transactionIndex": "5",
+            "removed": False,
+        }
+    )
+    transaction = {
+        "to": config.position_manager,
+        "from": recipient,
+        "hash": transaction_hash,
+        "blockNumber": "101",
+        "blockHash": block_hash,
+        "transactionIndex": "5",
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION]),
+            [
+                _build_mint_param(
+                    config,
+                    tick_lower=-120,
+                    tick_upper=120,
+                    liquidity_delta=999,
+                    recipient=recipient,
+                )
+            ],
+        ),
+    }
+    receipt = {
+        "transactionHash": transaction_hash,
+        "blockNumber": "101",
+        "blockHash": block_hash,
+        "transactionIndex": "5",
+        "status": "1",
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            modify_log,
+        ],
+    }
+    transaction_json = lp_ledger_export._canonical_rpc_json(
+        lp_ledger_export._normalize_rpc_payload(transaction, label="transaction")
+    )
+    receipt_json = lp_ledger_export._canonical_rpc_json(
+        lp_ledger_export._normalize_rpc_payload(receipt, label="receipt")
+    )
+    bundle = CandidateBundle(
+        transaction_hash=transaction_hash,
+        block_number=101,
+        block_hash=block_hash,
+        transaction_index=5,
+        transaction_json=transaction_json,
+        receipt_json=receipt_json,
+        payload_sha256=lp_ledger_export.candidate_payload_sha256(
+            transaction_json,
+            receipt_json,
+        ),
+    )
+    witness = DiscoveryWitness(
+        source="pool_modify",
+        block_number=101,
+        block_hash=block_hash,
+        transaction_hash=transaction_hash,
+        transaction_index=5,
+        log_index=11,
+        address=config.pool_manager.lower(),
+        topics=tuple(str(topic).lower() for topic in modify_log["topics"]),
+        data=str(modify_log["data"]).lower(),
+    )
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _action_decode_checkpoint_identity(paths.output, config)
+    header_calls: list[int] = []
+
+    def header(_w3, block_number: int) -> tuple[str, int]:
+        header_calls.append(block_number)
+        assert block_number == 101
+        return block_hash, 101_000
+
+    monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", header)
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(contract=lambda **_kwargs: object())
+    )
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            identity,
+            fresh=False,
+        ) as run:
+            run.complete_phase("preflight")
+            for chunk in run.incomplete_action_chunks():
+                run.commit_action_chunk(
+                    chunk,
+                    (witness,) if chunk.start_block <= 101 <= chunk.end_block else (),
+                )
+            run.commit_action_bundle(bundle)
+            first = lp_ledger_export._stage_action_decode(run, w3, config)
+
+            assert first.phase == "token_set_freeze"
+            assert run.load_decoder_state() == {
+                77: LedgerPositionState(config.pool_id, -120, 120, 999)
+            }
+            assert [action.token_id for action in run.load_decoded_actions()] == [77]
+
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            identity,
+            fresh=False,
+        ) as resumed:
+            second = lp_ledger_export._stage_action_decode(resumed, w3, config)
+
+            assert second.phase == "token_set_freeze"
+            assert resumed.undecoded_action_bundles() == ()
+            assert len(resumed.load_decoded_actions()) == 1
+            frozen = lp_ledger_export._freeze_action_token_set(resumed)
+            assert frozen.phase == "full_transfer_scan"
+            assert resumed.frozen_token_ids() == (77,)
+
+    assert header_calls == [101]
+
+
+def test_action_decode_completes_empty_phase_and_freezes_only_after_decode() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    run = _ActionDecodeRun(config, ())
+
+    decoded = lp_ledger_export._stage_action_decode(
+        run,
+        SimpleNamespace(eth=SimpleNamespace(contract=lambda **_kwargs: object())),
+        config,
+    )
+    frozen = lp_ledger_export._freeze_action_token_set(run)
+
+    assert decoded.phase == "token_set_freeze"
+    assert run.completed == ["action_decode"]
+    assert frozen.phase == "full_transfer_scan"
+    assert run.freeze_calls == 1
+
+
+def test_action_decode_identity_rejects_a_different_wrapper_entrypoint() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    identity = SimpleNamespace(
+        pool=config.name,
+        chain=config.chain,
+        pool_id=config.pool_id,
+        pool_manager=config.pool_manager,
+        position_manager=config.position_manager,
+        wrapper_entrypoint="0x" + "99" * 20,
+    )
+
+    with pytest.raises(ValueError, match="EntryPoint"):
+        lp_ledger_export._require_matching_action_decode_identity(identity, config)
+
+
+def test_action_decode_fetches_each_resolution_header_once(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    transaction_hash = "0x" + "33" * 32
+    block_hash = "0x" + "44" * 32
+    transaction_json = lp_ledger_export._canonical_rpc_json({})
+    receipt_json = lp_ledger_export._canonical_rpc_json(
+        {"blockNumber": "101", "logs": []}
+    )
+    bundle = CandidateBundle(
+        transaction_hash=transaction_hash,
+        block_number=101,
+        block_hash=block_hash,
+        transaction_index=5,
+        transaction_json=transaction_json,
+        receipt_json=receipt_json,
+        payload_sha256=lp_ledger_export.candidate_payload_sha256(
+            transaction_json,
+            receipt_json,
+        ),
+    )
+    run = _ActionDecodeRun(config, (bundle,))
+    header_calls: list[int] = []
+
+    def fetch_header(_w3, block_number: int) -> tuple[str, int]:
+        header_calls.append(block_number)
+        return (
+            block_hash if block_number == 101 else "0x" + "55" * 32,
+            block_number * 1_000,
+        )
+
+    def decode_with_two_resolutions(
+        *_args,
+        position_resolver,
+        **_kwargs,
+    ):
+        assert position_resolver(55, 100) is None
+        assert position_resolver(66, 100) is None
+        return []
+
+    monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", fetch_header)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_strict_position_state_from_chain",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "decode_liquidity_actions_for_tx",
+        decode_with_two_resolutions,
+    )
+
+    lp_ledger_export._stage_action_decode(
+        run,
+        SimpleNamespace(
+            eth=SimpleNamespace(contract=lambda **_kwargs: object()),
+        ),
+        config,
+    )
+
+    assert header_calls == [101, 100]
+    assert run.commits[0]["resolutions"] == (
+        lp_ledger_export.PositionResolution(55, 100, False, None),
+        lp_ledger_export.PositionResolution(66, 100, False, None),
+    )
+
+
+def test_action_decode_rejects_target_position_missing_its_inception_mint(
+    monkeypatch,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    transaction_hash = "0x" + "61" * 32
+    block_hash = "0x" + "62" * 32
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, "0x" + "bb" * 20],
+    )
+    transaction = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": transaction_hash,
+        "blockNumber": "101",
+        "transactionIndex": "5",
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease, take_pair],
+        ),
+    }
+    receipt = {
+        "blockNumber": "101",
+        "logs": [
+            _modify_liquidity_log(
+                11,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            )
+        ],
+    }
+    transaction_json = lp_ledger_export._canonical_rpc_json(
+        lp_ledger_export._normalize_rpc_payload(transaction, label="transaction")
+    )
+    receipt_json = lp_ledger_export._canonical_rpc_json(
+        lp_ledger_export._normalize_rpc_payload(receipt, label="receipt")
+    )
+    bundle = CandidateBundle(
+        transaction_hash=transaction_hash,
+        block_number=101,
+        block_hash=block_hash,
+        transaction_index=5,
+        transaction_json=transaction_json,
+        receipt_json=receipt_json,
+        payload_sha256=lp_ledger_export.candidate_payload_sha256(
+            transaction_json,
+            receipt_json,
+        ),
+    )
+    run = _ActionDecodeRun(config, (bundle,))
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_coverage_block_header",
+        lambda _w3, block_number: (
+            block_hash if block_number == 101 else "0x" + "63" * 32,
+            block_number * 1_000,
+        ),
+    )
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_strict_position_state_from_chain",
+        lambda *_args, **_kwargs: LedgerPositionState(
+            config.pool_id,
+            -120,
+            120,
+            1_000,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="inception action history"):
+        lp_ledger_export._stage_action_decode(
+            run,
+            SimpleNamespace(
+                eth=SimpleNamespace(contract=lambda **_kwargs: object()),
+            ),
+            config,
+        )
+
+    assert run.commits == []
+
+
 def test_verified_rpc_entrypoint_fails_closed_before_legacy_scan(
     tmp_path,
     monkeypatch,
@@ -638,7 +1221,9 @@ def test_verified_decode_rejects_an_unrepresentable_target_pool_action(
     transaction_hash = "0x" + "44" * 32
     transaction = {
         "hash": transaction_hash,
-        "input": "0x",
+        "input": "0xdeadbeef",
+        "to": config.position_manager,
+        "from": "0x" + "11" * 20,
         "blockNumber": 100,
         "transactionIndex": 0,
     }
@@ -661,7 +1246,7 @@ def test_verified_decode_rejects_an_unrepresentable_target_pool_action(
         lambda *_args: 1_700_000_000,
     )
 
-    with pytest.raises(ValueError, match="not representable"):
+    with pytest.raises(ValueError, match="ModifyLiquidity"):
         lp_ledger_export._decode_rpc_lp_inputs(
             fake_w3,
             config,
@@ -823,6 +1408,8 @@ def test_verified_decode_requires_one_action_per_target_pool_modify_log(
     transaction = {
         "hash": transaction_hash,
         "input": _build_modify_input(bytes([_V4_LP_MINT_POSITION]), [mint_param]),
+        "to": config.position_manager,
+        "from": "0x" + "11" * 20,
         "blockNumber": 100,
         "transactionIndex": 0,
     }
@@ -855,7 +1442,7 @@ def test_verified_decode_requires_one_action_per_target_pool_modify_log(
         lambda *_args: 1_700_000_000,
     )
 
-    with pytest.raises(ValueError, match="every target-pool ModifyLiquidity"):
+    with pytest.raises(ValueError, match="ModifyLiquidity"):
         lp_ledger_export._decode_rpc_lp_inputs(
             fake_w3,
             config,
@@ -1320,6 +1907,371 @@ def _build_multicall_input(calls: list[bytes]) -> str:
     return "0x" + calldata.hex()
 
 
+def _build_mint_param(
+    config,
+    *,
+    tick_lower: int,
+    tick_upper: int,
+    liquidity_delta: int,
+    recipient: str,
+    fee: int | None = None,
+) -> bytes:
+    return encode(
+        [
+            "(address,address,uint24,int24,address)",
+            "int24",
+            "int24",
+            "uint256",
+            "uint128",
+            "uint128",
+            "address",
+            "bytes",
+        ],
+        [
+            (
+                config.token0_address,
+                config.token1_address,
+                int(config.fee_rate * 1_000_000) if fee is None else fee,
+                30,
+                ZERO_ADDRESS,
+            ),
+            tick_lower,
+            tick_upper,
+            liquidity_delta,
+            1_000_000,
+            2_000_000,
+            recipient,
+            b"",
+        ],
+    )
+
+
+_ENTRYPOINT_V08 = "0x4337084d9e255ff0702461cf8895ce9e3b5ff108"
+_USER_OPERATION_TYPE = (
+    "(address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[]"
+)
+
+
+def _build_wrapped_position_manager_input(
+    *,
+    sender: str,
+    position_manager_calls: list[tuple[str, int, bytes]],
+    mode: bytes = b"\x01" + b"\x00" * 31,
+    user_operation_count: int = 1,
+) -> str:
+    execution_data = encode(
+        ["(address,uint256,bytes)[]"],
+        [position_manager_calls],
+    )
+    execute_call = (
+        Web3.keccak(text="execute(bytes32,bytes)")[:4]
+        + encode(["bytes32", "bytes"], [mode, execution_data])
+    )
+    user_operation = (
+        sender,
+        7,
+        b"",
+        execute_call,
+        b"\x00" * 32,
+        100_000,
+        b"\x00" * 32,
+        b"",
+        b"fixture-signature",
+    )
+    handle_ops = Web3.keccak(
+        text=(
+            "handleOps((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[],"
+            "address)"
+        )
+    )[:4]
+    calldata = handle_ops + encode(
+        [_USER_OPERATION_TYPE, "address"],
+        [[user_operation] * user_operation_count, "0x" + "88" * 20],
+    )
+    return "0x" + calldata.hex()
+
+
+def _wrapped_base_burn_manifest() -> dict[str, object]:
+    path = (
+        REPO_ROOT
+        / "research"
+        / "tests"
+        / "fixtures"
+        / "v4_lp_wrapped_base_burns.json"
+    )
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise AssertionError("wrapped-burn fixture must be a JSON object")
+    return payload
+
+
+def test_wrapped_base_burn_manifest_is_exact_and_explicitly_synthetic() -> None:
+    manifest = _wrapped_base_burn_manifest()
+    cases = manifest["cases"]
+    assert isinstance(cases, list)
+    assert manifest["fixture_kind"] == "synthetic_wrapper_representability"
+    assert manifest["historical_calldata_captured"] is False
+    assert len(cases) == manifest["expected_wrapped_count"] == 43
+    assert [case["case_id"] for case in cases] == [
+        f"wrapped_burn_{index:03d}" for index in range(1, 44)
+    ]
+    assert [(case["block_number"], case["log_index"]) for case in cases] == sorted(
+        (case["block_number"], case["log_index"]) for case in cases
+    )
+    counts = {
+        str(token_id): sum(case["token_id"] == token_id for case in cases)
+        for token_id in (2087350, 2094074, 2128952)
+    }
+    assert counts == manifest["expected_token_counts"]
+    assert all(
+        int(case["salt"], 16) == case["token_id"]
+        and case["liquidity_delta"] < 0
+        for case in cases
+    )
+    semantic_fields = manifest["semantic_vector_fields"]
+    assert isinstance(semantic_fields, list)
+    semantic_ndjson = "".join(
+        json.dumps(
+            {field: case[field] for field in semantic_fields},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+        + "\n"
+        for case in cases
+    ).encode()
+    assert hashlib.sha256(semantic_ndjson).hexdigest() == manifest[
+        "semantic_vector_sha256"
+    ]
+    assert manifest["direct_control"] not in cases
+
+
+def test_all_43_wrapped_base_burn_vectors_are_structurally_representable() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    manifest = _wrapped_base_burn_manifest()
+    cases = manifest["cases"]
+    assert isinstance(cases, list)
+    user_operation_sender = "0x" + "11" * 20
+    bundler = "0x" + "22" * 20
+
+    for index, case in enumerate(cases, start=1):
+        token_id = int(case["token_id"])
+        burn = encode(
+            ["uint256", "uint128", "uint128", "bytes"],
+            [token_id, 0, 0, b""],
+        )
+        take_pair = encode(
+            ["address", "address", "address"],
+            [config.token0_address, config.token1_address, user_operation_sender],
+        )
+        modify_call = bytes.fromhex(
+            _build_modify_input(
+                bytes([_V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR]),
+                [burn, take_pair],
+            )[2:]
+        )
+        position_manager_call = bytes.fromhex(
+            _build_multicall_input([modify_call])[2:]
+        )
+        transaction_hash = "0x" + index.to_bytes(32, "big").hex()
+        tx = {
+            "to": _ENTRYPOINT_V08,
+            "from": bundler,
+            "hash": transaction_hash,
+            "blockNumber": case["block_number"],
+            "input": _build_wrapped_position_manager_input(
+                sender=user_operation_sender,
+                position_manager_calls=[
+                    (config.position_manager, 0, position_manager_call)
+                ],
+            ),
+        }
+        receipt = {
+            "logs": [
+                _modify_liquidity_log(
+                    int(case["log_index"]),
+                    tick_lower=int(case["tick_lower"]),
+                    tick_upper=int(case["tick_upper"]),
+                    liquidity_delta=int(case["liquidity_delta"]),
+                    salt_token_id=token_id,
+                )
+            ]
+        }
+        contexts = position_manager_calls_for_transaction(
+            tx,
+            config.position_manager,
+            _ENTRYPOINT_V08,
+        )
+        token_state = {
+            token_id: LedgerPositionState(
+                config.pool_id,
+                int(case["tick_lower"]),
+                int(case["tick_upper"]),
+                -int(case["liquidity_delta"]),
+            )
+        }
+        position_keys = {
+            token_id: _position_key(
+                config,
+                token_id,
+                tick_lower=int(case["tick_lower"]),
+                tick_upper=int(case["tick_upper"]),
+            )
+        }
+
+        actions = decode_liquidity_actions_for_tx(
+            tx,
+            receipt,
+            1_700_000_000,
+            config,
+            token_state,
+            position_keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+        assert len(contexts) == 1
+        assert contexts[0].wrapper_source == "entrypoint_handle_ops"
+        assert contexts[0].effective_sender == Web3.to_checksum_address(
+            user_operation_sender
+        )
+        assert len(actions) == 1
+        assert (
+            actions[0].token_id,
+            actions[0].tick_lower,
+            actions[0].tick_upper,
+            actions[0].liquidity_delta,
+            actions[0].log_index,
+        ) == (
+            token_id,
+            case["tick_lower"],
+            case["tick_upper"],
+            case["liquidity_delta"],
+            case["log_index"],
+        )
+        assert token_state == {}
+
+
+def test_wrapped_burn_manifest_direct_control_stays_outside_wrapper_count() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    manifest = _wrapped_base_burn_manifest()
+    control = manifest["direct_control"]
+    assert isinstance(control, dict)
+    token_id = int(control["token_id"])
+    burn = encode(
+        ["uint256", "uint128", "uint128", "bytes"],
+        [token_id, 0, 0, b""],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "11" * 20,
+        "hash": "0x" + "ff" * 32,
+        "blockNumber": control["block_number"],
+        "input": _build_modify_input(bytes([_V4_LP_BURN_POSITION]), [burn]),
+    }
+    contexts = position_manager_calls_for_transaction(
+        tx,
+        config.position_manager,
+        _ENTRYPOINT_V08,
+    )
+
+    assert len(contexts) == 1
+    assert contexts[0].wrapper_source == control["expected_wrapper_source"] == "direct"
+    assert control["case_id"] not in {
+        case["case_id"] for case in manifest["cases"]
+    }
+
+
+def test_wrapped_action_uses_user_operation_sender_and_exact_pm_multicall() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    user_operation_sender = "0x" + "11" * 20
+    bundler = "0x" + "22" * 20
+    account = "0x" + "33" * 20
+    pm_multicall = bytes.fromhex(_build_multicall_input([b"\x12\x34"])[2:])
+    transaction_hash = "0x" + "44" * 32
+    tx = {
+        "to": _ENTRYPOINT_V08,
+        "from": bundler,
+        "hash": transaction_hash,
+        "input": _build_wrapped_position_manager_input(
+            sender=user_operation_sender,
+            position_manager_calls=[
+                (account, 0, b"unrelated"),
+                (config.position_manager, 0, pm_multicall),
+            ],
+        ),
+    }
+
+    calls = position_manager_calls_for_transaction(
+        tx,
+        config.position_manager,
+        _ENTRYPOINT_V08,
+    )
+
+    assert len(calls) == 1
+    assert calls[0].input_data == "0x" + pm_multicall.hex()
+    assert calls[0].effective_sender == Web3.to_checksum_address(
+        user_operation_sender
+    )
+    assert calls[0].wrapper_source == "entrypoint_handle_ops"
+    assert calls[0].user_operation_index == 0
+    assert calls[0].batch_index == 1
+    assert calls[0].outer_transaction_hash == transaction_hash
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "wrong_entrypoint",
+        "unsupported_mode",
+        "zero_pm_calls",
+        "multiple_pm_calls",
+        "multiple_user_operations",
+        "trailing_bytes",
+    ),
+)
+def test_wrapped_action_rejects_ambiguous_or_noncanonical_shapes(
+    mutation: str,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    pm_multicall = bytes.fromhex(_build_multicall_input([b"\x12\x34"])[2:])
+    calls = [(config.position_manager, 0, pm_multicall)]
+    mode = b"\x01" + b"\x00" * 31
+    user_operation_count = 1
+    outer_target = _ENTRYPOINT_V08
+    trailing = ""
+    if mutation == "wrong_entrypoint":
+        outer_target = "0x" + "99" * 20
+    elif mutation == "unsupported_mode":
+        mode = b"\x00" * 32
+    elif mutation == "zero_pm_calls":
+        calls = [("0x" + "77" * 20, 0, b"unrelated")]
+    elif mutation == "multiple_pm_calls":
+        calls = calls * 2
+    elif mutation == "multiple_user_operations":
+        user_operation_count = 2
+    else:
+        trailing = "00"
+    tx = {
+        "to": outer_target,
+        "from": "0x" + "22" * 20,
+        "hash": "0x" + "44" * 32,
+        "input": _build_wrapped_position_manager_input(
+            sender="0x" + "11" * 20,
+            position_manager_calls=calls,
+            mode=mode,
+            user_operation_count=user_operation_count,
+        )
+        + trailing,
+    }
+
+    with pytest.raises(ValueError):
+        position_manager_calls_for_transaction(
+            tx,
+            config.position_manager,
+            _ENTRYPOINT_V08,
+        )
+
+
 def _topic_address(address: str) -> str:
     return "0x" + "00" * 12 + address[2:].lower()
 
@@ -1340,7 +2292,7 @@ def _transfer_log(
             _topic_address(to_address),
             "0x" + token_or_amount.to_bytes(32, "big").hex(),
         ],
-        "data": hex(token_or_amount),
+        "data": "0x",
         "logIndex": log_index,
     }
 
@@ -1348,7 +2300,7 @@ def _transfer_log(
 def _erc20_transfer_log(
     *,
     token: str,
-    from_address: str = "0x0000000000000000000000000000000000000011",
+    from_address: str,
     to_address: str,
     amount_raw: int,
     log_index: int,
@@ -1365,17 +2317,1220 @@ def _erc20_transfer_log(
     }
 
 
-def _modify_liquidity_log(log_index: int) -> dict[str, object]:
+def _position_key(
+    config,
+    token_id: int,
+    *,
+    tick_lower: int = -120,
+    tick_upper: int = 120,
+) -> PoolPositionKey:
+    return PoolPositionKey(
+        pool_id=config.pool_id,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        salt="0x" + token_id.to_bytes(32, "big").hex(),
+    )
+
+
+def _modify_liquidity_log(
+    log_index: int,
+    *,
+    config=None,
+    pool_id: str | None = None,
+    sender: str | None = None,
+    tick_lower: int = -120,
+    tick_upper: int = 120,
+    liquidity_delta: int = 999,
+    salt_token_id: int = 77,
+) -> dict[str, object]:
+    config = POOL_CONFIGS["uni-base"] if config is None else config
+    salt = salt_token_id.to_bytes(32, "big")
     return {
-        "address": POOL_CONFIGS["uni-base"].pool_manager,
+        "address": config.pool_manager,
         "topics": [
             V4_MODIFY_LIQUIDITY_TOPIC,
-            POOL_CONFIGS["uni-base"].pool_id,
-            _topic_address("0x0000000000000000000000000000000000000022"),
+            config.pool_id if pool_id is None else pool_id,
+            _topic_address(config.position_manager if sender is None else sender),
         ],
-        "data": "0x",
+        "data": "0x"
+        + encode(
+            ["int24", "int24", "int256", "bytes32"],
+            [tick_lower, tick_upper, liquidity_delta, salt],
+        ).hex(),
         "logIndex": log_index,
     }
+
+
+def test_multi_mint_pairs_distinct_token_transfers_and_position_keys() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    sender = "0x" + "bb" * 20
+    recipient = "0x" + "aa" * 20
+    mint0 = _build_mint_param(
+        config,
+        tick_lower=-120,
+        tick_upper=120,
+        liquidity_delta=999,
+        recipient=recipient,
+    )
+    mint1 = _build_mint_param(
+        config,
+        tick_lower=-240,
+        tick_upper=240,
+        liquidity_delta=555,
+        recipient=recipient,
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": sender,
+        "hash": "0x" + "31" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION, _V4_LP_MINT_POSITION]),
+            [mint0, mint1],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=101,
+                log_index=5,
+            ),
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=999,
+                salt_token_id=101,
+            ),
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=202,
+                log_index=9,
+            ),
+            _modify_liquidity_log(
+                12,
+                tick_lower=-240,
+                tick_upper=240,
+                liquidity_delta=555,
+                salt_token_id=202,
+            ),
+        ]
+    }
+    token_state: dict[int, LedgerPositionState] = {}
+    position_keys: dict[int, PoolPositionKey] = {}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert [(action.token_id, action.log_index) for action in actions] == [
+        (101, 8),
+        (202, 12),
+    ]
+    assert token_state == {
+        101: LedgerPositionState(config.pool_id, -120, 120, 999),
+        202: LedgerPositionState(config.pool_id, -240, 240, 555),
+    }
+    assert position_keys == {
+        101: _position_key(config, 101),
+        202: _position_key(config, 202, tick_lower=-240, tick_upper=240),
+    }
+
+
+def test_mixed_pool_mints_preserve_global_transfer_pairing_order() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    foreign_mint = _build_mint_param(
+        config,
+        tick_lower=-60,
+        tick_upper=60,
+        liquidity_delta=111,
+        recipient=recipient,
+        fee=3_000,
+    )
+    target_mint = _build_mint_param(
+        config,
+        tick_lower=-120,
+        tick_upper=120,
+        liquidity_delta=999,
+        recipient=recipient,
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "46" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION, _V4_LP_MINT_POSITION]),
+            [foreign_mint, target_mint],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=101,
+                log_index=5,
+            ),
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=202,
+                log_index=9,
+            ),
+            _modify_liquidity_log(12, salt_token_id=202),
+        ]
+    }
+    token_state: dict[int, LedgerPositionState] = {}
+    position_keys: dict[int, PoolPositionKey] = {}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert [(action.token_id, action.log_index) for action in actions] == [(202, 12)]
+    assert token_state == {
+        202: LedgerPositionState(config.pool_id, -120, 120, 999)
+    }
+    assert position_keys == {202: _position_key(config, 202)}
+
+
+def test_mint_recipient_must_match_creation_transfer() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "47" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION]),
+            [
+                _build_mint_param(
+                    config,
+                    tick_lower=-120,
+                    tick_upper=120,
+                    liquidity_delta=999,
+                    recipient=recipient,
+                )
+            ],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address="0x" + "cc" * 20,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _modify_liquidity_log(8),
+        ]
+    }
+
+    with pytest.raises(ValueError, match="recipient"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            receipt,
+            1_700_000_000,
+            config,
+            {},
+            {},
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+
+def test_mint_resolves_address_this_recipient_to_position_manager() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    address_this = "0x0000000000000000000000000000000000000002"
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "48" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION]),
+            [
+                _build_mint_param(
+                    config,
+                    tick_lower=-120,
+                    tick_upper=120,
+                    liquidity_delta=999,
+                    recipient=address_this,
+                )
+            ],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=config.position_manager,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _modify_liquidity_log(8, salt_token_id=77),
+        ]
+    }
+    token_state: dict[int, LedgerPositionState] = {}
+    position_keys: dict[int, PoolPositionKey] = {}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert [(action.token_id, action.log_index) for action in actions] == [(77, 8)]
+    assert token_state == {
+        77: LedgerPositionState(config.pool_id, -120, 120, 999)
+    }
+    assert position_keys == {77: _position_key(config, 77)}
+
+
+@pytest.mark.parametrize(
+    "witness_change",
+    ("pool", "sender", "ticks", "salt", "delta"),
+)
+def test_action_decode_rejects_semantic_witness_mismatch_transactionally(
+    witness_change: str,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "32" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_MINT_POSITION]),
+            [
+                _build_mint_param(
+                    config,
+                    tick_lower=-120,
+                    tick_upper=120,
+                    liquidity_delta=999,
+                    recipient=recipient,
+                )
+            ],
+        ),
+    }
+    log_kwargs: dict[str, object] = {}
+    if witness_change == "pool":
+        log_kwargs["pool_id"] = "0x" + "ab" * 32
+    elif witness_change == "sender":
+        log_kwargs["sender"] = "0x" + "cd" * 20
+    elif witness_change == "ticks":
+        log_kwargs["tick_lower"] = -121
+    elif witness_change == "salt":
+        log_kwargs["salt_token_id"] = 78
+    else:
+        log_kwargs["liquidity_delta"] = 998
+    receipt = {
+        "logs": [
+            _transfer_log(
+                address=config.position_manager,
+                from_address=ZERO_ADDRESS,
+                to_address=recipient,
+                token_or_amount=77,
+                log_index=5,
+            ),
+            _modify_liquidity_log(8, **log_kwargs),
+        ]
+    }
+    original_state = {
+        9: LedgerPositionState(config.pool_id, -30, 30, 10),
+    }
+    original_keys = {
+        9: _position_key(config, 9, tick_lower=-30, tick_upper=30),
+    }
+    token_state = dict(original_state)
+    position_keys = dict(original_keys)
+
+    with pytest.raises(ValueError, match="ModifyLiquidity"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            receipt,
+            1_700_000_000,
+            config,
+            token_state,
+            position_keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert token_state == original_state
+    assert position_keys == original_keys
+
+
+def test_action_decode_rejects_negative_liquidity_without_mutating_state() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    sender = "0x" + "bb" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 1_001, 0, 0, b""],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": sender,
+        "hash": "0x" + "33" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY]),
+            [decrease],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-1_001,
+                salt_token_id=55,
+            )
+        ]
+    }
+    original_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    original_keys = {55: _position_key(config, 55)}
+    token_state = dict(original_state)
+    position_keys = dict(original_keys)
+
+    with pytest.raises(ValueError, match="below zero"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            receipt,
+            1_700_000_000,
+            config,
+            token_state,
+            position_keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert token_state == original_state
+    assert position_keys == original_keys
+
+
+def test_burn_position_removes_remaining_liquidity_and_collects() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    sender = "0x" + "bb" * 20
+    recipient = "0x" + "aa" * 20
+    burn = encode(
+        ["uint256", "uint128", "uint128", "bytes"],
+        [55, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": sender,
+        "hash": "0x" + "41" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR]),
+            [burn, take_pair],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-1_000,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address="0x" + "11" * 20,
+                to_address=recipient,
+                amount_raw=9_000_000,
+                log_index=9,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=config.pool_manager,
+                to_address=recipient,
+                amount_raw=2_500_000,
+                log_index=10,
+            ),
+        ]
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    position_keys = {55: _position_key(config, 55)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "burn_collect"
+    assert actions[0].liquidity_delta == -1_000
+    assert actions[0].log_index == 8
+    assert actions[0].collect_amount0 == Decimal("2.5")
+
+
+def test_increase_does_not_discard_pending_take_attribution() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    increase = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [66, 100, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "46" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes(
+                [
+                    _V4_LP_DECREASE_LIQUIDITY,
+                    _V4_LP_INCREASE_LIQUIDITY,
+                    _V4_LP_TAKE_PAIR,
+                ]
+            ),
+            [decrease, increase, take_pair],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            ),
+            _modify_liquidity_log(
+                9,
+                tick_lower=-240,
+                tick_upper=240,
+                liquidity_delta=100,
+                salt_token_id=66,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=config.pool_manager,
+                to_address=recipient,
+                amount_raw=2_500_000,
+                log_index=10,
+            ),
+        ]
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+        66: LedgerPositionState(config.pool_id, -240, 240, 900),
+    }
+    position_keys = {
+        55: _position_key(config, 55),
+        66: _position_key(config, 66, tick_lower=-240, tick_upper=240),
+    }
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert [action.action_type for action in actions] == ["burn_collect", "mint"]
+    assert actions[0].collect_amount0 == Decimal("2.5")
+    assert actions[1].amount_attribution_status == "ambiguous_missing_settle_pair"
+    assert token_state == {
+        55: LedgerPositionState(config.pool_id, -120, 120, 600),
+        66: LedgerPositionState(config.pool_id, -240, 240, 1_000),
+    }
+    assert position_keys == {
+        55: _position_key(config, 55),
+        66: _position_key(config, 66, tick_lower=-240, tick_upper=240),
+    }
+
+
+def test_burn_position_with_zero_liquidity_emits_no_modify_action() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    burn = encode(
+        ["uint256", "uint128", "uint128", "bytes"],
+        [55, 0, 0, b""],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "42" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(bytes([_V4_LP_BURN_POSITION]), [burn]),
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 0),
+    }
+    position_keys = {55: _position_key(config, 55)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        {"logs": []},
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert actions == []
+    assert token_state == {}
+    assert position_keys == {55: _position_key(config, 55)}
+
+
+def test_full_decrease_then_burn_emits_only_the_decrease_modify_action() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 1_000, 0, 0, b""],
+    )
+    burn = encode(
+        ["uint256", "uint128", "uint128", "bytes"],
+        [55, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "43" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes(
+                [
+                    _V4_LP_DECREASE_LIQUIDITY,
+                    _V4_LP_BURN_POSITION,
+                    _V4_LP_TAKE_PAIR,
+                ]
+            ),
+            [decrease, burn, take_pair],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-1_000,
+                salt_token_id=55,
+            )
+        ]
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    position_keys = {55: _position_key(config, 55)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert [(action.action_type, action.liquidity_delta) for action in actions] == [
+        ("burn_collect", -1_000)
+    ]
+    assert token_state == {}
+
+
+def test_multiple_target_take_pairs_fail_closed() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "44" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes(
+                [
+                    _V4_LP_DECREASE_LIQUIDITY,
+                    _V4_LP_TAKE_PAIR,
+                    _V4_LP_TAKE_PAIR,
+                ]
+            ),
+            [decrease, take_pair, take_pair],
+        ),
+    }
+    state = {55: LedgerPositionState(config.pool_id, -120, 120, 1_000)}
+    keys = {55: _position_key(config, 55)}
+
+    with pytest.raises(ValueError, match="multiple target-pool TAKE_PAIR"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            {
+                "logs": [
+                    _modify_liquidity_log(
+                        8,
+                        liquidity_delta=-400,
+                        salt_token_id=55,
+                    )
+                ]
+            },
+            1_700_000_000,
+            config,
+            state,
+            keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert state[55].liquidity_after == 1_000
+
+
+def test_overlapping_non_target_take_pair_fails_closed() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    foreign_token = "0x" + "cc" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    target_take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    overlapping_take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, foreign_token, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "50" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes(
+                [
+                    _V4_LP_DECREASE_LIQUIDITY,
+                    _V4_LP_TAKE_PAIR,
+                    _V4_LP_TAKE_PAIR,
+                ]
+            ),
+            [decrease, target_take_pair, overlapping_take_pair],
+        ),
+    }
+    state = {55: LedgerPositionState(config.pool_id, -120, 120, 1_000)}
+    keys = {55: _position_key(config, 55)}
+
+    with pytest.raises(ValueError, match="TAKE_PAIR receipt attribution is ambiguous"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            {
+                "logs": [
+                    _modify_liquidity_log(
+                        8,
+                        liquidity_delta=-400,
+                        salt_token_id=55,
+                    ),
+                    _erc20_transfer_log(
+                        token=config.token0_address,
+                        from_address=config.pool_manager,
+                        to_address=recipient,
+                        amount_raw=2_500_000,
+                        log_index=9,
+                    ),
+                    _erc20_transfer_log(
+                        token=config.token0_address,
+                        from_address=config.pool_manager,
+                        to_address=recipient,
+                        amount_raw=9_000_000,
+                        log_index=10,
+                    ),
+                ]
+            },
+            1_700_000_000,
+            config,
+            state,
+            keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert state[55].liquidity_after == 1_000
+
+
+def test_duplicate_pool_manager_transfers_for_one_take_pair_fail_closed() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "53" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease, take_pair],
+        ),
+    }
+    original_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    state = dict(original_state)
+
+    with pytest.raises(ValueError, match="TAKE_PAIR receipt attribution is ambiguous"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            {
+                "logs": [
+                    _modify_liquidity_log(
+                        8,
+                        liquidity_delta=-400,
+                        salt_token_id=55,
+                    ),
+                    _erc20_transfer_log(
+                        token=config.token0_address,
+                        from_address=config.pool_manager,
+                        to_address=recipient,
+                        amount_raw=2_000_000,
+                        log_index=9,
+                    ),
+                    _erc20_transfer_log(
+                        token=config.token0_address,
+                        from_address=config.pool_manager,
+                        to_address=recipient,
+                        amount_raw=500_000,
+                        log_index=10,
+                    ),
+                ]
+            },
+            1_700_000_000,
+            config,
+            state,
+            {55: _position_key(config, 55)},
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert state == original_state
+
+
+def test_multiple_unresolved_decreases_before_take_fail_closed() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    decrease0 = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    decrease1 = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [66, 300, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "45" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes(
+                [
+                    _V4_LP_DECREASE_LIQUIDITY,
+                    _V4_LP_DECREASE_LIQUIDITY,
+                    _V4_LP_TAKE_PAIR,
+                ]
+            ),
+            [decrease0, decrease1, take_pair],
+        ),
+    }
+    state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+        66: LedgerPositionState(config.pool_id, -240, 240, 900),
+    }
+    keys = {
+        55: _position_key(config, 55),
+        66: _position_key(config, 66, tick_lower=-240, tick_upper=240),
+    }
+
+    with pytest.raises(ValueError, match="multiple unresolved target-pool"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            {
+                "logs": [
+                    _modify_liquidity_log(
+                        8,
+                        liquidity_delta=-400,
+                        salt_token_id=55,
+                    ),
+                    _modify_liquidity_log(
+                        9,
+                        tick_lower=-240,
+                        tick_upper=240,
+                        liquidity_delta=-300,
+                        salt_token_id=66,
+                    ),
+                ]
+            },
+            1_700_000_000,
+            config,
+            state,
+            keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert state == {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+        66: LedgerPositionState(config.pool_id, -240, 240, 900),
+    }
+
+
+def test_reversed_take_pair_currency_order_is_supported() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    recipient = "0x" + "aa" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token1_address, config.token0_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "51" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease, take_pair],
+        ),
+    }
+    state = {55: LedgerPositionState(config.pool_id, -120, 120, 1_000)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        {
+            "logs": [
+                _modify_liquidity_log(
+                    8,
+                    liquidity_delta=-400,
+                    salt_token_id=55,
+                ),
+                _erc20_transfer_log(
+                    token=config.token0_address,
+                    from_address=config.pool_manager,
+                    to_address=recipient,
+                    amount_raw=2_500_000,
+                    log_index=9,
+                ),
+                _erc20_transfer_log(
+                    token=config.token1_address,
+                    from_address=config.pool_manager,
+                    to_address=recipient,
+                    amount_raw=1_250_000,
+                    log_index=10,
+                ),
+            ]
+        },
+        1_700_000_000,
+        config,
+        state,
+        {55: _position_key(config, 55)},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "burn_collect"
+    assert actions[0].collect_amount0 == Decimal("2.5")
+    assert actions[0].collect_amount1 == Decimal("1.25")
+
+
+def test_unresolved_target_withdrawal_fails_closed() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    unsupported_take = encode(
+        ["address", "address", "uint256"],
+        [config.token0_address, "0x" + "aa" * 20, 2_500_000],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "52" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, 0x0E]),
+            [decrease, unsupported_take],
+        ),
+    }
+    original_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    state = dict(original_state)
+    original_keys = {55: _position_key(config, 55)}
+    keys = dict(original_keys)
+
+    with pytest.raises(ValueError, match="no supported TAKE_PAIR attribution"):
+        decode_liquidity_actions_for_tx(
+            tx,
+            {
+                "logs": [
+                    _modify_liquidity_log(
+                        8,
+                        liquidity_delta=-400,
+                        salt_token_id=55,
+                    )
+                ]
+            },
+            1_700_000_000,
+            config,
+            state,
+            keys,
+            wrapper_entrypoint=_ENTRYPOINT_V08,
+        )
+
+    assert state == original_state
+    assert keys == original_keys
+
+
+def test_zero_delta_decrease_take_pair_is_one_collect_modify_action() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    sender = "0x" + "bb" * 20
+    recipient = "0x" + "aa" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 0, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, recipient],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": sender,
+        "hash": "0x" + "34" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease, take_pair],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=0,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=config.pool_manager,
+                to_address=recipient,
+                amount_raw=2_500_000,
+                log_index=9,
+            ),
+        ]
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    position_keys = {55: _position_key(config, 55)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "collect"
+    assert actions[0].liquidity_delta == 0
+    assert actions[0].log_index == 8
+    assert actions[0].collect_amount0 == Decimal("2.5")
+
+
+def test_wrapped_decode_uses_user_operation_sender_for_msg_sender_collect() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    user_operation_sender = "0x" + "11" * 20
+    bundler = "0x" + "22" * 20
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, ACTION_RECIPIENT_MSG_SENDER],
+    )
+    modify_call = bytes.fromhex(
+        _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease, take_pair],
+        )[2:]
+    )
+    position_manager_call = bytes.fromhex(_build_multicall_input([modify_call])[2:])
+    tx = {
+        "to": _ENTRYPOINT_V08,
+        "from": bundler,
+        "hash": "0x" + "35" * 32,
+        "blockNumber": 100,
+        "input": _build_wrapped_position_manager_input(
+            sender=user_operation_sender,
+            position_manager_calls=[(config.position_manager, 0, position_manager_call)],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=config.pool_manager,
+                to_address=user_operation_sender,
+                amount_raw=2_500_000,
+                log_index=9,
+            ),
+        ]
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    position_keys = {55: _position_key(config, 55)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "burn_collect"
+    assert actions[0].collect_amount0 == Decimal("2.5")
+    assert token_state[55].liquidity_after == 600
+
+
+def test_take_pair_resolves_address_this_recipient_to_position_manager() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    address_this = "0x0000000000000000000000000000000000000002"
+    decrease = encode(
+        ["uint256", "uint256", "uint128", "uint128", "bytes"],
+        [55, 400, 0, 0, b""],
+    )
+    take_pair = encode(
+        ["address", "address", "address"],
+        [config.token0_address, config.token1_address, address_this],
+    )
+    tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
+        "hash": "0x" + "49" * 32,
+        "blockNumber": 100,
+        "input": _build_modify_input(
+            bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
+            [decrease, take_pair],
+        ),
+    }
+    receipt = {
+        "logs": [
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(
+                token=config.token0_address,
+                from_address=config.pool_manager,
+                to_address=config.position_manager,
+                amount_raw=2_500_000,
+                log_index=9,
+            ),
+        ]
+    }
+    token_state = {
+        55: LedgerPositionState(config.pool_id, -120, 120, 1_000),
+    }
+    position_keys = {55: _position_key(config, 55)}
+
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        position_keys,
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
+
+    assert len(actions) == 1
+    assert actions[0].action_type == "burn_collect"
+    assert actions[0].collect_amount0 == Decimal("2.5")
+    assert token_state[55].liquidity_after == 600
 
 
 def test_collect_row_carries_token_id_owner_range_and_event_price():
@@ -1565,6 +3720,7 @@ def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
     )
     settle_param = encode(["address", "address"], [config.token0_address, config.token1_address])
     tx = {
+        "to": config.position_manager,
         "input": _build_modify_input(bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR]), [mint_param, settle_param]),
         "hash": "0x" + "11" * 32,
         "blockNumber": 100,
@@ -1597,7 +3753,15 @@ def test_decode_mint_action_uses_minted_token_transfer_and_pool_modify_log():
         ],
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        {},
+        {},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert len(actions) == 1
     assert actions[0].action_type == "mint"
@@ -1647,6 +3811,7 @@ def test_decode_mint_action_inside_position_manager_multicall():
     )
     unrelated_call = bytes.fromhex("002a3e3a") + encode(["address"], [recipient])
     tx = {
+        "to": config.position_manager,
         "input": _build_multicall_input([unrelated_call, modify_input]),
         "hash": "0x" + "16" * 32,
         "blockNumber": 100,
@@ -1672,7 +3837,15 @@ def test_decode_mint_action_inside_position_manager_multicall():
         ],
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        {},
+        {},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert len(actions) == 1
     assert actions[0].action_type == "mint"
@@ -1707,6 +3880,7 @@ def test_decode_multiple_add_actions_marks_opening_amounts_ambiguous():
     )
     increase_param = encode(["uint256", "uint256", "uint128", "uint128", "bytes"], [77, 111, 500_000, 1_000_000, b""])
     tx = {
+        "to": config.position_manager,
         "input": _build_modify_input(
             bytes([
                 _V4_LP_MINT_POSITION,
@@ -1744,11 +3918,23 @@ def test_decode_multiple_add_actions_marks_opening_amounts_ambiguous():
                 log_index=7,
             ),
             _modify_liquidity_log(8),
-            _modify_liquidity_log(12),
+            _modify_liquidity_log(
+                12,
+                liquidity_delta=111,
+                salt_token_id=77,
+            ),
         ],
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        {},
+        {},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert [action.action_type for action in actions] == ["mint", "mint"]
     assert [action.amount_attribution_status for action in actions] == [
@@ -1787,6 +3973,7 @@ def test_settle_pair_must_immediately_follow_add_action_for_exact_attribution():
     )
     settle_param = encode(["address", "address"], [config.token0_address, config.token1_address])
     tx = {
+        "to": config.position_manager,
         "input": _build_modify_input(
             bytes([_V4_LP_MINT_POSITION, 0x99, _V4_LP_SETTLE_PAIR]),
             [mint_param, b"", settle_param],
@@ -1815,7 +4002,15 @@ def test_settle_pair_must_immediately_follow_add_action_for_exact_attribution():
         ],
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, {})
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        {},
+        {},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert len(actions) == 1
     assert actions[0].amount_attribution_status == "ambiguous_missing_settle_pair"
@@ -1829,6 +4024,7 @@ def test_decode_increase_with_single_currency_settle_actions_uses_exact_transfer
     settle0_param = encode(["address"], [config.token0_address])
     settle1_param = encode(["address"], [config.token1_address])
     tx = {
+        "to": config.position_manager,
         "input": _build_modify_input(bytes([_V4_LP_INCREASE_LIQUIDITY, 18, 18]), [increase_param, settle0_param, settle1_param]),
         "hash": "0x" + "17" * 32,
         "blockNumber": 100,
@@ -1836,7 +4032,11 @@ def test_decode_increase_with_single_currency_settle_actions_uses_exact_transfer
     }
     receipt = {
         "logs": [
-            _modify_liquidity_log(8),
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=400,
+                salt_token_id=55,
+            ),
             _erc20_transfer_log(
                 token=config.token0_address,
                 from_address=sender,
@@ -1862,7 +4062,15 @@ def test_decode_increase_with_single_currency_settle_actions_uses_exact_transfer
         )
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, token_state)
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        {55: _position_key(config, 55)},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert len(actions) == 1
     assert actions[0].amount_attribution_status == "exact"
@@ -1876,15 +4084,21 @@ def test_decode_decrease_take_pair_combines_burn_and_collect_amounts():
     decrease_param = encode(["uint256", "uint256", "uint128", "uint128", "bytes"], [55, 400, 0, 0, b""])
     take_pair_param = encode(["address", "address", "address"], [config.token0_address, config.token1_address, recipient])
     tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
         "input": _build_modify_input(bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]), [decrease_param, take_pair_param]),
         "hash": "0x" + "22" * 32,
         "blockNumber": 100,
     }
     receipt = {
         "logs": [
-            _modify_liquidity_log(8),
-            _erc20_transfer_log(token=config.token0_address, to_address=recipient, amount_raw=2_500_000, log_index=9),
-            _erc20_transfer_log(token=config.token1_address, to_address=recipient, amount_raw=1_250_000, log_index=10),
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(token=config.token0_address, from_address=config.pool_manager, to_address=recipient, amount_raw=2_500_000, log_index=9),
+            _erc20_transfer_log(token=config.token1_address, from_address=config.pool_manager, to_address=recipient, amount_raw=1_250_000, log_index=10),
         ],
     }
     token_state = {
@@ -1896,7 +4110,15 @@ def test_decode_decrease_take_pair_combines_burn_and_collect_amounts():
         )
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, token_state)
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        {55: _position_key(config, 55)},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert len(actions) == 1
     assert actions[0].action_type == "burn_collect"
@@ -1920,6 +4142,7 @@ def test_decode_decrease_take_pair_resolves_msg_sender_recipient():
         [config.token0_address, config.token1_address, action_recipient],
     )
     tx = {
+        "to": config.position_manager,
         "input": _build_modify_input(
             bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]),
             [decrease_param, take_pair_param],
@@ -1930,9 +4153,13 @@ def test_decode_decrease_take_pair_resolves_msg_sender_recipient():
     }
     receipt = {
         "logs": [
-            _modify_liquidity_log(8),
-            _erc20_transfer_log(token=config.token0_address, to_address=sender, amount_raw=2_500_000, log_index=9),
-            _erc20_transfer_log(token=config.token1_address, to_address=sender, amount_raw=1_250_000, log_index=10),
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(token=config.token0_address, from_address=config.pool_manager, to_address=sender, amount_raw=2_500_000, log_index=9),
+            _erc20_transfer_log(token=config.token1_address, from_address=config.pool_manager, to_address=sender, amount_raw=1_250_000, log_index=10),
         ],
     }
     token_state = {
@@ -1944,7 +4171,15 @@ def test_decode_decrease_take_pair_resolves_msg_sender_recipient():
         )
     }
 
-    actions = decode_liquidity_actions_for_tx(tx, receipt, 1_700_000_000, config, token_state)
+    actions = decode_liquidity_actions_for_tx(
+        tx,
+        receipt,
+        1_700_000_000,
+        config,
+        token_state,
+        {55: _position_key(config, 55)},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
+    )
 
     assert len(actions) == 1
     assert actions[0].action_type == "burn_collect"
@@ -1958,14 +4193,20 @@ def test_decode_decrease_resolves_preexisting_position_before_action_block():
     decrease_param = encode(["uint256", "uint256", "uint128", "uint128", "bytes"], [55, 400, 0, 0, b""])
     take_pair_param = encode(["address", "address", "address"], [config.token0_address, config.token1_address, recipient])
     tx = {
+        "to": config.position_manager,
+        "from": "0x" + "bb" * 20,
         "input": _build_modify_input(bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_TAKE_PAIR]), [decrease_param, take_pair_param]),
         "hash": "0x" + "23" * 32,
         "blockNumber": 100,
     }
     receipt = {
         "logs": [
-            _modify_liquidity_log(8),
-            _erc20_transfer_log(token=config.token0_address, to_address=recipient, amount_raw=2_500_000, log_index=9),
+            _modify_liquidity_log(
+                8,
+                liquidity_delta=-400,
+                salt_token_id=55,
+            ),
+            _erc20_transfer_log(token=config.token0_address, from_address=config.pool_manager, to_address=recipient, amount_raw=2_500_000, log_index=9),
         ],
     }
     calls = []
@@ -1980,6 +4221,8 @@ def test_decode_decrease_resolves_preexisting_position_before_action_block():
         1_700_000_000,
         config,
         {},
+        {},
+        wrapper_entrypoint=_ENTRYPOINT_V08,
         position_resolver=resolver,
     )
 
@@ -2015,6 +4258,7 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
     settle_param = encode(["address", "address"], [config.token0_address, config.token1_address])
     tx_hash = "0x" + "24" * 32
     tx = {
+        "to": config.position_manager,
         "input": _build_modify_input(bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR]), [mint_param, settle_param]),
         "hash": tx_hash,
         "blockNumber": 100,
@@ -2128,19 +4372,25 @@ def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp
     increase_hash = "0x" + "12" * 32
     txs = {
         mint_hash: {
+            "to": config.position_manager,
+            "from": recipient,
             "input": _build_modify_input(bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR]), [mint_param, settle_param]),
             "hash": mint_hash,
             "blockNumber": 100,
             "transactionIndex": 5,
         },
         increase_hash: {
+            "to": config.position_manager,
+            "from": next_owner,
             "input": _build_modify_input(bytes([_V4_LP_INCREASE_LIQUIDITY, _V4_LP_SETTLE_PAIR]), [increase_param, settle_param]),
             "hash": increase_hash,
             "blockNumber": 100,
             "transactionIndex": 7,
         },
         transfer_hash: {
-            "input": "0x",
+            "to": config.position_manager,
+            "from": recipient,
+            "input": "0xdeadbeef",
             "hash": transfer_hash,
             "blockNumber": 100,
             "transactionIndex": 6,
@@ -2166,7 +4416,13 @@ def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp
             "transactionHash": increase_hash,
             "blockNumber": 100,
             "transactionIndex": 7,
-            "logs": [_modify_liquidity_log(12)],
+            "logs": [
+                _modify_liquidity_log(
+                    12,
+                    liquidity_delta=111,
+                    salt_token_id=77,
+                )
+            ],
         },
         transfer_hash: {
             "transactionHash": transfer_hash,

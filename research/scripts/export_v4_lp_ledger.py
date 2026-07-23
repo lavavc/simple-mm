@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from web3 import Web3
 
@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from engine.web3_utils import coerce_hex_str  # noqa: E402
+from engine.web3_utils import as_hexstr, coerce_hex_str  # noqa: E402
 from research.backtester.lp_ledger_attribution import (  # noqa: E402
     build_fixture_ledger_coverage_bytes,
     build_rpc_ledger_coverage_bytes,
@@ -33,10 +33,15 @@ from research.backtester.lp_ledger_attribution import (  # noqa: E402
     pool_attribution_orientation,
 )
 from research.backtester.lp_ledger_checkpoint import (  # noqa: E402
+    ActionDecodeIdentity,
+    BlockHeader,
     CandidateBundle,
     CheckpointSnapshot,
+    DecoderStateUpsert,
     DiscoveryWitness,
     LPLedgerCheckpoint,
+    PositionKeyMapping,
+    PositionResolution,
     candidate_payload_sha256,
     render_safe_failure,
 )
@@ -52,9 +57,12 @@ from research.backtester.v4_export import (  # noqa: E402
     V4_INITIALIZE_TOPIC,
     V4_MODIFY_LIQUIDITY_TOPIC,
     V4_SWAP_TOPIC,
+    ExportPoolConfig,
     _block_timestamp_from_raw,
+    _decode_position_info,
     _fetch_logs_with_debug,
     _make_web3,
+    _pool_id_prefix_matches,
     _position_state_from_chain,
     _raw_get_block,
     _state_seed_before_block,
@@ -62,13 +70,18 @@ from research.backtester.v4_export import (  # noqa: E402
     decode_swap_row,
 )
 from research.backtester.v4_lp_ledger import (  # noqa: E402
+    ENTRYPOINT_V08_ADDRESS,
     DecodedLiquidityAction,
     LedgerPositionState,
     LPLedgerRow,
     OwnershipEvent,
+    PoolPositionKey,
     build_lp_ledger_rows,
     decode_liquidity_actions_for_tx,
     decode_ownership_events_from_receipt,
+)
+from research.backtester.v4_lp_ledger import (  # noqa: E402
+    _pool_key_matches as _ledger_pool_key_matches,
 )
 from research.cross_pool.contracts import CrossPoolContractError  # noqa: E402
 
@@ -283,6 +296,310 @@ def _stage_action_bundles(
     return snapshot
 
 
+def _stage_action_decode(
+    run: LPLedgerCheckpoint,
+    w3: Web3,
+    config: ExportPoolConfig,
+) -> CheckpointSnapshot:
+    identity = run.action_decode_identity()
+    _require_matching_action_decode_identity(identity, config)
+    token_state = run.load_decoder_state()
+    position_keys = {
+        mapping.token_id: PoolPositionKey(
+            pool_id=mapping.pool_id,
+            tick_lower=mapping.tick_lower,
+            tick_upper=mapping.tick_upper,
+            salt=mapping.salt,
+        )
+        for mapping in run.load_position_keys()
+    }
+    position_manager = w3.eth.contract(
+        address=Web3.to_checksum_address(config.position_manager),
+        abi=POSITION_MANAGER_ABI,
+    )
+    pending_bundles = run.undecoded_action_bundles()
+    snapshot = run.snapshot()
+    for bundle in pending_bundles:
+        transaction = _canonical_bundle_mapping(
+            bundle.transaction_json,
+            "candidate transaction JSON",
+        )
+        receipt = _canonical_bundle_mapping(
+            bundle.receipt_json,
+            "candidate receipt JSON",
+        )
+        headers = {
+            bundle.block_number: _load_or_fetch_decode_header(
+                run,
+                w3,
+                bundle.block_number,
+                expected_hash=bundle.block_hash,
+            )
+        }
+        new_resolutions: dict[tuple[int, int], PositionResolution] = {}
+
+        def resolve_position(
+            token_id: int,
+            query_block: int,
+        ) -> LedgerPositionState | None:
+            key = (token_id, query_block)
+            pending_resolution = new_resolutions.get(key)
+            if pending_resolution is not None:
+                return pending_resolution.state
+            cached_resolution = run.load_position_resolution(token_id, query_block)
+            if cached_resolution is not None:
+                return cached_resolution.state
+            if query_block not in headers:
+                headers[query_block] = _load_or_fetch_decode_header(
+                    run,
+                    w3,
+                    query_block,
+                )
+            state = _strict_position_state_from_chain(
+                token_id,
+                position_manager,
+                config,
+                query_block,
+            )
+            new_resolutions[key] = PositionResolution(
+                token_id=token_id,
+                query_block=query_block,
+                found=state is not None,
+                state=state,
+            )
+            return state
+
+        prior_state = dict(token_state)
+        prior_keys = dict(position_keys)
+        actions = decode_liquidity_actions_for_tx(
+            transaction,
+            receipt,
+            headers[bundle.block_number].timestamp_ms // 1_000,
+            config,
+            token_state,
+            position_keys,
+            wrapper_entrypoint=identity.wrapper_entrypoint,
+            position_resolver=resolve_position,
+        )
+        action_token_ids = {action.token_id for action in actions}
+        for token_id in tuple(token_state):
+            if token_id not in prior_state and token_id not in action_token_ids:
+                token_state.pop(token_id)
+                if token_id not in prior_keys:
+                    position_keys.pop(token_id, None)
+        state_upserts, state_deletes = _decoder_state_changes(
+            prior_state,
+            token_state,
+            actions,
+        )
+        position_key_mappings = _new_position_key_mappings(
+            prior_keys,
+            position_keys,
+            actions,
+            receipt,
+            config,
+        )
+        snapshot = run.commit_decoded_action_transaction(
+            bundle,
+            headers=tuple(headers[number] for number in sorted(headers)),
+            resolutions=tuple(
+                new_resolutions[key] for key in sorted(new_resolutions)
+            ),
+            state_upserts=state_upserts,
+            state_deletes=state_deletes,
+            actions=actions,
+            position_keys=position_key_mappings,
+        )
+    if (
+        not pending_bundles
+        and snapshot.phase == "action_decode"
+        and not run.undecoded_action_bundles()
+    ):
+        snapshot = run.complete_phase("action_decode")
+    return snapshot
+
+
+def _freeze_action_token_set(run: LPLedgerCheckpoint) -> CheckpointSnapshot:
+    snapshot = run.snapshot()
+    if snapshot.phase != "token_set_freeze":
+        raise ValueError("action token set cannot freeze before action decode completes")
+    if run.undecoded_action_bundles():
+        raise ValueError("action token set cannot freeze with undecoded bundles")
+    return run.freeze_action_token_set()
+
+
+def _require_matching_action_decode_identity(
+    identity: ActionDecodeIdentity,
+    config: ExportPoolConfig,
+) -> None:
+    expected = (
+        config.name,
+        config.chain,
+        config.pool_id.lower(),
+        config.pool_manager.lower(),
+        config.position_manager.lower(),
+    )
+    observed = (
+        identity.pool,
+        identity.chain,
+        identity.pool_id.lower(),
+        identity.pool_manager.lower(),
+        identity.position_manager.lower(),
+    )
+    if observed != expected:
+        raise ValueError("checkpoint action-decode identity does not match pool config")
+    if identity.wrapper_entrypoint.lower() != ENTRYPOINT_V08_ADDRESS.lower():
+        raise ValueError("checkpoint action-decode EntryPoint is unsupported")
+
+
+def _canonical_bundle_mapping(payload_json: str, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is invalid") from exc
+    if not isinstance(payload, dict) or _canonical_rpc_json(payload) != payload_json:
+        raise ValueError(f"{label} is not a canonical object")
+    return payload
+
+
+def _load_or_fetch_decode_header(
+    run: LPLedgerCheckpoint,
+    w3: Web3,
+    block_number: int,
+    *,
+    expected_hash: str | None = None,
+) -> BlockHeader:
+    cached = run.load_header(block_number)
+    if cached is not None:
+        if expected_hash is not None and cached.block_hash != expected_hash:
+            raise ValueError("cached action-decode header hash conflicts with bundle")
+        return cached
+    block_hash, timestamp_ms = _coverage_block_header(w3, block_number)
+    if expected_hash is not None and block_hash != expected_hash:
+        raise ValueError("action-decode header hash conflicts with bundle")
+    return BlockHeader(block_number, block_hash, timestamp_ms)
+
+
+def _strict_position_state_from_chain(
+    token_id: int,
+    position_manager: Any,
+    config: ExportPoolConfig,
+    block_number: int,
+) -> LedgerPositionState | None:
+    call_kwargs = {"block_identifier": block_number}
+    pool_key, info = position_manager.functions.getPoolAndPositionInfo(token_id).call(
+        **call_kwargs
+    )
+    if not _ledger_pool_key_matches(tuple(pool_key), config):
+        return None
+    pool_prefix, tick_lower, tick_upper = _decode_position_info(info)
+    if not _pool_id_prefix_matches(pool_prefix, config):
+        raise ValueError("resolved position pool prefix conflicts with its PoolKey")
+    liquidity = int(
+        position_manager.functions.getPositionLiquidity(token_id).call(**call_kwargs)
+    )
+    if liquidity < 0:
+        raise ValueError("resolved position liquidity is negative")
+    return LedgerPositionState(
+        pool_id=config.pool_id.lower(),
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        liquidity_after=liquidity,
+    )
+
+
+def _decoder_state_changes(
+    prior_state: Mapping[int, LedgerPositionState],
+    current_state: Mapping[int, LedgerPositionState],
+    actions: Sequence[DecodedLiquidityAction],
+) -> tuple[tuple[DecoderStateUpsert, ...], tuple[int, ...]]:
+    actions_by_token: dict[int, list[DecodedLiquidityAction]] = {}
+    for action in actions:
+        actions_by_token.setdefault(action.token_id, []).append(action)
+    upserts: list[DecoderStateUpsert] = []
+    for token_id in sorted(current_state):
+        state = current_state[token_id]
+        if prior_state.get(token_id) == state:
+            continue
+        token_actions = actions_by_token.get(token_id)
+        if not token_actions:
+            raise ValueError("decoder state changed without a represented action")
+        final_action = max(
+            token_actions,
+            key=lambda action: (
+                action.block_number,
+                action.log_index,
+                action.event_order,
+            ),
+        )
+        upserts.append(
+            DecoderStateUpsert(
+                token_id=token_id,
+                state=state,
+                last_block_number=final_action.block_number,
+                last_log_index=final_action.log_index,
+                last_event_order=final_action.event_order,
+            )
+        )
+    deletes = tuple(sorted(set(prior_state).difference(current_state)))
+    return tuple(upserts), deletes
+
+
+def _new_position_key_mappings(
+    prior_keys: Mapping[int, PoolPositionKey],
+    current_keys: Mapping[int, PoolPositionKey],
+    actions: Sequence[DecodedLiquidityAction],
+    receipt: dict[str, Any],
+    config: ExportPoolConfig,
+) -> tuple[PositionKeyMapping, ...]:
+    created_token_ids = {
+        event.token_id
+        for event in decode_ownership_events_from_receipt(
+            receipt,
+            config.position_manager,
+        )
+        if event.previous_owner is None
+    }
+    mappings: list[PositionKeyMapping] = []
+    for token_id in sorted(set(current_keys).difference(prior_keys)):
+        if token_id not in created_token_ids:
+            raise ValueError(
+                "target-pool position is missing from the frozen inception action "
+                "history"
+            )
+        mint_actions = [
+            action
+            for action in actions
+            if action.token_id == token_id and action.action_type == "mint"
+        ]
+        if not mint_actions:
+            raise ValueError(
+                "target-pool position has creation evidence but no in-range mint action"
+            )
+        creation = min(
+            mint_actions,
+            key=lambda action: (
+                action.block_number,
+                action.log_index,
+                action.event_order,
+            ),
+        )
+        position_key = current_keys[token_id]
+        mappings.append(
+            PositionKeyMapping(
+                token_id=token_id,
+                pool_id=position_key.pool_id,
+                tick_lower=position_key.tick_lower,
+                tick_upper=position_key.tick_upper,
+                salt=position_key.salt,
+                mint_block_number=creation.block_number,
+                mint_log_index=creation.log_index,
+                mint_event_order=creation.event_order,
+            )
+        )
+    return tuple(mappings)
+
+
 def _fetch_and_validate_candidate_bundle(
     w3: Web3,
     raw_requested_hash: object,
@@ -298,8 +615,8 @@ def _fetch_and_validate_candidate_bundle(
         raw_requested_hash,
         label="candidate transaction hash",
     )
-    transaction_raw = w3.eth.get_transaction(requested_hash)
-    receipt_raw = w3.eth.get_transaction_receipt(requested_hash)
+    transaction_raw = w3.eth.get_transaction(as_hexstr(requested_hash))
+    receipt_raw = w3.eth.get_transaction_receipt(as_hexstr(requested_hash))
     if not isinstance(transaction_raw, Mapping) or not isinstance(receipt_raw, Mapping):
         raise ValueError("candidate RPC responses must be mappings")
     transaction = dict(transaction_raw)
@@ -668,6 +985,7 @@ def _decode_rpc_lp_inputs(
         abi=POSITION_MANAGER_ABI,
     )
     token_state: dict[int, LedgerPositionState] = {}
+    position_keys: dict[int, PoolPositionKey] = {}
     decoded_actions: list[DecodedLiquidityAction] = []
     ownership_events: list[OwnershipEvent] = []
 
@@ -692,8 +1010,8 @@ def _decode_rpc_lp_inputs(
             raw_requested_hash,
             label="candidate transaction hash",
         )
-        tx = dict(w3.eth.get_transaction(requested_hash))
-        receipt = dict(w3.eth.get_transaction_receipt(requested_hash))
+        tx = dict(w3.eth.get_transaction(as_hexstr(requested_hash)))
+        receipt = dict(w3.eth.get_transaction_receipt(as_hexstr(requested_hash)))
         _require_matching_response_hash(
             requested_hash,
             tx.get("hash"),
@@ -733,6 +1051,8 @@ def _decode_rpc_lp_inputs(
             block_timestamp,
             config,
             token_state,
+            position_keys,
+            wrapper_entrypoint=ENTRYPOINT_V08_ADDRESS,
             position_resolver=resolve_position,
         )
         transaction_hash = bundle.transaction_hash
@@ -1070,7 +1390,7 @@ def _decoded_action_from_json(payload: dict[str, Any]) -> DecodedLiquidityAction
         key: Decimal(str(value)) if key in decimal_fields else value
         for key, value in payload.items()
     }
-    return DecodedLiquidityAction(**normalized)
+    return DecodedLiquidityAction(**cast(Any, normalized))
 
 
 def _render_ledger_rows(rows: Sequence[LPLedgerRow]) -> bytes:

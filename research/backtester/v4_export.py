@@ -11,7 +11,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Any
@@ -164,7 +164,7 @@ def sqrt_price_x96_to_decimal(
 class ExportPoolConfig:
     name: str
     chain: str
-    rpc_url: str
+    rpc_url: str = field(repr=False)
     pool_manager: str
     state_view: str
     pool_id: str

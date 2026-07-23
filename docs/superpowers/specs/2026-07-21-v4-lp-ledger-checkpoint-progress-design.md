@@ -343,10 +343,25 @@ signed liquidity delta, salt, and log identity. An action matches exactly one
 witness by this semantic identity; ordering is only a deterministic tie-break
 after identity equality. Mints pair all mint operations with all zero-address
 PositionManager Transfers in operation/log order before structural matching.
+Because verified runs begin at the configured pool-inception block, resolving a
+target-pool position before its first persisted mint is evidence that the
+inception action history is incomplete. The decoder fails closed instead of
+synthesizing a pre-range position key. Historical resolution caching remains
+useful for explicit not-found classification and resume consistency.
 Increase/decrease actions recover the token's prior salt-bearing position key
 and require exact pool/ticks/salt/delta agreement. Selecting the first mint,
 positionally dequeuing a nonmatching witness, clamping invalid liquidity, or
 leaving any action/witness unmatched is forbidden.
+
+Periphery recipients are resolved before receipt attribution:
+`MSG_SENDER` (`address(1)`) maps to the effective sender and `ADDRESS_THIS`
+(`address(2)`) maps to the configured PositionManager. `SETTLE_PAIR` and
+`TAKE_PAIR` currency order is not semantically significant. Withdrawal receipt
+attribution accepts at most one ERC-20 `Transfer` per pool token from the
+configured PoolManager to the resolved recipient. Multiple target `TAKE_PAIR`
+actions, an overlapping same-recipient `TAKE_PAIR`, multiple matching receipt
+transfers, or a target withdrawal left without a supported `TAKE_PAIR` are
+ambiguous and fail closed rather than producing inferred or zero proceeds.
 
 ### 5. Token-Set Freeze
 

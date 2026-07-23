@@ -187,8 +187,10 @@ python3 research/scripts/report_backtest_regime_stability.py \
   --out research/data/quality/backtest_regime_stability.md
 ```
 
-The LP lifecycle ledger exporter now has an RPC path for PositionManager
-`modifyLiquidities` transactions:
+The LP lifecycle ledger exporter retains deterministic fixture and explicit
+candidate-list paths. The verified no-candidate command shape below is reserved
+for the checkpointed action-first runner; until its remaining transfer, replay,
+build, and publication phases are wired, it fails closed and writes no output:
 
 ```bash
 python3 research/scripts/export_v4_lp_ledger.py \
@@ -204,13 +206,15 @@ python3 research/scripts/export_v4_lp_ledger.py \
   --out research/data/derived/uni_bsc_lp_ledger.csv
 ```
 
-Each export writes an adjacent `*.csv.coverage.json` sidecar that binds the
-exact ledger bytes to the requested block range and chain ID. Only the union of
-a target-pool PoolManager `ModifyLiquidity` scan and the PositionManager ERC-721
-`Transfer` scan is marked `rpc_verified`; `--candidate-tx-csv` and fixture
-exports are unverified and cannot support a complete market-structure
-diagnostic. A target-pool liquidity transaction that the configured
-PositionManager decoder cannot represent fails the export. The sidecar records
+Completed verified exports will write an adjacent `*.csv.coverage.json` sidecar
+that binds the exact ledger bytes to the requested block range and chain ID.
+The action-first contract scans and reconciles target-pool PoolManager
+`ModifyLiquidity` actions before freezing relevant token IDs, then attests the
+complete PositionManager ERC-721 `Transfer` scan while fetching transaction
+bundles only for those IDs. `--candidate-tx-csv` and fixture exports remain
+unverified and cannot support a complete market-structure diagnostic. A
+target-pool liquidity transaction that the configured PositionManager decoder
+cannot represent fails the export. The sidecar records
 both endpoint block hashes and timestamps, the observed ledger row range, and
 the canonical producer-attested candidate set and digest. Endpoint headers are
 captured before candidate and replay reads and must match exactly after those
@@ -308,10 +312,12 @@ closes, zero-proceed closes, and unmatched collect capital.
 
 Close-side receipt attribution resolves the Uniswap V4 periphery
 `MSG_SENDER` recipient sentinel (`0x0000000000000000000000000000000000000001`)
-to the transaction sender before scanning pool-token `Transfer` logs. Treating
-that sentinel as a literal address incorrectly marks real close proceeds as
-zero. If `tx.from` is unavailable for such an action, the decoder fails rather
-than silently zeroing the collect.
+to the effective sender and `ADDRESS_THIS`
+(`0x0000000000000000000000000000000000000002`) to the PositionManager before
+scanning pool-token `Transfer` logs. Only transfers from the PoolManager to that
+resolved recipient count. Reversed pair order is accepted, while overlapping
+take actions, duplicate matching transfers, and withdrawals without a supported
+`TAKE_PAIR` fail closed rather than silently changing or zeroing proceeds.
 
 Treat the `paper_compatible` sample in the close-attribution QA report as the
 default realized-PnL sample for paper-style studies. It includes direct,

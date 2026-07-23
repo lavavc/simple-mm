@@ -1350,6 +1350,124 @@ def test_decoded_action_round_trip_is_one_durable_unit(tmp_path: Path) -> None:
     assert tuple(marker) == (1,)
 
 
+def test_later_decode_reuses_exact_cached_position_resolution(
+    tmp_path: Path,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _identity(paths.output)
+    first_witness = _witness(
+        source="pool_modify",
+        transaction_hash=_HASH_C,
+        block_number=101,
+        block_hash=_HASH_E,
+        transaction_index=5,
+        log_index=11,
+    )
+    second_witness = _witness(
+        source="pool_modify",
+        transaction_hash=_HASH_D,
+        block_number=101,
+        block_hash=_HASH_E,
+        transaction_index=7,
+        log_index=13,
+    )
+    first_action = _action(first_witness)
+    resolved_state = LedgerPositionState(_HASH_A, -20, 20, 50)
+    burn_action = replace(
+        _action(second_witness),
+        action_type="burn",
+        token_id=88,
+        tick_lower=-20,
+        tick_upper=20,
+        liquidity_delta=-10,
+        amount0=Decimal("0"),
+        amount1=Decimal("0"),
+        amount0_raw="0",
+        amount1_raw="0",
+        amount0_actual=Decimal("0"),
+        amount1_actual=Decimal("0"),
+        amount0_attribution_source="not_applicable",
+        amount1_attribution_source="not_applicable",
+        amount_attribution_status="not_applicable",
+    )
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            run.complete_phase("preflight")
+            for chunk in run.incomplete_action_chunks():
+                run.commit_action_chunk(
+                    chunk,
+                    tuple(
+                        witness
+                        for witness in (first_witness, second_witness)
+                        if chunk.start_block <= witness.block_number <= chunk.end_block
+                    ),
+                )
+            first_bundle = _bundle(first_witness)
+            second_bundle = _bundle(second_witness)
+            run.commit_action_bundle(first_bundle)
+            run.commit_action_bundle(second_bundle)
+            run.commit_decoded_action_transaction(
+                first_bundle,
+                headers=(
+                    BlockHeader(100, _HASH_A, 1_000),
+                    BlockHeader(101, _HASH_E, 1_010),
+                ),
+                resolutions=(
+                    PositionResolution(88, 100, True, resolved_state),
+                ),
+                state_upserts=(
+                    DecoderStateUpsert(
+                        77,
+                        LedgerPositionState(_HASH_A, -10, 10, 100),
+                        101,
+                        11,
+                        0,
+                    ),
+                ),
+                state_deletes=(),
+                actions=(first_action,),
+                position_keys=(_position_key(first_action),),
+            )
+
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            run.commit_decoded_action_transaction(
+                second_bundle,
+                headers=(BlockHeader(101, _HASH_E, 1_010),),
+                resolutions=(),
+                state_upserts=(
+                    DecoderStateUpsert(
+                        88,
+                        LedgerPositionState(_HASH_A, -20, 20, 40),
+                        101,
+                        13,
+                        0,
+                    ),
+                ),
+                state_deletes=(),
+                actions=(burn_action,),
+                position_keys=(),
+            )
+
+            assert run.load_decoder_state()[88] == LedgerPositionState(
+                _HASH_A,
+                -20,
+                20,
+                40,
+            )
+            assert run.load_position_resolution(88, 100) == PositionResolution(
+                88,
+                100,
+                True,
+                resolved_state,
+            )
+            count = run._connection.execute(
+                "SELECT COUNT(*) FROM position_resolutions WHERE token_id = '88'"
+            ).fetchone()[0]
+
+    assert count == 1
+
+
 def test_transfer_scan_rejects_a_witness_for_an_unfrozen_token(
     tmp_path: Path,
 ) -> None:

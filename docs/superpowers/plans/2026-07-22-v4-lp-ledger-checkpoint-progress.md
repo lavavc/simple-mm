@@ -1210,7 +1210,7 @@ git commit -m "feat: stage complete LP action evidence"
 - Produces: `position_manager_calls_for_transaction(...)`,
   `_stage_action_decode(...)`, and `_freeze_action_token_set(...)`.
 
-- [ ] **Step 1: Write failing direct, wrapped, multi-action, and freeze tests**
+- [x] **Step 1: Write failing direct, wrapped, multi-action, and freeze tests**
 
 Pin an anonymized local fixture for the observed wrapped path:
 
@@ -1229,6 +1229,14 @@ execution mode, a wrong outer EntryPoint, zero or multiple matching
 PositionManager calls, noncanonical ABI payloads, action/log count or identity
 mismatch, and a target action with no decoder representation.
 
+Pin recipient and withdrawal attribution semantics: `MSG_SENDER` resolves to
+the effective sender, `ADDRESS_THIS` resolves to the PositionManager, reversed
+`SETTLE_PAIR`/`TAKE_PAIR` currency order is accepted, and receipt proceeds must
+be a unique PoolManager-to-recipient transfer per pool token. Add fail-closed
+tests for unresolved withdrawals, multiple target takes, overlapping
+same-recipient takes that share a pool token, and duplicate matching receipt
+transfers.
+
 Add an exact multi-mint test proving each mint action maps to a distinct
 zero-address PositionManager Transfer by log order; `_find_minted_token_id()`
 may not select the first mint for multiple actions. Test chronological resume,
@@ -1237,7 +1245,7 @@ token-set freeze. Require durable position state to include the salt-bearing
 `PoolPositionKey`. Test same-log-order rows with wrong pool, ticks, salt, or
 signed delta; excessive decrements must fail rather than clamp liquidity.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "wrapped_action or multi_mint or action_decode or token_set"
@@ -1246,7 +1254,7 @@ python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "wrapped_action or m
 Expected: wrapped calls produce no actions, multi-mint mapping is ambiguous,
 and token freeze is unavailable.
 
-- [ ] **Step 3: Implement the smallest explicit wrapper and reconciliation path**
+- [x] **Step 3: Implement the smallest explicit wrapper and reconciliation path**
 
 Decode only the pinned EntryPoint/account batch shape plus existing direct and
 PositionManager `multicall` inputs. Return explicit call contexts containing
@@ -1269,12 +1277,21 @@ key and require exact pool/ticks/salt/delta agreement. Any unmatched or extra
 action/witness fails; there is no positional dequeue or salt-based token-ID
 fallback.
 
+Resolve both V4 periphery recipient sentinels before mint-recipient or receipt
+matching. Treat pair currencies as unordered. Attribute withdrawal proceeds
+only from the configured PoolManager to the resolved recipient, and require the
+receipt/action set to make that attribution unique. Never commit a withdrawal
+whose supported `TAKE_PAIR` attribution remains unresolved.
+
 Stage action decoding in transaction order with cached headers and historical
 position resolutions. Commit decoded actions/state/cursor atomically. Once all
 action bundles reconcile exactly, call the checkpoint's evidence-bearing token
-freeze transition. The precoverage ledger is used only in Task 9 comparison.
+freeze transition. Since verified mode is inception-bound, a first-seen target
+position resolved before any persisted mint is an incomplete-action-history
+failure, not a valid pre-range key; pin this boundary in an adapter test. The
+precoverage ledger is used only in Task 9 comparison.
 
-- [ ] **Step 4: Run GREEN and decoder regressions**
+- [x] **Step 4: Run GREEN and decoder regressions**
 
 ```bash
 python3 -m pytest -q research/tests/test_v4_lp_ledger.py -k "decode or action or mint or ownership"
@@ -1282,7 +1299,7 @@ python3 -m py_compile research/backtester/v4_lp_ledger.py research/scripts/expor
 git diff --check
 ```
 
-- [ ] **Step 5: Commit Task 6**
+- [x] **Step 5: Commit Task 6**
 
 ```bash
 git add research/backtester/v4_lp_ledger.py research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py
