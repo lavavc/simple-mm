@@ -127,6 +127,49 @@ _PRIMARY_INPUT_NAMES = (
     "base_ledger",
     "bsc_ledger",
 )
+_ARTICLE_MANIFEST_SOURCE_PATH = (
+    "research/results/cross_pool_lead_lag/article_manifest.json"
+)
+_EVIDENCE_EDITORIAL_KEYS = (
+    "CPL_EDITORIAL_STATUS",
+    "CPL_PRIMARY_CLASS",
+    "CPL_REVERSE_CLASS",
+    "CPL_ARTICLE_BRANCH",
+    "CPL_ECONOMIC_CLASS",
+    "CPL_ROBUSTNESS_STATUS",
+    "CPL_ROBUSTNESS_FLAGS",
+    "CPL_SOURCE_MANIFEST",
+)
+_EVIDENCE_PROVENANCE_KEYS = (
+    "CPL_MANIFEST_SHA256",
+    "CPL_REVIEWED_BY",
+    "CPL_REVIEWED_AT_UTC",
+    "CPL_CODE_COMMIT",
+    "CPL_SCHEMA_VERSION",
+    "CPL_SOURCE_DIFF_SHA256",
+)
+_MISSING_INPUT_REASON_CODES: Mapping[str, QaReasonCode] = {
+    "base_features": "FEATURE_BASE_INVALID",
+    "bsc_features": "FEATURE_BSC_INVALID",
+    "base_replay": "REPLAY_BASE_INVALID",
+    "bsc_replay": "REPLAY_BSC_INVALID",
+    "base_ledger": "LEDGER_BASE_COVERAGE_INVALID",
+    "bsc_ledger": "LEDGER_BSC_COVERAGE_INVALID",
+}
+_EVIDENCE_INPUT_KEYS = frozenset(
+    key
+    for input_name in _PRIMARY_INPUT_NAMES
+    for key in (
+        f"CPL_INPUT_SHA256_{input_name.upper()}",
+        f"CPL_INPUT_MISSING_{input_name.upper()}",
+    )
+)
+_EVIDENCE_KEYS = frozenset(
+    (*_EVIDENCE_EDITORIAL_KEYS, *_EVIDENCE_PROVENANCE_KEYS)
+) | _EVIDENCE_INPUT_KEYS
+_EVIDENCE_LINE_PATTERN = re.compile(
+    r"(?P<key>CPL_[A-Z0-9_]+): (?P<value>\S(?:.*\S)?)\Z"
+)
 _FIGURE_NAMES = (
     "price_gap",
     "event_response",
@@ -1340,6 +1383,157 @@ def load_and_validate_article_manifest(path: Path) -> dict[str, JsonValue]:
         raw = path.read_bytes()
     except OSError as exc:
         raise CrossPoolContractError("manifest file could not be read") from exc
+    return _load_and_validate_article_manifest_bytes(raw)
+
+
+def validate_evidence_provenance_block(
+    evidence_text: str,
+    manifest_path: Path,
+) -> None:
+    """Verify the durable evidence ledger against one reviewed manifest."""
+    try:
+        raw = manifest_path.read_bytes()
+    except OSError as exc:
+        raise CrossPoolContractError("manifest file could not be read") from exc
+    manifest = _load_and_validate_article_manifest_bytes(raw)
+    review = cast(dict[str, JsonValue], manifest["review"])
+    if (
+        manifest["artifact_status"] != "reviewed"
+        or review["status"] != "reviewed"
+    ):
+        raise CrossPoolContractError(
+            "evidence provenance requires a reviewed manifest"
+        )
+
+    fields = _parse_evidence_provenance_fields(evidence_text)
+    for key in (*_EVIDENCE_EDITORIAL_KEYS, *_EVIDENCE_PROVENANCE_KEYS):
+        if key not in fields:
+            raise CrossPoolContractError(
+                f"evidence provenance block is missing required key {key}"
+            )
+
+    provenance = cast(dict[str, JsonValue], manifest["provenance"])
+    expected_fixed_values = {
+        **_expected_evidence_editorial_values(manifest),
+        "CPL_MANIFEST_SHA256": hashlib.sha256(raw).hexdigest(),
+        "CPL_REVIEWED_BY": cast(str, review["reviewed_by"]),
+        "CPL_REVIEWED_AT_UTC": cast(str, review["reviewed_at_utc"]),
+        "CPL_CODE_COMMIT": cast(str, provenance["code_commit"]),
+        "CPL_SCHEMA_VERSION": cast(str, manifest["schema_version"]),
+        "CPL_SOURCE_DIFF_SHA256": cast(
+            str,
+            provenance["source_diff_sha256"],
+        ),
+    }
+    for key, expected in expected_fixed_values.items():
+        if fields[key] != expected:
+            raise CrossPoolContractError(
+                f"evidence provenance value for {key} does not match manifest"
+            )
+
+    input_sha256 = cast(dict[str, JsonValue], provenance["input_sha256"])
+    expected_input_keys: set[str] = set()
+    for input_name in _PRIMARY_INPUT_NAMES:
+        prefix = (
+            "CPL_INPUT_MISSING_"
+            if input_sha256[input_name] is None
+            else "CPL_INPUT_SHA256_"
+        )
+        expected_input_keys.add(f"{prefix}{input_name.upper()}")
+    observed_input_keys = set(fields) & _EVIDENCE_INPUT_KEYS
+    if observed_input_keys != expected_input_keys:
+        raise CrossPoolContractError(
+            "evidence provenance input key sets do not match manifest availability"
+        )
+
+    qa = cast(dict[str, JsonValue], manifest["qa"])
+    reason_codes = cast(list[JsonValue], qa["reasons"])
+    for input_name in _PRIMARY_INPUT_NAMES:
+        digest = input_sha256[input_name]
+        suffix = input_name.upper()
+        if digest is None:
+            required_reason = _MISSING_INPUT_REASON_CODES[input_name]
+            key = f"CPL_INPUT_MISSING_{suffix}"
+            if required_reason not in reason_codes or fields[key] != required_reason:
+                raise CrossPoolContractError(
+                    f"evidence provenance missing {input_name} requires "
+                    f"{required_reason}"
+                )
+        else:
+            key = f"CPL_INPUT_SHA256_{suffix}"
+            if fields[key] != digest:
+                raise CrossPoolContractError(
+                    f"evidence provenance value for {key} does not match manifest"
+                )
+
+
+def _expected_evidence_editorial_values(
+    manifest: Mapping[str, JsonValue],
+) -> dict[str, str]:
+    qa = cast(dict[str, JsonValue], manifest["qa"])
+    robustness = cast(dict[str, JsonValue], manifest["robustness"])
+    flags = cast(list[str], robustness["flags"])
+    expected = {
+        "CPL_EDITORIAL_STATUS": "EVIDENCE_REVIEWED",
+        "CPL_ROBUSTNESS_STATUS": cast(str, robustness["status"]),
+        "CPL_ROBUSTNESS_FLAGS": ",".join(flags) if flags else "NONE",
+        "CPL_SOURCE_MANIFEST": _ARTICLE_MANIFEST_SOURCE_PATH,
+    }
+    if qa["status"] == "blocked":
+        expected.update(
+            {
+                "CPL_PRIMARY_CLASS": "UNAVAILABLE",
+                "CPL_REVERSE_CLASS": "UNAVAILABLE",
+                "CPL_ARTICLE_BRANCH": "NOT_ADJUDICABLE_QA",
+                "CPL_ECONOMIC_CLASS": "NOT_ADJUDICABLE_QA",
+            }
+        )
+        return expected
+
+    predictive = cast(dict[str, JsonValue], manifest["predictive"])
+    primary = cast(dict[str, JsonValue], predictive["primary"])
+    reverse = cast(dict[str, JsonValue], predictive["reverse"])
+    publication = cast(dict[str, JsonValue], manifest["publication"])
+    expected.update(
+        {
+            "CPL_PRIMARY_CLASS": cast(str, primary["evidence_class"]),
+            "CPL_REVERSE_CLASS": cast(str, reverse["evidence_class"]),
+            "CPL_ARTICLE_BRANCH": cast(str, publication["article_branch"]),
+            "CPL_ECONOMIC_CLASS": cast(str, publication["economic_class"]),
+        }
+    )
+    return expected
+
+
+def _parse_evidence_provenance_fields(evidence_text: str) -> dict[str, str]:
+    if not isinstance(evidence_text, str):
+        raise CrossPoolContractError("evidence provenance requires text")
+    fields: dict[str, str] = {}
+    for line in evidence_text.splitlines():
+        candidate = line.strip()
+        if not candidate.startswith("CPL_"):
+            continue
+        match = _EVIDENCE_LINE_PATTERN.fullmatch(candidate)
+        if match is None:
+            raise CrossPoolContractError(
+                "evidence provenance block has malformed CPL line"
+            )
+        key = match.group("key")
+        if key in fields:
+            raise CrossPoolContractError(
+                f"evidence provenance block contains duplicate key {key}"
+            )
+        if key not in _EVIDENCE_KEYS:
+            raise CrossPoolContractError(
+                f"evidence provenance block contains unsupported key {key}"
+            )
+        fields[key] = match.group("value")
+    return fields
+
+
+def _load_and_validate_article_manifest_bytes(
+    raw: bytes,
+) -> dict[str, JsonValue]:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:

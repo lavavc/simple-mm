@@ -34,15 +34,16 @@ STALE_POLICY_TRANSFER_PHRASES = (
     "strict QTS gates reject BSC",
 )
 
-PENDING_BLOCK = """CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
-CPL_PRIMARY_CLASS: UNAVAILABLE
-CPL_REVERSE_CLASS: UNAVAILABLE
-CPL_ARTICLE_BRANCH: UNAVAILABLE
-CPL_ECONOMIC_CLASS: UNAVAILABLE
-CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+REVIEWED_BLOCK = """CPL_EDITORIAL_STATUS: EVIDENCE_REVIEWED
+CPL_PRIMARY_CLASS: inconclusive
+CPL_REVERSE_CLASS: inconclusive
+CPL_ARTICLE_BRANCH: leadership_unresolved
+CPL_ECONOMIC_CLASS: no_net_return_improvement
+CPL_ROBUSTNESS_STATUS: complete
+CPL_ROBUSTNESS_FLAGS: dtw_band_unstable
 CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json"""
 
-PENDING_ARTICLE_PATHS = (
+REVIEWED_ARTICLE_PATHS = (
     Path("research/articles/README.md"),
     Path("research/articles/02-backtesting-the-market-layer.md"),
     Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
@@ -92,7 +93,7 @@ def test_cross_pool_design_pins_writer_manifest_and_branches() -> None:
     normalized = " ".join(design.split())
 
     assert "article_manifest.json" in design
-    assert "schema version `1.0.0`" in design
+    assert "schema version `2.0.0`" in design
     manifest_section = _section_between(
         design,
         "The top-level manifest groups are:",
@@ -190,31 +191,31 @@ def test_policy_transfer_edit_preserves_lp_metrics_and_promotion_boundary() -> N
     assert "Closeout decision: DEX LP remains diagnostic, not deployable." in lp_text
 
 
-@pytest.mark.parametrize("path", PENDING_ARTICLE_PATHS)
-def test_pending_article_files_share_one_status_contract(path: Path) -> None:
+@pytest.mark.parametrize("path", REVIEWED_ARTICLE_PATHS)
+def test_reviewed_article_files_share_one_status_contract(path: Path) -> None:
     text = path.read_text()
 
-    assert text.count(PENDING_BLOCK) == 1
+    assert text.count(REVIEWED_BLOCK) == 1
 
 
-def test_pending_block_stays_out_of_historical_closeout_documents() -> None:
+def test_reviewed_block_stays_out_of_historical_closeout_documents() -> None:
     for path in (
         Path("research/autoresearch/lp.md"),
         Path("research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"),
     ):
-        assert PENDING_BLOCK not in path.read_text()
+        assert REVIEWED_BLOCK not in path.read_text()
 
 
-def test_pending_blocks_use_the_approved_document_anchors() -> None:
+def test_reviewed_blocks_use_the_approved_document_anchors() -> None:
     readme = Path("research/articles/README.md").read_text()
     article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
     evidence = Path("research/articles/evidence-pack-2026-07-cngn-market-making.md").read_text()
 
-    assert readme.index(PENDING_BLOCK) < readme.index("Active July 2026 sequence:")
-    assert article.index("## Why This Fits Lava") < article.index(PENDING_BLOCK)
-    assert article.index(PENDING_BLOCK) < article.index("## Narrative Progression")
-    assert evidence.index("Purpose:") < evidence.index(PENDING_BLOCK)
-    assert evidence.index(PENDING_BLOCK) < evidence.index("## Source Map")
+    assert readme.index(REVIEWED_BLOCK) < readme.index("Active July 2026 sequence:")
+    assert article.index("## Why This Fits Lava") < article.index(REVIEWED_BLOCK)
+    assert article.index(REVIEWED_BLOCK) < article.index("## Narrative Progression")
+    assert evidence.index("Purpose:") < evidence.index(REVIEWED_BLOCK)
+    assert evidence.index(REVIEWED_BLOCK) < evidence.index("## Source Map")
 
 
 def test_pending_handoff_addendum_keeps_results_unreviewed() -> None:
@@ -233,7 +234,7 @@ def test_pending_handoff_addendum_keeps_results_unreviewed() -> None:
     assert handoff.index("## July 15, 2026 Addendum") < handoff.index("## Current Research State")
 
 
-def test_article_two_contains_only_approved_result_independent_cross_pool_prose() -> None:
+def test_article_two_contains_reviewed_cross_pool_result_and_boundaries() -> None:
     article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
     normalized = " ".join(article.split())
 
@@ -252,6 +253,9 @@ def test_article_two_contains_only_approved_result_independent_cross_pool_prose(
         "weekly walk-forward",
         "reverse Base-to-BSC falsification",
         "unconditional frozen-policy evaluation",
+        "Both one-hour directional tests were `inconclusive`",
+        "`leadership_unresolved`",
+        "`no_net_return_improvement`",
         "USDC/USDT parity",
         "below 10 basis points",
         "causal price discovery",
@@ -265,20 +269,39 @@ def test_article_two_contains_only_approved_result_independent_cross_pool_prose(
     ) < article.index("### 8. Why the failures are the point")
 
 
-@pytest.mark.parametrize("path", PENDING_ARTICLE_PATHS)
-def test_pending_article_files_do_not_fabricate_cross_pool_outcomes(path: Path) -> None:
+@pytest.mark.parametrize("path", REVIEWED_ARTICLE_PATHS)
+def test_reviewed_article_files_publish_only_approved_aggregate_outcomes(
+    path: Path,
+) -> None:
     text = path.read_text()
 
-    for fabricated_claim in (
-        "BSC leads Base",
-        "Base leads BSC",
-        "cross-pool model improved",
-        "signal-gated policy improved",
+    assert "leadership_unresolved" in text
+    assert "no_net_return_improvement" in text
+    assert "deployable alpha" in text or path.name == "README.md"
+
+
+def test_durable_evidence_pack_records_complete_review_provenance_keys() -> None:
+    evidence = Path(
+        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
+    ).read_text()
+    for key in (
+        "CPL_MANIFEST_SHA256",
+        "CPL_REVIEWED_BY",
+        "CPL_REVIEWED_AT_UTC",
+        "CPL_CODE_COMMIT",
+        "CPL_SCHEMA_VERSION",
+        "CPL_SOURCE_DIFF_SHA256",
+        "CPL_INPUT_SHA256_BASE_FEATURES",
+        "CPL_INPUT_SHA256_BSC_FEATURES",
+        "CPL_INPUT_SHA256_BASE_REPLAY",
+        "CPL_INPUT_SHA256_BSC_REPLAY",
+        "CPL_INPUT_SHA256_BASE_LEDGER",
+        "CPL_INPUT_SHA256_BSC_LEDGER",
     ):
-        assert fabricated_claim not in text
+        assert len(re.findall(rf"^{key}: \S+$", evidence, flags=re.MULTILINE)) == 1
 
 
-def test_pending_article_files_link_the_approved_design() -> None:
+def test_reviewed_article_files_link_the_approved_design() -> None:
     design_path = "docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md"
 
     assert design_path in Path("research/articles/README.md").read_text()
@@ -288,7 +311,7 @@ def test_pending_article_files_link_the_approved_design() -> None:
     )
 
 
-def test_pending_scaffold_preserves_thesis_and_historical_closeout_boundaries() -> None:
+def test_reviewed_article_preserves_thesis_and_historical_closeout_boundaries() -> None:
     article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
     normalized_article = " ".join(article.split())
     handoff = Path(

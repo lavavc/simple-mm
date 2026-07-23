@@ -317,7 +317,7 @@ outputs under an ignored `research/results/cross_pool_lead_lag/` directory:
 - a Markdown report;
 - article-ready price-gap, event-response, DTW-lag, and LP-performance figures.
 
-Also produce `article_manifest.json` with schema version `1.0.0`. Generated
+Also produce `article_manifest.json` with schema version `2.0.0`. Generated
 code may set only `generated_unreviewed` or `qa_blocked`; it cannot mark its own
 evidence `reviewed`. The manifest records provenance, QA, aggregate predictive,
 event-study, DTW, market-structure, robustness, and economic results; artifact

@@ -69,6 +69,7 @@ from research.cross_pool.manifest import (
     ForecastCoverage,
     GeneratedArtifactStatus,
     InputFileProvenance,
+    JsonValue,
     PredictiveSensitivityInput,
     QaBlockedManifestInput,
     RobustnessStatus,
@@ -88,6 +89,7 @@ from research.cross_pool.manifest import (
     select_article_branch,
     select_economic_class,
     validate_article_manifest,
+    validate_evidence_provenance_block,
 )
 from research.cross_pool.provenance import (
     ProvenanceCaptureError,
@@ -1424,6 +1426,214 @@ def test_manifest_loader_requires_exact_canonical_bytes(tmp_path: Path) -> None:
         load_and_validate_article_manifest(path)
 
 
+def test_evidence_provenance_accepts_reviewed_qa_pass_and_blocked(
+    tmp_path: Path,
+) -> None:
+    for label, manifest in (
+        ("qa-pass", _reviewed_qa_pass_manifest()),
+        ("qa-blocked", _reviewed_qa_blocked_manifest()),
+    ):
+        manifest_path = tmp_path / label / "article_manifest.json"
+        manifest_path.parent.mkdir()
+        raw = canonical_manifest_bytes(manifest)
+        manifest_path.write_bytes(raw)
+
+        validate_evidence_provenance_block(
+            _evidence_provenance_text(manifest, raw),
+            manifest_path,
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "replacement"),
+    (
+        ("CPL_MANIFEST_SHA256", "0" * 64),
+        ("CPL_REVIEWED_BY", "another_reviewer"),
+        ("CPL_REVIEWED_AT_UTC", "2026-07-18T12:00:00Z"),
+        ("CPL_CODE_COMMIT", "0" * 40),
+        ("CPL_SCHEMA_VERSION", "0.0.0"),
+        (
+            "CPL_SOURCE_MANIFEST",
+            "research/results/cross_pool_lead_lag/stale_manifest.json",
+        ),
+        ("CPL_SOURCE_DIFF_SHA256", "0" * 64),
+    ),
+)
+def test_evidence_provenance_rejects_stale_fixed_values(
+    tmp_path: Path,
+    key: str,
+    replacement: str,
+) -> None:
+    manifest = _reviewed_qa_pass_manifest()
+    raw = canonical_manifest_bytes(manifest)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+    evidence = _replace_evidence_value(
+        _evidence_provenance_text(manifest, raw),
+        key,
+        replacement,
+    )
+
+    with pytest.raises(CrossPoolContractError, match="does not match manifest"):
+        validate_evidence_provenance_block(evidence, manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("key", "replacement"),
+    (
+        ("CPL_PRIMARY_CLASS", "positive_evidence"),
+        ("CPL_REVERSE_CLASS", "positive_evidence"),
+        ("CPL_ARTICLE_BRANCH", "BSC_TO_BASE_INCREMENTAL"),
+        ("CPL_ECONOMIC_CLASS", "PARETO_IMPROVEMENT"),
+        ("CPL_ROBUSTNESS_STATUS", "complete"),
+        ("CPL_ROBUSTNESS_FLAGS", "dtw_band_unstable"),
+    ),
+)
+def test_evidence_provenance_rejects_qa_blocked_editorial_claims(
+    tmp_path: Path,
+    key: str,
+    replacement: str,
+) -> None:
+    manifest = _reviewed_qa_blocked_manifest()
+    raw = canonical_manifest_bytes(manifest)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+    evidence = _replace_evidence_value(
+        _evidence_provenance_text(manifest, raw),
+        key,
+        replacement,
+    )
+
+    with pytest.raises(CrossPoolContractError, match="does not match manifest"):
+        validate_evidence_provenance_block(evidence, manifest_path)
+
+
+def test_evidence_provenance_rejects_stale_input_hash(tmp_path: Path) -> None:
+    manifest = _reviewed_qa_pass_manifest()
+    raw = canonical_manifest_bytes(manifest)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+    evidence = _replace_evidence_value(
+        _evidence_provenance_text(manifest, raw),
+        "CPL_INPUT_SHA256_BASE_FEATURES",
+        "0" * 64,
+    )
+
+    with pytest.raises(CrossPoolContractError, match="does not match manifest"):
+        validate_evidence_provenance_block(evidence, manifest_path)
+
+
+@pytest.mark.parametrize("mutation", ("omit", "both"))
+def test_evidence_provenance_rejects_input_availability_mismatch(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    manifest = _reviewed_qa_blocked_manifest()
+    raw = canonical_manifest_bytes(manifest)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+    missing_line = "CPL_INPUT_MISSING_BASE_FEATURES: FEATURE_BASE_INVALID"
+    evidence = _evidence_provenance_text(manifest, raw)
+    if mutation == "omit":
+        evidence = evidence.replace(f"{missing_line}\n", "", 1)
+    else:
+        evidence += f"CPL_INPUT_SHA256_BASE_FEATURES: {'0' * 64}\n"
+
+    with pytest.raises(CrossPoolContractError, match="input key sets"):
+        validate_evidence_provenance_block(evidence, manifest_path)
+
+
+def test_evidence_provenance_rejects_wrong_or_unattributed_missing_reason(
+    tmp_path: Path,
+) -> None:
+    manifest = _reviewed_qa_blocked_manifest()
+    raw = canonical_manifest_bytes(manifest)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+    evidence = _replace_evidence_value(
+        _evidence_provenance_text(manifest, raw),
+        "CPL_INPUT_MISSING_BASE_FEATURES",
+        "ANALYSIS_CONTRACT_INVALID",
+    )
+
+    with pytest.raises(
+        CrossPoolContractError,
+        match="missing base_features requires FEATURE_BASE_INVALID",
+    ):
+        validate_evidence_provenance_block(evidence, manifest_path)
+
+    unattributed = build_qa_blocked_manifest(
+        QaBlockedManifestInput(
+            provenance=replace(_valid_provenance(), base_features=None),
+            reason_codes=("ANALYSIS_CONTRACT_INVALID",),
+        )
+    )
+    unattributed = _mark_manifest_reviewed(unattributed)
+    unattributed_raw = canonical_manifest_bytes(unattributed)
+    manifest_path.write_bytes(unattributed_raw)
+    with pytest.raises(
+        CrossPoolContractError,
+        match="missing base_features requires FEATURE_BASE_INVALID",
+    ):
+        validate_evidence_provenance_block(
+            _evidence_provenance_text(unattributed, unattributed_raw),
+            manifest_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "duplicate",
+        "unsupported",
+        "malformed",
+    ),
+)
+def test_evidence_provenance_rejects_invalid_cpl_lines(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    manifest = _reviewed_qa_pass_manifest()
+    raw = canonical_manifest_bytes(manifest)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+    evidence = _evidence_provenance_text(manifest, raw)
+    if mutation == "duplicate":
+        evidence += f"CPL_MANIFEST_SHA256: {hashlib.sha256(raw).hexdigest()}\n"
+        match = "duplicate key"
+    elif mutation == "unsupported":
+        evidence += "CPL_UNSUPPORTED_FIELD: value\n"
+        match = "unsupported key"
+    else:
+        evidence += "CPL_MALFORMED_FIELD=value\n"
+        match = "malformed CPL line"
+
+    with pytest.raises(CrossPoolContractError, match=match):
+        validate_evidence_provenance_block(evidence, manifest_path)
+
+
+def test_evidence_provenance_requires_reviewed_manifest(tmp_path: Path) -> None:
+    unreviewed = merge_economic_invalid_manifest(
+        build_article_manifest(_statistical_manifest_input()),
+        EconomicInvalidManifestInput(
+            reason_codes=("FORECAST_COVERAGE_INVALID",),
+        ),
+    )
+    reviewed = _mark_manifest_reviewed(unreviewed)
+    raw = canonical_manifest_bytes(unreviewed)
+    manifest_path = tmp_path / "article_manifest.json"
+    manifest_path.write_bytes(raw)
+
+    with pytest.raises(CrossPoolContractError, match="requires a reviewed manifest"):
+        validate_evidence_provenance_block(
+            _evidence_provenance_text(
+                reviewed,
+                canonical_manifest_bytes(reviewed),
+            ),
+            manifest_path,
+        )
+
+
 def test_manifest_semantics_bind_input_hash_and_interval_availability() -> None:
     manifest = build_qa_blocked_manifest(
         QaBlockedManifestInput(
@@ -1564,6 +1774,127 @@ def test_manifest_reconciles_predictive_metric_arithmetic() -> None:
 
     with pytest.raises(CrossPoolContractError, match="MAE improvement"):
         validate_article_manifest(mutated)
+
+
+_EVIDENCE_INPUT_NAMES = (
+    "base_features",
+    "bsc_features",
+    "base_replay",
+    "bsc_replay",
+    "base_ledger",
+    "bsc_ledger",
+)
+_MISSING_INPUT_REASONS = {
+    "base_features": "FEATURE_BASE_INVALID",
+    "bsc_features": "FEATURE_BSC_INVALID",
+    "base_replay": "REPLAY_BASE_INVALID",
+    "bsc_replay": "REPLAY_BSC_INVALID",
+    "base_ledger": "LEDGER_BASE_COVERAGE_INVALID",
+    "bsc_ledger": "LEDGER_BSC_COVERAGE_INVALID",
+}
+
+
+def _mark_manifest_reviewed(
+    manifest: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    reviewed = deepcopy(manifest)
+    reviewed["artifact_status"] = "reviewed"
+    reviewed["review"] = {
+        "status": "reviewed",
+        "reviewed_by": "sol_ultra",
+        "reviewed_at_utc": "2026-07-17T12:00:00Z",
+    }
+    validate_article_manifest(reviewed)
+    return reviewed
+
+
+def _reviewed_qa_pass_manifest() -> dict[str, JsonValue]:
+    manifest = merge_economic_invalid_manifest(
+        build_article_manifest(_statistical_manifest_input()),
+        EconomicInvalidManifestInput(
+            reason_codes=("FORECAST_COVERAGE_INVALID",),
+        ),
+    )
+    return _mark_manifest_reviewed(manifest)
+
+
+def _reviewed_qa_blocked_manifest() -> dict[str, JsonValue]:
+    manifest = build_qa_blocked_manifest(
+        QaBlockedManifestInput(
+            provenance=replace(_valid_provenance(), base_features=None),
+            reason_codes=("FEATURE_BASE_INVALID",),
+        )
+    )
+    return _mark_manifest_reviewed(manifest)
+
+
+def _evidence_provenance_text(
+    manifest: dict[str, JsonValue],
+    raw: bytes,
+) -> str:
+    review = cast(dict[str, JsonValue], manifest["review"])
+    provenance = cast(dict[str, JsonValue], manifest["provenance"])
+    input_sha256 = cast(dict[str, JsonValue], provenance["input_sha256"])
+    qa = cast(dict[str, JsonValue], manifest["qa"])
+    publication_group = cast(dict[str, JsonValue], manifest["publication"])
+    predictive_group = cast(dict[str, JsonValue], manifest["predictive"])
+    robustness_group = cast(dict[str, JsonValue], manifest["robustness"])
+    robustness_flags = cast(list[str], robustness_group["flags"])
+    if qa["status"] == "blocked":
+        primary_class = "UNAVAILABLE"
+        reverse_class = "UNAVAILABLE"
+        article_branch = "NOT_ADJUDICABLE_QA"
+        economic_class = "NOT_ADJUDICABLE_QA"
+    else:
+        primary_group = cast(dict[str, JsonValue], predictive_group["primary"])
+        reverse_group = cast(dict[str, JsonValue], predictive_group["reverse"])
+        primary_class = cast(str, primary_group["evidence_class"])
+        reverse_class = cast(str, reverse_group["evidence_class"])
+        article_branch = cast(str, publication_group["article_branch"])
+        economic_class = cast(str, publication_group["economic_class"])
+    lines = [
+        "CPL_EDITORIAL_STATUS: EVIDENCE_REVIEWED",
+        f"CPL_PRIMARY_CLASS: {primary_class}",
+        f"CPL_REVERSE_CLASS: {reverse_class}",
+        f"CPL_ARTICLE_BRANCH: {article_branch}",
+        f"CPL_ECONOMIC_CLASS: {economic_class}",
+        f"CPL_ROBUSTNESS_STATUS: {robustness_group['status']}",
+        (
+            "CPL_ROBUSTNESS_FLAGS: "
+            f"{','.join(robustness_flags) if robustness_flags else 'NONE'}"
+        ),
+        (
+            "CPL_SOURCE_MANIFEST: "
+            "research/results/cross_pool_lead_lag/article_manifest.json"
+        ),
+        f"CPL_MANIFEST_SHA256: {hashlib.sha256(raw).hexdigest()}",
+        f"CPL_REVIEWED_BY: {review['reviewed_by']}",
+        f"CPL_REVIEWED_AT_UTC: {review['reviewed_at_utc']}",
+        f"CPL_CODE_COMMIT: {provenance['code_commit']}",
+        f"CPL_SCHEMA_VERSION: {manifest['schema_version']}",
+        f"CPL_SOURCE_DIFF_SHA256: {provenance['source_diff_sha256']}",
+    ]
+    for input_name in _EVIDENCE_INPUT_NAMES:
+        digest = input_sha256[input_name]
+        suffix = input_name.upper()
+        if digest is None:
+            lines.append(
+                f"CPL_INPUT_MISSING_{suffix}: "
+                f"{_MISSING_INPUT_REASONS[input_name]}"
+            )
+        else:
+            lines.append(f"CPL_INPUT_SHA256_{suffix}: {digest}")
+    return "\n".join(lines) + "\n"
+
+
+def _replace_evidence_value(text: str, key: str, replacement: str) -> str:
+    lines = text.splitlines()
+    matching_indexes = [
+        index for index, line in enumerate(lines) if line.startswith(f"{key}: ")
+    ]
+    assert len(matching_indexes) == 1
+    lines[matching_indexes[0]] = f"{key}: {replacement}"
+    return "\n".join(lines) + "\n"
 
 
 def _blocked_provenance() -> RunProvenance:

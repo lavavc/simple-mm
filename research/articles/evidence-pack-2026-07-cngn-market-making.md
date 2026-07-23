@@ -2,18 +2,37 @@
 
 Date: 2026-07-10
 
+Cross-pool evidence reviewed: 2026-07-23
+
 Purpose: collect the source-backed claims that can support the next two Lava
 cNGN articles without implying live promotion of Fair Price or DEX LP research.
 
 ```text
-CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
-CPL_PRIMARY_CLASS: UNAVAILABLE
-CPL_REVERSE_CLASS: UNAVAILABLE
-CPL_ARTICLE_BRANCH: UNAVAILABLE
-CPL_ECONOMIC_CLASS: UNAVAILABLE
-CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+CPL_EDITORIAL_STATUS: EVIDENCE_REVIEWED
+CPL_PRIMARY_CLASS: inconclusive
+CPL_REVERSE_CLASS: inconclusive
+CPL_ARTICLE_BRANCH: leadership_unresolved
+CPL_ECONOMIC_CLASS: no_net_return_improvement
+CPL_ROBUSTNESS_STATUS: complete
+CPL_ROBUSTNESS_FLAGS: dtw_band_unstable
 CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
+CPL_MANIFEST_SHA256: adf4fd71fd33604cee70fcba7aa90d2b7763715d3cba68a868d26347c599abfe
+CPL_REVIEWED_BY: sol_ultra
+CPL_REVIEWED_AT_UTC: 2026-07-23T05:29:25Z
+CPL_CODE_COMMIT: ad7cef98fbe610e4e6671959963e7dcfd9fc2d6f
+CPL_SCHEMA_VERSION: 2.0.0
+CPL_SOURCE_DIFF_SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+CPL_INPUT_SHA256_BASE_FEATURES: 47bae897266c00d92823fcae8d004debf9e50d22639ab52c326b121c9b7da23a
+CPL_INPUT_SHA256_BSC_FEATURES: aba2dbef0548d4bca4882c26f220da14f963c1727bff855cd7532784c2cfaa5c
+CPL_INPUT_SHA256_BASE_REPLAY: 41c3d5b945abdffde32087590c21115914404f496069519c572e393b667f99b9
+CPL_INPUT_SHA256_BSC_REPLAY: bf99f9a17ea2ff0048da7c7eec4fa0c8fa3b9e7e5586e6200919b66edaccd1e2
+CPL_INPUT_SHA256_BASE_LEDGER: 2075fca8e83b52330e0558d24002eaa881a82c00fa13f69bdeb6912f23e14028
+CPL_INPUT_SHA256_BSC_LEDGER: 8435d0d1924ff7906af9d8290d21884027109cf279fde478eb796e67f402bebb
 ```
+
+Generated reports retain their generation-time `generated and unreviewed`
+label. Human review authority lives only in the reviewed manifest above, which
+binds those unchanged report bytes by hash.
 
 ## Source Map
 
@@ -42,6 +61,9 @@ Local artifacts:
 - `research/data/quidax_uniswap_v4_overlap_report.md`
 - `research/results/flow_gated_lp/uni_base/directional_paper_gate_summary.csv`
 - `research/results/flow_gated_lp/uni_bsc/directional_paper_gate_summary.csv`
+- `research/results/cross_pool_lead_lag/article_manifest.json`
+- `research/results/cross_pool_lead_lag/statistical_report.md`
+- `research/results/cross_pool_lead_lag/frozen_policy_report.md`
 
 ## What The First Lava Article Argued
 
@@ -119,6 +141,28 @@ BSC pool prices contain incremental information about future Base price
 changes. No live LP promotion is justified without a non-pool inventory
 comparator.
 
+Cross-pool information transfer:
+
+- The sealed statistical run passed data and causal-alignment QA.
+- The one-hour BSC-to-Base and Base-to-BSC predictive tests were both
+  `inconclusive`.
+- The constrained-DTW lag was unstable across the preregistered bands. The
+  reviewed robustness flag is therefore `dtw_band_unstable`.
+- The only permitted aggregate conclusion is `leadership_unresolved`. The result
+  does not establish either directional lead, bidirectional incremental evidence,
+  or an affirmative finding of no material lead.
+
+Frozen Base economics:
+
+- The separate frozen evaluation compared the original and forecast-gated
+  policies over the same 23 reset-capital windows.
+- Aggregate net return was +0.515% for the original policy and +0.310% for the
+  gated policy.
+- The gated policy's worst window was -0.096%, versus -0.009% for the original;
+  worst within-window drawdown was unchanged at 0.468%.
+- The reviewed economic class is `no_net_return_improvement`. This is an
+  aggregate diagnostic result, not authorization for a live policy change.
+
 ## What The Repo Does Not Prove
 
 - It does not prove a live Fair Price model.
@@ -130,6 +174,13 @@ comparator.
   transferable.
 - It does not prove that Bybit P2P can be used as a historical comparator for
   the current LP windows.
+- It does not prove that BSC leads Base, that Base leads BSC, or that both pools
+  provide incremental predictive information.
+- It does not prove an affirmative null or establish that no material
+  cross-pool lead exists.
+- It does not prove that the frozen forecast gate improves LP economics.
+- It does not identify causal price discovery, toxic flow, or any external LP's
+  profitability.
 
 ## Central Bank Trust Framing
 
@@ -199,6 +250,14 @@ Mechanism:
 - DEX LP summary:
   the table above contrasts the Base strict-QTS slice with the failed
   strict-QTS policy transfer to BSC.
+- Reviewed cross-pool diagnostics:
+  `price_gap.png`, `predictive_performance.png`, `event_response.png`, and
+  `dtw_lag.png`. Captions must state that directional leadership is unresolved
+  and that DTW is band-unstable.
+- Frozen economic summary:
+  `frozen_policy_summary.csv`, `frozen_policy_report.md`, and
+  `lp_performance.png`. Captions must state `no_net_return_improvement` and
+  describe the figure as diagnostic research.
 - Claims allowed versus claims rejected:
   use this pack as the checklist before drafting.
 
@@ -214,3 +273,13 @@ Mechanism:
 - "cNGN should flood DEXs with unrestricted supply."
 - "The IMF paper endorses decentralized lending or tokenized T-bills as the
   policy answer."
+- "BSC provides incremental predictive evidence for Base."
+- "Base provides incremental predictive evidence for BSC."
+- "Both pools provide incremental predictive evidence without a unique leader."
+- "The study proves there is no material incremental lead."
+- "DTW establishes which pool leads."
+- "The forecast-gated policy improved LP performance."
+- Any claim of causal price discovery, toxic-flow attribution, external-LP
+  profitability, or deployable alpha.
+- Any publication of implementation-specific signal definitions, model
+  coefficients, capital-allocation parameters, leverage, or execution details.

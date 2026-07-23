@@ -26,12 +26,13 @@ avoid circular labels, stale references, and attractive backtests that do not
 survive venue-specific constraints.
 
 ```text
-CPL_EDITORIAL_STATUS: DESIGN_APPROVED_RESULTS_PENDING
-CPL_PRIMARY_CLASS: UNAVAILABLE
-CPL_REVERSE_CLASS: UNAVAILABLE
-CPL_ARTICLE_BRANCH: UNAVAILABLE
-CPL_ECONOMIC_CLASS: UNAVAILABLE
-CPL_ROBUSTNESS_STATUS: UNAVAILABLE
+CPL_EDITORIAL_STATUS: EVIDENCE_REVIEWED
+CPL_PRIMARY_CLASS: inconclusive
+CPL_REVERSE_CLASS: inconclusive
+CPL_ARTICLE_BRANCH: leadership_unresolved
+CPL_ECONOMIC_CLASS: no_net_return_improvement
+CPL_ROBUSTNESS_STATUS: complete
+CPL_ROBUSTNESS_FLAGS: dtw_band_unstable
 CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
 ```
 
@@ -149,7 +150,7 @@ the article should not call this live LP alpha.
 ### 7. The separate cross-pool information-transfer experiment
 
 The failed strict-QTS policy transfer does not answer whether one pool contains
-incremental information about the other. The approved experiment uses each
+incremental information about the other. The reviewed experiment uses each
 pool's canonical `raw_sqrt_mid` and checks stability across the known
 early/late methodology boundaries rather than reconstructing legacy prices.
 
@@ -161,16 +162,26 @@ cross-pool model adds BSC features to a Base-only baseline after a 14-day warmup
 and expanding weekly walk-forward refits. A reverse Base-to-BSC falsification
 uses the same construction.
 
-Once data QA and causal alignment pass, the economic follow-up is an
-unconditional frozen-policy evaluation. It applies the one-hour forecast only
-as an entry veto to the existing Base policy and does not retune routes, ranges,
-sizing, exits, gas, or validation windows in response to the statistical
-result.
+The reviewed statistical result is deliberately narrow. Both one-hour
+directional tests were `inconclusive`, and the constrained-DTW lag was unstable
+across the preregistered bands. The manifest therefore selects
+`leadership_unresolved`. That permits one aggregate claim: this experiment did
+not resolve a stable directional leader. It does not establish either
+directional lead, bidirectional incremental evidence, or an affirmative finding
+that no material lead exists.
 
-The comparison assumes USDC/USDT parity, so effects below 10 basis points are
-not economically interpretable without a historical basis series. Even reviewed
-results cannot establish causal price discovery, toxic flow, external-LP
-profitability, or deployable alpha from these two pool histories.
+The unconditional frozen-policy evaluation also produced a negative result. On
+the same 23 reset-capital windows, aggregate net return was +0.515% for the
+original Base policy and +0.310% for its forecast-gated variant. The gated
+variant had a worse worst window, while worst within-window drawdown was
+unchanged. The reviewed economic class is `no_net_return_improvement`.
+
+The comparison assumes USDC/USDT parity, so effects below 10 basis points remain
+economically uninterpretable without a historical basis series. Even these
+reviewed results cannot establish causal price discovery, toxic flow,
+external-LP profitability, or deployable alpha from two pool histories.
+Implementation-specific parameters and execution details remain outside the
+article.
 
 ### 8. Why the failures are the point
 
@@ -181,6 +192,8 @@ The research branch produced reusable discipline:
 - separate top-book proxy tests from depth-walk execution
 - keep Base and BSC separate unless transferability is being tested explicitly
 - document why data was rejected, not just what data was used
+- allow a QA-valid result to remain unresolved when robustness fails
+- run a frozen economic test without turning a negative result into a new search
 - keep research-only features out of live execution policy until the evidence
   earns promotion
 
@@ -195,7 +208,8 @@ testing conventions as much as they need code.
 4. What Quidax can rigorously show.
 5. Quidax versus Uniswap v4 over the overlap.
 6. The Base diagnostic slice and the failed strict-QTS policy transfer to BSC.
-7. The separate cross-pool information-transfer method and pending status.
+7. The reviewed cross-pool result: leadership unresolved and no net-return
+   improvement from the frozen economic gate.
 8. Why publishing disciplined non-results helps the market.
 
 ## Evidence And Repo Anchors
@@ -214,6 +228,9 @@ testing conventions as much as they need code.
 - `research/tests/test_fetch_binance_reference.py`
 - `research/tests/test_analyze_binance_fair_price.py`
 - `research/tests/test_evaluate_directional_paper_lp.py`
+- `research/results/cross_pool_lead_lag/article_manifest.json`
+- `research/results/cross_pool_lead_lag/statistical_report.md`
+- `research/results/cross_pool_lead_lag/frozen_policy_report.md`
 
 ## Claims To Avoid
 
@@ -225,3 +242,13 @@ testing conventions as much as they need code.
 - Do not call Bybit P2P a historical executable comparator.
 - Do not publish generated plots or aggregate LP curves as proof of in-house LP
   performance without owner-level attribution.
+- Do not claim either pool has established incremental predictive leadership.
+- Do not convert `leadership_unresolved` into a claim that no material lead
+  exists.
+- Do not treat constrained DTW as directional evidence when its lag is
+  band-unstable.
+- Do not claim the forecast-gated policy improved LP economics.
+- Do not infer causal price discovery, toxic flow, or external-LP profitability
+  from price histories or owner concentration.
+- Do not publish implementation-specific signals, model coefficients,
+  capital-allocation parameters, leverage, or execution details.

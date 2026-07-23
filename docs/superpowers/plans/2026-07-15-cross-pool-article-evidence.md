@@ -15,7 +15,7 @@ aggregate-results ledger. Article 2 consumes only claims promoted into that
 ledger after final review. Until then, committed documents carry an exact
 pending-results status block and only result-independent methods and limits.
 
-**Tech Stack:** Markdown, deterministic JSON schema `1.0.0`, pytest document
+**Tech Stack:** Markdown, deterministic JSON schema `2.0.0`, pytest document
 contract checks, `rg`, `json.tool`, `jq`, and `git diff --check`.
 
 ## Global Constraints
@@ -71,7 +71,7 @@ def test_cross_pool_design_pins_writer_manifest_and_branches() -> None:
         "docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md"
     ).read_text()
     assert "article_manifest.json" in design
-    assert "schema version `1.0.0`" in design
+    assert "schema version `2.0.0`" in design
     for branch in (
         "bsc_to_base_incremental",
         "base_to_bsc_incremental",
@@ -337,7 +337,7 @@ manifest = load_and_validate_article_manifest(
 assert manifest["artifact_status"] in {"generated_unreviewed", "qa_blocked"}
 PY
 jq -e '
-  .schema_version == "1.0.0" and
+  .schema_version == "2.0.0" and
   (.artifact_status == "generated_unreviewed" or .artifact_status == "qa_blocked") and
   (.provenance.input_sha256 | type == "object") and
   (.publication.forbidden_claims | type == "array")
@@ -393,11 +393,15 @@ same reviewed editorial block in the evidence pack, Article 2, and README. The
 block begins with
 `CPL_EDITORIAL_STATUS: EVIDENCE_REVIEWED`. For data-valid evidence, record the
 reviewed primary and reverse classes, one approved article branch, one approved
-economic branch, and the reviewed robustness status. For reviewed QA-blocked
+economic branch, the reviewed robustness status, and its sorted flags. Record
+the latter separately as `CPL_ROBUSTNESS_STATUS` and `CPL_ROBUSTNESS_FLAGS`
+(`NONE` when the flag list is empty). For reviewed QA-blocked
 evidence, record exactly `CPL_PRIMARY_CLASS: UNAVAILABLE`,
 `CPL_REVERSE_CLASS: UNAVAILABLE`,
 `CPL_ARTICLE_BRANCH: NOT_ADJUDICABLE_QA`,
-`CPL_ECONOMIC_CLASS: NOT_ADJUDICABLE_QA`, and the blocked robustness/QA status.
+`CPL_ECONOMIC_CLASS: NOT_ADJUDICABLE_QA`,
+`CPL_ROBUSTNESS_STATUS: unavailable`, and
+`CPL_ROBUSTNESS_FLAGS: NONE`.
 Both shapes retain
 `CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json`.
 
@@ -416,7 +420,8 @@ reason code. These values make the durable ledger independently auditable even
 when the local generated artifact is absent.
 
 Use exact provenance keys `CPL_MANIFEST_SHA256`, `CPL_REVIEWED_BY`,
-`CPL_REVIEWED_AT_UTC`, `CPL_CODE_COMMIT`, `CPL_SCHEMA_VERSION`, one
+`CPL_REVIEWED_AT_UTC`, `CPL_CODE_COMMIT`, `CPL_SCHEMA_VERSION`,
+`CPL_SOURCE_DIFF_SHA256`, one
 `CPL_INPUT_SHA256_<UPPER_SNAKE_INPUT_NAME>` line for each available input, and
 one `CPL_INPUT_MISSING_<UPPER_SNAKE_INPUT_NAME>` line for each unavailable
 input. Add fixture-backed valid and QA-blocked tests for
@@ -445,7 +450,7 @@ section and every causal/alpha limitation.
 
 ```bash
 jq -e '
-  .schema_version == "1.0.0" and
+  .schema_version == "2.0.0" and
   .artifact_status == "reviewed" and
   .review.status == "reviewed" and
   (.review.reviewed_by | type == "string") and
