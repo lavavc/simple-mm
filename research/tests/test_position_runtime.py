@@ -561,9 +561,60 @@ def test_terminal_liquidation_swaps_sub_epsilon_token_balance() -> None:
     runtime.wallet = PortfolioComposition(stable_usd=0.0, cngn_amount=5e-13)
 
     action = runtime.propose_terminal_liquidation(event, active_liquidity)
+    runtime.apply_action(action)
 
-    assert action.wallet_after.cngn_amount == 0.0
+    assert runtime.wallet.cngn_amount == 0.0
     assert action.transaction_cost.swap_notional_usd > 0.0
+    assert runtime.result.external_output_value_usd >= 0.0
+    assert (
+        runtime.result.external_input_value_usd
+        - runtime.result.external_output_value_usd
+    ) == pytest.approx(runtime.result.total_variable_execution_cost_usd)
+
+
+def test_terminal_liquidation_rejects_cost_larger_than_dust_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = _events_that_enter_accrue_fee_exit_and_reenter()[0]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+    runtime.wallet = PortfolioComposition(stable_usd=100.0, cngn_amount=5e-11)
+    before = deepcopy(runtime.wallet)
+
+    def infeasible_cost(
+        action: str,
+        swap_notional_usd: float,
+        *args: object,
+        **kwargs: object,
+    ) -> TransactionCostBreakdown:
+        if swap_notional_usd == 0.0:
+            return TransactionCostBreakdown(action)
+        return TransactionCostBreakdown(
+            action,
+            price_impact_cost=swap_notional_usd + 5e-11,
+            swap_notional_usd=swap_notional_usd,
+        )
+
+    monkeypatch.setattr(
+        position_runtime_module,
+        "_swap_cost_breakdown",
+        infeasible_cost,
+    )
+
+    with pytest.raises(
+        TerminalLiquidationError,
+        match="variable cost exceeds swap output",
+    ):
+        runtime.propose_terminal_liquidation(event, active_liquidity)
+
+    assert runtime.wallet == before
 
 
 @pytest.mark.parametrize(

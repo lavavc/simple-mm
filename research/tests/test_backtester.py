@@ -54,6 +54,7 @@ from research.backtester.simulator import (
     UNISWAP_BSC_POOL,
     VirtualPosition,
     _event_fee_wallet,
+    _exact_clmm_input_costs,
     _exact_clmm_output_costs,
     _range_traversal_fraction,
     simulate_pool,
@@ -132,6 +133,42 @@ class TestSwapStep:
         assert sp_next < sqrt_p
         assert out > 0
 
+    @pytest.mark.parametrize("zero_for_one", (True, False))
+    def test_dust_input_preserves_direction_and_positive_output(
+        self,
+        zero_for_one: bool,
+    ) -> None:
+        sqrt_price = 0.026802395315693162
+        liquidity = 66_068_474_111_482.97
+        amount_in = 5.820766091346741e-05
+        fee_rate = 0.0015
+
+        sqrt_next, consumed, amount_out, fee = compute_swap_step(
+            sqrt_price,
+            liquidity,
+            amount_in,
+            fee_rate,
+            zero_for_one,
+        )
+
+        effective = amount_in * (1.0 - fee_rate)
+        if zero_for_one:
+            expected_out = (
+                liquidity
+                * effective
+                * sqrt_price
+                * sqrt_price
+                / (liquidity + effective * sqrt_price)
+            )
+            assert sqrt_next <= sqrt_price
+        else:
+            expected_out = effective / (sqrt_price * sqrt_next)
+            assert sqrt_next >= sqrt_price
+        assert consumed == amount_in
+        assert fee == pytest.approx(amount_in * fee_rate)
+        assert amount_out == pytest.approx(expected_out, rel=1e-12)
+        assert amount_out > 0.0
+
     def test_single_tick_execution_price(self):
         """Execution price should equal √P_old × √P_new for single tick."""
         sqrt_p = 1.5
@@ -160,6 +197,54 @@ class TestSwapStep:
 
         assert fee_usd == pytest.approx(0.0)
         assert impact_usd == pytest.approx(expected_effective_input_usd - 10.0)
+
+    def test_exact_input_dust_costs_remain_bounded_by_sale_notional(self) -> None:
+        input_notional = 4.1814543927245e-14
+
+        costs = _exact_clmm_input_costs(
+            input_notional_usd=input_notional,
+            active_liquidity=66_068_474_111_482.97,
+            fee_rate=0.0015,
+            current_tick=-72_389,
+            current_sqrt_price_x96=2_123_504_531_843_295_099_807_112_226,
+            current_price=0.0007183683946586908,
+            direction="cngn_to_stable",
+            pool_config=UNISWAP_BASE_POOL,
+        )
+
+        assert costs is not None
+        fee_usd, impact_usd = costs
+        assert math.isfinite(fee_usd)
+        assert math.isfinite(impact_usd)
+        assert fee_usd >= 0.0
+        assert impact_usd >= 0.0
+        assert fee_usd + impact_usd <= input_notional + 1e-12
+
+    @pytest.mark.parametrize(
+        "direction",
+        ("cngn_to_stable", "stable_to_cngn"),
+    )
+    def test_exact_output_dust_retains_fee_and_nonnegative_impact(
+        self,
+        direction: str,
+    ) -> None:
+        output_notional = 4.1814543927245e-14
+
+        costs = _exact_clmm_output_costs(
+            output_notional_usd=output_notional,
+            active_liquidity=66_068_474_111_482.97,
+            fee_rate=0.0015,
+            current_tick=-72_389,
+            current_sqrt_price_x96=2_123_504_531_843_295_099_807_112_226,
+            current_price=0.0007183683946586908,
+            direction=direction,
+            pool_config=UNISWAP_BASE_POOL,
+        )
+
+        assert costs is not None
+        fee_usd, impact_usd = costs
+        assert 0.0 < fee_usd < output_notional
+        assert impact_usd >= 0.0
 
     def test_exact_output_returns_none_when_swap_crosses_spacing_boundary(self):
         costs = _exact_clmm_output_costs(

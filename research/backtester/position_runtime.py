@@ -79,6 +79,10 @@ class TerminalLiquidationError(ValueError):
     """Raised when a validation boundary cannot settle exactly to USD cash."""
 
 
+def _variable_cost_tolerance(notional: float, variable_cost: float) -> float:
+    return 1e-12 * max(1.0, notional, variable_cost)
+
+
 @dataclass
 class SleeveRuntime:
     sleeve_id: str
@@ -466,7 +470,10 @@ class SleeveRuntime:
                     raise TerminalLiquidationError(
                         "terminal liquidation variable cost is invalid"
                     )
-                if variable_cost > swap_notional + tolerance:
+                if variable_cost > swap_notional + _variable_cost_tolerance(
+                    swap_notional,
+                    variable_cost,
+                ):
                     raise TerminalLiquidationError(
                         "terminal liquidation variable cost exceeds swap output"
                     )
@@ -564,7 +571,10 @@ class SleeveRuntime:
             if action.kind == "enter"
             else external_notional - variable_cost
         )
-        if external_output < -1e-12:
+        if external_output < -_variable_cost_tolerance(
+            external_notional,
+            variable_cost,
+        ):
             raise ValueError("action variable execution cost exceeds external notional")
         self.result.external_swap_notional_usd += external_notional
         self.result.external_input_value_usd += external_input

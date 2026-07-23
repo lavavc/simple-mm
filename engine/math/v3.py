@@ -144,11 +144,18 @@ def compute_swap_step(
 
     if zero_for_one:
         # Sell token0 → get token1, price goes DOWN (√P decreases)
-        sqrt_price_next = sqrt_price * liquidity / (liquidity + effective * sqrt_price)
-        amount_out = liquidity * (sqrt_price - sqrt_price_next)
+        denominator = liquidity + effective * sqrt_price
+        sqrt_price_next = sqrt_price / (
+            1.0 + effective * sqrt_price / liquidity
+        )
+        # This equivalent form avoids subtracting nearly equal square roots.
+        amount_out = (
+            liquidity * effective * sqrt_price * sqrt_price / denominator
+        )
     else:
         # Sell token1 → get token0, price goes UP (√P increases)
         sqrt_price_next = sqrt_price + effective / liquidity
-        amount_out = liquidity * (1.0 / sqrt_price - 1.0 / sqrt_price_next)
+        # This equivalent form avoids subtracting nearly equal reciprocals.
+        amount_out = effective / (sqrt_price * sqrt_price_next)
 
     return sqrt_price_next, amount_in, amount_out, fee_amount

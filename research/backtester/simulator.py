@@ -1096,13 +1096,15 @@ def _exact_clmm_output_costs(
         sqrt_next = sqrt_price - output_raw / active_liquidity
         if sqrt_next <= 0:
             return None
-        effective_input_raw = active_liquidity * (1 / sqrt_next - 1 / sqrt_price)
+        effective_input_raw = output_raw / (sqrt_price * sqrt_next)
     else:
-        denominator = 1 / sqrt_price - output_raw / active_liquidity
-        if denominator <= 0:
+        output_ratio = output_raw * sqrt_price / active_liquidity
+        if output_ratio >= 1:
             return None
-        sqrt_next = 1 / denominator
-        effective_input_raw = active_liquidity * (sqrt_next - sqrt_price)
+        sqrt_next = sqrt_price / (1 - output_ratio)
+        effective_input_raw = (
+            output_raw * sqrt_price * sqrt_price / (1 - output_ratio)
+        )
 
     if not _same_spacing_range(sqrt_next, current_tick, pool_config.tick_spacing, zero_for_one):
         return None
