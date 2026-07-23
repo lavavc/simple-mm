@@ -7,20 +7,35 @@ import pytest
 
 DESIGN_PATH = Path("docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md")
 
-TERMINOLOGY_PATHS = (
+PUBLIC_TERMINOLOGY_PATHS = (
     Path("research/articles/02-backtesting-the-market-layer.md"),
     Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
+)
+
+INTERNAL_TERMINOLOGY_PATHS = (
     Path("research/autoresearch/lp.md"),
     Path("research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"),
 )
 
-CANONICAL_POLICY_TRANSFER = (
+TERMINOLOGY_PATHS = PUBLIC_TERMINOLOGY_PATHS + INTERNAL_TERMINOLOGY_PATHS
+
+PUBLIC_POLICY_TRANSFER = (
+    "The pre-specified diagnostic directional LP policy did not transfer across "
+    "pools; this is a pool-separated research result, not a live recommendation."
+)
+
+PUBLIC_INFORMATION_TRANSFER = (
+    "That transfer finding does not answer whether either pool contributes "
+    "stable incremental information about the other."
+)
+
+INTERNAL_POLICY_TRANSFER = (
     "The Base strict-QTS 20/25 directional LP policy did not transfer to BSC: "
     "it returned -1.272% across seven BSC windows, versus +1.039% across four "
     "Base windows."
 )
 
-CANONICAL_INFORMATION_TRANSFER = (
+INTERNAL_INFORMATION_TRANSFER = (
     "That result concerns policy transferability. It does not test whether "
     "lagged BSC pool prices contain incremental information about future Base "
     "price changes."
@@ -63,9 +78,9 @@ CLOSED_ACQUISITION = (
     "an open task."
 )
 
-LP_RESULT_ROWS = (
-    "| Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |",
-    "| BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |",
+PUBLIC_LP_RESULT_ROWS = (
+    "| Base | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |",
+    "| BSC | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |",
 )
 
 MANIFEST_GROUPS = (
@@ -157,16 +172,33 @@ def test_cross_pool_design_pins_writer_manifest_and_branches() -> None:
 
 
 @pytest.mark.parametrize("path", TERMINOLOGY_PATHS)
-def test_policy_transfer_language_does_not_prejudge_information_transfer(
+def test_policy_transfer_language_omits_stale_overclaims(
     path: Path,
 ) -> None:
     text = path.read_text()
-    normalized = " ".join(text.split())
 
     for stale_phrase in STALE_POLICY_TRANSFER_PHRASES:
         assert stale_phrase not in text
-    assert CANONICAL_POLICY_TRANSFER in normalized
-    assert CANONICAL_INFORMATION_TRANSFER in normalized
+
+
+@pytest.mark.parametrize("path", PUBLIC_TERMINOLOGY_PATHS)
+def test_public_policy_transfer_language_is_aggregate_and_non_operational(
+    path: Path,
+) -> None:
+    normalized = " ".join(path.read_text().split())
+
+    assert PUBLIC_POLICY_TRANSFER in normalized
+    assert PUBLIC_INFORMATION_TRANSFER in normalized
+    assert "strict-QTS" not in normalized
+    assert "gate_strict_qts_20_25" not in normalized
+
+
+@pytest.mark.parametrize("path", INTERNAL_TERMINOLOGY_PATHS)
+def test_internal_policy_transfer_language_preserves_audit_detail(path: Path) -> None:
+    normalized = " ".join(path.read_text().split())
+
+    assert INTERNAL_POLICY_TRANSFER in normalized
+    assert INTERNAL_INFORMATION_TRANSFER in normalized
 
 
 @pytest.mark.parametrize(
@@ -176,10 +208,12 @@ def test_policy_transfer_language_does_not_prejudge_information_transfer(
         Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
     ),
 )
-def test_policy_transfer_edit_preserves_result_tables(path: Path) -> None:
+def test_public_policy_transfer_preserves_pool_separated_aggregate_results(
+    path: Path,
+) -> None:
     text = path.read_text()
 
-    for row in LP_RESULT_ROWS:
+    for row in PUBLIC_LP_RESULT_ROWS:
         assert row in text
 
 
@@ -307,6 +341,33 @@ def test_article_two_contains_reviewed_cross_pool_result_and_boundaries() -> Non
     assert article.index(
         "### 7. The separate cross-pool information-transfer experiment"
     ) < article.index("### 8. Why the failures are the point")
+
+
+def test_article_two_scaffolds_the_final_portfolio_test_without_a_result_claim() -> None:
+    article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
+    normalized = " ".join(article.split())
+    pending_marker = "<!-- PORTFOLIO_RESULT: PENDING_VALIDATION -->"
+
+    for phrase in (
+        "#### The final portfolio test",
+        "canonical economic candidates",
+        "joint portfolio accounting",
+        "carried capital paths",
+        "reset-only diagnostics",
+        "Portfolio results — publication gated.",
+        "separately for each pool",
+        "missing non-pool inventory comparator",
+    ):
+        assert phrase in normalized
+    assert article.index("#### The final portfolio test") < article.index(
+        "### 7. The separate cross-pool information-transfer experiment"
+    )
+    assert article.count(pending_marker) == 1
+    assert (
+        article.index("#### The final portfolio test")
+        < article.index(pending_marker)
+        < article.index("### 7. The separate cross-pool information-transfer experiment")
+    )
 
 
 @pytest.mark.parametrize("path", REVIEWED_ARTICLE_PATHS)

@@ -109,8 +109,8 @@ External reference availability:
 - Local `bybit_p2p` rows cover only 171 snapshots from
   `2026-06-19T12:26:49.707000+00:00` through
   `2026-06-20T01:09:16.620000+00:00`.
-- Bybit covers `0/8` Base strict-sign-cone-positive-QTS start/end marks within
-  the 3600-second external-reference max-age rule.
+- The local Bybit sample covers none of the relevant Base validation marks at a
+  usable age.
 
 Quidax versus Uniswap v4:
 
@@ -126,20 +126,20 @@ clean Fair Price label.
 
 DEX LP:
 
-| Pool | Gate | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |
-| BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
+| Pool | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Base | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |
+| BSC | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
 
 Interpretation: Base has a sparse DEX-internal directional regime worth
-preserving as a diagnostic. The Base strict-QTS 20/25 directional LP policy did
-not transfer to BSC: it returned -1.272% across seven BSC windows, versus
-+1.039% across four Base windows.
+preserving as a diagnostic. The pre-specified diagnostic directional LP policy
+did not transfer across pools; this is a pool-separated research result, not a
+live recommendation. Its aggregate return was +1.039% across four Base windows
+and -1.272% across seven BSC windows.
 
-That result concerns policy transferability. It does not test whether lagged
-BSC pool prices contain incremental information about future Base price
-changes. No live LP promotion is justified without a non-pool inventory
-comparator.
+That transfer finding does not answer whether either pool contributes stable
+incremental information about the other. No live LP promotion is justified
+without a non-pool inventory comparator.
 
 Cross-pool information transfer:
 
@@ -170,7 +170,7 @@ Frozen Base economics:
   CEX PnL.
 - It does not prove that Uniswap v4 is an independent truth label.
 - It does not prove DEX LP alpha.
-- It does not prove that the Base strict-QTS result is large, durable, or
+- It does not prove that the Base diagnostic result is large, durable, or
   transferable.
 - It does not prove that Bybit P2P can be used as a historical comparator for
   the current LP windows.
@@ -248,8 +248,8 @@ Mechanism:
   `quidax` anchor testable against future Quidax top book; `dex_vwap` and
   `blended` only proxy-testable with stale/as-of DEX context from this sample.
 - DEX LP summary:
-  the table above contrasts the Base strict-QTS slice with the failed
-  strict-QTS policy transfer to BSC.
+  the table above reports the pool-separated aggregate outcomes from the
+  diagnostic policy-transfer test.
 - Reviewed cross-pool diagnostics:
   `price_gap.png`, `predictive_performance.png`, `event_response.png`, and
   `dtw_lag.png`. Captions must state that directional leadership is unresolved
@@ -281,5 +281,6 @@ Mechanism:
 - "The forecast-gated policy improved LP performance."
 - Any claim of causal price discovery, toxic-flow attribution, external-LP
   profitability, or deployable alpha.
-- Any publication of implementation-specific signal definitions, model
-  coefficients, capital-allocation parameters, leverage, or execution details.
+- Any publication of selected identifiers, portfolio weights, operational
+  thresholds, implementation-specific signal definitions, model coefficients,
+  capital-allocation parameters, leverage, or execution details.

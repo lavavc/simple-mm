@@ -64,8 +64,8 @@ DEX LP:
   after walk-forward validation?
 - Desired comparator: a non-pool cNGN inventory mark covering the relevant
   validation windows.
-- Result: the Base strict-QTS policy did not transfer to BSC; no live LP
-  promotion is justified.
+- Result: the pre-specified directional policy did not transfer across pools;
+  no live LP promotion is justified.
 
 CEX execution-mode feasibility:
 
@@ -90,7 +90,8 @@ State the source availability facts directly:
 - The local Bybit sample has only 171 snapshots from
   `2026-06-19T12:26:49.707000+00:00` through
   `2026-06-20T01:09:16.620000+00:00`.
-- Bybit covers `0/8` strict Base edge marks under the one-hour max-age rule.
+- The local Bybit sample covers none of the relevant Base validation marks at a
+  usable age.
 
 This is a publishable negative result. It prevents the article from pretending
 there is a clean non-pool reference series when there is not.
@@ -130,26 +131,49 @@ mark, but not as a clean Fair Price label.
 
 ### 6. What the DEX LP experiments can support
 
-The completed strict-QTS policy-transfer conclusion is diagnostic:
+The completed directional-policy transfer conclusion is diagnostic:
 
-| Pool | Gate | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |
-| BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
+| Pool | Active windows | Directional sum | Worst directional | Positive directional | Directional minus hold | Best static sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Base | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |
+| BSC | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |
 
 Base has a sparse DEX-internal regime worth preserving as a hypothesis. The
-Base strict-QTS 20/25 directional LP policy did not transfer to BSC: it
-returned -1.272% across seven BSC windows, versus +1.039% across four Base
-windows.
+pre-specified diagnostic directional LP policy did not transfer across pools;
+this is a pool-separated research result, not a live recommendation. Its
+aggregate return was +1.039% across four Base windows and -1.272% across seven
+BSC windows.
 
-That result concerns policy transferability. It does not test whether lagged
-BSC pool prices contain incremental information about future Base price
-changes. Because no usable non-pool comparator covers the relevant windows,
-the article should not call this live LP alpha.
+That transfer finding does not answer whether either pool contributes stable
+incremental information about the other. Because no usable non-pool comparator
+covers the relevant windows, the article should not call this live LP alpha.
+
+#### The final portfolio test
+
+Earlier liquidity experiments generated useful hypotheses, but an individual
+range is not a portfolio. Multiple ideas can overlap economically, capital can
+carry from one evaluation period to the next, and an isolated result can change
+once it shares one accounting frame with the rest of the portfolio.
+
+The final study therefore evaluates canonical economic candidates with joint
+portfolio accounting. It keeps Base and BSC separate, distinguishes carried
+capital paths from reset-only diagnostics, and tests candidate completeness,
+path validity, and comparator evidence as separate questions. A failed gate is
+reported as a failure rather than repaired with a replacement result.
+
+> **Portfolio results — publication gated.** This article will report an
+> outcome only after both frozen evidence packages pass completeness,
+> provenance, and independent review.
+> Results will be stated separately for each pool and only as diagnostic
+> historical evidence.
+> The missing non-pool inventory comparator remains a binding limit on any
+> economic interpretation.
+
+<!-- PORTFOLIO_RESULT: PENDING_VALIDATION -->
 
 ### 7. The separate cross-pool information-transfer experiment
 
-The failed strict-QTS policy transfer does not answer whether one pool contains
+The failed directional-policy transfer does not answer whether one pool contains
 incremental information about the other. The reviewed experiment uses each
 pool's canonical `raw_sqrt_mid` and checks stability across the known
 early/late methodology boundaries rather than reconstructing legacy prices.
@@ -207,7 +231,7 @@ testing conventions as much as they need code.
 3. The missing non-pool comparator.
 4. What Quidax can rigorously show.
 5. Quidax versus Uniswap v4 over the overlap.
-6. The Base diagnostic slice and the failed strict-QTS policy transfer to BSC.
+6. The Base diagnostic slice and the failed directional-policy transfer to BSC.
 7. The reviewed cross-pool result: leadership unresolved and no net-return
    improvement from the frozen economic gate.
 8. Why publishing disciplined non-results helps the market.
@@ -237,7 +261,7 @@ testing conventions as much as they need code.
 - Do not claim Fair Price is solved.
 - Do not claim Quidax top book proves execution quality.
 - Do not claim Uniswap v4 is the fair-value truth label.
-- Do not claim the Base strict-QTS slice is live LP alpha.
+- Do not claim the Base diagnostic slice is live LP alpha.
 - Do not merge Base and BSC into one market unless transferability is the claim.
 - Do not call Bybit P2P a historical executable comparator.
 - Do not publish generated plots or aggregate LP curves as proof of in-house LP
@@ -250,5 +274,6 @@ testing conventions as much as they need code.
 - Do not claim the forecast-gated policy improved LP economics.
 - Do not infer causal price discovery, toxic flow, or external-LP profitability
   from price histories or owner concentration.
-- Do not publish implementation-specific signals, model coefficients,
+- Do not publish selected identifiers, portfolio weights, operational
+  thresholds, implementation-specific signals, model coefficients,
   capital-allocation parameters, leverage, or execution details.
