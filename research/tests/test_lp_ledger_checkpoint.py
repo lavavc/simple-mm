@@ -105,6 +105,7 @@ def test_schema_v2_public_contract_is_action_first_and_replay_bound() -> None:
         "row_count",
         "header_sha256",
         "parser_version",
+        "parser_contract_sha256",
         "price_semantics_sha256",
         "chain",
         "pool_id",
@@ -916,8 +917,8 @@ def test_replay_input_bind_is_identity_exact_and_resume_validated(tmp_path: Path
 
     with sqlite3.connect(paths.database) as connection:
         connection.execute(
-            "UPDATE replay_input SET price_events_sha256 = ? WHERE singleton = 1",
-            ("f" * 64,),
+            "UPDATE replay_input SET parser_contract_sha256 = ? WHERE singleton = 1",
+            ("0" * 64,),
         )
     with acquire_run_lock(paths):
         with pytest.raises(CheckpointContractError, match="staged evidence"):
@@ -3933,6 +3934,7 @@ def _identity(output: Path) -> RunIdentity:
             row_count=10,
             header_sha256="c" * 64,
             parser_version="pool-history-replay-v1",
+            parser_contract_sha256="f" * 64,
             price_semantics_sha256="d" * 64,
             chain="base",
             pool_id=_HASH_A,
@@ -4000,7 +4002,7 @@ def _mark_checkpoint_succeeded(database: Path, *, status: str) -> None:
         connection.execute(
             """
             INSERT INTO replay_input VALUES (
-                1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1
+                1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1
             )
             """,
             (
@@ -4010,6 +4012,7 @@ def _mark_checkpoint_succeeded(database: Path, *, status: str) -> None:
                 replay["row_count"],
                 replay["header_sha256"],
                 replay["parser_version"],
+                replay["parser_contract_sha256"],
                 replay["price_semantics_sha256"],
                 replay["chain"],
                 replay["pool_id"],

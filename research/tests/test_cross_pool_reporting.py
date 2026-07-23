@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date
 from decimal import Decimal, localcontext
 from functools import lru_cache
@@ -17,7 +18,23 @@ import research.cross_pool.publication as publication
 import research.scripts.evaluate_cross_pool_economic_lp as economic_cli
 from research.backtester.lp_ledger_attribution import (
     POOL_ATTRIBUTION_ORIENTATIONS,
+    AcquisitionPolicyCoverage,
+    BundleDigestCoverage,
+    EligibleBundleCoverage,
+    FROZEN_REPLAY_PARSER_VERSION,
+    FrozenTokenCoverage,
+    FullTransferCoverage,
+    ReconciliationCoverage,
+    ReplayCoverage,
+    RpcLedgerEvidence,
+    TransferChunkCoverage,
     VerifiedLedgerCoverageEvidence,
+    WitnessSetCoverage,
+    build_rpc_ledger_coverage_bytes,
+    frozen_replay_header_sha256,
+    frozen_replay_parser_contract_sha256,
+    frozen_replay_price_semantics_sha256,
+    rpc_ledger_coverage_from_payload,
 )
 from research.cross_pool.contracts import (
     CausalPanel,
@@ -929,11 +946,13 @@ def test_csv_file_provenance_hashes_bytes_and_parses_timestamp_kinds(
     tmp_path: Path,
 ) -> None:
     milliseconds = tmp_path / "milliseconds.csv"
-    milliseconds.write_bytes(b"timestamp_ms,value\n100,a\n250,b\n")
+    milliseconds.write_bytes(
+        b"block_number,timestamp_ms,value\n1,100,a\n2,250,b\n"
+    )
     block_time = tmp_path / "block_time.csv"
     block_time.write_bytes(
-        b"block_time,value\n1970-01-01T00:00:00.100Z,a\n"
-        b"1970-01-01T00:00:00.250Z,b\n"
+        b"block_number,block_time,value\n1,1970-01-01T00:00:00.100Z,a\n"
+        b"2,1970-01-01T00:00:00.250Z,b\n"
     )
 
     millisecond_result = csv_file_provenance(
@@ -946,6 +965,8 @@ def test_csv_file_provenance_hashes_bytes_and_parses_timestamp_kinds(
     )
 
     assert millisecond_result.rows == block_time_result.rows == 2
+    assert millisecond_result.first_block == 1
+    assert block_time_result.last_block == 2
     assert millisecond_result.first_timestamp_ms == 100
     assert block_time_result.last_timestamp_ms == 250
     assert millisecond_result.sha256 == hashlib.sha256(milliseconds.read_bytes()).hexdigest()
@@ -1389,11 +1410,87 @@ def test_manifest_semantics_reject_reversed_input_interval() -> None:
     mutated["provenance"]["input_sha256"]["base_features"] = "f" * 64
     mutated["provenance"]["input_intervals"]["base_features"] = {
         "rows": 1,
+        "first_block": 2,
+        "last_block": 1,
         "first_timestamp_ms": 2,
         "last_timestamp_ms": 1,
     }
 
     with pytest.raises(CrossPoolContractError, match="ordered"):
+        validate_article_manifest(mutated)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("sha256", "f" * 64),
+        ("rows", 11),
+        ("first_block", POOL_ATTRIBUTION_ORIENTATIONS["uni-base"].inception_block + 1),
+        (
+            "last_block",
+            POOL_ATTRIBUTION_ORIENTATIONS["uni-base"].inception_block + 1_998,
+        ),
+        ("first_timestamp_ms", 101),
+        ("last_timestamp_ms", 299),
+    ),
+)
+def test_typed_manifest_provenance_requires_exact_replay_identity(
+    field: str,
+    value: object,
+) -> None:
+    provenance = _valid_provenance()
+    assert provenance.base_replay is not None
+    changed_replay = replace(provenance.base_replay, **{field: value})
+
+    with pytest.raises(CrossPoolContractError, match="captured replay"):
+        replace(provenance, base_replay=changed_replay)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("sha256", "f" * 64),
+        ("rows", 11),
+        ("first_block", POOL_ATTRIBUTION_ORIENTATIONS["uni-base"].inception_block + 1),
+        (
+            "last_block",
+            POOL_ATTRIBUTION_ORIENTATIONS["uni-base"].inception_block + 1_998,
+        ),
+        ("first_timestamp_ms", 101),
+        ("last_timestamp_ms", 299),
+    ),
+)
+def test_serialized_manifest_requires_exact_replay_identity(
+    field: str,
+    value: object,
+) -> None:
+    manifest = build_article_manifest(_statistical_manifest_input())
+    mutated = deepcopy(manifest)
+    if field == "sha256":
+        mutated["provenance"]["input_sha256"]["base_replay"] = value
+    else:
+        mutated["provenance"]["input_intervals"]["base_replay"][field] = value
+
+    with pytest.raises(CrossPoolContractError, match="exact replay"):
+        validate_article_manifest(mutated)
+
+
+def test_typed_and_serialized_manifest_bind_exact_sidecar_bytes() -> None:
+    provenance = _valid_provenance()
+    assert provenance.base_ledger_coverage is not None
+    changed_coverage = replace(
+        provenance.base_ledger_coverage,
+        sidecar_sha256="f" * 64,
+    )
+    with pytest.raises(CrossPoolContractError, match="sidecar hash"):
+        replace(provenance, base_ledger_coverage=changed_coverage)
+
+    manifest = build_article_manifest(_statistical_manifest_input())
+    mutated = deepcopy(manifest)
+    mutated["provenance"]["ledger_coverage"]["base_ledger"][
+        "sidecar_sha256"
+    ] = "f" * 64
+    with pytest.raises(CrossPoolContractError, match="sidecar hash"):
         validate_article_manifest(mutated)
 
 
@@ -1519,39 +1616,35 @@ def _statistical_manifest_input() -> StatisticalManifestInput:
 
 
 def _valid_provenance() -> RunProvenance:
-    base_ledger_digest = _digest("base-ledger")
-    bsc_ledger_digest = _digest("bsc-ledger")
+    base_end_block = POOL_ATTRIBUTION_ORIENTATIONS["uni-base"].inception_block + 1_999
+    bsc_end_block = POOL_ATTRIBUTION_ORIENTATIONS["uni-bsc"].inception_block + 1_999
+    base_replay = _replay_input_file("uni-base", last_block=base_end_block)
+    bsc_replay = _replay_input_file("uni-bsc", last_block=bsc_end_block)
+    base_ledger, base_coverage = _coverage_evidence(
+        "uni-base",
+        replay=base_replay,
+        ledger_rows=36,
+        covered_end_block=base_end_block,
+        required_end_block=base_end_block,
+    )
+    bsc_ledger, bsc_coverage = _coverage_evidence(
+        "uni-bsc",
+        replay=bsc_replay,
+        ledger_rows=13,
+        covered_end_block=bsc_end_block,
+        required_end_block=bsc_end_block,
+    )
     return RunProvenance(
         code_commit="a" * 40,
         source_diff_sha256="b" * 64,
         base_features=_input_file("base-features"),
         bsc_features=_input_file("bsc-features"),
-        base_replay=_input_file("base-replay"),
-        bsc_replay=_input_file("bsc-replay"),
-        base_ledger=InputFileProvenance(
-            sha256=base_ledger_digest,
-            rows=36,
-            first_timestamp_ms=100,
-            last_timestamp_ms=250,
-        ),
-        bsc_ledger=InputFileProvenance(
-            sha256=bsc_ledger_digest,
-            rows=13,
-            first_timestamp_ms=100,
-            last_timestamp_ms=250,
-        ),
-        base_ledger_coverage=_coverage_evidence(
-            "uni-base",
-            ledger_sha256=base_ledger_digest,
-            covered_end_block=47_514_853,
-            required_end_block=47_514_853,
-        ),
-        bsc_ledger_coverage=_coverage_evidence(
-            "uni-bsc",
-            ledger_sha256=bsc_ledger_digest,
-            covered_end_block=105_135_905,
-            required_end_block=105_020_455,
-        ),
+        base_replay=base_replay,
+        bsc_replay=bsc_replay,
+        base_ledger=base_ledger,
+        bsc_ledger=bsc_ledger,
+        base_ledger_coverage=base_coverage,
+        bsc_ledger_coverage=bsc_coverage,
         config=RunConfiguration(),
         runtime=_runtime_environment(),
     )
@@ -1577,23 +1670,166 @@ def _input_file(label: str) -> InputFileProvenance:
     return InputFileProvenance(
         sha256=_digest(label),
         rows=10,
+        first_block=1,
+        last_block=10,
         first_timestamp_ms=100,
         last_timestamp_ms=250,
+    )
+
+
+def _replay_input_file(pool: str, *, last_block: int) -> InputFileProvenance:
+    orientation = POOL_ATTRIBUTION_ORIENTATIONS[pool]
+    return InputFileProvenance(
+        sha256=_digest(f"{pool}-replay"),
+        rows=10,
+        first_block=orientation.inception_block,
+        last_block=last_block,
+        first_timestamp_ms=100,
+        last_timestamp_ms=300,
     )
 
 
 def _coverage_evidence(
     pool: str,
     *,
-    ledger_sha256: str,
+    replay: InputFileProvenance,
+    ledger_rows: int,
     covered_end_block: int,
     required_end_block: int,
-) -> VerifiedLedgerCoverageEvidence:
+) -> tuple[InputFileProvenance, VerifiedLedgerCoverageEvidence]:
     orientation = POOL_ATTRIBUTION_ORIENTATIONS[pool]
-    return VerifiedLedgerCoverageEvidence(
-        schema_version="1.0.0",
-        sidecar_sha256=_digest(f"{pool}-sidecar"),
-        ledger_sha256=ledger_sha256,
+    ledger_blocks = tuple(
+        orientation.inception_block + index for index in range(ledger_rows)
+    )
+    ledger_bytes = (
+        "chain,pool_id,block_number\n"
+        + "".join(
+            f"{orientation.chain},{orientation.pool_id},{block_number}\n"
+            for block_number in ledger_blocks
+        )
+    ).encode()
+    transaction_hash = "0x" + "3" * 64
+    transaction_hashes = (transaction_hash,)
+    transaction_digest = _json_digest(list(transaction_hashes))
+    action_witnesses = WitnessSetCoverage(
+        witness_count=ledger_rows,
+        witnesses_sha256=_digest(f"{pool}-action-witnesses"),
+        transaction_count=1,
+        transactions_sha256=transaction_digest,
+        transaction_hashes=transaction_hashes,
+    )
+    relevant_witnesses = WitnessSetCoverage(
+        witness_count=1,
+        witnesses_sha256=_digest(f"{pool}-transfer-witnesses"),
+        transaction_count=1,
+        transactions_sha256=transaction_digest,
+        transaction_hashes=transaction_hashes,
+    )
+    transfer_chunk = TransferChunkCoverage(
+        index=0,
+        start_block=orientation.inception_block,
+        end_block=covered_end_block,
+        unfiltered_count=1,
+        unfiltered_sha256=_digest(f"{pool}-transfer-chunk"),
+    )
+    bundle = BundleDigestCoverage(
+        transaction_hash=transaction_hash,
+        payload_sha256=_digest(f"{pool}-bundle"),
+    )
+    evidence = RpcLedgerEvidence(
+        rpc_provider_origin="https://fixture-rpc.example",
+        acquisition_policy=AcquisitionPolicyCoverage(
+            max_blocks_per_log_query=2_000,
+            retry_attempts=3,
+            subdivision="sequential_binary",
+            hidden_provider_retries="disabled",
+            completeness="provider_conditioned",
+        ),
+        action_witnesses=action_witnesses,
+        frozen_token_ids=FrozenTokenCoverage(
+            token_count=1,
+            token_ids_sha256=_json_digest(["1"]),
+            token_ids=("1",),
+        ),
+        full_transfer_scan=FullTransferCoverage(
+            position_manager=(
+                "0x7c5f5a4bbd8fd63184577525326123b519429bdc"
+                if pool == "uni-base"
+                else "0x7a4a5c919ae2541aed11041a1aeee68f1287f95b"
+            ),
+            transfer_topic=(
+                "0xddf252ad1be2c89b69c2b068fc378daa"
+                "952ba7f163c4a11628f55a4df523b3ef"
+            ),
+            start_block=orientation.inception_block,
+            end_block=covered_end_block,
+            log_count=1,
+            chunks_sha256=_json_digest([asdict(transfer_chunk)]),
+            chunks=(transfer_chunk,),
+        ),
+        relevant_transfer_witnesses=relevant_witnesses,
+        eligible_bundles=EligibleBundleCoverage(
+            transaction_count=1,
+            transactions_sha256=transaction_digest,
+            bundles_sha256=_json_digest([asdict(bundle)]),
+            transaction_hashes=transaction_hashes,
+            bundles=(bundle,),
+        ),
+        replay_input=ReplayCoverage(
+            sha256=replay.sha256,
+            byte_length=1,
+            row_count=replay.rows,
+            header_sha256=frozen_replay_header_sha256(),
+            parser_version=FROZEN_REPLAY_PARSER_VERSION,
+            parser_contract_sha256=frozen_replay_parser_contract_sha256(),
+            price_semantics_sha256=frozen_replay_price_semantics_sha256(),
+            chain=orientation.chain,
+            pool_id=orientation.pool_id,
+            first_block=replay.first_block,
+            last_block=replay.last_block,
+            first_timestamp_ms=replay.first_timestamp_ms,
+            last_timestamp_ms=replay.last_timestamp_ms,
+            price_event_count=5,
+            price_events_sha256=_digest(f"{pool}-price-events"),
+        ),
+        action_reconciliation=ReconciliationCoverage(
+            status="exact_success",
+            count=ledger_rows,
+            sha256=_digest(f"{pool}-action-reconciliation"),
+        ),
+        ownership_reconciliation=ReconciliationCoverage(
+            status="exact_success",
+            count=1,
+            sha256=_digest(f"{pool}-ownership-reconciliation"),
+        ),
+    )
+    coverage_bytes = build_rpc_ledger_coverage_bytes(
+        pool,
+        ledger_bytes,
+        chain_id=orientation.chain_id,
+        covered_start_block=orientation.inception_block,
+        covered_start_block_hash="0x" + "1" * 64,
+        covered_start_timestamp_ms=replay.first_timestamp_ms,
+        covered_end_block=covered_end_block,
+        covered_end_block_hash="0x" + "2" * 64,
+        covered_end_timestamp_ms=replay.last_timestamp_ms,
+        evidence=evidence,
+    )
+    payload = json.loads(coverage_bytes)
+    assert isinstance(payload, dict)
+    coverage = rpc_ledger_coverage_from_payload(pool, payload)
+    ledger_provenance = InputFileProvenance(
+        sha256=coverage.ledger_sha256,
+        rows=coverage.ledger_rows,
+        first_block=coverage.ledger_first_block,
+        last_block=coverage.ledger_last_block,
+        first_timestamp_ms=100,
+        last_timestamp_ms=250,
+    )
+    verified = VerifiedLedgerCoverageEvidence(
+        schema_version=coverage.schema_version,
+        sidecar_sha256=hashlib.sha256(coverage_bytes).hexdigest(),
+        ledger_sha256=coverage.ledger_sha256,
         pool=pool,
         chain=orientation.chain,
         chain_id=orientation.chain_id,
@@ -1603,16 +1839,28 @@ def _coverage_evidence(
         covered_start_timestamp_ms=100,
         covered_end_block=covered_end_block,
         covered_end_block_hash="0x" + "2" * 64,
-        covered_end_timestamp_ms=300,
+        covered_end_timestamp_ms=replay.last_timestamp_ms,
         required_end_block=required_end_block,
         required_end_timestamp_ms=250,
-        candidate_transaction_count=5,
-        candidate_transactions_sha256=_digest(f"{pool}-candidates"),
-        candidate_scan_source=(
-            "pool_manager_modify_liquidity_plus_position_manager_transfer_logs"
-        ),
-        candidate_scan_status="producer_attested",
+        ledger_rows=coverage.ledger_rows,
+        ledger_first_block=coverage.ledger_first_block,
+        ledger_last_block=coverage.ledger_last_block,
+        evidence=coverage.evidence,
+        attestation_sha256=coverage.attestation_sha256,
     )
+    return ledger_provenance, verified
+
+
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
 
 
 def _event_study_group() -> dict[str, object]:

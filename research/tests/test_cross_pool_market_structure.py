@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -19,10 +19,12 @@ from research.backtester.lp_ledger_attribution import (
     load_verified_ledger_attribution_rows,
     opening_capital_usd,
     pool_attribution_orientation,
+    write_candidate_list_ledger_coverage,
     write_fixture_ledger_coverage,
     write_rpc_ledger_coverage,
 )
 from research.backtester.pool_price_semantics import raw_sqrt_mid_from_row
+from research.backtester.v4_export import POOL_CONFIGS
 from research.cross_pool import market_structure
 from research.cross_pool.contracts import CrossPoolContractError, PoolName
 from research.cross_pool.market_structure import (
@@ -46,22 +48,7 @@ INCEPTION_BLOCKS: dict[PoolName, int] = {
     "uni-bsc": 84_655_203,
 }
 
-REPLAY_FIELDS = (
-    "block_time",
-    "chain",
-    "pool_id",
-    "event_type",
-    "tx_hash",
-    "log_index",
-    "block_number",
-    "sqrt_price_x96",
-    "active_liquidity",
-    "fee_rate",
-    "amount_usd",
-    "cngn_usd_price",
-    "token0_symbol",
-    "token1_symbol",
-)
+REPLAY_FIELDS = ledger_attribution.FROZEN_REPLAY_INPUT_FIELDS
 
 LEDGER_FIELDS = (
     "chain",
@@ -96,6 +83,12 @@ def test_replay_inspection_exposes_provenance_interval_and_cutoff_block(
     evidence = inspect_replay_stream("uni-base", replay_path)
 
     assert evidence.pool == "uni-base"
+    assert evidence.sha256 == hashlib.sha256(replay_path.read_bytes()).hexdigest()
+    assert evidence.row_count == 5
+    assert evidence.first_block == INCEPTION_BLOCKS["uni-base"]
+    assert evidence.last_block == INCEPTION_BLOCKS["uni-base"] + 103
+    assert evidence.artifact_first_timestamp_ms == START_MS - 2_000
+    assert evidence.artifact_last_timestamp_ms == END_MS
     assert evidence.swap_count == 4
     assert evidence.first_timestamp_ms == START_MS
     assert evidence.last_timestamp_ms == END_MS
@@ -104,6 +97,41 @@ def test_replay_inspection_exposes_provenance_interval_and_cutoff_block(
         replay_path,
         cutoff_timestamp_ms=END_MS - 1_000,
     ) == INCEPTION_BLOCKS["uni-base"] + 102
+
+
+def test_stored_cngn_price_cannot_change_replay_state_evidence(
+    tmp_path: Path,
+) -> None:
+    original_rows = [dict(row) for row in _replay_rows("uni-base")]
+    changed_rows = [dict(row) for row in original_rows]
+    for index, row in enumerate(changed_rows):
+        row["cngn_usd_price"] = str(index + 1)
+    original_path = _write_csv(
+        tmp_path / "original_replay.csv",
+        REPLAY_FIELDS,
+        original_rows,
+    )
+    changed_path = _write_csv(
+        tmp_path / "changed_replay.csv",
+        REPLAY_FIELDS,
+        changed_rows,
+    )
+
+    original_evidence = inspect_replay_stream("uni-base", original_path)
+    changed_evidence = inspect_replay_stream("uni-base", changed_path)
+
+    assert original_evidence.sha256 != changed_evidence.sha256
+    assert (
+        original_evidence.price_events_sha256
+        == changed_evidence.price_events_sha256
+    )
+    assert tuple(
+        row.raw_mid
+        for row in market_structure._load_replay_swaps("uni-base", original_path)
+    ) == tuple(
+        row.raw_mid
+        for row in market_structure._load_replay_swaps("uni-base", changed_path)
+    )
 
 
 def test_market_structure_uses_the_common_swap_interval_and_exact_capital(
@@ -173,8 +201,8 @@ def test_market_structure_analysis_preserves_verified_coverage_evidence(
         REPLAY_FIELDS,
         _replay_rows("uni-bsc", include_outer_rows=True),
     )
-    base_ledger = _write_ledger(tmp_path, "uni-base")
-    bsc_ledger = _write_ledger(tmp_path, "uni-bsc")
+    base_ledger = _write_ledger(tmp_path, "uni-base", replay_path=base_replay)
+    bsc_ledger = _write_ledger(tmp_path, "uni-bsc", replay_path=bsc_replay)
 
     analysis = market_structure.analyze_market_structure(
         base_replay_path=base_replay,
@@ -191,6 +219,32 @@ def test_market_structure_analysis_preserves_verified_coverage_evidence(
     assert analysis.ledger_coverage[0].sidecar_sha256 == hashlib.sha256(
         ledger_coverage_path(base_ledger).read_bytes()
     ).hexdigest()
+
+
+def test_market_structure_rejects_self_consistent_wrong_replay_attestation(
+    tmp_path: Path,
+) -> None:
+    base_replay = _write_csv(
+        tmp_path / "base_replay.csv",
+        REPLAY_FIELDS,
+        _replay_rows("uni-base"),
+    )
+    bsc_replay = _write_csv(
+        tmp_path / "bsc_replay.csv",
+        REPLAY_FIELDS,
+        _replay_rows("uni-bsc", include_outer_rows=True),
+    )
+    base_ledger = _write_ledger(tmp_path, "uni-base", replay_path=base_replay)
+    bsc_ledger = _write_ledger(tmp_path, "uni-bsc", replay_path=bsc_replay)
+    _write_verified_coverage(base_ledger, "uni-base")
+
+    with pytest.raises(CrossPoolContractError, match="exact replay artifact"):
+        market_structure.analyze_market_structure(
+            base_replay_path=base_replay,
+            bsc_replay_path=bsc_replay,
+            base_ledger_path=base_ledger,
+            bsc_ledger_path=bsc_ledger,
+        )
 
 
 def test_common_interval_excludes_unmatched_activity_and_post_cutoff_capital(
@@ -211,7 +265,7 @@ def test_non_swap_rows_do_not_enter_activity_liquidity_or_volume(
 ) -> None:
     base_rows = list(_replay_rows("uni-base"))
     base_rows.insert(
-        2,
+        3,
         _replay_row(
             "uni-base",
             timestamp_ms=START_MS + 1_000,
@@ -329,9 +383,18 @@ def test_meaningful_move_threshold_is_inclusive() -> None:
     )
 
 
-def test_bsc_canonical_mid_matches_the_shared_price_semantics() -> None:
+def test_bsc_canonical_mid_matches_the_shared_price_semantics(
+    tmp_path: Path,
+) -> None:
     orientation = pool_attribution_orientation("uni-bsc")
     sqrt_price_x96 = 2_959_134_576_890_254_664_750_393
+    rows = [dict(row) for row in _replay_rows("uni-bsc")]
+    rows[1]["sqrt_price_x96"] = str(sqrt_price_x96)
+    replay_path = _write_csv(
+        tmp_path / "bsc_replay.csv",
+        REPLAY_FIELDS,
+        rows,
+    )
     expected = raw_sqrt_mid_from_row(
         {
             "sqrt_price_x96": str(sqrt_price_x96),
@@ -341,13 +404,10 @@ def test_bsc_canonical_mid_matches_the_shared_price_semantics() -> None:
         }
     )
 
-    assert (
-        market_structure._canonical_mid_from_sqrt_price_x96(
-            sqrt_price_x96,
-            pool="uni-bsc",
-        )
-        == expected
-    )
+    assert market_structure._load_replay_swaps(
+        "uni-bsc",
+        replay_path,
+    )[0].raw_mid == expected
 
 
 def test_serialization_is_canonical_and_never_contains_owner_addresses(
@@ -436,9 +496,10 @@ def test_replay_validation_fails_closed(
         base_rows[1]["tx_hash"] = base_rows[0]["tx_hash"]
         base_rows[1]["log_index"] = base_rows[0]["log_index"]
     elif mutation == "reversed_order":
-        base_rows[1]["block_number"] = str(INCEPTION_BLOCKS["uni-base"] + 99)
+        base_rows[1]["block_number"] = str(INCEPTION_BLOCKS["uni-base"])
+        base_rows[1]["log_index"] = "0"
     elif mutation == "backward_time":
-        base_rows[1]["block_time"] = _iso_timestamp(START_MS - 1)
+        base_rows[1]["block_time"] = _iso_timestamp(START_MS - 3_000)
     elif mutation == "changed_fee":
         base_rows[1]["fee_rate"] = "0.003"
     elif mutation == "uniform_wrong_fee":
@@ -477,7 +538,7 @@ def test_replay_requires_canonical_raw_columns_and_two_common_swaps(
         _replay_rows("uni-bsc"),
     )
 
-    with pytest.raises(CrossPoolContractError, match="sqrt_price_x96"):
+    with pytest.raises(CrossPoolContractError, match="exact frozen header"):
         summarize_market_structure(
             base_replay_path=base_path,
             bsc_replay_path=bsc_path,
@@ -485,7 +546,11 @@ def test_replay_requires_canonical_raw_columns_and_two_common_swaps(
             bsc_ledger_path=_write_ledger(tmp_path, "uni-bsc"),
         )
 
-    one_common = tuple(row for index, row in enumerate(_replay_rows("uni-base")) if index == 0)
+    one_common = tuple(
+        row
+        for index, row in enumerate(_replay_rows("uni-base"))
+        if index < 2
+    )
     with pytest.raises(CrossPoolContractError, match="at least two swaps"):
         _summaries(tmp_path, base_replay_rows=one_common)
 
@@ -669,7 +734,8 @@ def test_verified_ledger_load_uses_one_immutable_ledger_snapshot(
     assert len(loaded.rows) == len(_ledger_rows("uni-base"))
     assert loaded.coverage.sidecar_sha256 == expected_sidecar_sha
     assert loaded.coverage.chain_id == 8453
-    assert loaded.coverage.candidate_scan_status == "producer_attested"
+    assert loaded.coverage.schema_version == "2.0.0"
+    assert loaded.coverage.evidence.action_reconciliation.status == "exact_success"
 
 
 def test_candidate_set_is_canonical_and_digest_bound(tmp_path: Path) -> None:
@@ -681,6 +747,7 @@ def test_candidate_set_is_canonical_and_digest_bound(tmp_path: Path) -> None:
     _write_verified_coverage(
         ledger,
         "uni-base",
+        verification_mode="candidate_list_unverified",
         candidate_transaction_hashes=(
             "0X" + "AA" * 32,
             "0x" + "11" * 32,
@@ -695,13 +762,14 @@ def test_candidate_set_is_canonical_and_digest_bound(tmp_path: Path) -> None:
     ]
     payload["candidate_transaction_hashes"].reverse()
     _write_canonical_json(sidecar, payload)
-    with pytest.raises(CrossPoolContractError, match="canonical order"):
+    with pytest.raises(CrossPoolContractError, match="not canonical"):
         load_ledger_coverage("uni-base", ledger)
 
     with pytest.raises(CrossPoolContractError, match="must be unique"):
         _write_verified_coverage(
             ledger,
             "uni-base",
+            verification_mode="candidate_list_unverified",
             candidate_transaction_hashes=(
                 "0x" + "AA" * 32,
                 "0x" + "aa" * 32,
@@ -715,8 +783,8 @@ def test_candidate_set_is_canonical_and_digest_bound(tmp_path: Path) -> None:
         ("chain_id", 56, "pool orientation"),
         ("pool_id", "0x" + "ff" * 32, "pool orientation"),
         ("covered_end_block_hash", "0x1234", "32-byte hex hash"),
-        ("ledger_rows", 999, "row facts"),
-        ("candidate_transactions_sha256", "0" * 64, "digest is inconsistent"),
+        ("ledger_rows", 999, "action reconciliation count"),
+        ("attestation_sha256", "0" * 64, "attestation digest is inconsistent"),
     ),
 )
 def test_coverage_identity_and_attestation_mutations_fail_closed(
@@ -746,11 +814,11 @@ def test_verified_coverage_start_must_equal_pool_inception(tmp_path: Path) -> No
         LEDGER_FIELDS,
         _ledger_rows("uni-base"),
     )
-    _write_verified_coverage(ledger, "uni-base")
-    sidecar = ledger_coverage_path(ledger)
-    payload = json.loads(sidecar.read_bytes())
-    payload["covered_start_block"] = INCEPTION_BLOCKS["uni-base"] - 1
-    _write_canonical_json(sidecar, payload)
+    _write_verified_coverage(
+        ledger,
+        "uni-base",
+        covered_start_block=INCEPTION_BLOCKS["uni-base"] - 1,
+    )
 
     with pytest.raises(CrossPoolContractError, match="begin at pool inception"):
         load_verified_ledger_attribution_rows(
@@ -868,7 +936,11 @@ def _summaries(
         LEDGER_FIELDS,
         base_ledger_rows or _ledger_rows("uni-base", include_post_cutoff=True),
     )
-    _write_verified_coverage(base_ledger_path, "uni-base")
+    _write_verified_coverage(
+        base_ledger_path,
+        "uni-base",
+        replay_path=base_replay_path,
+    )
     if base_coverage_mutation == "missing":
         ledger_coverage_path(base_ledger_path).unlink()
     elif base_coverage_mutation == "ledger_hash":
@@ -914,7 +986,16 @@ def _summaries(
     _write_verified_coverage(
         bsc_ledger_path,
         "uni-bsc",
-        covered_end_timestamp_ms=bsc_coverage_end_timestamp_ms,
+        replay_path=(
+            bsc_replay_path
+            if bsc_coverage_end_timestamp_ms == END_MS + 1_000
+            else None
+        ),
+        covered_end_timestamp_ms=(
+            None
+            if bsc_coverage_end_timestamp_ms == END_MS + 1_000
+            else bsc_coverage_end_timestamp_ms
+        ),
     )
     return summarize_market_structure(
         base_replay_path=base_replay_path,
@@ -932,24 +1013,36 @@ def _replay_rows(
     rows = [
         _replay_row(
             pool,
-            timestamp_ms=timestamp_ms,
-            block_number=INCEPTION_BLOCKS[pool] + 100 + index,
-            log_index=1,
-            sqrt_price_x96=sqrt_price_x96,
-            active_liquidity=10 * (index + 1),
-            amount_usd=str(index + 1),
-        )
-        for index, (timestamp_ms, sqrt_price_x96) in enumerate(
-            zip(
-                (START_MS, START_MS + 1_000, START_MS + 1_000, END_MS),
-                (SQRT_BASE, 2 * SQRT_BASE, 2 * SQRT_BASE, SQRT_BASE),
-                strict=True,
+            timestamp_ms=START_MS - 2_000,
+            block_number=INCEPTION_BLOCKS[pool],
+            log_index=0,
+            sqrt_price_x96=SQRT_BASE,
+            active_liquidity=1,
+            amount_usd="0",
+            event_type="initialize",
+        ),
+        *(
+            _replay_row(
+                pool,
+                timestamp_ms=timestamp_ms,
+                block_number=INCEPTION_BLOCKS[pool] + 100 + index,
+                log_index=1,
+                sqrt_price_x96=sqrt_price_x96,
+                active_liquidity=10 * (index + 1),
+                amount_usd=str(index + 1),
             )
-        )
+            for index, (timestamp_ms, sqrt_price_x96) in enumerate(
+                zip(
+                    (START_MS, START_MS + 1_000, START_MS + 1_000, END_MS),
+                    (SQRT_BASE, 2 * SQRT_BASE, 2 * SQRT_BASE, SQRT_BASE),
+                    strict=True,
+                )
+            )
+        ),
     ]
     if include_outer_rows:
         rows.insert(
-            0,
+            1,
             _replay_row(
                 pool,
                 timestamp_ms=START_MS - 1_000,
@@ -995,12 +1088,20 @@ def _replay_row(
         "log_index": str(log_index),
         "block_number": str(block_number),
         "sqrt_price_x96": str(sqrt_price_x96),
+        "tick": "0",
         "active_liquidity": str(active_liquidity),
         "fee_rate": str(orientation.fee_rate),
         "amount_usd": amount_usd,
         "cngn_usd_price": "999999",
         "token0_symbol": orientation.token0_symbol,
         "token1_symbol": orientation.token1_symbol,
+        "event_source": (
+            "pool_manager_initialize"
+            if event_type == "initialize"
+            else "pool_manager_swap"
+            if event_type == "swap"
+            else "pool_manager_modify_liquidity"
+        ),
     }
 
 
@@ -1128,13 +1229,18 @@ def _ledger_row(
     }
 
 
-def _write_ledger(tmp_path: Path, pool: PoolName) -> Path:
+def _write_ledger(
+    tmp_path: Path,
+    pool: PoolName,
+    *,
+    replay_path: Path | None = None,
+) -> Path:
     path = _write_csv(
         tmp_path / f"{pool}_ledger.csv",
         LEDGER_FIELDS,
         _ledger_rows(pool),
     )
-    _write_verified_coverage(path, pool)
+    _write_verified_coverage(path, pool, replay_path=replay_path)
     return path
 
 
@@ -1142,26 +1248,227 @@ def _write_verified_coverage(
     path: Path,
     pool: PoolName,
     *,
+    replay_path: Path | None = None,
+    covered_start_block: int | None = None,
     covered_end_block: int | None = None,
-    covered_end_timestamp_ms: int = END_MS + 1_000,
+    covered_end_timestamp_ms: int | None = None,
     verification_mode: RpcVerificationMode = "rpc_verified",
     candidate_transaction_hashes: tuple[str, ...] = ("0x" + "33" * 32,),
 ) -> None:
+    replay = (
+        inspect_replay_stream(pool, replay_path)
+        if replay_path is not None
+        else None
+    )
+    resolved_start_block = (
+        covered_start_block
+        if covered_start_block is not None
+        else replay.first_block
+        if replay is not None
+        else INCEPTION_BLOCKS[pool]
+    )
+    resolved_end_block = (
+        covered_end_block
+        if covered_end_block is not None
+        else replay.last_block
+        if replay is not None
+        else resolved_start_block + 1_000
+    )
+    resolved_start_timestamp_ms = (
+        replay.artifact_first_timestamp_ms
+        if replay is not None
+        else START_MS - 2_000
+    )
+    resolved_end_timestamp_ms = (
+        replay.artifact_last_timestamp_ms
+        if covered_end_timestamp_ms is None and replay is not None
+        else END_MS + 1_000
+        if covered_end_timestamp_ms is None
+        else covered_end_timestamp_ms
+    )
+    if verification_mode == "candidate_list_unverified":
+        write_candidate_list_ledger_coverage(
+            pool,
+            path,
+            chain_id=pool_attribution_orientation(pool).chain_id,
+            covered_start_block=resolved_start_block,
+            covered_start_block_hash="0x" + "11" * 32,
+            covered_start_timestamp_ms=resolved_start_timestamp_ms,
+            covered_end_block=resolved_end_block,
+            covered_end_block_hash="0x" + "22" * 32,
+            covered_end_timestamp_ms=resolved_end_timestamp_ms,
+            candidate_transaction_hashes=candidate_transaction_hashes,
+        )
+        return
     write_rpc_ledger_coverage(
         pool,
         path,
         chain_id=pool_attribution_orientation(pool).chain_id,
-        covered_start_block=INCEPTION_BLOCKS[pool],
+        covered_start_block=resolved_start_block,
         covered_start_block_hash="0x" + "11" * 32,
-        covered_start_timestamp_ms=START_MS - 2_000,
-        covered_end_block=(
-            INCEPTION_BLOCKS[pool] + 1_000 if covered_end_block is None else covered_end_block
-        ),
+        covered_start_timestamp_ms=resolved_start_timestamp_ms,
+        covered_end_block=resolved_end_block,
         covered_end_block_hash="0x" + "22" * 32,
-        covered_end_timestamp_ms=covered_end_timestamp_ms,
-        candidate_transaction_hashes=candidate_transaction_hashes,
-        verification_mode=verification_mode,
+        covered_end_timestamp_ms=resolved_end_timestamp_ms,
+        evidence=_rpc_evidence(
+            pool,
+            path,
+            start_block=resolved_start_block,
+            end_block=resolved_end_block,
+            start_timestamp_ms=resolved_start_timestamp_ms,
+            end_timestamp_ms=resolved_end_timestamp_ms,
+            transaction_hashes=candidate_transaction_hashes,
+            replay_path=replay_path,
+        ),
     )
+
+
+def _rpc_evidence(
+    pool: PoolName,
+    ledger_path: Path,
+    *,
+    start_block: int,
+    end_block: int,
+    start_timestamp_ms: int,
+    end_timestamp_ms: int,
+    transaction_hashes: tuple[str, ...],
+    replay_path: Path | None,
+) -> ledger_attribution.RpcLedgerEvidence:
+    hashes = tuple(sorted(transaction_hashes))
+    hashes_sha256 = _json_sha256(list(hashes))
+    with ledger_path.open(newline="") as handle:
+        ledger_rows = sum(1 for _ in csv.DictReader(handle))
+    action_witness_set = ledger_attribution.WitnessSetCoverage(
+        witness_count=ledger_rows,
+        witnesses_sha256="1" * 64,
+        transaction_count=len(hashes),
+        transactions_sha256=hashes_sha256,
+        transaction_hashes=hashes,
+    )
+    relevant_witness_set = ledger_attribution.WitnessSetCoverage(
+        witness_count=len(hashes),
+        witnesses_sha256="1" * 64,
+        transaction_count=len(hashes),
+        transactions_sha256=hashes_sha256,
+        transaction_hashes=hashes,
+    )
+    chunk = ledger_attribution.TransferChunkCoverage(
+        index=0,
+        start_block=start_block,
+        end_block=end_block,
+        unfiltered_count=len(hashes),
+        unfiltered_sha256="2" * 64,
+    )
+    bundles = tuple(
+        ledger_attribution.BundleDigestCoverage(
+            transaction_hash=value,
+            payload_sha256="3" * 64,
+        )
+        for value in hashes
+    )
+    orientation = pool_attribution_orientation(pool)
+    replay = (
+        inspect_replay_stream(pool, replay_path)
+        if replay_path is not None
+        else None
+    )
+    return ledger_attribution.RpcLedgerEvidence(
+        rpc_provider_origin="https://fixture-rpc.example",
+        acquisition_policy=ledger_attribution.AcquisitionPolicyCoverage(
+            max_blocks_per_log_query=2_000,
+            retry_attempts=3,
+            subdivision="sequential_binary",
+            hidden_provider_retries="disabled",
+            completeness="provider_conditioned",
+        ),
+        action_witnesses=action_witness_set,
+        frozen_token_ids=ledger_attribution.FrozenTokenCoverage(
+            token_count=1,
+            token_ids_sha256=_json_sha256(["1"]),
+            token_ids=("1",),
+        ),
+        full_transfer_scan=ledger_attribution.FullTransferCoverage(
+            position_manager=POOL_CONFIGS[pool].position_manager.lower(),
+            transfer_topic=(
+                "0xddf252ad1be2c89b69c2b068fc378daa"
+                "952ba7f163c4a11628f55a4df523b3ef"
+            ),
+            start_block=start_block,
+            end_block=end_block,
+            log_count=len(hashes),
+            chunks_sha256=_json_sha256([asdict(chunk)]),
+            chunks=(chunk,),
+        ),
+        relevant_transfer_witnesses=relevant_witness_set,
+        eligible_bundles=ledger_attribution.EligibleBundleCoverage(
+            transaction_count=len(hashes),
+            transactions_sha256=hashes_sha256,
+            bundles_sha256=_json_sha256(
+                [asdict(bundle) for bundle in bundles]
+            ),
+            transaction_hashes=hashes,
+            bundles=bundles,
+        ),
+        replay_input=ledger_attribution.ReplayCoverage(
+            sha256=replay.sha256 if replay is not None else "4" * 64,
+            byte_length=(
+                replay_path.stat().st_size
+                if replay_path is not None
+                else 1
+            ),
+            row_count=replay.row_count if replay is not None else 1,
+            header_sha256=ledger_attribution.frozen_replay_header_sha256(),
+            parser_version=ledger_attribution.FROZEN_REPLAY_PARSER_VERSION,
+            parser_contract_sha256=(
+                ledger_attribution.frozen_replay_parser_contract_sha256()
+            ),
+            price_semantics_sha256=(
+                ledger_attribution.frozen_replay_price_semantics_sha256()
+            ),
+            chain=orientation.chain,
+            pool_id=orientation.pool_id,
+            first_block=replay.first_block if replay is not None else start_block,
+            last_block=replay.last_block if replay is not None else end_block,
+            first_timestamp_ms=(
+                replay.artifact_first_timestamp_ms
+                if replay is not None
+                else start_timestamp_ms
+            ),
+            last_timestamp_ms=(
+                replay.artifact_last_timestamp_ms
+                if replay is not None
+                else end_timestamp_ms
+            ),
+            price_event_count=(
+                replay.price_event_count if replay is not None else 1
+            ),
+            price_events_sha256=(
+                replay.price_events_sha256 if replay is not None else "7" * 64
+            ),
+        ),
+        action_reconciliation=ledger_attribution.ReconciliationCoverage(
+            status="exact_success",
+            count=ledger_rows,
+            sha256="8" * 64,
+        ),
+        ownership_reconciliation=ledger_attribution.ReconciliationCoverage(
+            status="exact_success",
+            count=len(hashes),
+            sha256="9" * 64,
+        ),
+    )
+
+
+def _json_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
 
 
 def _write_csv(

@@ -184,8 +184,9 @@ binds:
   port; endpoint paths, user information, queries, fragments, and credentials
   are forbidden;
 - normalized absolute frozen replay-artifact path, SHA-256 digest, byte length,
-  row count, exact header digest, parser version, price-semantics source digest,
-  first/last block, first/last timestamp, chain, and pool ID;
+  row count, exact header digest, parser version, parser-contract digest,
+  price-semantics source digest, first/last block, first/last timestamp, chain,
+  and pool ID;
 - normalized absolute output path; and
 - initial start/end block hashes and timestamps.
 
@@ -261,7 +262,7 @@ Logical tables cover these responsibilities:
 | Transfer-scan chunks | Complete fixed block partitions with total unfiltered transfer-log count/digest and retained relevant count for every chunk |
 | Relevant transfer witnesses and bundles | Full log identity for frozen-token transfers plus canonically normalized bundles only for relevant transfer-only transactions |
 | Ownership decode | A separate relevant-transfer cursor and chronologically ordered ownership events restricted to the frozen token set |
-| Replay input | Exact frozen replay path, bytes/header/source digests, byte length, row count, parser version, chain/pool, range, and endpoint timestamps validated against run identity |
+| Replay input | Exact frozen replay path, bytes/header/parser-contract/source digests, byte length, row count, parser version, chain/pool, range, and endpoint timestamps validated against run identity |
 | Action price bindings | Deterministic event-time state attached to each decoded action |
 
 Exact SQL belongs in the implementation plan, but the schema must use primary
@@ -418,7 +419,9 @@ action. Provider errors, oversized responses, or ambiguity trigger deterministic
 sequential subdivision/retry under the bounded policy above. Successful child
 logs are normalized and merged into their configured parent before its count
 and digest are computed, so retry shape cannot change durable evidence. A chunk
-is never marked complete after a potentially truncated response.
+is never marked complete after a potentially truncated response. The
+2,000-block cap constrains each transient RPC request; it does not constrain the
+5,000-block configured parent recorded in the checkpoint and sidecar.
 
 ### 7. Relevant Transfer Fetch
 
@@ -458,6 +461,21 @@ validated metadata as the replay input. A changed or malformed file makes the
 checkpoint incompatible. The parser module and price-semantics module are
 included in the run-identity source digests.
 
+The parser version names an immutable replay profile. That profile binds the
+exact header, event-source policy, price-event classification, and a
+price-semantics dependency-closure digest covering `pool_price_semantics.py`,
+`clmm_math.py`, and `engine/math/v3.py`. Generic sidecar and manifest loading
+validates the persisted `parser_contract_sha256` and price-semantics digest
+against the registered immutable profile so sealed research remains inspectable
+after later code changes. The parser-contract digest includes the exact exporter
+and analysis parser code paths plus their shared Web3 normalization and replay
+event contracts, including the event-time state replay algorithm and its price/
+carried-event policy. The digest is persisted in the checkpoint replay-input
+record before it is copied to the final coverage sidecar. Active export and
+analysis recompute the profile from the current checkout and fail closed on
+drift; a semantic change therefore requires a new registered parser profile
+rather than silently reinterpreting an old artifact.
+
 The frozen artifact facts are:
 
 | Pool | SHA-256 | Bytes | Data rows | First block | Last block |
@@ -469,13 +487,21 @@ This is an explicit reuse claim, not a claim that price logs were freshly
 rescanned by the LP-ledger exporter. The final coverage sidecar binds the replay
 artifact digest and range.
 
+Downstream provenance independently captures the whole replay artifact: bytes
+digest, total data-row count, first/last block, and artifact first/last
+timestamp. These facts are distinct from swap-only count and activity interval.
+Verified publication requires exact equality between that whole-artifact
+provenance and the sidecar replay identity.
+
 ### 10. Price Replay
 
 Read the validated frozen replay artifact and reconstruct event-time state in
 canonical `(block_number, log_index, event_order)` order. Initialize and swap
 rows update carried state; each decoded action receives the state available at
 its exact event location. Persist one unique binding per action. Missing,
-duplicate, crossed-order, non-`sqrt_mid`, or unseedable state fails closed.
+duplicate, crossed-order, nonpositive or malformed sqrt-derived state, or
+unseedable state fails closed. The stored `cngn_usd_price` classification may
+remain legacy `swap_amount_ratio`; it is diagnostic and never controls replay.
 
 The local replay may be recomputed after interruption because it performs no
 RPC reads, but a completed binding phase is reused only after all bindings and
@@ -495,12 +521,17 @@ serializer. Build a versioned coverage sidecar that separately binds:
 - exact frozen replay-input digest, byte length, row count, and range; and
 - ledger bytes, range, chain ID, and endpoint snapshots.
 
+Only verified full-RPC sidecars use schema v2. Fixture and explicit-candidate
+sidecars remain separately typed unverified evidence. A v1 sidecar can never be
+loaded or projected as `rpc_verified`.
+
 The final eligible hash list never implies that unrelated transfer transactions
 were fetched. The raw transfer-scan attestation and retained relevant subset are
 distinct fields. Sidecar replay identity, including digest, range, endpoint
-timestamps, parser version, and price-semantics source digest, must equal the
-replay provenance captured independently by the downstream manifest. A ledger
-bound to one replay artifact cannot be analyzed against another.
+timestamps, parser version, parser-contract digest, and price-semantics source
+digest, must equal the replay evidence recomputed independently by the
+downstream analysis. A ledger bound to one replay artifact or parser contract
+cannot be analyzed against another.
 
 Immediately before publication, recapture start/end headers and require exact
 equality with the stored initial snapshot. Commit `publish_started` plus the

@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
 import json
+import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, DecimalException, InvalidOperation, localcontext
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from research.backtester.lp_ledger_attribution import (
+    FROZEN_REPLAY_EVENT_SOURCES,
+    FROZEN_REPLAY_INPUT_FIELDS,
+    FROZEN_REPLAY_PARSER_VERSION,
+    FROZEN_REPLAY_PRICE_EVENT_TYPES,
     LedgerAttributionRow,
     VerifiedLedgerCoverageEvidence,
+    frozen_replay_evidence_sha256,
+    frozen_replay_header_sha256,
+    frozen_replay_parser_contract_sha256,
+    frozen_replay_price_semantics_sha256,
     load_verified_ledger_attribution_rows,
     pool_attribution_orientation,
 )
+from research.backtester.pool_price_semantics import raw_sqrt_mid_from_row
+from research.backtester.v4_event_replay import ReplayEvent
 from research.cross_pool.contracts import (
     CrossPoolContractError,
     PoolName,
@@ -26,26 +39,8 @@ _MEANINGFUL_MOVE_BPS = Decimal("10")
 _RATIO_PRECISION = 28
 _CALCULATION_PRECISION = 60
 _POOL_ORDER: tuple[PoolName, ...] = ("uni-base", "uni-bsc")
-_SUPPORTED_EVENT_TYPES = frozenset(("initialize", "swap", "mint", "burn", "collect"))
-_REPLAY_REQUIRED_FIELDS = frozenset(
-    (
-        "block_time",
-        "chain",
-        "pool_id",
-        "event_type",
-        "tx_hash",
-        "log_index",
-        "block_number",
-        "sqrt_price_x96",
-        "active_liquidity",
-        "fee_rate",
-        "amount_usd",
-        "token0_symbol",
-        "token1_symbol",
-    )
-)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-_Q96 = 2**96
+_TX_HASH_PATTERN = re.compile(r"0x[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -225,6 +220,19 @@ class MarketStructureAnalysis:
 @dataclass(frozen=True)
 class ReplayStreamEvidence:
     pool: PoolName
+    sha256: str
+    byte_length: int
+    row_count: int
+    header_sha256: str
+    parser_version: str
+    parser_contract_sha256: str
+    price_semantics_sha256: str
+    first_block: int
+    last_block: int
+    artifact_first_timestamp_ms: int
+    artifact_last_timestamp_ms: int
+    price_event_count: int
+    price_events_sha256: str
     swap_count: int
     first_timestamp_ms: int
     last_timestamp_ms: int
@@ -232,6 +240,44 @@ class ReplayStreamEvidence:
     def __post_init__(self) -> None:
         if self.pool not in _POOL_ORDER:
             raise CrossPoolContractError("replay evidence requires a supported pool")
+        for digest in (
+            self.sha256,
+            self.header_sha256,
+            self.parser_contract_sha256,
+            self.price_semantics_sha256,
+            self.price_events_sha256,
+        ):
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise CrossPoolContractError(
+                    "replay evidence requires canonical SHA-256 values"
+                )
+        if (
+            self.parser_version != FROZEN_REPLAY_PARSER_VERSION
+            or self.header_sha256 != frozen_replay_header_sha256()
+            or self.parser_contract_sha256
+            != frozen_replay_parser_contract_sha256()
+            or self.price_semantics_sha256
+            != frozen_replay_price_semantics_sha256()
+        ):
+            raise CrossPoolContractError("replay parser evidence is inconsistent")
+        for value, label in (
+            (self.byte_length, "replay evidence byte length"),
+            (self.row_count, "replay evidence row_count"),
+            (self.first_block, "replay evidence first block"),
+            (self.last_block, "replay evidence last block"),
+            (
+                self.artifact_first_timestamp_ms,
+                "replay evidence artifact first timestamp",
+            ),
+            (
+                self.artifact_last_timestamp_ms,
+                "replay evidence artifact last timestamp",
+            ),
+            (self.price_event_count, "replay evidence price event count"),
+        ):
+            _require_positive_int(value, label)
         _require_positive_int(self.swap_count, "replay evidence swap_count")
         _require_positive_int(
             self.first_timestamp_ms,
@@ -241,8 +287,25 @@ class ReplayStreamEvidence:
             self.last_timestamp_ms,
             "replay evidence last timestamp",
         )
+        if self.first_block > self.last_block:
+            raise CrossPoolContractError("replay evidence block interval is empty")
+        if self.artifact_first_timestamp_ms > self.artifact_last_timestamp_ms:
+            raise CrossPoolContractError("replay artifact interval is empty")
         if self.first_timestamp_ms > self.last_timestamp_ms:
             raise CrossPoolContractError("replay evidence interval is empty")
+        if (
+            self.swap_count > self.price_event_count
+            or self.price_event_count > self.row_count
+            or not (
+                self.artifact_first_timestamp_ms
+                <= self.first_timestamp_ms
+                <= self.last_timestamp_ms
+                <= self.artifact_last_timestamp_ms
+            )
+        ):
+            raise CrossPoolContractError(
+                "replay swap evidence falls outside the replay artifact"
+            )
 
 
 @dataclass(frozen=True)
@@ -258,15 +321,55 @@ class _ReplaySwap:
     amount_usd: Decimal
 
 
+@dataclass(frozen=True)
+class _ReplayLoad:
+    swaps: tuple[_ReplaySwap, ...]
+    evidence: ReplayStreamEvidence
+
+
 def inspect_replay_stream(pool: PoolName, path: Path) -> ReplayStreamEvidence:
-    """Validate one replay independently and expose its swap interval."""
-    swaps = _load_replay_swaps(pool, path)
-    return ReplayStreamEvidence(
-        pool=pool,
-        swap_count=len(swaps),
-        first_timestamp_ms=swaps[0].timestamp_ms,
-        last_timestamp_ms=swaps[-1].timestamp_ms,
-    )
+    """Validate one replay and expose whole-file and swap-only evidence."""
+    return _load_replay_stream(pool, path).evidence
+
+
+def validate_ledger_replay_binding(
+    coverage: VerifiedLedgerCoverageEvidence,
+    replay: ReplayStreamEvidence,
+) -> None:
+    """Require one verified ledger to attest the exact replay artifact."""
+    bound = coverage.evidence.replay_input
+    if coverage.pool != replay.pool or (
+        bound.sha256,
+        bound.byte_length,
+        bound.row_count,
+        bound.header_sha256,
+        bound.parser_version,
+        bound.parser_contract_sha256,
+        bound.price_semantics_sha256,
+        bound.first_block,
+        bound.last_block,
+        bound.first_timestamp_ms,
+        bound.last_timestamp_ms,
+        bound.price_event_count,
+        bound.price_events_sha256,
+    ) != (
+        replay.sha256,
+        replay.byte_length,
+        replay.row_count,
+        replay.header_sha256,
+        replay.parser_version,
+        replay.parser_contract_sha256,
+        replay.price_semantics_sha256,
+        replay.first_block,
+        replay.last_block,
+        replay.artifact_first_timestamp_ms,
+        replay.artifact_last_timestamp_ms,
+        replay.price_event_count,
+        replay.price_events_sha256,
+    ):
+        raise CrossPoolContractError(
+            f"{replay.pool} LP ledger coverage does not bind the exact replay artifact"
+        )
 
 
 def replay_end_block_at_or_before(
@@ -277,7 +380,7 @@ def replay_end_block_at_or_before(
 ) -> int:
     """Return the last validated swap block observable by a UTC cutoff."""
     _require_positive_int(cutoff_timestamp_ms, "replay cutoff timestamp")
-    swaps = _load_replay_swaps(pool, path)
+    swaps = _load_replay_stream(pool, path).swaps
     eligible = tuple(
         row for row in swaps if row.timestamp_ms <= cutoff_timestamp_ms
     )
@@ -310,8 +413,10 @@ def analyze_market_structure(
     base_ledger_path: Path,
     bsc_ledger_path: Path,
 ) -> MarketStructureAnalysis:
-    base_swaps = _load_replay_swaps("uni-base", base_replay_path)
-    bsc_swaps = _load_replay_swaps("uni-bsc", bsc_replay_path)
+    base_replay = _load_replay_stream("uni-base", base_replay_path)
+    bsc_replay = _load_replay_stream("uni-bsc", bsc_replay_path)
+    base_swaps = base_replay.swaps
+    bsc_swaps = bsc_replay.swaps
     activity_start_timestamp_ms = max(
         base_swaps[0].timestamp_ms,
         bsc_swaps[0].timestamp_ms,
@@ -345,6 +450,8 @@ def analyze_market_structure(
         required_end_block=bsc_common[-1].block_number,
         required_end_timestamp_ms=activity_end_timestamp_ms,
     )
+    validate_ledger_replay_binding(base_verified.coverage, base_replay.evidence)
+    validate_ledger_replay_binding(bsc_verified.coverage, bsc_replay.evidence)
     base_ledger = tuple(
         row
         for row in base_verified.rows
@@ -402,29 +509,51 @@ def serialize_market_structure(rows: Sequence[VenueStructureSummary]) -> str:
 
 
 def _load_replay_swaps(pool: PoolName, path: Path) -> tuple[_ReplaySwap, ...]:
+    return _load_replay_stream(pool, path).swaps
+
+
+def _load_replay_stream(pool: PoolName, path: Path) -> _ReplayLoad:
     if not path.is_file():
         raise CrossPoolContractError(f"replay CSV does not exist: {path}")
+    try:
+        raw_bytes = path.read_bytes()
+    except OSError as exc:
+        raise CrossPoolContractError(f"replay CSV could not be read: {path}") from exc
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CrossPoolContractError(f"replay CSV must use UTF-8: {path}") from exc
     orientation = pool_attribution_orientation(pool)
     swaps: list[_ReplaySwap] = []
     identities: set[tuple[str, int]] = set()
     previous_order: tuple[int, int] | None = None
     previous_timestamp_ms: int | None = None
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            raise CrossPoolContractError(f"replay CSV has no header: {path}")
-        missing = sorted(_REPLAY_REQUIRED_FIELDS.difference(reader.fieldnames))
-        if missing:
-            raise CrossPoolContractError(f"replay CSV missing required fields {missing}: {path}")
+    row_count = 0
+    first_block: int | None = None
+    first_timestamp_ms: int | None = None
+    price_events: list[ReplayEvent] = []
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    try:
+        if reader.fieldnames is None or tuple(reader.fieldnames) != (
+            FROZEN_REPLAY_INPUT_FIELDS
+        ):
+            raise CrossPoolContractError(
+                f"replay CSV does not use the exact frozen header: {path}"
+            )
 
         for row_number, row in enumerate(reader, start=2):
-            chain = _required_cell(row, "chain", row_number).lower()
+            if set(row) != set(FROZEN_REPLAY_INPUT_FIELDS) or not all(
+                isinstance(value, str) for value in row.values()
+            ):
+                raise _replay_row_error(row_number, "malformed replay row")
+            row_count += 1
+            chain = _required_cell(row, "chain", row_number)
             pool_id = _required_cell(row, "pool_id", row_number)
             token0_symbol = _required_cell(row, "token0_symbol", row_number)
             token1_symbol = _required_cell(row, "token1_symbol", row_number)
             if (
-                chain != orientation.chain.lower()
-                or pool_id.lower() != orientation.pool_id.lower()
+                chain != orientation.chain
+                or pool_id != orientation.pool_id
                 or token0_symbol != orientation.token0_symbol
                 or token1_symbol != orientation.token1_symbol
             ):
@@ -432,12 +561,20 @@ def _load_replay_swaps(pool: PoolName, path: Path) -> tuple[_ReplaySwap, ...]:
                     row_number,
                     "chain, pool_id, or token symbols violate pool orientation",
                 )
-            event_type = _required_cell(row, "event_type", row_number).lower()
-            if event_type not in _SUPPORTED_EVENT_TYPES:
+            event_type = _required_cell(row, "event_type", row_number)
+            if event_type not in FROZEN_REPLAY_EVENT_SOURCES:
                 raise _replay_row_error(row_number, "unsupported replay event_type")
+            event_source = _required_cell(row, "event_source", row_number)
+            if event_source not in FROZEN_REPLAY_EVENT_SOURCES[event_type]:
+                raise _replay_row_error(row_number, "invalid replay event_source")
             block_number = _parse_positive_int(row, "block_number", row_number)
             log_index = _parse_nonnegative_int(row, "log_index", row_number)
             tx_hash = _required_cell(row, "tx_hash", row_number)
+            if not _TX_HASH_PATTERN.fullmatch(tx_hash):
+                raise _replay_row_error(
+                    row_number,
+                    "transaction hash must be canonical",
+                )
             identity = (tx_hash.lower(), log_index)
             if identity in identities:
                 raise _replay_row_error(
@@ -455,6 +592,9 @@ def _load_replay_swaps(pool: PoolName, path: Path) -> tuple[_ReplaySwap, ...]:
                 _required_cell(row, "block_time", row_number),
                 row_number,
             )
+            if first_block is None:
+                first_block = block_number
+                first_timestamp_ms = timestamp_ms
             if previous_timestamp_ms is not None and timestamp_ms < previous_timestamp_ms:
                 raise _replay_row_error(
                     row_number,
@@ -462,14 +602,27 @@ def _load_replay_swaps(pool: PoolName, path: Path) -> tuple[_ReplaySwap, ...]:
                 )
             previous_order = order
             previous_timestamp_ms = timestamp_ms
+            if event_type in FROZEN_REPLAY_PRICE_EVENT_TYPES:
+                sqrt_price_x96 = _parse_positive_int(
+                    row,
+                    "sqrt_price_x96",
+                    row_number,
+                )
+                tick = _parse_int(row, "tick", row_number)
+                raw_mid = raw_sqrt_mid_from_row(row)
+                _require_positive_decimal(raw_mid, "canonical replay mid")
+                price_events.append(
+                    ReplayEvent(
+                        block_number=block_number,
+                        log_index=log_index,
+                        event_order=0,
+                        event_type=event_type,
+                        sqrt_price_x96=sqrt_price_x96,
+                        tick=tick,
+                    )
+                )
             if event_type != "swap":
                 continue
-
-            sqrt_price_x96 = _parse_positive_int(
-                row,
-                "sqrt_price_x96",
-                row_number,
-            )
             active_liquidity = Decimal(
                 _parse_positive_int(
                     row,
@@ -483,11 +636,6 @@ def _load_replay_swaps(pool: PoolName, path: Path) -> tuple[_ReplaySwap, ...]:
             amount_usd = _parse_decimal(row, "amount_usd", row_number)
             if amount_usd < 0:
                 raise _replay_row_error(row_number, "amount_usd must be nonnegative")
-            raw_mid = _canonical_mid_from_sqrt_price_x96(
-                sqrt_price_x96,
-                pool=pool,
-            )
-            _require_positive_decimal(raw_mid, "canonical replay mid")
             swaps.append(
                 _ReplaySwap(
                     pool=pool,
@@ -501,9 +649,36 @@ def _load_replay_swaps(pool: PoolName, path: Path) -> tuple[_ReplaySwap, ...]:
                     amount_usd=amount_usd,
                 )
             )
+    except csv.Error as exc:
+        raise CrossPoolContractError(f"replay CSV is malformed: {path}") from exc
     if not swaps:
         raise CrossPoolContractError(f"{pool} replay requires at least one swap")
-    return tuple(swaps)
+    assert first_block is not None
+    assert first_timestamp_ms is not None
+    assert previous_order is not None
+    assert previous_timestamp_ms is not None
+    evidence = ReplayStreamEvidence(
+        pool=pool,
+        sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        byte_length=len(raw_bytes),
+        row_count=row_count,
+        header_sha256=frozen_replay_header_sha256(),
+        parser_version=FROZEN_REPLAY_PARSER_VERSION,
+        parser_contract_sha256=frozen_replay_parser_contract_sha256(),
+        price_semantics_sha256=frozen_replay_price_semantics_sha256(),
+        first_block=first_block,
+        last_block=previous_order[0],
+        artifact_first_timestamp_ms=first_timestamp_ms,
+        artifact_last_timestamp_ms=previous_timestamp_ms,
+        price_event_count=len(price_events),
+        price_events_sha256=frozen_replay_evidence_sha256(
+            [asdict(event) for event in price_events]
+        ),
+        swap_count=len(swaps),
+        first_timestamp_ms=swaps[0].timestamp_ms,
+        last_timestamp_ms=swaps[-1].timestamp_ms,
+    )
+    return _ReplayLoad(swaps=tuple(swaps), evidence=evidence)
 
 
 def _common_swaps(
@@ -656,25 +831,6 @@ def _log_move_bps(previous_mid: Decimal, current_mid: Decimal) -> Decimal:
         raise CrossPoolContractError("canonical replay log move must be finite") from exc
 
 
-def _canonical_mid_from_sqrt_price_x96(
-    sqrt_price_x96: int,
-    *,
-    pool: PoolName,
-) -> Decimal:
-    orientation = pool_attribution_orientation(pool)
-    with localcontext() as context:
-        context.prec = 80
-        native = (Decimal(sqrt_price_x96) / Decimal(_Q96)) ** 2
-        native *= Decimal(10) ** Decimal(orientation.token0_decimals - orientation.token1_decimals)
-        if orientation.token0_symbol.upper() == "CNGN":
-            return +native
-    if orientation.token1_symbol.upper() == "CNGN":
-        with localcontext() as context:
-            context.prec = _CALCULATION_PRECISION
-            return +(Decimal("1") / native)
-    raise CrossPoolContractError(f"unsupported pool token orientation for {pool}")
-
-
 def _meets_meaningful_move_threshold(move_bps: Decimal) -> bool:
     _require_nonnegative_decimal(move_bps, "meaningful move magnitude")
     return move_bps >= _MEANINGFUL_MOVE_BPS
@@ -772,9 +928,9 @@ def _required_cell(
     row_number: int,
 ) -> str:
     value = row.get(field)
-    if value is None or not value.strip():
+    if value is None or not value or value != value.strip():
         raise _replay_row_error(row_number, f"{field} cannot be empty")
-    return value.strip()
+    return value
 
 
 def _parse_positive_int(
@@ -806,9 +962,12 @@ def _parse_int(
 ) -> int:
     value = _required_cell(row, field, row_number)
     try:
-        return int(value)
+        parsed = int(value)
     except ValueError as exc:
         raise _replay_row_error(row_number, f"{field} must be an integer") from exc
+    if str(parsed) != value:
+        raise _replay_row_error(row_number, f"{field} must be canonical")
+    return parsed
 
 
 def _parse_decimal(

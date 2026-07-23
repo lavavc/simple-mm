@@ -192,7 +192,7 @@ def csv_file_provenance(
     *,
     timestamp_field: TimestampField,
 ) -> InputFileProvenance:
-    """Hash a CSV snapshot and bind its ordered timestamp interval."""
+    """Hash a CSV snapshot and bind its ordered block/time interval."""
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -203,11 +203,16 @@ def csv_file_provenance(
         raise CrossPoolContractError("input CSV must use UTF-8") from exc
 
     reader = csv.DictReader(io.StringIO(text, newline=""))
-    if reader.fieldnames is None or timestamp_field not in reader.fieldnames:
+    if (
+        reader.fieldnames is None
+        or timestamp_field not in reader.fieldnames
+        or "block_number" not in reader.fieldnames
+    ):
         raise CrossPoolContractError(
-            f"input CSV requires {timestamp_field} for provenance"
+            f"input CSV requires block_number and {timestamp_field} for provenance"
         )
     timestamps: list[int] = []
+    blocks: list[int] = []
     for row_number, row in enumerate(reader, start=2):
         raw_timestamp = row.get(timestamp_field)
         if raw_timestamp is None or not raw_timestamp.strip():
@@ -217,6 +222,22 @@ def csv_file_provenance(
         timestamps.append(
             _parse_timestamp(raw_timestamp.strip(), timestamp_field, row_number)
         )
+        raw_block = row.get("block_number")
+        if raw_block is None or not raw_block.strip():
+            raise CrossPoolContractError(
+                f"input CSV row {row_number} has no block_number"
+            )
+        try:
+            block_number = int(raw_block.strip())
+        except ValueError as exc:
+            raise CrossPoolContractError(
+                f"input CSV row {row_number} block_number must be an integer"
+            ) from exc
+        if block_number <= 0 or str(block_number) != raw_block.strip():
+            raise CrossPoolContractError(
+                f"input CSV row {row_number} block_number must be canonical and positive"
+            )
+        blocks.append(block_number)
     if not timestamps:
         raise CrossPoolContractError("input CSV provenance requires at least one row")
     if any(
@@ -226,9 +247,18 @@ def csv_file_provenance(
         raise CrossPoolContractError(
             "input CSV provenance timestamps must be nondecreasing"
         )
+    if any(
+        current < previous
+        for previous, current in zip(blocks, blocks[1:], strict=False)
+    ):
+        raise CrossPoolContractError(
+            "input CSV provenance blocks must be nondecreasing"
+        )
     return InputFileProvenance(
         sha256=hashlib.sha256(raw).hexdigest(),
         rows=len(timestamps),
+        first_block=blocks[0],
+        last_block=blocks[-1],
         first_timestamp_ms=timestamps[0],
         last_timestamp_ms=timestamps[-1],
     )

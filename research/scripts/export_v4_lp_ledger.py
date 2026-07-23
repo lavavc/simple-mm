@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -36,25 +37,50 @@ if str(REPO_ROOT) not in sys.path:
 
 from engine.web3_utils import as_hexstr, coerce_hex_str  # noqa: E402
 from research.backtester.lp_ledger_attribution import (  # noqa: E402
+    FROZEN_REPLAY_EVENT_SOURCES,
+    FROZEN_REPLAY_INPUT_FIELDS,
+    FROZEN_REPLAY_PARSER_VERSION,
+    FROZEN_REPLAY_PRICE_EVENT_TYPES,
+    AcquisitionPolicyCoverage,
+    BundleDigestCoverage,
+    EligibleBundleCoverage,
+    FrozenTokenCoverage,
+    FullTransferCoverage,
+    ReconciliationCoverage,
+    ReplayCoverage,
+    RpcLedgerEvidence,
+    TransferChunkCoverage,
+    WitnessSetCoverage,
+    build_candidate_list_ledger_coverage_bytes,
     build_fixture_ledger_coverage_bytes,
     build_rpc_ledger_coverage_bytes,
+    frozen_replay_evidence_sha256,
+    frozen_replay_header_sha256,
+    frozen_replay_parser_contract_sha256,
+    frozen_replay_price_semantics_sha256,
     ledger_coverage_path,
     load_ledger_coverage,
     pool_attribution_orientation,
 )
 from research.backtester.lp_ledger_checkpoint import (  # noqa: E402
     ActionDecodeIdentity,
+    ActionPriceBinding,
     BlockHeader,
+    BuildInputs,
     CandidateBundle,
     CheckpointSnapshot,
     DecoderStateUpsert,
     DiscoveryWitness,
+    EventTimeStateSource,
     LPLedgerCheckpoint,
     PositionKeyMapping,
     PositionResolution,
+    ReplayInputEvidence,
+    RunIdentity,
     candidate_payload_sha256,
     render_safe_failure,
 )
+from research.backtester.pool_price_semantics import raw_sqrt_mid_from_row  # noqa: E402
 from research.backtester.v4_event_replay import (  # noqa: E402
     ReplayedEvent,
     ReplayEvent,
@@ -141,6 +167,11 @@ _POSITION_MANAGER_TRANSFER_TOPIC = str(
 ).lower()
 _MAX_TRANSFER_LOG_QUERY_BLOCKS = 2_000
 _TRANSFER_LOG_RETRY_ATTEMPTS = 3
+_REPLAY_INPUT_PARSER_VERSION = FROZEN_REPLAY_PARSER_VERSION
+_REPLAY_INPUT_FIELDS = FROZEN_REPLAY_INPUT_FIELDS
+_REPLAY_EVENT_TYPES = frozenset(FROZEN_REPLAY_EVENT_SOURCES)
+_PRICE_EVENT_TYPES = FROZEN_REPLAY_PRICE_EVENT_TYPES
+_REPLAY_EVENT_SOURCES = FROZEN_REPLAY_EVENT_SOURCES
 
 
 @dataclass(frozen=True)
@@ -158,6 +189,12 @@ class _RpcCoverageEndpointSnapshot:
     start_timestamp_ms: int
     end_block_hash: str
     end_timestamp_ms: int
+
+
+@dataclass(frozen=True)
+class _FrozenReplayInput:
+    evidence: ReplayInputEvidence
+    price_events: tuple[ReplayEvent, ...]
 
 
 def _stage_action_discovery(
@@ -858,6 +895,560 @@ def _stage_relevant_transfer_decode(
     return snapshot
 
 
+def _load_frozen_replay_input(
+    path: Path,
+    config: ExportPoolConfig,
+) -> _FrozenReplayInput:
+    normalized_path = path.resolve()
+    try:
+        raw_bytes = normalized_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("frozen replay input is unreadable") from exc
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("frozen replay input must use UTF-8") from exc
+
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    if reader.fieldnames is None or tuple(reader.fieldnames) != _REPLAY_INPUT_FIELDS:
+        raise ValueError("frozen replay input header is not the exact frozen header")
+
+    price_events: list[ReplayEvent] = []
+    row_count = 0
+    first_block: int | None = None
+    last_block: int | None = None
+    first_timestamp_ms: int | None = None
+    last_timestamp_ms: int | None = None
+    previous_order: tuple[int, int] | None = None
+    previous_timestamp_ms: int | None = None
+    identities: set[tuple[str, int]] = set()
+    for row_number, raw_row in enumerate(reader, start=2):
+        if set(raw_row) != set(_REPLAY_INPUT_FIELDS) or not all(
+            isinstance(value, str) for value in raw_row.values()
+        ):
+            raise ValueError(f"frozen replay row {row_number} is malformed")
+        row = cast(dict[str, str], raw_row)
+        chain = _replay_required_text(row, "chain", row_number)
+        pool_id = _replay_required_text(row, "pool_id", row_number)
+        token0_symbol = _replay_required_text(row, "token0_symbol", row_number)
+        token1_symbol = _replay_required_text(row, "token1_symbol", row_number)
+        if (
+            chain != config.chain
+            or pool_id != config.pool_id
+            or token0_symbol != config.token0_symbol
+            or token1_symbol != config.token1_symbol
+        ):
+            raise ValueError(f"frozen replay row {row_number} violates pool identity")
+
+        event_type = _replay_required_text(row, "event_type", row_number)
+        if event_type not in _REPLAY_EVENT_TYPES:
+            raise ValueError(f"frozen replay row {row_number} has unsupported event type")
+        if _replay_required_text(
+            row,
+            "event_source",
+            row_number,
+        ) not in _REPLAY_EVENT_SOURCES[event_type]:
+            raise ValueError(f"frozen replay row {row_number} has invalid event source")
+
+        transaction_hash = _normalize_transaction_hash(
+            _replay_required_text(row, "tx_hash", row_number),
+            label=f"frozen replay row {row_number} transaction hash",
+        )
+        if transaction_hash != row["tx_hash"]:
+            raise ValueError(f"frozen replay row {row_number} transaction hash is not canonical")
+        block_number = _replay_canonical_int(
+            row,
+            "block_number",
+            row_number,
+            positive=True,
+        )
+        log_index = _replay_canonical_int(
+            row,
+            "log_index",
+            row_number,
+            positive=False,
+        )
+        order = (block_number, log_index)
+        if previous_order is not None and order <= previous_order:
+            raise ValueError("frozen replay rows must use strict block/log order")
+        identity = (transaction_hash, log_index)
+        if identity in identities:
+            raise ValueError("frozen replay row identity is duplicated")
+        identities.add(identity)
+
+        timestamp_ms = _replay_timestamp_ms(
+            _replay_required_text(row, "block_time", row_number),
+            row_number,
+        )
+        if previous_timestamp_ms is not None and timestamp_ms < previous_timestamp_ms:
+            raise ValueError("frozen replay timestamps must be nondecreasing")
+
+        if event_type in _PRICE_EVENT_TYPES:
+            sqrt_price_x96 = _replay_canonical_int(
+                row,
+                "sqrt_price_x96",
+                row_number,
+                positive=True,
+            )
+            tick = _replay_canonical_int(
+                row,
+                "tick",
+                row_number,
+                positive=None,
+            )
+            raw_sqrt_mid_from_row(row)
+            price_events.append(
+                ReplayEvent(
+                    block_number=block_number,
+                    log_index=log_index,
+                    event_order=0,
+                    event_type=event_type,
+                    sqrt_price_x96=sqrt_price_x96,
+                    tick=tick,
+                )
+            )
+
+        row_count += 1
+        first_block = block_number if first_block is None else first_block
+        first_timestamp_ms = timestamp_ms if first_timestamp_ms is None else first_timestamp_ms
+        last_block = block_number
+        last_timestamp_ms = timestamp_ms
+        previous_order = order
+        previous_timestamp_ms = timestamp_ms
+
+    if (
+        row_count == 0
+        or first_block is None
+        or last_block is None
+        or first_timestamp_ms is None
+        or last_timestamp_ms is None
+        or not price_events
+    ):
+        raise ValueError("frozen replay input has no usable rows")
+    evidence = ReplayInputEvidence(
+        path=str(normalized_path),
+        sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        byte_length=len(raw_bytes),
+        row_count=row_count,
+        header_sha256=frozen_replay_header_sha256(),
+        parser_version=_REPLAY_INPUT_PARSER_VERSION,
+        parser_contract_sha256=frozen_replay_parser_contract_sha256(),
+        price_semantics_sha256=frozen_replay_price_semantics_sha256(),
+        chain=config.chain,
+        pool_id=config.pool_id,
+        first_block=first_block,
+        last_block=last_block,
+        first_timestamp_ms=first_timestamp_ms,
+        last_timestamp_ms=last_timestamp_ms,
+        price_event_count=len(price_events),
+        price_events_sha256=frozen_replay_evidence_sha256(
+            [asdict(event) for event in price_events]
+        ),
+    )
+    return _FrozenReplayInput(evidence=evidence, price_events=tuple(price_events))
+
+
+def _bind_frozen_replay_input(
+    run: LPLedgerCheckpoint,
+    config: ExportPoolConfig,
+    expected: ReplayInputEvidence,
+) -> CheckpointSnapshot:
+    if run.snapshot().phase != "replay_input_bind":
+        raise ValueError("frozen replay input cannot bind in the current phase")
+    observed = _load_frozen_replay_input(Path(expected.path), config)
+    if observed.evidence != expected:
+        raise ValueError("frozen replay input changed after preflight")
+    return run.commit_replay_input(observed.evidence)
+
+
+def _stage_price_replay(
+    run: LPLedgerCheckpoint,
+    config: ExportPoolConfig,
+) -> CheckpointSnapshot:
+    if run.snapshot().phase != "price_replay":
+        raise ValueError("price replay cannot run in the current phase")
+    expected = run.load_replay_input()
+    frozen = _load_frozen_replay_input(Path(expected.path), config)
+    if frozen.evidence != expected:
+        raise ValueError("frozen replay input changed after binding")
+    actions = run.load_decoded_actions()
+    action_keys = tuple(
+        (action.block_number, action.log_index, action.event_order)
+        for action in actions
+    )
+    if action_keys != tuple(sorted(set(action_keys))):
+        raise ValueError("decoded actions are not uniquely canonically ordered")
+    price_keys = {
+        (event.block_number, event.log_index, event.event_order)
+        for event in frozen.price_events
+    }
+    if price_keys.intersection(action_keys):
+        raise ValueError("frozen price event and decoded action identities overlap")
+    replay_events = [*frozen.price_events]
+    replay_events.extend(
+        ReplayEvent(
+            block_number=action.block_number,
+            log_index=action.log_index,
+            event_order=action.event_order,
+            event_type=action.action_type,
+            sqrt_price_x96=None,
+            tick=None,
+        )
+        for action in actions
+    )
+    replayed = attach_event_time_state(replay_events, None)
+    action_key_set = set(action_keys)
+    by_action_key = {
+        (event.block_number, event.log_index, event.event_order): event
+        for event in replayed
+        if (event.block_number, event.log_index, event.event_order) in action_key_set
+    }
+    if tuple(sorted(by_action_key)) != action_keys:
+        raise ValueError("local replay did not produce exactly one state per action")
+    bindings = tuple(
+        ActionPriceBinding(
+            block_number=key[0],
+            log_index=key[1],
+            event_order=key[2],
+            event_time_sqrt_price_x96=by_action_key[key].event_time_sqrt_price_x96,
+            event_time_tick=by_action_key[key].event_time_tick,
+            event_time_state_source=cast(
+                EventTimeStateSource,
+                by_action_key[key].event_time_state_source,
+            ),
+        )
+        for key in action_keys
+    )
+    return run.commit_action_price_bindings(bindings)
+
+
+def _build_rpc_ledger_pair_from_checkpoint(
+    run: LPLedgerCheckpoint,
+    identity: RunIdentity,
+    config: ExportPoolConfig,
+) -> tuple[bytes, bytes, int]:
+    inputs = run.load_build_inputs()
+    binding_by_key = {
+        (binding.block_number, binding.log_index, binding.event_order): binding
+        for binding in inputs.action_price_bindings
+    }
+    if len(binding_by_key) != len(inputs.action_price_bindings):
+        raise ValueError("action price bindings are duplicated")
+    replayed_actions: list[ReplayedEvent] = []
+    for action in inputs.actions:
+        key = (action.block_number, action.log_index, action.event_order)
+        binding = binding_by_key.get(key)
+        if binding is None:
+            raise ValueError("action price binding is missing")
+        replayed_actions.append(
+            ReplayedEvent(
+                block_number=action.block_number,
+                log_index=action.log_index,
+                event_order=action.event_order,
+                event_type=action.action_type,
+                sqrt_price_x96=None,
+                tick=None,
+                event_time_sqrt_price_x96=binding.event_time_sqrt_price_x96,
+                event_time_tick=binding.event_time_tick,
+                event_time_state_source=binding.event_time_state_source,
+            )
+        )
+    rows = build_lp_ledger_rows(
+        inputs.actions,
+        inputs.ownership_events,
+        replayed_actions,
+    )
+    ledger_bytes = _render_ledger_rows(rows)
+    evidence = _rpc_ledger_evidence(identity, config, inputs)
+    coverage_bytes = build_rpc_ledger_coverage_bytes(
+        identity.pool,
+        ledger_bytes,
+        chain_id=identity.chain_id,
+        covered_start_block=identity.start_block,
+        covered_start_block_hash=identity.endpoint.start.block_hash,
+        covered_start_timestamp_ms=identity.endpoint.start.timestamp_ms,
+        covered_end_block=identity.end_block,
+        covered_end_block_hash=identity.endpoint.end.block_hash,
+        covered_end_timestamp_ms=identity.endpoint.end.timestamp_ms,
+        evidence=evidence,
+    )
+    return ledger_bytes, coverage_bytes, len(rows)
+
+
+def _rpc_ledger_evidence(
+    identity: RunIdentity,
+    config: ExportPoolConfig,
+    inputs: BuildInputs,
+) -> RpcLedgerEvidence:
+    action_witnesses = _witness_set_coverage(
+        inputs.action_witnesses,
+        inputs.action_transaction_hashes,
+    )
+    relevant_witnesses = _witness_set_coverage(
+        inputs.relevant_transfer_witnesses,
+        inputs.relevant_transfer_transaction_hashes,
+    )
+    token_ids = tuple(str(token_id) for token_id in inputs.frozen_token_ids)
+    frozen_tokens = FrozenTokenCoverage(
+        token_count=len(token_ids),
+        token_ids_sha256=_coverage_digest(list(token_ids)),
+        token_ids=token_ids,
+    )
+    transfer_chunks = tuple(
+        TransferChunkCoverage(
+            index=value.index,
+            start_block=value.start_block,
+            end_block=value.end_block,
+            unfiltered_count=value.unfiltered_count,
+            unfiltered_sha256=value.unfiltered_sha256,
+        )
+        for value in inputs.transfer_chunk_attestations
+    )
+    full_transfer = FullTransferCoverage(
+        position_manager=config.position_manager.lower(),
+        transfer_topic=identity.transfer_topic,
+        start_block=identity.start_block,
+        end_block=identity.end_block,
+        log_count=sum(chunk.unfiltered_count for chunk in transfer_chunks),
+        chunks_sha256=_coverage_digest([asdict(chunk) for chunk in transfer_chunks]),
+        chunks=transfer_chunks,
+    )
+    bundles = tuple(
+        sorted(
+            (
+                BundleDigestCoverage(
+                    transaction_hash=bundle.transaction_hash,
+                    payload_sha256=bundle.payload_sha256,
+                )
+                for bundle in inputs.eligible_bundles
+            ),
+            key=lambda value: value.transaction_hash,
+        )
+    )
+    eligible_hashes = tuple(bundle.transaction_hash for bundle in bundles)
+    eligible = EligibleBundleCoverage(
+        transaction_count=len(eligible_hashes),
+        transactions_sha256=_coverage_digest(list(eligible_hashes)),
+        bundles_sha256=_coverage_digest([asdict(bundle) for bundle in bundles]),
+        transaction_hashes=eligible_hashes,
+        bundles=bundles,
+    )
+    replay = inputs.replay_input
+    replay_coverage = ReplayCoverage(
+        sha256=replay.sha256,
+        byte_length=replay.byte_length,
+        row_count=replay.row_count,
+        header_sha256=replay.header_sha256,
+        parser_version=replay.parser_version,
+        parser_contract_sha256=replay.parser_contract_sha256,
+        price_semantics_sha256=replay.price_semantics_sha256,
+        chain=replay.chain,
+        pool_id=replay.pool_id,
+        first_block=replay.first_block,
+        last_block=replay.last_block,
+        first_timestamp_ms=replay.first_timestamp_ms,
+        last_timestamp_ms=replay.last_timestamp_ms,
+        price_event_count=replay.price_event_count,
+        price_events_sha256=replay.price_events_sha256,
+    )
+    action_records = _action_reconciliation_records(
+        inputs.action_witnesses,
+        inputs.actions,
+    )
+    ownership_records = _ownership_reconciliation_records(
+        inputs.relevant_transfer_witnesses,
+        inputs.ownership_events,
+    )
+    return RpcLedgerEvidence(
+        rpc_provider_origin=identity.rpc_provider_origin,
+        acquisition_policy=AcquisitionPolicyCoverage(
+            max_blocks_per_log_query=_MAX_TRANSFER_LOG_QUERY_BLOCKS,
+            retry_attempts=_TRANSFER_LOG_RETRY_ATTEMPTS,
+            subdivision="sequential_binary",
+            hidden_provider_retries="disabled",
+            completeness="provider_conditioned",
+        ),
+        action_witnesses=action_witnesses,
+        frozen_token_ids=frozen_tokens,
+        full_transfer_scan=full_transfer,
+        relevant_transfer_witnesses=relevant_witnesses,
+        eligible_bundles=eligible,
+        replay_input=replay_coverage,
+        action_reconciliation=ReconciliationCoverage(
+            status="exact_success",
+            count=len(action_records),
+            sha256=_coverage_digest(action_records),
+        ),
+        ownership_reconciliation=ReconciliationCoverage(
+            status="exact_success",
+            count=len(ownership_records),
+            sha256=_coverage_digest(ownership_records),
+        ),
+    )
+
+
+def _witness_set_coverage(
+    witnesses: Sequence[DiscoveryWitness],
+    transaction_hashes: Sequence[str],
+) -> WitnessSetCoverage:
+    witness_values = tuple(witnesses)
+    hash_values = tuple(transaction_hashes)
+    derived_hashes = tuple(sorted({value.transaction_hash for value in witness_values}))
+    if hash_values != derived_hashes:
+        raise ValueError("witness transaction hashes do not match their witness set")
+    return WitnessSetCoverage(
+        witness_count=len(witness_values),
+        witnesses_sha256=_coverage_digest(
+            [asdict(witness) for witness in witness_values]
+        ),
+        transaction_count=len(hash_values),
+        transactions_sha256=_coverage_digest(list(hash_values)),
+        transaction_hashes=hash_values,
+    )
+
+
+def _action_reconciliation_records(
+    witnesses: Sequence[DiscoveryWitness],
+    actions: Sequence[DecodedLiquidityAction],
+) -> list[dict[str, object]]:
+    witness_by_key = {
+        (witness.transaction_hash, witness.log_index): witness
+        for witness in witnesses
+    }
+    if len(witness_by_key) != len(witnesses):
+        raise ValueError("action witness identities are duplicated")
+    represented: set[tuple[str, int]] = set()
+    records: list[dict[str, object]] = []
+    for action in actions:
+        key = (action.tx_hash.lower(), action.log_index)
+        witness = witness_by_key.get(key)
+        if witness is None or action.block_number != witness.block_number:
+            raise ValueError("decoded action does not reconcile to an action witness")
+        if key in represented:
+            raise ValueError("an action witness maps to multiple decoded actions")
+        represented.add(key)
+        records.append(
+            {
+                "witness": asdict(witness),
+                "decoded_action": {
+                    "block_number": action.block_number,
+                    "log_index": action.log_index,
+                    "event_order": action.event_order,
+                    "transaction_hash": action.tx_hash.lower(),
+                },
+            }
+        )
+    if represented != set(witness_by_key):
+        raise ValueError("an action witness has no decoded action")
+    return records
+
+
+def _ownership_reconciliation_records(
+    witnesses: Sequence[DiscoveryWitness],
+    owners: Sequence[OwnershipEvent],
+) -> list[dict[str, object]]:
+    owner_by_key = {
+        (owner.block_number, owner.log_index): owner for owner in owners
+    }
+    if len(owner_by_key) != len(owners):
+        raise ValueError("ownership event identities are duplicated")
+    records: list[dict[str, object]] = []
+    for witness in witnesses:
+        owner = owner_by_key.get((witness.block_number, witness.log_index))
+        if owner is None or len(witness.topics) != 4:
+            raise ValueError("retained transfer has no ownership event")
+        token_id = int(witness.topics[3], 16)
+        previous_owner = _topic_owner(witness.topics[1])
+        new_owner = _topic_owner(witness.topics[2])
+        if (
+            owner.token_id != token_id
+            or _lower_optional_owner(owner.previous_owner) != previous_owner
+            or _lower_optional_owner(owner.new_owner) != new_owner
+        ):
+            raise ValueError("ownership event does not reconcile to its transfer witness")
+        records.append(
+            {
+                "witness": asdict(witness),
+                "ownership_event": {
+                    "block_number": owner.block_number,
+                    "log_index": owner.log_index,
+                    "event_order": owner.event_order,
+                    "token_id": str(owner.token_id),
+                    "previous_owner": previous_owner,
+                    "new_owner": new_owner,
+                },
+            }
+        )
+    if len(records) != len(owners):
+        raise ValueError("ownership event set differs from retained transfers")
+    return records
+
+
+def _topic_owner(topic: str) -> str | None:
+    owner = f"0x{topic[-40:]}"
+    return None if owner == "0x" + "0" * 40 else owner
+
+
+def _lower_optional_owner(value: str | None) -> str | None:
+    return None if value is None else value.lower()
+
+
+def _coverage_digest(value: object) -> str:
+    return hashlib.sha256(_canonical_rpc_json(value).encode("utf-8")).hexdigest()
+
+
+def _replay_required_text(
+    row: Mapping[str, str],
+    field: str,
+    row_number: int,
+) -> str:
+    value = row.get(field)
+    if value is None or not value or value != value.strip():
+        raise ValueError(f"frozen replay row {row_number} has no {field}")
+    return value
+
+
+def _replay_canonical_int(
+    row: Mapping[str, str],
+    field: str,
+    row_number: int,
+    *,
+    positive: bool | None,
+) -> int:
+    raw = _replay_required_text(row, field, row_number)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"frozen replay row {row_number} has invalid {field}") from exc
+    if str(value) != raw or positive is True and value <= 0 or positive is False and value < 0:
+        raise ValueError(f"frozen replay row {row_number} has noncanonical {field}")
+    return value
+
+
+def _replay_timestamp_ms(value: str, row_number: int) -> int:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"frozen replay row {row_number} block time is not ISO-8601"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError(f"frozen replay row {row_number} block time is not UTC")
+    if parsed.microsecond % 1_000 != 0:
+        raise ValueError(
+            f"frozen replay row {row_number} block time must use millisecond precision"
+        )
+    elapsed = parsed - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    timestamp_ms = (
+        elapsed.days * 86_400_000
+        + elapsed.seconds * 1_000
+        + elapsed.microseconds // 1_000
+    )
+    if timestamp_ms <= 0:
+        raise ValueError(f"frozen replay row {row_number} block time is invalid")
+    return timestamp_ms
+
+
 def _require_matching_action_decode_identity(
     identity: ActionDecodeIdentity,
     config: ExportPoolConfig,
@@ -1415,7 +2006,7 @@ def export_rpc_lp_ledger(
             "RPC coverage endpoint snapshot changed during LP ledger export"
         )
     ledger_bytes = _render_ledger_rows(rows)
-    coverage_bytes = build_rpc_ledger_coverage_bytes(
+    coverage_bytes = build_candidate_list_ledger_coverage_bytes(
         pool,
         ledger_bytes,
         chain_id=chain_id,
@@ -1426,7 +2017,6 @@ def export_rpc_lp_ledger(
         covered_end_block_hash=initial_endpoint.end_block_hash,
         covered_end_timestamp_ms=initial_endpoint.end_timestamp_ms,
         candidate_transaction_hashes=resolved_candidate_hashes,
-        verification_mode="candidate_list_unverified",
     )
     _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
     return len(rows)

@@ -988,7 +988,8 @@ PositionKeyMapping(
 )
 ReplayInputEvidence(
   path, sha256, byte_length, row_count, header_sha256, parser_version,
-  price_semantics_sha256, chain, pool_id, first_block, last_block,
+  parser_contract_sha256, price_semantics_sha256, chain, pool_id,
+  first_block, last_block,
   first_timestamp_ms, last_timestamp_ms, price_event_count,
   price_events_sha256,
 )
@@ -1427,11 +1428,17 @@ git commit -m "feat: filter LP ownership bundle reads"
 ### Task 8: Bind Frozen Replay Inputs And Publish Coverage Sidecar V2
 
 **Files:**
+- Modify: `research/backtester/lp_ledger_checkpoint.py`
 - Modify: `research/scripts/export_v4_lp_ledger.py`
 - Modify: `research/backtester/lp_ledger_attribution.py`
+- Modify: `research/cross_pool/market_structure.py`
 - Modify: `research/cross_pool/manifest.py`
+- Modify: `research/cross_pool/provenance.py`
 - Modify: `research/cross_pool/article_manifest.schema.json`
+- Modify: `research/scripts/run_cross_pool_lead_lag.py`
 - Modify: `research/tests/test_v4_lp_ledger.py`
+- Modify: `research/tests/test_lp_ledger_checkpoint.py`
+- Modify: `research/tests/test_cross_pool_cli.py`
 - Modify: `research/tests/test_cross_pool_market_structure.py`
 - Modify: `research/tests/test_cross_pool_reporting.py`
 
@@ -1441,7 +1448,7 @@ git commit -m "feat: filter LP ownership bundle reads"
 - Produces: `_bind_frozen_replay_input(...)`, `_stage_price_replay(...)`,
   `RpcLedgerCoverage` schema v2, and `_build_rpc_ledger_pair_from_checkpoint(...)`.
 
-- [ ] **Step 1: Write failing replay-drift, ordering, sidecar-v2, and manifest tests**
+- [x] **Step 1: Write failing replay-drift, ordering, sidecar-v2, and manifest tests**
 
 Require exact replay path/digest/byte length/row count/range/timestamps,
 pool/chain, frozen CSV header, parser version, and canonical order. Validate
@@ -1460,6 +1467,13 @@ replay input digest/range/counts, endpoint facts, sanitized provider origin,
 acquisition query/retry policy, and ledger bytes. Every mutation must fail the
 strict loader and manifest gate.
 
+The independently captured replay provenance must describe the whole frozen
+CSV, not only its swap subset: exact bytes digest, total data-row count,
+first/last block, and artifact first/last timestamp. Preserve swap-only count
+and interval as separate market-activity evidence. The typed provenance and
+manifest compare all six whole-artifact facts to the sidecar. A swap count may
+not stand in for replay row count.
+
 All set digests are SHA-256 over UTF-8 canonical JSON with sorted keys and no
 insignificant whitespace. Action/relevant witnesses use full normalized log
 objects sorted by `(block_number, transaction_index, log_index,
@@ -1469,8 +1483,10 @@ covers its complete normalized witness array before filtering. The aggregate
 full-transfer digest covers the ordered configured-parent records
 `(index,start,end,count,sha256)` and separately binds PositionManager address,
 Transfer topic, and inclusive run range; transient subdivision leaves never
-enter the preimage. Eligible bundles use sorted hashes plus their validated raw
-bundle digests.
+enter the preimage. A 5,000-block checkpoint parent may therefore exceed the
+2,000-block per-request cap; the cap applies to its transient RPC children, not
+to the durable parent record. Eligible bundles use sorted hashes plus their
+validated raw bundle digests.
 
 Action reconciliation evidence contains count, digest, and exact-success status
 over sorted action-witness-to-decoded-action identities. Ownership
@@ -1479,42 +1495,62 @@ evidence includes exact endpoint timestamps, parser version, price-semantics
 source digest, and row/order facts. The distilled manifest evidence must copy
 these fields and require its independently captured Base/BSC replay digest,
 range, and timestamps to equal the corresponding ledger coverage values.
+Treat the parser version as an immutable registered profile binding the header,
+event-source policy, price-event types, and the dependency closure of the
+sqrt-price implementation. Persist the profile's `parser_contract_sha256` in
+the checkpoint replay-input evidence, v2 sidecar, and manifest. Include the
+exact exporter/analysis parser code paths and the event-time state replay
+algorithm and policy in its preimage. Archived evidence validates against its
+registered profile, while active exporter/analysis code separately recomputes
+that profile and refuses parser or semantic source drift.
 
-- [ ] **Step 2: Run RED**
+The reconciliation digest preimages are canonical JSON arrays. Action records
+contain the full action witness identity plus the reconciled decoded-action
+`(block_number, log_index, event_order, transaction_hash)` identity. Ownership
+records contain the full retained Transfer witness identity plus the reconciled
+ownership-event `(block_number, log_index, event_order, token_id,
+previous_owner, new_owner)` identity. Records use the same canonical ordering
+as their witness streams.
+
+- [x] **Step 2: Run RED**
 
 ```bash
 python3 -m pytest -q research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py -k "replay_input or staged_replay or coverage or manifest"
 ```
 
-- [ ] **Step 3: Implement local replay binding and sidecar-v2 propagation**
+- [x] **Step 3: Implement local replay binding and sidecar-v2 propagation**
 
 Load and validate the existing replay CSV without RPC. Bind exact artifact
 metadata in the checkpoint, derive event-time states from its canonical
 Initialize/Swap stream, and commit one action binding each. Build ledger bytes
 from explicit canonical actions/ownership/bindings.
 
-Bump the sidecar schema and replace the ambiguous scan-source field with named
+Bump verified full-RPC sidecars to schema v2 and replace the ambiguous
+scan-source field with named
 action, token, full-transfer, relevant-transfer, eligible-bundle, replay-input,
 reconciliation, sanitized-provider-origin, and acquisition-policy evidence.
 Update strict parsing/serialization, distilled verified evidence, manifest
-JSON/schema, and test fixtures. Do not accept v1 as verified through a
-compatibility shim. The manifest gate compares each ledger's replay-input
+JSON/schema, and test fixtures. Keep fixture and explicit-candidate-list
+sidecars on a separate unverified contract; do not accept a v1 sidecar as
+`rpc_verified` through a compatibility shim. Bump the article-manifest contract
+when its required nested coverage shape changes. The manifest gate compares
+each ledger's replay-input
 digest, range, and timestamps to the exact replay artifact consumed by the
 cross-pool analysis and fails on any mismatch.
 
-- [ ] **Step 4: Run GREEN and integrated research regressions**
+- [x] **Step 4: Run GREEN and integrated research regressions**
 
 ```bash
-python3 -m pytest -q research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py
-python3 -m ruff check research/backtester/lp_ledger_attribution.py research/cross_pool/manifest.py research/scripts/export_v4_lp_ledger.py
-python3 -m py_compile research/backtester/lp_ledger_attribution.py research/cross_pool/manifest.py research/scripts/export_v4_lp_ledger.py
+python3 -m pytest -q research/tests/test_lp_ledger_checkpoint.py research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_cli.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py
+python3 -m ruff check research/backtester/lp_ledger_checkpoint.py research/backtester/lp_ledger_attribution.py research/cross_pool/market_structure.py research/cross_pool/manifest.py research/cross_pool/provenance.py research/scripts/export_v4_lp_ledger.py research/scripts/run_cross_pool_lead_lag.py
+python3 -m py_compile research/backtester/lp_ledger_checkpoint.py research/backtester/lp_ledger_attribution.py research/cross_pool/market_structure.py research/cross_pool/manifest.py research/cross_pool/provenance.py research/scripts/export_v4_lp_ledger.py research/scripts/run_cross_pool_lead_lag.py
 git diff --check
 ```
 
-- [ ] **Step 5: Commit Task 8**
+- [x] **Step 5: Commit Task 8**
 
 ```bash
-git add research/backtester/lp_ledger_attribution.py research/cross_pool/manifest.py research/cross_pool/article_manifest.schema.json research/scripts/export_v4_lp_ledger.py research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py
+git add docs/superpowers/plans/2026-07-22-v4-lp-ledger-checkpoint-progress.md docs/superpowers/specs/2026-07-21-v4-lp-ledger-checkpoint-progress-design.md research/backtester/lp_ledger_checkpoint.py research/backtester/lp_ledger_attribution.py research/cross_pool/market_structure.py research/cross_pool/manifest.py research/cross_pool/provenance.py research/cross_pool/article_manifest.schema.json research/scripts/export_v4_lp_ledger.py research/scripts/run_cross_pool_lead_lag.py research/tests/test_lp_ledger_checkpoint.py research/tests/test_v4_lp_ledger.py research/tests/test_cross_pool_cli.py research/tests/test_cross_pool_market_structure.py research/tests/test_cross_pool_reporting.py
 git commit -m "feat: attest relevant LP ledger coverage"
 ```
 

@@ -193,6 +193,7 @@ class ReplayInputEvidence:
     row_count: int
     header_sha256: str
     parser_version: str
+    parser_contract_sha256: str
     price_semantics_sha256: str
     chain: str
     pool_id: str
@@ -1788,12 +1789,12 @@ class LPLedgerCheckpoint:
                 """
                 INSERT INTO replay_input (
                     singleton, path, sha256, byte_length, row_count,
-                    header_sha256, parser_version, price_semantics_sha256,
-                    chain, pool_id, first_block, last_block,
+                    header_sha256, parser_version, parser_contract_sha256,
+                    price_semantics_sha256, chain, pool_id, first_block, last_block,
                     first_timestamp_ms, last_timestamp_ms,
                     price_event_count, price_events_sha256,
                     committed_generation
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     evidence.path,
@@ -1802,6 +1803,7 @@ class LPLedgerCheckpoint:
                     evidence.row_count,
                     evidence.header_sha256,
                     evidence.parser_version,
+                    evidence.parser_contract_sha256,
                     evidence.price_semantics_sha256,
                     evidence.chain,
                     evidence.pool_id,
@@ -5181,6 +5183,7 @@ def _validate_replay_input_evidence(evidence: ReplayInputEvidence) -> None:
     for label, digest in (
         ("replay input digest", evidence.sha256),
         ("replay header digest", evidence.header_sha256),
+        ("replay parser contract digest", evidence.parser_contract_sha256),
         ("price semantics digest", evidence.price_semantics_sha256),
         ("price events digest", evidence.price_events_sha256),
     ):
@@ -5218,6 +5221,7 @@ def _replay_input_from_row(row: sqlite3.Row) -> ReplayInputEvidence:
         row_count=cast(int, row["row_count"]),
         header_sha256=cast(str, row["header_sha256"]),
         parser_version=cast(str, row["parser_version"]),
+        parser_contract_sha256=cast(str, row["parser_contract_sha256"]),
         price_semantics_sha256=cast(str, row["price_semantics_sha256"]),
         chain=cast(str, row["chain"]),
         pool_id=cast(str, row["pool_id"]),
@@ -7088,6 +7092,7 @@ CREATE TABLE replay_input (
     row_count INTEGER NOT NULL CHECK (row_count > 0),
     header_sha256 TEXT NOT NULL CHECK (length(header_sha256) = 64),
     parser_version TEXT NOT NULL CHECK (length(parser_version) > 0),
+    parser_contract_sha256 TEXT NOT NULL CHECK (length(parser_contract_sha256) = 64),
     price_semantics_sha256 TEXT NOT NULL CHECK (length(price_semantics_sha256) = 64),
     chain TEXT NOT NULL CHECK (length(chain) > 0),
     pool_id TEXT NOT NULL CHECK (

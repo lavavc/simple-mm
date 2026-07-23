@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lava.xyz/schemas/cross-pool-article-manifest-1.0.0.json",
+  "$id": "https://lava.xyz/schemas/cross-pool-article-manifest-2.0.0.json",
   "title": "Cross-pool article manifest",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
     "review"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "const": "2.0.0" },
     "artifact_status": {
       "enum": ["generated_unreviewed", "qa_blocked", "reviewed"]
     },
@@ -234,9 +234,17 @@
     "input_interval": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rows", "first_timestamp_ms", "last_timestamp_ms"],
+      "required": [
+        "rows",
+        "first_block",
+        "last_block",
+        "first_timestamp_ms",
+        "last_timestamp_ms"
+      ],
       "properties": {
         "rows": { "type": "integer", "minimum": 1 },
+        "first_block": { "type": "integer", "minimum": 1 },
+        "last_block": { "type": "integer", "minimum": 1 },
         "first_timestamp_ms": { "type": "integer", "minimum": 1 },
         "last_timestamp_ms": { "type": "integer", "minimum": 1 }
       }
@@ -287,11 +295,230 @@
         "bsc_ledger": { "$ref": "#/$defs/nullable_input_interval" }
       }
     },
+    "transaction_hash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$"
+    },
+    "witness_set_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "witness_count",
+        "witnesses_sha256",
+        "transaction_count",
+        "transactions_sha256",
+        "transaction_hashes"
+      ],
+      "properties": {
+        "witness_count": { "type": "integer", "minimum": 0 },
+        "witnesses_sha256": { "$ref": "#/$defs/sha256" },
+        "transaction_count": { "type": "integer", "minimum": 0 },
+        "transactions_sha256": { "$ref": "#/$defs/sha256" },
+        "transaction_hashes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/transaction_hash" }
+        }
+      }
+    },
+    "frozen_token_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token_count", "token_ids_sha256", "token_ids"],
+      "properties": {
+        "token_count": { "type": "integer", "minimum": 0 },
+        "token_ids_sha256": { "$ref": "#/$defs/sha256" },
+        "token_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" }
+        }
+      }
+    },
+    "transfer_chunk_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "start_block",
+        "end_block",
+        "unfiltered_count",
+        "unfiltered_sha256"
+      ],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "start_block": { "type": "integer", "minimum": 1 },
+        "end_block": { "type": "integer", "minimum": 1 },
+        "unfiltered_count": { "type": "integer", "minimum": 0 },
+        "unfiltered_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "full_transfer_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position_manager",
+        "transfer_topic",
+        "start_block",
+        "end_block",
+        "log_count",
+        "chunks_sha256",
+        "chunks"
+      ],
+      "properties": {
+        "position_manager": { "$ref": "#/$defs/address" },
+        "transfer_topic": {
+          "const": "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        },
+        "start_block": { "type": "integer", "minimum": 1 },
+        "end_block": { "type": "integer", "minimum": 1 },
+        "log_count": { "type": "integer", "minimum": 0 },
+        "chunks_sha256": { "$ref": "#/$defs/sha256" },
+        "chunks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/transfer_chunk_coverage" }
+        }
+      }
+    },
+    "bundle_digest_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transaction_hash", "payload_sha256"],
+      "properties": {
+        "transaction_hash": { "$ref": "#/$defs/transaction_hash" },
+        "payload_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "eligible_bundle_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction_count",
+        "transactions_sha256",
+        "bundles_sha256",
+        "transaction_hashes",
+        "bundles"
+      ],
+      "properties": {
+        "transaction_count": { "type": "integer", "minimum": 0 },
+        "transactions_sha256": { "$ref": "#/$defs/sha256" },
+        "bundles_sha256": { "$ref": "#/$defs/sha256" },
+        "transaction_hashes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/transaction_hash" }
+        },
+        "bundles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/bundle_digest_coverage" }
+        }
+      }
+    },
+    "replay_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "byte_length",
+        "row_count",
+        "header_sha256",
+        "parser_version",
+        "parser_contract_sha256",
+        "price_semantics_sha256",
+        "chain",
+        "pool_id",
+        "first_block",
+        "last_block",
+        "first_timestamp_ms",
+        "last_timestamp_ms",
+        "price_event_count",
+        "price_events_sha256"
+      ],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byte_length": { "type": "integer", "minimum": 1 },
+        "row_count": { "type": "integer", "minimum": 1 },
+        "header_sha256": { "$ref": "#/$defs/sha256" },
+        "parser_version": { "type": "string", "minLength": 1 },
+        "parser_contract_sha256": { "$ref": "#/$defs/sha256" },
+        "price_semantics_sha256": { "$ref": "#/$defs/sha256" },
+        "chain": { "enum": ["base", "bsc"] },
+        "pool_id": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+        "first_block": { "type": "integer", "minimum": 1 },
+        "last_block": { "type": "integer", "minimum": 1 },
+        "first_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "last_timestamp_ms": { "type": "integer", "minimum": 1 },
+        "price_event_count": { "type": "integer", "minimum": 1 },
+        "price_events_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "reconciliation_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "count", "sha256"],
+      "properties": {
+        "status": { "const": "exact_success" },
+        "count": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "acquisition_policy_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_blocks_per_log_query",
+        "retry_attempts",
+        "subdivision",
+        "hidden_provider_retries",
+        "completeness"
+      ],
+      "properties": {
+        "max_blocks_per_log_query": { "const": 2000 },
+        "retry_attempts": { "const": 3 },
+        "subdivision": { "const": "sequential_binary" },
+        "hidden_provider_retries": { "const": "disabled" },
+        "completeness": { "const": "provider_conditioned" }
+      }
+    },
+    "rpc_ledger_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rpc_provider_origin",
+        "acquisition_policy",
+        "action_witnesses",
+        "frozen_token_ids",
+        "full_transfer_scan",
+        "relevant_transfer_witnesses",
+        "eligible_bundles",
+        "replay_input",
+        "action_reconciliation",
+        "ownership_reconciliation"
+      ],
+      "properties": {
+        "rpc_provider_origin": { "type": "string", "minLength": 1 },
+        "acquisition_policy": { "$ref": "#/$defs/acquisition_policy_coverage" },
+        "action_witnesses": { "$ref": "#/$defs/witness_set_coverage" },
+        "frozen_token_ids": { "$ref": "#/$defs/frozen_token_coverage" },
+        "full_transfer_scan": { "$ref": "#/$defs/full_transfer_coverage" },
+        "relevant_transfer_witnesses": { "$ref": "#/$defs/witness_set_coverage" },
+        "eligible_bundles": { "$ref": "#/$defs/eligible_bundle_coverage" },
+        "replay_input": { "$ref": "#/$defs/replay_coverage" },
+        "action_reconciliation": { "$ref": "#/$defs/reconciliation_coverage" },
+        "ownership_reconciliation": { "$ref": "#/$defs/reconciliation_coverage" }
+      }
+    },
     "ledger_coverage_evidence": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "schema_version",
+        "verification_mode",
         "sidecar_sha256",
         "ledger_sha256",
         "pool",
@@ -306,13 +533,15 @@
         "covered_end_timestamp_ms",
         "required_end_block",
         "required_end_timestamp_ms",
-        "candidate_transaction_count",
-        "candidate_transactions_sha256",
-        "candidate_scan_source",
-        "candidate_scan_status"
+        "ledger_rows",
+        "ledger_first_block",
+        "ledger_last_block",
+        "evidence",
+        "attestation_sha256"
       ],
       "properties": {
-        "schema_version": { "const": "1.0.0" },
+        "schema_version": { "const": "2.0.0" },
+        "verification_mode": { "const": "rpc_verified" },
         "sidecar_sha256": { "$ref": "#/$defs/sha256" },
         "ledger_sha256": { "$ref": "#/$defs/sha256" },
         "pool": { "enum": ["uni-base", "uni-bsc"] },
@@ -333,12 +562,11 @@
         "covered_end_timestamp_ms": { "type": "integer", "minimum": 1 },
         "required_end_block": { "type": "integer", "minimum": 1 },
         "required_end_timestamp_ms": { "type": "integer", "minimum": 1 },
-        "candidate_transaction_count": { "type": "integer", "minimum": 0 },
-        "candidate_transactions_sha256": { "$ref": "#/$defs/sha256" },
-        "candidate_scan_source": {
-          "const": "pool_manager_modify_liquidity_plus_position_manager_transfer_logs"
-        },
-        "candidate_scan_status": { "const": "producer_attested" }
+        "ledger_rows": { "type": "integer", "minimum": 1 },
+        "ledger_first_block": { "type": "integer", "minimum": 1 },
+        "ledger_last_block": { "type": "integer", "minimum": 1 },
+        "evidence": { "$ref": "#/$defs/rpc_ledger_evidence" },
+        "attestation_sha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "nullable_base_ledger_coverage": {

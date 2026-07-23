@@ -48,6 +48,7 @@ from research.cross_pool.market_structure import (
     analyze_market_structure,
     inspect_replay_stream,
     replay_end_block_at_or_before,
+    validate_ledger_replay_binding,
 )
 from research.cross_pool.panel import build_causal_panel
 from research.cross_pool.pipeline import analyze_cross_pool
@@ -414,6 +415,8 @@ def _capture_feature(
         provenance = InputFileProvenance(
             sha256=sha256_file(path),
             rows=len(events),
+            first_block=events[0].block_number,
+            last_block=events[-1].block_number,
             first_timestamp_ms=events[0].timestamp_ms,
             last_timestamp_ms=events[-1].timestamp_ms,
         )
@@ -434,10 +437,12 @@ def _capture_replay(
     try:
         evidence = inspect_replay_stream(pool, path)
         provenance = InputFileProvenance(
-            sha256=sha256_file(path),
-            rows=evidence.swap_count,
-            first_timestamp_ms=evidence.first_timestamp_ms,
-            last_timestamp_ms=evidence.last_timestamp_ms,
+            sha256=evidence.sha256,
+            rows=evidence.row_count,
+            first_block=evidence.first_block,
+            last_block=evidence.last_block,
+            first_timestamp_ms=evidence.artifact_first_timestamp_ms,
+            last_timestamp_ms=evidence.artifact_last_timestamp_ms,
         )
     except CrossPoolContractError:
         reasons.add(reason)
@@ -485,12 +490,17 @@ def _verified_coverage(
             snapshots.base_replay,
             cutoff_timestamp_ms=common_end_ms,
         )
-        base = load_verified_ledger_attribution_rows(
+        base_load = load_verified_ledger_attribution_rows(
             "uni-base",
             snapshots.base_ledger,
             required_end_block=base_end_block,
             required_end_timestamp_ms=common_end_ms,
-        ).coverage
+        )
+        validate_ledger_replay_binding(
+            base_load.coverage,
+            captured.base_replay_evidence,
+        )
+        base = base_load.coverage
     except CrossPoolContractError:
         reasons.add("LEDGER_BASE_COVERAGE_INVALID")
     try:
@@ -499,12 +509,17 @@ def _verified_coverage(
             snapshots.bsc_replay,
             cutoff_timestamp_ms=common_end_ms,
         )
-        bsc = load_verified_ledger_attribution_rows(
+        bsc_load = load_verified_ledger_attribution_rows(
             "uni-bsc",
             snapshots.bsc_ledger,
             required_end_block=bsc_end_block,
             required_end_timestamp_ms=common_end_ms,
-        ).coverage
+        )
+        validate_ledger_replay_binding(
+            bsc_load.coverage,
+            captured.bsc_replay_evidence,
+        )
+        bsc = bsc_load.coverage
     except CrossPoolContractError:
         reasons.add("LEDGER_BSC_COVERAGE_INVALID")
     return base, bsc, tuple(sorted(reasons))

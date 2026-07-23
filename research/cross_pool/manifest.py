@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -19,7 +20,11 @@ from jsonschema.exceptions import SchemaError
 from research.backtester.lp_ledger_attribution import (
     LEDGER_COVERAGE_SCHEMA_VERSION,
     POOL_ATTRIBUTION_ORIENTATIONS,
+    RpcLedgerCoverage,
     VerifiedLedgerCoverageEvidence,
+    rpc_ledger_coverage_bytes,
+    rpc_ledger_coverage_from_payload,
+    rpc_ledger_coverage_payload,
 )
 from research.cross_pool.contracts import (
     DTW_BAND_STEPS,
@@ -108,7 +113,7 @@ QaReasonCode: TypeAlias = Literal[
     "ANALYSIS_CONTRACT_INVALID",
 ]
 
-_SCHEMA_VERSION = "1.0.0"
+_SCHEMA_VERSION = "2.0.0"
 _SCHEMA_PATH = Path(__file__).with_name("article_manifest.schema.json")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -225,6 +230,8 @@ _PERMANENTLY_FORBIDDEN_CLAIMS = (
 class InputFileProvenance:
     sha256: str
     rows: int
+    first_block: int
+    last_block: int
     first_timestamp_ms: int
     last_timestamp_ms: int
 
@@ -232,6 +239,15 @@ class InputFileProvenance:
         _require_sha256(self.sha256, "input file")
         if isinstance(self.rows, bool) or self.rows <= 0:
             raise CrossPoolContractError("input file rows must be positive")
+        if (
+            isinstance(self.first_block, bool)
+            or isinstance(self.last_block, bool)
+            or self.first_block <= 0
+            or self.last_block < self.first_block
+        ):
+            raise CrossPoolContractError(
+                "input file block interval must be positive and ordered"
+            )
         if (
             isinstance(self.first_timestamp_ms, bool)
             or isinstance(self.last_timestamp_ms, bool)
@@ -360,11 +376,13 @@ class RunProvenance:
                 )
         _validate_coverage_slot(
             input_file=self.base_ledger,
+            replay_file=self.base_replay,
             coverage=self.base_ledger_coverage,
             expected_pool="uni-base",
         )
         _validate_coverage_slot(
             input_file=self.bsc_ledger,
+            replay_file=self.bsc_replay,
             coverage=self.bsc_ledger_coverage,
             expected_pool="uni-bsc",
         )
@@ -1462,20 +1480,13 @@ def _validate_data_valid_provenance(provenance: RunProvenance) -> None:
         raise CrossPoolContractError(
             "data-valid manifest requires both verified ledger sidecars"
         )
-    assert provenance.base_replay is not None
-    assert provenance.bsc_replay is not None
-    common_replay_cutoff_ms = min(
-        provenance.base_replay.last_timestamp_ms,
-        provenance.bsc_replay.last_timestamp_ms,
-    )
-    for coverage in (
-        provenance.base_ledger_coverage,
-        provenance.bsc_ledger_coverage,
+    if (
+        provenance.base_ledger_coverage.required_end_timestamp_ms
+        != provenance.bsc_ledger_coverage.required_end_timestamp_ms
     ):
-        if coverage.required_end_timestamp_ms != common_replay_cutoff_ms:
-            raise CrossPoolContractError(
-                "verified ledger sidecars must bind the common replay cutoff"
-            )
+        raise CrossPoolContractError(
+            "verified ledger sidecars must bind one common replay cutoff"
+        )
 
 
 def _validate_statistical_artifacts_and_figures(
@@ -1717,6 +1728,7 @@ def _dtw_stability_json(stability: DtwStability) -> dict[str, JsonValue]:
 def _validate_coverage_slot(
     *,
     input_file: InputFileProvenance | None,
+    replay_file: InputFileProvenance | None,
     coverage: VerifiedLedgerCoverageEvidence | None,
     expected_pool: Literal["uni-base", "uni-bsc"],
 ) -> None:
@@ -1730,6 +1742,10 @@ def _validate_coverage_slot(
         raise CrossPoolContractError(
             f"{expected_pool} coverage requires captured ledger provenance"
         )
+    if replay_file is None:
+        raise CrossPoolContractError(
+            f"{expected_pool} coverage requires captured replay provenance"
+        )
     orientation = POOL_ATTRIBUTION_ORIENTATIONS[expected_pool]
     if (
         coverage.schema_version != LEDGER_COVERAGE_SCHEMA_VERSION
@@ -1738,22 +1754,43 @@ def _validate_coverage_slot(
         or coverage.chain_id != orientation.chain_id
         or coverage.pool_id != orientation.pool_id
         or coverage.covered_start_block != orientation.inception_block
-        or coverage.candidate_scan_source
-        != "pool_manager_modify_liquidity_plus_position_manager_transfer_logs"
-        or coverage.candidate_scan_status != "producer_attested"
     ):
         raise CrossPoolContractError(
             f"{expected_pool} coverage identity or verification mode is invalid"
         )
+    typed_coverage = _as_rpc_coverage(coverage)
     for label, digest in (
         ("sidecar", coverage.sidecar_sha256),
         ("ledger", coverage.ledger_sha256),
-        ("candidate transactions", coverage.candidate_transactions_sha256),
+        ("attestation", coverage.attestation_sha256),
     ):
         _require_sha256(digest, f"{expected_pool} coverage {label}")
-    if coverage.ledger_sha256 != input_file.sha256:
+    if hashlib.sha256(rpc_ledger_coverage_bytes(typed_coverage)).hexdigest() != (
+        coverage.sidecar_sha256
+    ):
+        raise CrossPoolContractError(
+            f"{expected_pool} coverage sidecar hash does not bind its payload"
+        )
+    if (
+        coverage.ledger_sha256 != input_file.sha256
+        or coverage.ledger_rows != input_file.rows
+        or coverage.ledger_first_block != input_file.first_block
+        or coverage.ledger_last_block != input_file.last_block
+    ):
         raise CrossPoolContractError(
             f"{expected_pool} coverage does not bind the captured ledger"
+        )
+    replay = coverage.evidence.replay_input
+    if (
+        replay.sha256 != replay_file.sha256
+        or replay.row_count != replay_file.rows
+        or replay.first_block != replay_file.first_block
+        or replay.last_block != replay_file.last_block
+        or replay.first_timestamp_ms != replay_file.first_timestamp_ms
+        or replay.last_timestamp_ms != replay_file.last_timestamp_ms
+    ):
+        raise CrossPoolContractError(
+            f"{expected_pool} coverage does not bind the captured replay"
         )
     if (
         not _BLOCK_HASH_PATTERN.fullmatch(coverage.covered_start_block_hash)
@@ -1770,7 +1807,9 @@ def _validate_coverage_slot(
         coverage.covered_end_timestamp_ms,
         coverage.required_end_block,
         coverage.required_end_timestamp_ms,
-        coverage.candidate_transaction_count,
+        coverage.ledger_rows,
+        coverage.ledger_first_block,
+        coverage.ledger_last_block,
     )
     if any(isinstance(value, bool) or value < 0 for value in integer_fields):
         raise CrossPoolContractError(
@@ -1792,6 +1831,50 @@ def _validate_coverage_slot(
         )
 
 
+def _as_rpc_coverage(
+    coverage: VerifiedLedgerCoverageEvidence,
+) -> RpcLedgerCoverage:
+    return RpcLedgerCoverage(
+        schema_version=cast(Literal["2.0.0"], coverage.schema_version),
+        verification_mode="rpc_verified",
+        pool=coverage.pool,
+        chain=coverage.chain,
+        chain_id=coverage.chain_id,
+        pool_id=coverage.pool_id,
+        covered_start_block=coverage.covered_start_block,
+        covered_start_block_hash=coverage.covered_start_block_hash,
+        covered_start_timestamp_ms=coverage.covered_start_timestamp_ms,
+        covered_end_block=coverage.covered_end_block,
+        covered_end_block_hash=coverage.covered_end_block_hash,
+        covered_end_timestamp_ms=coverage.covered_end_timestamp_ms,
+        ledger_sha256=coverage.ledger_sha256,
+        ledger_rows=coverage.ledger_rows,
+        ledger_first_block=coverage.ledger_first_block,
+        ledger_last_block=coverage.ledger_last_block,
+        evidence=coverage.evidence,
+        attestation_sha256=coverage.attestation_sha256,
+    )
+
+
+def _rpc_coverage_from_manifest_json(
+    coverage: Mapping[str, JsonValue],
+) -> RpcLedgerCoverage:
+    payload = dict(coverage)
+    for consumer_field in (
+        "sidecar_sha256",
+        "required_end_block",
+        "required_end_timestamp_ms",
+    ):
+        payload.pop(consumer_field, None)
+    pool = payload.get("pool")
+    if pool not in ("uni-base", "uni-bsc"):
+        raise CrossPoolContractError("manifest ledger coverage pool is invalid")
+    return rpc_ledger_coverage_from_payload(
+        cast(Literal["uni-base", "uni-bsc"], pool),
+        cast(Mapping[str, object], payload),
+    )
+
+
 def _run_provenance_json(provenance: RunProvenance) -> dict[str, JsonValue]:
     if not isinstance(provenance, RunProvenance):
         raise CrossPoolContractError("manifest provenance must use RunProvenance")
@@ -1810,6 +1893,8 @@ def _run_provenance_json(provenance: RunProvenance) -> dict[str, JsonValue]:
             name: (
                 {
                     "rows": item.rows,
+                    "first_block": item.first_block,
+                    "last_block": item.last_block,
                     "first_timestamp_ms": item.first_timestamp_ms,
                     "last_timestamp_ms": item.last_timestamp_ms,
                 }
@@ -1832,27 +1917,14 @@ def _ledger_coverage_json(
 ) -> dict[str, JsonValue] | None:
     if coverage is None:
         return None
-    return {
-        "schema_version": coverage.schema_version,
-        "sidecar_sha256": coverage.sidecar_sha256,
-        "ledger_sha256": coverage.ledger_sha256,
-        "pool": coverage.pool,
-        "chain": coverage.chain,
-        "chain_id": coverage.chain_id,
-        "pool_id": coverage.pool_id,
-        "covered_start_block": coverage.covered_start_block,
-        "covered_start_block_hash": coverage.covered_start_block_hash,
-        "covered_start_timestamp_ms": coverage.covered_start_timestamp_ms,
-        "covered_end_block": coverage.covered_end_block,
-        "covered_end_block_hash": coverage.covered_end_block_hash,
-        "covered_end_timestamp_ms": coverage.covered_end_timestamp_ms,
-        "required_end_block": coverage.required_end_block,
-        "required_end_timestamp_ms": coverage.required_end_timestamp_ms,
-        "candidate_transaction_count": coverage.candidate_transaction_count,
-        "candidate_transactions_sha256": coverage.candidate_transactions_sha256,
-        "candidate_scan_source": coverage.candidate_scan_source,
-        "candidate_scan_status": coverage.candidate_scan_status,
-    }
+    payload = _copy_json_mapping(
+        rpc_ledger_coverage_payload(_as_rpc_coverage(coverage)),
+        "ledger coverage",
+    )
+    payload["sidecar_sha256"] = coverage.sidecar_sha256
+    payload["required_end_block"] = coverage.required_end_block
+    payload["required_end_timestamp_ms"] = coverage.required_end_timestamp_ms
+    return payload
 
 
 def _run_configuration_json(config: RunConfiguration) -> dict[str, JsonValue]:
@@ -2033,19 +2105,23 @@ def _validate_data_valid_manifest_semantics(
         raise CrossPoolContractError(
             "data-valid manifest requires both verified ledger sidecars"
         )
-    base_replay = cast(dict[str, JsonValue], input_intervals["base_replay"])
-    bsc_replay = cast(dict[str, JsonValue], input_intervals["bsc_replay"])
-    common_replay_cutoff_ms = min(
-        cast(int, base_replay["last_timestamp_ms"]),
-        cast(int, bsc_replay["last_timestamp_ms"]),
+    common_replay_cutoff_ms = cast(
+        int,
+        base_coverage["required_end_timestamp_ms"],
     )
+    if cast(int, bsc_coverage["required_end_timestamp_ms"]) != common_replay_cutoff_ms:
+        raise CrossPoolContractError(
+            "verified ledger sidecars must bind one common replay cutoff"
+        )
+    market_structure = cast(dict[str, JsonValue], payload["market_structure"])
+    venues = cast(list[JsonValue], market_structure["venues"])
     if any(
-        cast(int, coverage["required_end_timestamp_ms"])
+        cast(dict[str, JsonValue], venue)["activity_end_timestamp_ms"]
         != common_replay_cutoff_ms
-        for coverage in (base_coverage, bsc_coverage)
+        for venue in venues
     ):
         raise CrossPoolContractError(
-            "verified ledger sidecars must bind the common replay cutoff"
+            "market structure must use the verified common replay cutoff"
         )
 
     predictive = cast(dict[str, JsonValue], payload["predictive"])
@@ -2641,11 +2717,13 @@ def _validate_input_provenance_semantics(
         if interval_value is None:
             continue
         interval = cast(dict[str, JsonValue], interval_value)
+        first_block = cast(int, interval["first_block"])
+        last_block = cast(int, interval["last_block"])
         first_timestamp_ms = cast(int, interval["first_timestamp_ms"])
         last_timestamp_ms = cast(int, interval["last_timestamp_ms"])
-        if last_timestamp_ms < first_timestamp_ms:
+        if last_block < first_block or last_timestamp_ms < first_timestamp_ms:
             raise CrossPoolContractError(
-                f"manifest {name} input interval must be ordered"
+                f"manifest {name} input block/time interval must be ordered"
             )
 
     ledger_coverage = cast(dict[str, JsonValue], provenance["ledger_coverage"])
@@ -2655,23 +2733,59 @@ def _validate_input_provenance_semantics(
             continue
         ledger_digest = input_sha256[ledger_name]
         coverage = cast(dict[str, JsonValue], coverage_value)
-        if ledger_digest is None or coverage["ledger_sha256"] != ledger_digest:
+        typed_coverage = _rpc_coverage_from_manifest_json(coverage)
+        ledger_interval = cast(dict[str, JsonValue], input_intervals[ledger_name])
+        if ledger_digest is None or (
+            typed_coverage.ledger_sha256 != ledger_digest
+            or typed_coverage.ledger_rows != ledger_interval["rows"]
+            or typed_coverage.ledger_first_block != ledger_interval["first_block"]
+            or typed_coverage.ledger_last_block != ledger_interval["last_block"]
+        ):
             raise CrossPoolContractError(
-                f"manifest {ledger_name} coverage must bind its input hash"
+                f"manifest {ledger_name} coverage must bind its exact input"
+            )
+        replay_name = (
+            "base_replay" if ledger_name == "base_ledger" else "bsc_replay"
+        )
+        replay_digest = input_sha256[replay_name]
+        replay_interval = cast(dict[str, JsonValue], input_intervals[replay_name])
+        replay = typed_coverage.evidence.replay_input
+        if replay_digest is None or (
+            replay.sha256 != replay_digest
+            or replay.row_count != replay_interval["rows"]
+            or replay.first_block != replay_interval["first_block"]
+            or replay.last_block != replay_interval["last_block"]
+            or replay.first_timestamp_ms != replay_interval["first_timestamp_ms"]
+            or replay.last_timestamp_ms != replay_interval["last_timestamp_ms"]
+        ):
+            raise CrossPoolContractError(
+                f"manifest {ledger_name} coverage must bind its exact replay"
+            )
+        sidecar_sha256 = coverage["sidecar_sha256"]
+        if not isinstance(sidecar_sha256, str):
+            raise CrossPoolContractError(
+                f"manifest {ledger_name} sidecar SHA-256 is invalid"
+            )
+        _require_sha256(sidecar_sha256, f"manifest {ledger_name} sidecar")
+        if hashlib.sha256(
+            rpc_ledger_coverage_bytes(typed_coverage)
+        ).hexdigest() != sidecar_sha256:
+            raise CrossPoolContractError(
+                f"manifest {ledger_name} sidecar hash does not bind its payload"
             )
         if (
-            cast(int, coverage["covered_end_block"])
-            < cast(int, coverage["covered_start_block"])
+            typed_coverage.covered_end_block
+            < typed_coverage.covered_start_block
             or cast(int, coverage["required_end_block"])
-            < cast(int, coverage["covered_start_block"])
+            < typed_coverage.covered_start_block
             or cast(int, coverage["required_end_block"])
-            > cast(int, coverage["covered_end_block"])
-            or cast(int, coverage["covered_end_timestamp_ms"])
-            < cast(int, coverage["covered_start_timestamp_ms"])
+            > typed_coverage.covered_end_block
+            or typed_coverage.covered_end_timestamp_ms
+            < typed_coverage.covered_start_timestamp_ms
             or cast(int, coverage["required_end_timestamp_ms"])
-            < cast(int, coverage["covered_start_timestamp_ms"])
+            < typed_coverage.covered_start_timestamp_ms
             or cast(int, coverage["required_end_timestamp_ms"])
-            > cast(int, coverage["covered_end_timestamp_ms"])
+            > typed_coverage.covered_end_timestamp_ms
         ):
             raise CrossPoolContractError(
                 f"manifest {ledger_name} coverage must bracket the required cutoff"

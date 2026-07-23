@@ -16,6 +16,7 @@ from eth_abi import encode  # type: ignore[attr-defined]
 from requests import ConnectionError as RequestsConnectionError
 from web3 import Web3
 
+import research.backtester.lp_ledger_attribution as ledger_attribution
 import research.scripts.export_v4_lp_ledger as lp_ledger_export
 from engine.lp.types import (
     _V4_LP_BURN_POSITION,
@@ -26,7 +27,21 @@ from engine.lp.types import (
     _V4_LP_TAKE_PAIR,
 )
 from research.backtester.lp_ledger_attribution import (
+    AcquisitionPolicyCoverage,
+    BundleDigestCoverage,
+    EligibleBundleCoverage,
+    FROZEN_REPLAY_PARSER_VERSION,
+    FrozenTokenCoverage,
+    FullTransferCoverage,
+    ReconciliationCoverage,
+    ReplayCoverage,
+    RpcLedgerEvidence,
+    TransferChunkCoverage,
+    WitnessSetCoverage,
     build_rpc_ledger_coverage_bytes,
+    frozen_replay_header_sha256,
+    frozen_replay_parser_contract_sha256,
+    frozen_replay_price_semantics_sha256,
     ledger_coverage_path,
     load_ledger_coverage,
 )
@@ -504,6 +519,38 @@ class _RelevantTransferDecodeRun:
         return SimpleNamespace(phase=self.phase)
 
 
+class _ReplayRun:
+    def __init__(
+        self,
+        expected: ReplayInputEvidence,
+        actions: tuple[DecodedLiquidityAction, ...],
+    ) -> None:
+        self.expected = expected
+        self.actions = actions
+        self.phase = "replay_input_bind"
+        self.bound_inputs: list[ReplayInputEvidence] = []
+        self.binding_commits: list[tuple[object, ...]] = []
+
+    def commit_replay_input(self, evidence: ReplayInputEvidence) -> SimpleNamespace:
+        self.bound_inputs.append(evidence)
+        self.phase = "price_replay"
+        return SimpleNamespace(phase=self.phase)
+
+    def load_replay_input(self) -> ReplayInputEvidence:
+        return self.expected
+
+    def load_decoded_actions(self) -> tuple[DecodedLiquidityAction, ...]:
+        return self.actions
+
+    def commit_action_price_bindings(self, bindings) -> SimpleNamespace:
+        self.binding_commits.append(tuple(bindings))
+        self.phase = "build"
+        return SimpleNamespace(phase=self.phase)
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(phase=self.phase)
+
+
 def _action_decode_checkpoint_identity(output: Path, config) -> RunIdentity:
     return RunIdentity(
         schema_version=2,
@@ -535,6 +582,7 @@ def _action_decode_checkpoint_identity(output: Path, config) -> RunIdentity:
             row_count=10,
             header_sha256="c" * 64,
             parser_version="pool-history-replay-v1",
+            parser_contract_sha256=frozen_replay_parser_contract_sha256(),
             price_semantics_sha256="d" * 64,
             chain=config.chain,
             pool_id=config.pool_id.lower(),
@@ -667,10 +715,512 @@ def _minimal_coverage_pair_bytes(block_number: int) -> tuple[bytes, bytes]:
         covered_end_block=200,
         covered_end_block_hash="0x" + "22" * 32,
         covered_end_timestamp_ms=1_700_001_000_000,
-        candidate_transaction_hashes=("0x" + "33" * 32,),
-        verification_mode="rpc_verified",
+        evidence=_minimal_rpc_evidence(
+            start_block=100,
+            end_block=200,
+            start_timestamp_ms=1_700_000_000_000,
+            end_timestamp_ms=1_700_001_000_000,
+        ),
     )
     return ledger_bytes, coverage_bytes
+
+
+def _minimal_rpc_evidence(
+    *,
+    start_block: int,
+    end_block: int,
+    start_timestamp_ms: int,
+    end_timestamp_ms: int,
+) -> RpcLedgerEvidence:
+    transaction_hash = "0x" + "33" * 32
+    hashes = (transaction_hash,)
+    hashes_sha256 = hashlib.sha256(
+        json.dumps(
+            list(hashes),
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    witness_set = WitnessSetCoverage(
+        witness_count=1,
+        witnesses_sha256="1" * 64,
+        transaction_count=1,
+        transactions_sha256=hashes_sha256,
+        transaction_hashes=hashes,
+    )
+    token_ids = ("1",)
+    token_sha256 = hashlib.sha256(b'["1"]').hexdigest()
+    chunk = TransferChunkCoverage(
+        index=0,
+        start_block=start_block,
+        end_block=end_block,
+        unfiltered_count=1,
+        unfiltered_sha256="2" * 64,
+    )
+    chunks_sha256 = hashlib.sha256(
+        json.dumps(
+            [asdict(chunk)],
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    bundle = BundleDigestCoverage(
+        transaction_hash=transaction_hash,
+        payload_sha256="3" * 64,
+    )
+    bundles_sha256 = hashlib.sha256(
+        json.dumps(
+            [asdict(bundle)],
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    return RpcLedgerEvidence(
+        rpc_provider_origin="https://base-mainnet.g.alchemy.com",
+        acquisition_policy=AcquisitionPolicyCoverage(
+            max_blocks_per_log_query=2_000,
+            retry_attempts=3,
+            subdivision="sequential_binary",
+            hidden_provider_retries="disabled",
+            completeness="provider_conditioned",
+        ),
+        action_witnesses=witness_set,
+        frozen_token_ids=FrozenTokenCoverage(
+            token_count=1,
+            token_ids_sha256=token_sha256,
+            token_ids=token_ids,
+        ),
+        full_transfer_scan=FullTransferCoverage(
+            position_manager=POOL_CONFIGS["uni-base"].position_manager.lower(),
+            transfer_topic="0x" + TRANSFER_TOPIC.removeprefix("0x"),
+            start_block=start_block,
+            end_block=end_block,
+            log_count=1,
+            chunks_sha256=chunks_sha256,
+            chunks=(chunk,),
+        ),
+        relevant_transfer_witnesses=witness_set,
+        eligible_bundles=EligibleBundleCoverage(
+            transaction_count=1,
+            transactions_sha256=hashes_sha256,
+            bundles_sha256=bundles_sha256,
+            transaction_hashes=hashes,
+            bundles=(bundle,),
+        ),
+        replay_input=ReplayCoverage(
+            sha256="5" * 64,
+            byte_length=1_000,
+            row_count=10,
+            header_sha256=frozen_replay_header_sha256(),
+            parser_version=FROZEN_REPLAY_PARSER_VERSION,
+            parser_contract_sha256=frozen_replay_parser_contract_sha256(),
+            price_semantics_sha256=frozen_replay_price_semantics_sha256(),
+            chain="base",
+            pool_id=POOL_CONFIGS["uni-base"].pool_id.lower(),
+            first_block=start_block,
+            last_block=end_block,
+            first_timestamp_ms=start_timestamp_ms,
+            last_timestamp_ms=end_timestamp_ms,
+            price_event_count=4,
+            price_events_sha256="8" * 64,
+        ),
+        action_reconciliation=ReconciliationCoverage(
+            status="exact_success",
+            count=1,
+            sha256="9" * 64,
+        ),
+        ownership_reconciliation=ReconciliationCoverage(
+            status="exact_success",
+            count=1,
+            sha256="a" * 64,
+        ),
+    )
+
+
+def test_verified_rpc_coverage_v2_binds_named_checkpoint_evidence(
+    tmp_path: Path,
+) -> None:
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    ledger_path = tmp_path / "ledger.csv"
+    ledger_path.write_bytes(ledger_bytes)
+    sidecar = ledger_coverage_path(ledger_path)
+    sidecar.write_bytes(coverage_bytes)
+
+    loaded = load_ledger_coverage("uni-base", ledger_path)
+    payload = json.loads(coverage_bytes)
+
+    assert loaded.schema_version == "2.0.0"
+    assert loaded.verification_mode == "rpc_verified"
+    assert payload["evidence"]["rpc_provider_origin"] == (
+        "https://base-mainnet.g.alchemy.com"
+    )
+    assert set(payload["evidence"]) == {
+        "rpc_provider_origin",
+        "acquisition_policy",
+        "action_witnesses",
+        "frozen_token_ids",
+        "full_transfer_scan",
+        "relevant_transfer_witnesses",
+        "eligible_bundles",
+        "replay_input",
+        "action_reconciliation",
+        "ownership_reconciliation",
+    }
+    assert "candidate_scan_source" not in payload
+
+    payload["evidence"]["replay_input"]["row_count"] += 1
+    sidecar.write_text(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    with pytest.raises(CrossPoolContractError, match="attestation"):
+        load_ledger_coverage("uni-base", ledger_path)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("evidence", "action_witnesses", "witnesses_sha256"), "0" * 64),
+        (("evidence", "frozen_token_ids", "token_count"), 2),
+        (
+            ("evidence", "full_transfer_scan", "position_manager"),
+            "0x" + "ff" * 20,
+        ),
+        (
+            ("evidence", "relevant_transfer_witnesses", "witnesses_sha256"),
+            "0" * 64,
+        ),
+        (("evidence", "eligible_bundles", "bundles_sha256"), "0" * 64),
+        (("evidence", "replay_input", "sha256"), "0" * 64),
+        (("evidence", "action_reconciliation", "sha256"), "0" * 64),
+        (("evidence", "ownership_reconciliation", "sha256"), "0" * 64),
+        (("evidence", "acquisition_policy", "max_blocks_per_log_query"), 1_999),
+        (("evidence", "rpc_provider_origin"), "https://fixture.example/secret"),
+        (("covered_end_block_hash",), "0x" + "ff" * 32),
+        (("ledger_sha256",), "0" * 64),
+    ),
+)
+def test_verified_rpc_coverage_v2_rejects_each_attested_group_mutation(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    value: object,
+) -> None:
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    ledger_path = tmp_path / "ledger.csv"
+    ledger_path.write_bytes(ledger_bytes)
+    sidecar = ledger_coverage_path(ledger_path)
+    payload = json.loads(coverage_bytes)
+    target = payload
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    sidecar.write_text(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    with pytest.raises(CrossPoolContractError):
+        load_ledger_coverage("uni-base", ledger_path)
+
+
+def test_archived_replay_profile_loading_is_independent_of_live_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replay = _minimal_rpc_evidence(
+        start_block=100,
+        end_block=200,
+        start_timestamp_ms=1_700_000_000_000,
+        end_timestamp_ms=1_700_001_000_000,
+    ).replay_input
+    monkeypatch.setattr(
+        "research.backtester.lp_ledger_attribution."
+        "_active_frozen_replay_price_semantics_sha256",
+        lambda: "0" * 64,
+    )
+    ledger_attribution._active_frozen_replay_profile.cache_clear()
+
+    assert ReplayCoverage(**asdict(replay)) == replay
+    with pytest.raises(CrossPoolContractError, match="active frozen replay profile"):
+        frozen_replay_price_semantics_sha256()
+
+
+def test_replay_coverage_rejects_parser_contract_drift() -> None:
+    replay = _minimal_rpc_evidence(
+        start_block=100,
+        end_block=200,
+        start_timestamp_ms=1_700_000_000_000,
+        end_timestamp_ms=1_700_001_000_000,
+    ).replay_input
+
+    with pytest.raises(CrossPoolContractError, match="parser contract"):
+        replace(replay, parser_contract_sha256="0" * 64)
+
+
+def test_verified_coverage_distinguishes_parent_chunks_from_rpc_query_limit() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    ledger_bytes = (
+        "chain,pool_id,block_number\n"
+        f"base,{config.pool_id},100\n"
+    ).encode()
+    evidence = _minimal_rpc_evidence(
+        start_block=100,
+        end_block=5_099,
+        start_timestamp_ms=1_700_000_000_000,
+        end_timestamp_ms=1_700_001_000_000,
+    )
+
+    coverage_bytes = build_rpc_ledger_coverage_bytes(
+        "uni-base",
+        ledger_bytes,
+        chain_id=8453,
+        covered_start_block=100,
+        covered_start_block_hash="0x" + "11" * 32,
+        covered_start_timestamp_ms=1_700_000_000_000,
+        covered_end_block=5_099,
+        covered_end_block_hash="0x" + "22" * 32,
+        covered_end_timestamp_ms=1_700_001_000_000,
+        evidence=evidence,
+    )
+
+    assert b'"max_blocks_per_log_query":2000' in coverage_bytes
+    assert b'"end_block":5099' in coverage_bytes
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("empty_tokens", "frozen token set"),
+        ("relevant_exceeds_full", "relevant transfer witnesses"),
+    ),
+)
+def test_verified_coverage_rejects_impossible_candidate_relations(
+    mutation: str,
+    match: str,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    ledger_bytes = (
+        "chain,pool_id,block_number\n"
+        f"base,{config.pool_id},100\n"
+    ).encode()
+    evidence = _minimal_rpc_evidence(
+        start_block=100,
+        end_block=200,
+        start_timestamp_ms=1_700_000_000_000,
+        end_timestamp_ms=1_700_001_000_000,
+    )
+    if mutation == "empty_tokens":
+        evidence = replace(
+            evidence,
+            frozen_token_ids=FrozenTokenCoverage(
+                token_count=0,
+                token_ids_sha256=hashlib.sha256(b"[]").hexdigest(),
+                token_ids=(),
+            ),
+        )
+    else:
+        chunk = replace(
+            evidence.full_transfer_scan.chunks[0],
+            unfiltered_count=0,
+        )
+        chunks_sha256 = hashlib.sha256(
+            json.dumps(
+                [asdict(chunk)],
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        evidence = replace(
+            evidence,
+            full_transfer_scan=replace(
+                evidence.full_transfer_scan,
+                log_count=0,
+                chunks_sha256=chunks_sha256,
+                chunks=(chunk,),
+            ),
+        )
+
+    with pytest.raises(CrossPoolContractError, match=match):
+        build_rpc_ledger_coverage_bytes(
+            "uni-base",
+            ledger_bytes,
+            chain_id=8453,
+            covered_start_block=100,
+            covered_start_block_hash="0x" + "11" * 32,
+            covered_start_timestamp_ms=1_700_000_000_000,
+            covered_end_block=200,
+            covered_end_block_hash="0x" + "22" * 32,
+            covered_end_timestamp_ms=1_700_001_000_000,
+            evidence=evidence,
+        )
+
+
+def test_active_replay_profile_rejects_parser_implementation_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ledger_attribution,
+        "_active_frozen_replay_parser_contract_sha256",
+        lambda: "0" * 64,
+    )
+    ledger_attribution._active_frozen_replay_profile.cache_clear()
+
+    with pytest.raises(CrossPoolContractError, match="active frozen replay profile"):
+        ledger_attribution.frozen_replay_parser_contract_sha256()
+
+
+def test_frozen_replay_parser_contract_seals_event_time_replay() -> None:
+    assert set(
+        ledger_attribution._FROZEN_REPLAY_PARSER_SOURCE_SYMBOLS[
+            "research/backtester/v4_event_replay.py"
+        ]
+    ) == {
+        "PoolStateSnapshot",
+        "ReplayEvent",
+        "ReplayedEvent",
+        "_PRICE_EVENTS",
+        "_CARRIED_STATE_EVENTS",
+        "attach_event_time_state",
+    }
+    assert "_stage_price_replay" in (
+        ledger_attribution._FROZEN_REPLAY_PARSER_SOURCE_SYMBOLS[
+            "research/scripts/export_v4_lp_ledger.py"
+        ]
+    )
+
+
+def test_action_reconciliation_rejects_multiple_actions_per_witness() -> None:
+    config = POOL_CONFIGS["uni-base"]
+    transaction_hash = "0x" + "33" * 32
+    witness = DiscoveryWitness(
+        source="pool_modify",
+        block_number=100,
+        block_hash="0x" + "11" * 32,
+        transaction_hash=transaction_hash,
+        transaction_index=0,
+        log_index=5,
+        address=config.pool_manager.lower(),
+        topics=(V4_MODIFY_LIQUIDITY_TOPIC, config.pool_id, "0x" + "22" * 32),
+        data="0x",
+    )
+    action = DecodedLiquidityAction(
+        action_type="mint",
+        block_number=100,
+        log_index=5,
+        event_order=0,
+        token_id=1,
+        lp_owner=None,
+        tick_lower=-10,
+        tick_upper=10,
+        liquidity_delta=1,
+        amount0=0,
+        amount1=0,
+        collect_amount0=0,
+        tx_hash=transaction_hash,
+    )
+
+    with pytest.raises(ValueError, match="multiple decoded actions"):
+        lp_ledger_export._action_reconciliation_records(
+            (witness,),
+            (action, replace(action, event_order=1)),
+        )
+
+
+_REPLAY_FIELDS = (
+    "block_time",
+    "chain",
+    "pool_id",
+    "event_type",
+    "tx_hash",
+    "log_index",
+    "block_number",
+    "sqrt_price_x96",
+    "tick",
+    "active_liquidity",
+    "fee_rate",
+    "amount0",
+    "amount1",
+    "amount_usd",
+    "cngn_usd_price",
+    "token0_symbol",
+    "token1_symbol",
+    "event_source",
+    "sender",
+    "recipient",
+    "currency0",
+    "currency1",
+    "hooks",
+    "tick_spacing",
+    "tick_lower",
+    "tick_upper",
+    "liquidity_delta",
+    "salt",
+    "amount0_raw",
+    "amount1_raw",
+)
+
+
+def _replay_row(
+    *,
+    event_type: str,
+    block_number: int,
+    log_index: int,
+    sqrt_price_x96: int,
+    tick: int,
+    block_time: str,
+    config=None,
+) -> dict[str, str]:
+    resolved = POOL_CONFIGS["uni-base"] if config is None else config
+    row = {field: "" for field in _REPLAY_FIELDS}
+    row.update(
+        {
+            "block_time": block_time,
+            "chain": resolved.chain,
+            "pool_id": resolved.pool_id,
+            "event_type": event_type,
+            "tx_hash": f"0x{block_number:064x}",
+            "log_index": str(log_index),
+            "block_number": str(block_number),
+            "sqrt_price_x96": str(sqrt_price_x96),
+            "tick": str(tick),
+            "active_liquidity": "1",
+            "fee_rate": str(resolved.fee_rate),
+            "amount0": "1",
+            "amount1": "1",
+            "amount_usd": "1",
+            "cngn_usd_price": "999",
+            "token0_symbol": resolved.token0_symbol,
+            "token1_symbol": resolved.token1_symbol,
+            "event_source": f"pool_manager_{event_type}",
+        }
+    )
+    return row
+
+
+def _write_replay_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_REPLAY_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def test_action_discovery_stages_complete_witnesses_and_quiet_chunks(
@@ -1522,6 +2072,244 @@ def test_empty_frozen_set_attests_scan_and_completes_transfer_zero_work(
     assert bundle_run.completed == ["relevant_transfer_fetch"]
     assert decode_snapshot.phase == "replay_input_bind"
     assert decode_run.completed == ["relevant_transfer_decode"]
+
+
+def test_frozen_replay_binding_reuses_exact_local_sqrt_evidence(tmp_path: Path) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    replay_path = tmp_path / "replay.csv"
+    old_state = 2**96
+    new_state = 2**96 + 1_000
+    _write_replay_csv(
+        replay_path,
+        [
+            _replay_row(
+                event_type="initialize",
+                block_number=100,
+                log_index=1,
+                sqrt_price_x96=old_state,
+                tick=0,
+                block_time="2026-01-01T00:00:00+00:00",
+            ),
+            _replay_row(
+                event_type="swap",
+                block_number=101,
+                log_index=10,
+                sqrt_price_x96=new_state,
+                tick=1,
+                block_time="2026-01-01T00:00:01+00:00",
+            ),
+        ],
+    )
+    frozen = lp_ledger_export._load_frozen_replay_input(replay_path, config)
+    run = _ReplayRun(frozen.evidence, ())
+
+    snapshot = lp_ledger_export._bind_frozen_replay_input(
+        run,
+        config,
+        frozen.evidence,
+    )
+
+    assert snapshot.phase == "price_replay"
+    assert run.bound_inputs == [frozen.evidence]
+    assert frozen.evidence.path == str(replay_path.resolve())
+    assert frozen.evidence.row_count == 2
+    assert frozen.evidence.price_event_count == 2
+    assert frozen.evidence.first_block == 100
+    assert frozen.evidence.last_block == 101
+    assert tuple(event.sqrt_price_x96 for event in frozen.price_events) == (
+        old_state,
+        new_state,
+    )
+
+
+def test_frozen_replay_parser_rejects_noncanonical_pool_id(
+    tmp_path: Path,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    replay_path = tmp_path / "replay.csv"
+    row = _replay_row(
+        event_type="initialize",
+        block_number=100,
+        log_index=1,
+        sqrt_price_x96=2**96,
+        tick=0,
+        block_time="2026-01-01T00:00:00+00:00",
+    )
+    row["pool_id"] = config.pool_id.upper()
+    _write_replay_csv(replay_path, [row])
+
+    with pytest.raises(ValueError, match="pool identity"):
+        lp_ledger_export._load_frozen_replay_input(replay_path, config)
+
+
+def test_frozen_replay_non_price_rows_do_not_require_price_state_fields(
+    tmp_path: Path,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    replay_path = tmp_path / "replay.csv"
+    initialize = _replay_row(
+        event_type="initialize",
+        block_number=100,
+        log_index=1,
+        sqrt_price_x96=2**96,
+        tick=0,
+        block_time="2026-01-01T00:00:00+00:00",
+    )
+    mint = _replay_row(
+        event_type="mint",
+        block_number=101,
+        log_index=2,
+        sqrt_price_x96=1,
+        tick=0,
+        block_time="2026-01-01T00:00:01+00:00",
+    )
+    mint["event_source"] = "pool_manager_modify_liquidity"
+    mint["sqrt_price_x96"] = ""
+    mint["tick"] = ""
+    _write_replay_csv(replay_path, [initialize, mint])
+
+    frozen = lp_ledger_export._load_frozen_replay_input(replay_path, config)
+
+    assert frozen.evidence.row_count == 2
+    assert frozen.evidence.price_event_count == 1
+    assert len(frozen.price_events) == 1
+
+
+def test_staged_local_price_replay_respects_same_block_log_order(
+    tmp_path: Path,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    replay_path = tmp_path / "replay.csv"
+    old_state = 2**96
+    new_state = 2**96 + 1_000
+    _write_replay_csv(
+        replay_path,
+        [
+            _replay_row(
+                event_type="initialize",
+                block_number=100,
+                log_index=1,
+                sqrt_price_x96=old_state,
+                tick=0,
+                block_time="2026-01-01T00:00:00+00:00",
+            ),
+            _replay_row(
+                event_type="swap",
+                block_number=101,
+                log_index=10,
+                sqrt_price_x96=new_state,
+                tick=1,
+                block_time="2026-01-01T00:00:01+00:00",
+            ),
+        ],
+    )
+    frozen = lp_ledger_export._load_frozen_replay_input(replay_path, config)
+    actions = (
+        DecodedLiquidityAction(
+            action_type="mint",
+            block_number=101,
+            log_index=5,
+            event_order=0,
+            token_id=1,
+            lp_owner=None,
+            tick_lower=-10,
+            tick_upper=10,
+            liquidity_delta=1,
+            amount0=0,
+            amount1=0,
+            collect_amount0=0,
+        ),
+        DecodedLiquidityAction(
+            action_type="burn",
+            block_number=101,
+            log_index=15,
+            event_order=0,
+            token_id=1,
+            lp_owner=None,
+            tick_lower=-10,
+            tick_upper=10,
+            liquidity_delta=-1,
+            amount0=0,
+            amount1=0,
+            collect_amount0=0,
+        ),
+    )
+    run = _ReplayRun(frozen.evidence, actions)
+    run.phase = "price_replay"
+
+    snapshot = lp_ledger_export._stage_price_replay(run, config)
+
+    assert snapshot.phase == "build"
+    assert len(run.binding_commits) == 1
+    before, after = run.binding_commits[0]
+    assert before.event_time_sqrt_price_x96 == old_state
+    assert before.event_time_tick == 0
+    assert before.event_time_state_source == "prior_event"
+    assert after.event_time_sqrt_price_x96 == new_state
+    assert after.event_time_tick == 1
+    assert after.event_time_state_source == "same_block_prior_event"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "changed_bytes",
+        "crossed_order",
+        "duplicate_order",
+        "wrong_chain",
+        "zero_sqrt",
+        "submillisecond_time",
+    ),
+)
+def test_frozen_replay_binding_rejects_drift_and_malformed_rows(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    replay_path = tmp_path / "replay.csv"
+    rows = [
+        _replay_row(
+            event_type="initialize",
+            block_number=100,
+            log_index=1,
+            sqrt_price_x96=2**96,
+            tick=0,
+            block_time="2026-01-01T00:00:00+00:00",
+        ),
+        _replay_row(
+            event_type="swap",
+            block_number=101,
+            log_index=10,
+            sqrt_price_x96=2**96 + 1_000,
+            tick=1,
+            block_time="2026-01-01T00:00:01+00:00",
+        ),
+    ]
+    _write_replay_csv(replay_path, rows)
+    expected = lp_ledger_export._load_frozen_replay_input(
+        replay_path,
+        config,
+    ).evidence
+    if mutation == "changed_bytes":
+        rows[1]["cngn_usd_price"] = "998"
+    elif mutation == "crossed_order":
+        rows.reverse()
+    elif mutation == "duplicate_order":
+        rows[1]["block_number"] = rows[0]["block_number"]
+        rows[1]["log_index"] = rows[0]["log_index"]
+    elif mutation == "wrong_chain":
+        rows[1]["chain"] = "bsc"
+    elif mutation == "zero_sqrt":
+        rows[1]["sqrt_price_x96"] = "0"
+    else:
+        rows[1]["block_time"] = "2026-01-01T00:00:01.000001+00:00"
+    _write_replay_csv(replay_path, rows)
+    run = _ReplayRun(expected, ())
+
+    with pytest.raises(ValueError):
+        lp_ledger_export._bind_frozen_replay_input(run, config, expected)
+
+    assert run.bound_inputs == []
 
 
 def test_action_decode_stages_state_key_header_and_reconciled_action(
@@ -2519,7 +3307,11 @@ def test_rpc_export_brackets_data_reads_with_endpoint_snapshots(
     monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", header)
     monkeypatch.setattr(lp_ledger_export, "_decode_rpc_lp_inputs", decode)
     monkeypatch.setattr(lp_ledger_export, "_replayed_price_events_for_actions", replay)
-    monkeypatch.setattr(lp_ledger_export, "build_rpc_ledger_coverage_bytes", build_coverage)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "build_candidate_list_ledger_coverage_bytes",
+        build_coverage,
+    )
     monkeypatch.setattr(lp_ledger_export, "_publish_ledger_pair", publish)
 
     count = lp_ledger_export.export_rpc_lp_ledger(
@@ -2588,7 +3380,11 @@ def test_rpc_export_rejects_changed_endpoint_snapshot(
     monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", header)
     monkeypatch.setattr(lp_ledger_export, "_decode_rpc_lp_inputs", lambda *_args, **_kwargs: ([], []))
     monkeypatch.setattr(lp_ledger_export, "_replayed_price_events_for_actions", lambda *_args: [])
-    monkeypatch.setattr(lp_ledger_export, "build_rpc_ledger_coverage_bytes", build_coverage)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "build_candidate_list_ledger_coverage_bytes",
+        build_coverage,
+    )
     monkeypatch.setattr(lp_ledger_export, "_publish_ledger_pair", publish)
 
     with pytest.raises(CrossPoolContractError, match="endpoint.*changed"):
