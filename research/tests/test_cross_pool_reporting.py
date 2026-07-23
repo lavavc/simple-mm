@@ -13,15 +13,18 @@ from typing import cast
 
 import matplotlib
 import pytest
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
+import research.cross_pool.figures as figures
 import research.cross_pool.publication as publication
 import research.scripts.evaluate_cross_pool_economic_lp as economic_cli
 from research.backtester.lp_ledger_attribution import (
+    FROZEN_REPLAY_PARSER_VERSION,
     POOL_ATTRIBUTION_ORIENTATIONS,
     AcquisitionPolicyCoverage,
     BundleDigestCoverage,
     EligibleBundleCoverage,
-    FROZEN_REPLAY_PARSER_VERSION,
     FrozenTokenCoverage,
     FullTransferCoverage,
     ReconciliationCoverage,
@@ -888,6 +891,42 @@ def test_statistical_figures_are_nonempty_and_byte_stable() -> None:
         assert hashlib.sha256(first).digest() == hashlib.sha256(second).digest()
 
     assert dtw_lag_png(stabilities) == dtw_lag_png(tuple(reversed(stabilities)))
+
+
+def test_dtw_figure_footer_stays_inside_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stabilities = (
+        _dtw_stability("bsc_to_base", lag_steps=1.0),
+        _dtw_stability("base_to_bsc", lag_steps=-1.0),
+    )
+
+    def inspect_layout(
+        figure: Figure,
+        *,
+        bottom_margin: float = 0.06,
+    ) -> bytes:
+        figure.tight_layout(rect=(0.0, bottom_margin, 1.0, 1.0), pad=1.0)
+        canvas = FigureCanvasAgg(figure)
+        canvas.draw()
+        footer = next(
+            text
+            for text in figure.texts
+            if text.get_text().startswith("Positive lag means")
+        )
+        footer_bounds = footer.get_window_extent(canvas.get_renderer())
+        canvas_bounds = figure.bbox
+        inset_pixels = 2.0
+
+        assert footer_bounds.x0 >= canvas_bounds.x0 + inset_pixels
+        assert footer_bounds.y0 >= canvas_bounds.y0 + inset_pixels
+        assert footer_bounds.x1 <= canvas_bounds.x1 - inset_pixels
+        assert footer_bounds.y1 <= canvas_bounds.y1 - inset_pixels
+        return b"layout-inspected"
+
+    monkeypatch.setattr(figures, "_render_png", inspect_layout)
+
+    assert figures.dtw_lag_png(stabilities) == b"layout-inspected"
 
 
 def test_price_gap_figure_isolated_from_caller_rc_state() -> None:

@@ -264,13 +264,16 @@ def dtw_lag_png(stabilities: Sequence[DtwStability]) -> bytes:
         )
         figure.text(
             0.5,
-            0.01,
+            0.012,
             "Positive lag means the named source precedes its target. Exploratory; "
-            f"rotation-null comparison is reported separately. {stability_note}",
+            "rotation-null comparison is reported separately.\n"
+            f"{stability_note}",
             ha="center",
+            va="bottom",
             fontsize=6.8,
+            multialignment="center",
         )
-        return _render_png(figure)
+        return _render_png(figure, bottom_margin=0.1)
 
 
 def lp_performance_png(
@@ -383,8 +386,8 @@ def _utc_datetime(timestamp_ms: int) -> datetime:
     return datetime.fromtimestamp(timestamp_ms / 1_000, tz=timezone.utc)
 
 
-def _render_png(figure: Figure) -> bytes:
-    figure.tight_layout(rect=(0.0, 0.06, 1.0, 1.0), pad=1.0)
+def _render_png(figure: Figure, *, bottom_margin: float = 0.06) -> bytes:
+    figure.tight_layout(rect=(0.0, bottom_margin, 1.0, 1.0), pad=1.0)
     buffer = io.BytesIO()
     FigureCanvasAgg(figure).print_png(  # type: ignore[no-untyped-call]
         buffer,
