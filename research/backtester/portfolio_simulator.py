@@ -12,7 +12,11 @@ from research.backtester.entry_eligibility import EntryEligibilityOverlay
 from research.backtester.pool_state import PoolState
 from research.backtester.portfolio_allocation import Allocation
 from research.backtester.portfolio_catalog import SleeveDefinition
-from research.backtester.portfolio_errors import NoValidationSwapError
+from research.backtester.portfolio_errors import (
+    ExecutionAccountingError,
+    JointActionAffordabilityError,
+    NoValidationSwapError,
+)
 from research.backtester.position_runtime import (
     SleeveAction,
     SleeveRuntime,
@@ -43,14 +47,6 @@ class LiquidityShareExceeded(ValueError):  # noqa: N818 - required public contra
             f"aggregate synthetic liquidity share {observed_share:.6f} "
             f"exceeds {cap:.2f}"
         )
-
-
-class ExecutionAccountingError(ValueError):
-    """Raised when a prepared action batch does not conserve marked value."""
-
-
-class JointActionAffordabilityError(ExecutionAccountingError):
-    """Raised when joint entry costs exceed one or more sleeve wallets."""
 
 
 @dataclass

@@ -21,7 +21,6 @@ from research.backtester.simulator import (
     TransactionCostBreakdown,
     VirtualPosition,
     _calculate_entry_range,
-    _cngn_notional_usd,
     _cngn_to_native_price,
     _defensive_exit_mark,
     _defensive_exit_quality_passes,
@@ -711,7 +710,7 @@ class SleeveRuntime:
             self.current_tick,
             self.pool_config,
         )
-        liquidity, deployed_capital, entry_cost, next_wallet = _route_wallet_to_position(
+        route = _route_wallet_to_position(
             deploy_wallet,
             tick_lower,
             tick_upper,
@@ -723,44 +722,33 @@ class SleeveRuntime:
             self.pool_config,
             self.params,
         )
-        if liquidity <= 0:
+        if route.liquidity <= 0:
             return None
         if not eligibility_preapproved and not _expected_fee_apr_passes(
-                event,
-                self.params,
-                liquidity,
-                deployed_capital,
-                active_liquidity,
-                self.previous_swap_time,
-                self.pool_config,
-            ):
+            event,
+            self.params,
+            route.liquidity,
+            route.deployed_capital,
+            active_liquidity,
+            self.previous_swap_time,
+            self.pool_config,
+        ):
             return None
         position_after = VirtualPosition(
             tick_lower=tick_lower,
             tick_upper=tick_upper,
-            liquidity_L=liquidity,
+            liquidity_L=route.liquidity,
             entry_price=self.current_price,
-            entry_value=deployed_capital,
+            entry_value=route.deployed_capital,
             entry_time=event.block_time,
             entry_tick=self.current_tick,
             entry_active_liquidity=active_liquidity,
-            deployed_capital=deployed_capital,
-            entry_transaction_cost=entry_cost,
+            deployed_capital=route.deployed_capital,
+            entry_transaction_cost=route.transaction_cost,
         )
         wallet_after = PortfolioComposition(
-            stable_usd=next_wallet.stable_usd + idle_wallet.stable_usd,
-            cngn_amount=next_wallet.cngn_amount + idle_wallet.cngn_amount,
-        )
-        required_cngn_usd = _cngn_notional_usd(
-            *position_after.amounts_at_sqrt_price_x96(self.current_sqrt_price_x96),
-            self.current_price,
-            self.pool_config,
-        )
-        inventory_direction: Literal["stable_to_cngn", "cngn_to_stable"] | None = (
-            "stable_to_cngn"
-            if entry_cost.swap_notional_usd > 0
-            and deploy_wallet.cngn_amount * self.current_price < required_cngn_usd
-            else "cngn_to_stable" if entry_cost.swap_notional_usd > 0 else None
+            stable_usd=route.remaining_wallet.stable_usd + idle_wallet.stable_usd,
+            cngn_amount=route.remaining_wallet.cngn_amount + idle_wallet.cngn_amount,
         )
         return SleeveAction(
             sleeve_id=self.sleeve_id,
@@ -772,14 +760,16 @@ class SleeveRuntime:
             wallet_after=wallet_after,
             position_before=None,
             position_after=position_after,
-            transaction_cost=entry_cost,
+            transaction_cost=route.transaction_cost,
             reason=None,
-            inventory_swap_direction=inventory_direction,
-            inventory_swap_notional_usd=entry_cost.swap_notional_usd,
+            inventory_swap_direction=route.inventory_swap_direction,
+            inventory_swap_notional_usd=route.transaction_cost.swap_notional_usd,
             variable_cost_asset=(
                 "stable"
-                if inventory_direction == "stable_to_cngn"
-                else "cngn" if inventory_direction == "cngn_to_stable" else None
+                if route.inventory_swap_direction == "stable_to_cngn"
+                else "cngn"
+                if route.inventory_swap_direction == "cngn_to_stable"
+                else None
             ),
         )
 

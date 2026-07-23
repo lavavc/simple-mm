@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 
 from engine.math.v3 import compute_swap_step, tick_to_sqrt_price
 from engine.venues.dex.uniswap_base import UNISWAP_BASE_EXECUTION_CONFIG
@@ -19,6 +20,7 @@ from research.backtester.data import Event, V4Event
 from research.backtester.entry_eligibility import EntryEligibilityOverlay
 from research.backtester.params import BacktestParams, TransactionCostModel
 from research.backtester.pool_state import PoolState
+from research.backtester.portfolio_errors import ExecutionAccountingError
 from research.backtester.sizing import SizingPolicy
 from research.backtester.strategy import (
     EWMACalculator,
@@ -90,6 +92,7 @@ UNISWAP_BSC_POOL = PoolConfig(
 )
 
 _LOG_1_0001 = math.log(1.0001)
+InventorySwapDirection = Literal["stable_to_cngn", "cngn_to_stable"]
 
 
 def _fast_price_to_tick(price: float, dec0: int, dec1: int) -> int:
@@ -245,6 +248,15 @@ class PortfolioComposition:
 
     def value_usd(self, cngn_usd_price: float) -> float:
         return self.stable_usd + self.cngn_amount * cngn_usd_price
+
+
+@dataclass(frozen=True)
+class PositionEntryRoute:
+    liquidity: float
+    deployed_capital: float
+    transaction_cost: TransactionCostBreakdown
+    remaining_wallet: PortfolioComposition
+    inventory_swap_direction: InventorySwapDirection | None
 
 
 @dataclass
@@ -431,10 +443,31 @@ def _required_wallet_for_liquidity(
     return _raw_amounts_to_wallet(amount0, amount1, cngn_usd_price, pool_config)
 
 
-def _subtract_wallet(wallet: PortfolioComposition, required: PortfolioComposition) -> PortfolioComposition:
+def _subtract_wallet(
+    wallet: PortfolioComposition,
+    required: PortfolioComposition,
+) -> PortfolioComposition:
+    remaining: dict[str, float] = {}
+    for component, available, needed in (
+        ("stable", wallet.stable_usd, required.stable_usd),
+        ("cNGN", wallet.cngn_amount, required.cngn_amount),
+    ):
+        if not math.isfinite(available) or not math.isfinite(needed):
+            raise ExecutionAccountingError(
+                f"{component} wallet subtraction requires finite amounts"
+            )
+        tolerance = 1e-12 * max(1.0, abs(available), abs(needed))
+        if available < -tolerance or needed < -tolerance:
+            raise ExecutionAccountingError(
+                f"{component} wallet subtraction requires non-negative amounts"
+            )
+        residual = available - needed
+        if residual < -tolerance:
+            raise ExecutionAccountingError(f"{component} wallet shortfall")
+        remaining[component] = max(residual, 0.0)
     return PortfolioComposition(
-        stable_usd=max(wallet.stable_usd - required.stable_usd, 0.0),
-        cngn_amount=max(wallet.cngn_amount - required.cngn_amount, 0.0),
+        stable_usd=remaining["stable"],
+        cngn_amount=remaining["cNGN"],
     )
 
 
@@ -475,7 +508,7 @@ def _inventory_delta_swap(
     wallet: PortfolioComposition,
     required: PortfolioComposition,
     cngn_usd_price: float,
-) -> tuple[str | None, float]:
+) -> tuple[InventorySwapDirection | None, float]:
     wallet_cngn_usd = wallet.cngn_amount * cngn_usd_price
     required_cngn_usd = required.cngn_amount * cngn_usd_price
     if wallet_cngn_usd + 1e-12 < required_cngn_usd:
@@ -496,7 +529,7 @@ def _route_wallet_to_position(
     fee_rate: float,
     pool_config: PoolConfig,
     params: BacktestParams,
-) -> tuple[float, float, TransactionCostBreakdown, PortfolioComposition]:
+) -> PositionEntryRoute:
     cngn_per_l, stable_per_l = _position_token_values_per_liquidity(
         tick_lower,
         tick_upper,
@@ -507,22 +540,77 @@ def _route_wallet_to_position(
     )
     value_per_l = cngn_per_l + stable_per_l
     wallet_value = wallet.value_usd(cngn_usd_price)
-    if value_per_l <= 0 or wallet_value <= 0:
-        return 0.0, 0.0, TransactionCostBreakdown("enter"), wallet
+    empty_route = PositionEntryRoute(
+        liquidity=0.0,
+        deployed_capital=0.0,
+        transaction_cost=TransactionCostBreakdown("enter"),
+        remaining_wallet=wallet,
+        inventory_swap_direction=None,
+    )
+    if (
+        not math.isfinite(cngn_usd_price)
+        or cngn_usd_price <= 0
+        or not math.isfinite(wallet.stable_usd)
+        or not math.isfinite(wallet.cngn_amount)
+        or wallet.stable_usd < 0
+        or wallet.cngn_amount < 0
+        or not math.isfinite(wallet_value)
+    ):
+        raise ExecutionAccountingError("entry routing requires a valid non-negative wallet")
+    if not math.isfinite(value_per_l) or value_per_l <= 0 or wallet_value <= 0:
+        return empty_route
+
+    fixed_entry_cost = _swap_cost_breakdown(
+        "enter",
+        0.0,
+        active_liquidity,
+        fee_rate,
+        current_tick,
+        params,
+        current_price=cngn_usd_price,
+        current_sqrt_price_x96=current_sqrt_price_x96,
+        pool_config=pool_config,
+        exact_output=True,
+    )
+    fixed_cost = fixed_entry_cost.total
+    if not math.isfinite(fixed_cost) or fixed_cost < 0:
+        raise ExecutionAccountingError("entry routing produced an invalid fixed cost")
+    if fixed_cost >= wallet_value:
+        return PositionEntryRoute(
+            liquidity=0.0,
+            deployed_capital=0.0,
+            transaction_cost=fixed_entry_cost,
+            remaining_wallet=wallet,
+            inventory_swap_direction=None,
+        )
+    funded_wallet = _pay_wallet_cost(wallet, fixed_cost, cngn_usd_price)
+    funded_value = funded_wallet.value_usd(cngn_usd_price)
+    value_tolerance = 1e-12 * max(1.0, wallet_value, fixed_cost, funded_value)
+    if abs(funded_value - (wallet_value - fixed_cost)) > value_tolerance:
+        raise ExecutionAccountingError("fixed entry cost does not reconcile to the wallet")
 
     max_liquidity = None
-    if params.max_active_liquidity_share is not None and params.max_active_liquidity_share > 0 and active_liquidity > 0:
+    if (
+        params.max_active_liquidity_share is not None
+        and params.max_active_liquidity_share > 0
+        and active_liquidity > 0
+    ):
         max_liquidity = active_liquidity * params.max_active_liquidity_share
 
-    liquidity = wallet_value / value_per_l
+    upper_liquidity = funded_value / value_per_l
     if max_liquidity is not None:
-        liquidity = min(liquidity, max_liquidity)
-    entry_cost = TransactionCostBreakdown("enter")
-    required = PortfolioComposition(0.0, 0.0)
-    direction: str | None = None
-    swap_notional_usd = 0.0
+        upper_liquidity = min(upper_liquidity, max_liquidity)
+    if not math.isfinite(upper_liquidity) or upper_liquidity <= 0:
+        return empty_route
 
-    for _ in range(5):
+    def evaluate_route(
+        liquidity: float,
+    ) -> tuple[
+        PortfolioComposition,
+        InventorySwapDirection | None,
+        TransactionCostBreakdown,
+        float,
+    ]:
         required = _required_wallet_for_liquidity(
             liquidity,
             tick_lower,
@@ -532,7 +620,11 @@ def _route_wallet_to_position(
             cngn_usd_price,
             pool_config,
         )
-        direction, swap_notional_usd = _inventory_delta_swap(wallet, required, cngn_usd_price)
+        direction, swap_notional_usd = _inventory_delta_swap(
+            funded_wallet,
+            required,
+            cngn_usd_price,
+        )
         entry_cost = _swap_cost_breakdown(
             "enter",
             swap_notional_usd,
@@ -546,59 +638,110 @@ def _route_wallet_to_position(
             pool_config=pool_config,
             exact_output=True,
         )
-        affordable_value = max(wallet_value - entry_cost.total, 0.0)
-        next_liquidity = affordable_value / value_per_l
-        if max_liquidity is not None:
-            next_liquidity = min(next_liquidity, max_liquidity)
-        if abs(next_liquidity - liquidity) <= max(abs(liquidity) * 1e-9, 1e-9):
-            liquidity = next_liquidity
-            break
-        liquidity = next_liquidity
+        variable_cost = (
+            entry_cost.swap_fee_cost
+            + entry_cost.price_impact_cost
+            + entry_cost.slippage_cost
+            + entry_cost.latency_slippage_cost
+        )
+        required_value = required.value_usd(cngn_usd_price)
+        values = (
+            swap_notional_usd,
+            entry_cost.total,
+            variable_cost,
+            required_value,
+        )
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            raise ExecutionAccountingError("entry routing produced an invalid cost")
+        if (
+            abs(entry_cost.gas_cost + entry_cost.failed_tx_expected_cost - fixed_cost)
+            > value_tolerance
+        ):
+            raise ExecutionAccountingError("entry fixed cost changed with swap notional")
+        return required, direction, entry_cost, funded_value - required_value - variable_cost
 
-    if liquidity <= 0 or entry_cost.total >= wallet_value:
-        return 0.0, 0.0, entry_cost, wallet
+    affordability_tolerance = 1e-12 * max(1.0, funded_value)
+    _, _, upper_cost, upper_margin = evaluate_route(upper_liquidity)
+    if upper_margin >= -affordability_tolerance:
+        liquidity = upper_liquidity
+    else:
+        candidate = upper_liquidity
+        candidate_cost = upper_cost
+        liquidity = 0.0
+        for _ in range(20):
+            variable_cost = (
+                candidate_cost.swap_fee_cost
+                + candidate_cost.price_impact_cost
+                + candidate_cost.slippage_cost
+                + candidate_cost.latency_slippage_cost
+            )
+            next_candidate = min(
+                max((funded_value - variable_cost) / value_per_l, 0.0),
+                upper_liquidity,
+            )
+            if abs(next_candidate - candidate) * value_per_l <= affordability_tolerance:
+                conservative_candidate = min(candidate, next_candidate)
+                _, _, _, candidate_margin = evaluate_route(conservative_candidate)
+                if candidate_margin >= -affordability_tolerance:
+                    liquidity = conservative_candidate
+                    break
+            candidate = next_candidate
+            _, _, candidate_cost, _ = evaluate_route(candidate)
 
-    required = _required_wallet_for_liquidity(
-        liquidity,
-        tick_lower,
-        tick_upper,
-        current_tick,
-        current_sqrt_price_x96,
-        cngn_usd_price,
-        pool_config,
-    )
-    direction, swap_notional_usd = _inventory_delta_swap(wallet, required, cngn_usd_price)
-    entry_cost = _swap_cost_breakdown(
-        "enter",
-        swap_notional_usd,
-        active_liquidity,
-        fee_rate,
-        current_tick,
-        params,
-        direction=direction,
-        current_price=cngn_usd_price,
-        current_sqrt_price_x96=current_sqrt_price_x96,
-        pool_config=pool_config,
-        exact_output=True,
-    )
+        if liquidity == 0.0:
+            low = 0.0
+            high = upper_liquidity
+            for _ in range(100):
+                midpoint = (low + high) / 2.0
+                _, _, _, margin = evaluate_route(midpoint)
+                if margin >= 0:
+                    low = midpoint
+                else:
+                    high = midpoint
+                if (high - low) * value_per_l <= affordability_tolerance:
+                    break
+            if (high - low) * value_per_l > affordability_tolerance:
+                raise ExecutionAccountingError("entry affordability solve did not converge")
+            liquidity = low
+
+    if liquidity <= 0:
+        return empty_route
+    required, direction, entry_cost, margin = evaluate_route(liquidity)
+    if margin < -affordability_tolerance:
+        raise ExecutionAccountingError("entry affordability solve returned an invalid route")
     variable_cost = (
         entry_cost.swap_fee_cost
         + entry_cost.price_impact_cost
         + entry_cost.slippage_cost
         + entry_cost.latency_slippage_cost
     )
-    routed_wallet = _pay_wallet_cost(wallet, entry_cost.gas_cost + entry_cost.failed_tx_expected_cost, cngn_usd_price)
     routed_wallet = _apply_inventory_swap(
-        routed_wallet,
+        funded_wallet,
         direction,
-        swap_notional_usd,
+        entry_cost.swap_notional_usd,
         variable_cost,
         cngn_usd_price,
         exact_output=True,
     )
     remaining_wallet = _subtract_wallet(routed_wallet, required)
     deployed_capital = required.value_usd(cngn_usd_price)
-    return liquidity, deployed_capital, entry_cost, remaining_wallet
+    after_value = deployed_capital + remaining_wallet.value_usd(cngn_usd_price)
+    expected_value = wallet_value - entry_cost.total
+    reconciliation_tolerance = 1e-10 * max(
+        1.0,
+        wallet_value,
+        after_value,
+        entry_cost.total,
+    )
+    if abs(after_value - expected_value) > reconciliation_tolerance:
+        raise ExecutionAccountingError("entry route does not conserve marked value")
+    return PositionEntryRoute(
+        liquidity=liquidity,
+        deployed_capital=deployed_capital,
+        transaction_cost=entry_cost,
+        remaining_wallet=remaining_wallet,
+        inventory_swap_direction=direction,
+    )
 
 
 def _portfolio_value(

@@ -45,6 +45,8 @@ from research.backtester.simulator import (
     _exit_cost_breakdown,
     _portfolio_value,
     _raw_amounts_to_wallet,
+    _route_wallet_to_position,
+    _subtract_wallet,
     _swap_cost_breakdown,
 )
 from research.backtester.sizing import EntryContext, FixedDeployment
@@ -92,6 +94,17 @@ def _params(
             remove_gas_usd=0.0,
             fallback_price_impact_bps=0.0,
             unwind_to_cash_on_exit=unwind_to_cash_on_exit,
+        ),
+    )
+
+
+def _params_with_mint_cost(mint_gas_usd: float) -> BacktestParams:
+    params = _params()
+    return replace(
+        params,
+        transaction_costs=replace(
+            params.transaction_costs,
+            mint_gas_usd=mint_gas_usd,
         ),
     )
 
@@ -810,6 +823,158 @@ def test_action_value_reconciliation_fails_before_runtime_mutation() -> None:
 
     assert runtime.wallet == wallet_before
     assert runtime.position == position_before
+
+
+def test_wallet_subtraction_rejects_material_component_shortfall() -> None:
+    with pytest.raises(ExecutionAccountingError, match="stable wallet shortfall"):
+        _subtract_wallet(
+            PortfolioComposition(stable_usd=0.01, cngn_amount=1.0),
+            PortfolioComposition(stable_usd=0.02, cngn_amount=1.0),
+        )
+
+    remainder = _subtract_wallet(
+        PortfolioComposition(stable_usd=0.02 - 5e-13, cngn_amount=1.0),
+        PortfolioComposition(stable_usd=0.02, cngn_amount=1.0),
+    )
+    assert remainder == PortfolioComposition(stable_usd=0.0, cngn_amount=0.0)
+
+    with pytest.raises(ExecutionAccountingError, match="cNGN wallet shortfall"):
+        _subtract_wallet(
+            PortfolioComposition(stable_usd=1.0, cngn_amount=0.01),
+            PortfolioComposition(stable_usd=1.0, cngn_amount=0.02),
+        )
+    with pytest.raises(ExecutionAccountingError, match="finite amounts"):
+        _subtract_wallet(
+            PortfolioComposition(stable_usd=float("nan"), cngn_amount=1.0),
+            PortfolioComposition(stable_usd=0.0, cngn_amount=1.0),
+        )
+
+
+def test_entry_route_rejects_non_finite_marked_wallet_value() -> None:
+    with pytest.raises(ExecutionAccountingError, match="valid non-negative wallet"):
+        _route_wallet_to_position(
+            PortfolioComposition(stable_usd=1.0, cngn_amount=1e308),
+            -100,
+            100,
+            0,
+            tick_to_sqrt_price_x96(0),
+            1e308,
+            10**15,
+            UNISWAP_BASE_POOL.fee_rate,
+            UNISWAP_BASE_POOL,
+            _params_with_mint_cost(0.05),
+        )
+
+
+def test_fixed_entry_cost_equal_to_wallet_produces_no_action() -> None:
+    events = [_swap(0), _swap(1), _swap(2)]
+    runtime = create_sleeve_runtime(
+        sleeve_id="a",
+        params=_params_with_mint_cost(0.05),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=0.05,
+    )
+    for event in events:
+        runtime._observe_swap(event)
+        runtime.previous_swap_time = event.block_time
+    wallet_before = deepcopy(runtime.wallet)
+
+    assert runtime.propose_entry(events[-1], events[-1].active_liquidity) is None
+    assert runtime.wallet == wallet_before
+    assert runtime.position is None
+
+
+def test_fixed_entry_cost_routes_from_funded_wallet_and_conserves_value() -> None:
+    events = [_swap(0), _swap(1), _swap(2)]
+    runtime = create_sleeve_runtime(
+        sleeve_id="a",
+        params=_params_with_mint_cost(0.05),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=0.112732,
+    )
+    runtime.wallet = PortfolioComposition(stable_usd=0.056366, cngn_amount=0.056366)
+    for event in events:
+        runtime._observe_swap(event)
+        runtime.previous_swap_time = event.block_time
+
+    action = runtime.propose_entry(events[-1], events[-1].active_liquidity)
+
+    assert action is not None
+    assert action.inventory_swap_direction == "cngn_to_stable"
+    assert action.inventory_swap_notional_usd > 0.0
+    assert action.variable_cost_asset == "cngn"
+    before_value = action.wallet_before.value_usd(action.cngn_usd_price)
+    after_value = _portfolio_value(
+        action.position_after,
+        action.wallet_after,
+        runtime.current_price,
+        runtime.current_tick,
+        runtime.current_sqrt_price_x96,
+        UNISWAP_BASE_POOL,
+    )
+    assert after_value == pytest.approx(
+        before_value - action.transaction_cost.total,
+        abs=1e-10,
+    )
+
+
+def test_joint_settlement_conserves_small_mixed_wallet_entries() -> None:
+    events = [_swap(0), _swap(1), _swap(2)]
+    runtimes = {
+        sleeve_id: create_sleeve_runtime(
+            sleeve_id=sleeve_id,
+            params=_params_with_mint_cost(0.05),
+            pool_config=UNISWAP_BASE_POOL,
+            capital_usd=0.112732,
+        )
+        for sleeve_id in ("a", "b")
+    }
+    for runtime in runtimes.values():
+        runtime.wallet = PortfolioComposition(
+            stable_usd=0.056366,
+            cngn_amount=0.056366,
+        )
+        for event in events:
+            runtime._observe_swap(event)
+            runtime.previous_swap_time = event.block_time
+    actions = tuple(
+        action
+        for sleeve_id in sorted(runtimes)
+        if (
+            action := runtimes[sleeve_id].propose_entry(
+                events[-1],
+                events[-1].active_liquidity,
+            )
+        )
+        is not None
+    )
+    opening_value = sum(
+        runtime.wallet.value_usd(runtime.current_price) for runtime in runtimes.values()
+    )
+
+    batch = _settle_actions(
+        actions,
+        runtimes,
+        events[-1].active_liquidity,
+        UNISWAP_BASE_POOL,
+    )
+
+    assert len(actions) == len(runtimes)
+    final_value = sum(
+        _portfolio_value(
+            runtime.position,
+            runtime.wallet,
+            runtime.current_price,
+            runtime.current_tick,
+            runtime.current_sqrt_price_x96,
+            UNISWAP_BASE_POOL,
+        )
+        for runtime in runtimes.values()
+    )
+    assert final_value == pytest.approx(
+        opening_value - sum(cost.total for _, cost in batch.costs),
+        abs=1e-10,
+    )
 
 
 def test_full_wallet_entries_are_jointly_scaled_without_redistribution() -> None:
