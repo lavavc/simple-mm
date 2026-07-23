@@ -187,10 +187,14 @@ python3 research/scripts/report_backtest_regime_stability.py \
   --out research/data/quality/backtest_regime_stability.md
 ```
 
-The LP lifecycle ledger exporter retains deterministic fixture and explicit
-candidate-list paths. The verified no-candidate command shape below is reserved
-for the checkpointed action-first runner; until its remaining transfer, replay,
-build, and publication phases are wired, it fails closed and writes no output:
+### Resumable verified LP ledger exports
+
+The no-candidate LP lifecycle command is the verified, checkpointed action-first
+export. It resumes automatically from the output-derived SQLite checkpoint and
+must cover the exact frozen replay range from pool inception. Use `--fresh` only
+to replace incompatible or intentionally abandoned operational state; it is
+rejected for fixture and explicit-candidate-list modes. Schema-v1 operational
+files have no compatibility path and therefore require an explicit `--fresh`.
 
 ```bash
 python3 research/scripts/export_v4_lp_ledger.py \
@@ -206,29 +210,93 @@ python3 research/scripts/export_v4_lp_ledger.py \
   --out research/data/derived/uni_bsc_lp_ledger.csv
 ```
 
-Completed verified exports will write an adjacent `*.csv.coverage.json` sidecar
-that binds the exact ledger bytes to the requested block range and chain ID.
-The action-first contract scans and reconciles target-pool PoolManager
-`ModifyLiquidity` actions before freezing relevant token IDs, then attests the
-complete PositionManager ERC-721 `Transfer` scan while fetching transaction
-bundles only for those IDs. `--candidate-tx-csv` and fixture exports remain
-unverified and cannot support a complete market-structure diagnostic. A
-target-pool liquidity transaction that the configured PositionManager decoder
-cannot represent fails the export. The sidecar records
-both endpoint block hashes and timestamps, the observed ledger row range, and
-the canonical producer-attested candidate set and digest. Endpoint headers are
-captured before candidate and replay reads and must match exactly after those
-reads. Each fetched transaction and receipt must also agree on hash, block, and
-transaction index before decoding. The CSV and sidecar are staged and validated
-together; a failed replacement restores the prior valid pair or leaves no new
-pair when the exporter catches the publication error. A nonblocking advisory
-lock at `*.csv.publish.lock` serializes cooperating exporters targeting the same
-CSV through staging, validation, replacement, rollback, and cleanup; a
-concurrent exporter fails before changing either final file. A process
-interruption between the two renames can leave a mixed pair; readers reject it
-and the exporter refuses to overwrite it. Restore the retained backup named in
-any rollback error, or deliberately remove both final files, before retrying.
-Regenerate both whenever the analysis cutoff moves.
+For each output `ledger.csv`, the operational namespace is:
+
+- `ledger.csv.checkpoint.sqlite3`, plus live `-wal` and `-shm` siblings;
+- `ledger.csv.progress.json`;
+- `ledger.csv.run.lock`; and
+- `ledger.csv.publish.lock`.
+
+These files are resumability and observability state, not research evidence.
+Only the validated `ledger.csv` plus `ledger.csv.coverage.json` pair is canonical
+evidence. Do not copy, cite, or feed a partial checkpoint into the backtest.
+
+Read status without making any RPC request:
+
+```bash
+python3 research/scripts/report_lp_ledger_export_status.py \
+  research/data/derived/uni_base_lp_ledger.csv \
+  research/data/derived/uni_bsc_lp_ledger.csv
+
+python3 research/scripts/report_lp_ledger_export_status.py --json \
+  research/data/derived/uni_base_lp_ledger.csv \
+  research/data/derived/uni_bsc_lp_ledger.csv
+```
+
+The schema-v2 phases are `preflight`, action discovery/fetch/decode, token-set
+freeze, full transfer scan, relevant-transfer fetch/decode, replay-input bind,
+price replay, build, publish, and succeeded. Status includes the durable action,
+token, unfiltered transfer, relevant transfer, ownership, bound-action, and row
+counters. The JSON form also preserves the last durable unit, generation,
+stable error code, rate, and ETA. A compatible rerun resumes the current phase;
+completed chunks and bundles are not fetched again.
+
+SIGINT and SIGTERM record the current attempt as interrupted when cleanup can
+run. SIGKILL or a host restart leaves the last durable checkpoint intact; a free
+run lock makes status report the stale running attempt as interrupted. A busy
+terminal WAL checkpoint leaves the published pair valid and is retried on the
+next invocation. A non-busy WAL maintenance error preserves the publication
+fact under `checkpoint_maintenance_error`; the same command revalidates the
+exact pair and endpoint, retries maintenance, and performs no completed RPC
+scan or bundle fetch again.
+
+The action-first contract first scans and reconciles every target-pool
+PoolManager `ModifyLiquidity` action. Only then does it freeze the relevant
+position token IDs. It subsequently scans every PositionManager ERC-721
+`Transfer` log as coverage evidence, while fetching transaction and receipt
+bundles only for transfers involving a frozen token ID. The sidecar keeps the
+unfiltered transfer-scan count/digest separate from the relevant witness and
+eligible-bundle sets, so filtering does not masquerade as complete discovery.
+
+The exporter reuses, rather than rescans, the frozen pool-history replay inputs:
+
+- Base: SHA-256
+  `41c3d5b945abdffde32087590c21115914404f496069519c572e393b667f99b9`,
+  639921 bytes, 1596 rows, blocks 42926879 through 47514853.
+- BSC: SHA-256
+  `bf99f9a17ea2ff0048da7c7eec4fa0c8fa3b9e7e5586e6200919b66edaccd1e2`,
+  1330201 bytes, 3119 rows, blocks 84655203 through 105135905.
+
+Preflight binds those exact bytes, their parser and price-semantics contracts,
+and the start/end block hashes and timestamps. Endpoint headers are recaptured
+on every attempt and immediately before publication. A changed endpoint,
+replay file, source digest, runtime, range, pool configuration, or output path
+is incompatible and fails closed. A target-pool action that the configured
+PositionManager decoder cannot represent also fails the run.
+
+Before either final rename, the checkpoint durably records the expected CSV and
+sidecar SHA-256 values. Each final rename and rollback is followed by a parent
+directory `fsync`. If a process stops between renames, readers reject the mixed
+pair; the next compatible invocation rebuilds the expected bytes and installs
+only the checkpoint-exact missing or stale counterpart. Both exact files are
+strictly revalidated before publication becomes terminal. Files that do not
+match an authorized expected half, or a separately valid prior pair, remain
+untouched for manual investigation. Retained backup paths named by a rollback
+error are recovery evidence and must not be deleted until the prior pair is
+restored.
+
+For a bounded live smoke, keep the full frozen range so replay identity remains
+valid, interrupt immediately after the first durable action-discovery chunk,
+inspect status, and rerun the identical command without `--fresh`. Do not shorten
+the requested end block: a one-chunk range cannot bind the frozen replay bytes.
+
+`--candidate-tx-csv` and fixture exports remain explicitly unverified and
+non-resumable. They use the same output run lock and write terminal operational
+progress on success, failure, or handled interruption, but never create a
+schema-v2 SQLite checkpoint and cannot support a complete market-structure
+diagnostic. Their terminal error records contain only stable redacted codes.
+Regenerate the canonical verified pair whenever the frozen analysis cutoff
+deliberately changes.
 
 Use the fixture path for deterministic decoder tests or hand-built fixtures:
 

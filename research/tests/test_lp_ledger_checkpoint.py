@@ -2718,6 +2718,38 @@ def test_resume_rejects_logically_inconsistent_checkpoint(
             LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False)
 
 
+@pytest.mark.parametrize("publication_state", ("started", "published"))
+def test_resume_rejects_publication_state_before_publish_phase(
+    tmp_path: Path,
+    publication_state: str,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _identity(paths.output)
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False):
+            pass
+        with sqlite3.connect(paths.database) as connection:
+            connection.execute(
+                """
+                UPDATE publication_state
+                SET state = ?, expected_ledger_sha256 = ?,
+                    expected_sidecar_sha256 = ?, started_generation = 1,
+                    published_generation = ?
+                WHERE singleton = 1
+                """,
+                (
+                    publication_state,
+                    "a" * 64,
+                    "b" * 64,
+                    1 if publication_state == "published" else None,
+                ),
+            )
+
+        with pytest.raises(CheckpointContractError, match="publication.*phase"):
+            LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False)
+
+
 def test_resume_rejects_action_witness_moved_outside_its_chunk(
     tmp_path: Path,
 ) -> None:
@@ -2974,6 +3006,29 @@ def test_terminal_checkpoint_can_record_nonbusy_wal_maintenance_failure(
             assert failed.status == "failed"
             assert failed.output_published is True
             assert failed.error_code == "checkpoint_maintenance_error"
+            assert run.load_publication_state().state == "published"
+
+
+def test_terminal_checkpoint_can_clear_recovered_wal_maintenance_failure(
+    tmp_path: Path,
+) -> None:
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _identity(paths.output)
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False):
+            pass
+        _mark_checkpoint_succeeded(paths.database, status="succeeded")
+
+        with LPLedgerCheckpoint.create_or_resume(paths, identity, fresh=False) as run:
+            failed = run.mark_checkpoint_maintenance_failed()
+            recovered = run.mark_checkpoint_maintenance_recovered()
+
+            assert recovered.generation == failed.generation + 1
+            assert recovered.phase == "succeeded"
+            assert recovered.status == "succeeded"
+            assert recovered.output_published is True
+            assert recovered.error_code is None
             assert run.load_publication_state().state == "published"
 
 

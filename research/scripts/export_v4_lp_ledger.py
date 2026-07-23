@@ -6,18 +6,22 @@ import argparse
 import csv
 import fcntl
 import hashlib
+import importlib.metadata
 import io
 import json
 import os
+import platform
+import signal
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from requests import ConnectionError as RequestsConnectionError
@@ -63,22 +67,41 @@ from research.backtester.lp_ledger_attribution import (  # noqa: E402
     pool_attribution_orientation,
 )
 from research.backtester.lp_ledger_checkpoint import (  # noqa: E402
+    CHECKPOINT_SCHEMA_VERSION,
+    CHECKPOINT_SOURCE_PATHS,
     ActionDecodeIdentity,
     ActionPriceBinding,
     BlockHeader,
     BuildInputs,
     CandidateBundle,
+    CheckpointContractError,
+    CheckpointPaths,
     CheckpointSnapshot,
     DecoderStateUpsert,
     DiscoveryWitness,
+    EndpointSnapshot,
+    ErrorCode,
     EventTimeStateSource,
     LPLedgerCheckpoint,
+    Phase,
     PositionKeyMapping,
     PositionResolution,
+    ProgressSnapshot,
+    PublicationState,
     ReplayInputEvidence,
     RunIdentity,
+    acquire_run_lock,
     candidate_payload_sha256,
+    fsync_directory,
+    open_regular_leaf,
+    progress_from_snapshot,
     render_safe_failure,
+    should_write_progress,
+    terminal_noncheckpoint_failure_progress,
+    terminal_noncheckpoint_progress,
+    validate_output_namespace,
+    validate_regular_leaf,
+    write_progress_atomically,
 )
 from research.backtester.pool_price_semantics import raw_sqrt_mid_from_row  # noqa: E402
 from research.backtester.v4_event_replay import (  # noqa: E402
@@ -172,6 +195,11 @@ _REPLAY_INPUT_FIELDS = FROZEN_REPLAY_INPUT_FIELDS
 _REPLAY_EVENT_TYPES = frozenset(FROZEN_REPLAY_EVENT_SOURCES)
 _PRICE_EVENT_TYPES = FROZEN_REPLAY_PRICE_EVENT_TYPES
 _REPLAY_EVENT_SOURCES = FROZEN_REPLAY_EVENT_SOURCES
+_CHECKPOINT_EXPORTER_VERSION = "lp-ledger-checkpoint-v2"
+_FROZEN_REPLAY_PATHS = {
+    "uni-base": REPO_ROOT / "research/data/derived/uni_base_pool_history_replay.csv",
+    "uni-bsc": REPO_ROOT / "research/data/derived/uni_bsc_pool_history_replay.csv",
+}
 
 
 @dataclass(frozen=True)
@@ -197,14 +225,126 @@ class _FrozenReplayInput:
     price_events: tuple[ReplayEvent, ...]
 
 
+class _CheckpointExportError(RuntimeError):
+    def __init__(self, *, phase: Phase, error_code: ErrorCode) -> None:
+        super().__init__("LP ledger export failed")
+        self.phase = phase
+        self.error_code = error_code
+
+
+_ProgressCallback = Callable[[CheckpointSnapshot], None]
+
+
+@dataclass
+class _CheckpointProgressWriter:
+    paths: CheckpointPaths
+    previous: ProgressSnapshot | None = None
+
+    def emit(self, snapshot: CheckpointSnapshot, *, force: bool = False) -> None:
+        current = progress_from_snapshot(
+            snapshot,
+            datetime.now(timezone.utc),
+            time.monotonic(),
+            self.previous,
+        )
+        if force or should_write_progress(self.previous, current):
+            write_progress_atomically(self.paths, current)
+            self.previous = current
+
+
+def _notify_progress(
+    callback: _ProgressCallback | None,
+    snapshot: CheckpointSnapshot,
+) -> CheckpointSnapshot:
+    if callback is not None:
+        callback(snapshot)
+    return snapshot
+
+
+@contextmanager
+def _sigterm_as_interrupt() -> Iterator[None]:
+    previous_handler: Any = None
+    installed = False
+
+    def interrupt(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, interrupt)
+        installed = True
+    except ValueError:
+        pass
+    try:
+        yield
+    finally:
+        if installed and previous_handler is not None:
+            signal.signal(signal.SIGTERM, previous_handler)
+
+
+def _checkpoint_failure_code(
+    phase: Phase,
+    exception: Exception,
+) -> ErrorCode:
+    if isinstance(
+        exception,
+        (
+            RequestsConnectionError,
+            RequestsTimeout,
+            MultipleFailedRequests,
+            ProviderConnectionError,
+            RequestTimedOut,
+            TooManyRequests,
+            Web3RPCError,
+        ),
+    ):
+        return "rpc_error"
+    if isinstance(exception, CheckpointContractError):
+        return "checkpoint_corrupt"
+    if phase in ("action_decode", "token_set_freeze", "relevant_transfer_decode"):
+        return "decode_error"
+    if phase in ("replay_input_bind", "price_replay"):
+        return "replay_error"
+    if phase in ("build", "publish"):
+        return "publication_error"
+    return "unknown_error"
+
+
+def _record_noncheckpoint_failure(
+    pool: str,
+    mode: Literal["candidate_list_unverified", "fixture"],
+    start_block: int,
+    end_block: int,
+    output_path: Path,
+    phase: Phase,
+    error_code: ErrorCode,
+) -> None:
+    write_progress_atomically(
+        CheckpointPaths.from_output(output_path),
+        terminal_noncheckpoint_failure_progress(
+            pool=pool,
+            mode=mode,
+            start_block=start_block,
+            end_block=end_block,
+            output_filename=output_path.name,
+            phase=phase,
+            error_code=error_code,
+            now=datetime.now(timezone.utc),
+        ),
+    )
+
+
 def _stage_action_discovery(
     run: LPLedgerCheckpoint,
     w3: Web3,
     config: Any,
     start_block: int,
     end_block: int,
+    *,
+    on_progress: _ProgressCallback | None = None,
 ) -> CheckpointSnapshot:
     _validate_frozen_range(start_block, end_block)
+    snapshot = run.snapshot()
     for block_range in run.incomplete_action_chunks():
         if (
             block_range.start_block < start_block
@@ -233,7 +373,8 @@ def _stage_action_discovery(
                 key=_discovery_witness_sort_key,
             )
         )
-        run.commit_action_chunk(block_range, witnesses)
+        snapshot = run.commit_action_chunk(block_range, witnesses)
+        _notify_progress(on_progress, snapshot)
     return run.snapshot()
 
 
@@ -325,6 +466,8 @@ def _stage_action_bundles(
     w3: Web3,
     start_block: int,
     end_block: int,
+    *,
+    on_progress: _ProgressCallback | None = None,
 ) -> CheckpointSnapshot:
     _validate_frozen_range(start_block, end_block)
     snapshot = run.snapshot()
@@ -339,12 +482,14 @@ def _stage_action_bundles(
             end_block,
         )
         snapshot = run.commit_action_bundle(bundle)
+        _notify_progress(on_progress, snapshot)
     if (
         not pending_hashes
         and snapshot.phase == "action_fetch"
         and not run.action_candidate_hashes()
     ):
         snapshot = run.complete_phase("action_fetch")
+        _notify_progress(on_progress, snapshot)
     return snapshot
 
 
@@ -352,6 +497,8 @@ def _stage_action_decode(
     run: LPLedgerCheckpoint,
     w3: Web3,
     config: ExportPoolConfig,
+    *,
+    on_progress: _ProgressCallback | None = None,
 ) -> CheckpointSnapshot:
     identity = run.action_decode_identity()
     _require_matching_action_decode_identity(identity, config)
@@ -462,12 +609,14 @@ def _stage_action_decode(
             actions=actions,
             position_keys=position_key_mappings,
         )
+        _notify_progress(on_progress, snapshot)
     if (
         not pending_bundles
         and snapshot.phase == "action_decode"
         and not run.undecoded_action_bundles()
     ):
         snapshot = run.complete_phase("action_decode")
+        _notify_progress(on_progress, snapshot)
     return snapshot
 
 
@@ -486,6 +635,8 @@ def _stage_full_transfer_scan(
     config: ExportPoolConfig,
     start_block: int,
     end_block: int,
+    *,
+    on_progress: _ProgressCallback | None = None,
 ) -> CheckpointSnapshot:
     _validate_frozen_range(start_block, end_block)
     transfer_w3 = _transfer_scan_web3(w3, config)
@@ -528,6 +679,7 @@ def _stage_full_transfer_scan(
             unfiltered_sha256=_transfer_witnesses_sha256(witnesses),
             relevant_witnesses=relevant_witnesses,
         )
+        _notify_progress(on_progress, snapshot)
     return snapshot
 
 
@@ -826,6 +978,8 @@ def _stage_relevant_transfer_bundles(
     w3: Web3,
     start_block: int,
     end_block: int,
+    *,
+    on_progress: _ProgressCallback | None = None,
 ) -> CheckpointSnapshot:
     _validate_frozen_range(start_block, end_block)
     pending_hashes = run.unfetched_relevant_transfer_hashes()
@@ -834,6 +988,7 @@ def _stage_relevant_transfer_bundles(
         reused = run.reuse_staged_bundle_for_relevant_transfer(transaction_hash)
         if reused is not None:
             snapshot = reused
+            _notify_progress(on_progress, snapshot)
             continue
         bundle = _fetch_and_validate_candidate_bundle(
             w3,
@@ -843,18 +998,22 @@ def _stage_relevant_transfer_bundles(
             end_block,
         )
         snapshot = run.commit_relevant_transfer_bundle(bundle)
+        _notify_progress(on_progress, snapshot)
     if (
         not pending_hashes
         and snapshot.phase == "relevant_transfer_fetch"
         and not run.relevant_transfer_transaction_hashes()
     ):
         snapshot = run.complete_phase("relevant_transfer_fetch")
+        _notify_progress(on_progress, snapshot)
     return snapshot
 
 
 def _stage_relevant_transfer_decode(
     run: LPLedgerCheckpoint,
     config: ExportPoolConfig,
+    *,
+    on_progress: _ProgressCallback | None = None,
 ) -> CheckpointSnapshot:
     frozen_token_ids = frozenset(run.frozen_token_ids())
     pending_bundles = run.undecoded_relevant_transfer_bundles()
@@ -886,12 +1045,14 @@ def _stage_relevant_transfer_decode(
             bundle,
             owners=owners,
         )
+        _notify_progress(on_progress, snapshot)
     if (
         not pending_bundles
         and snapshot.phase == "relevant_transfer_decode"
         and not run.relevant_transfer_transaction_hashes()
     ):
         snapshot = run.complete_phase("relevant_transfer_decode")
+        _notify_progress(on_progress, snapshot)
     return snapshot
 
 
@@ -1934,29 +2095,485 @@ def export_fixture_lp_ledger(
     output_path: Path,
 ) -> int:
     ledger_coverage_path(output_path)
-    rows = build_lp_ledger_rows(
-        decoded_actions=[
-            _decoded_action_from_json(item) for item in _read_json_list(decoded_actions_path)
-        ],
-        ownership_events=[
-            OwnershipEvent(**item) for item in _read_json_list(ownership_events_path)
-        ],
-        price_events=[ReplayedEvent(**item) for item in _read_json_list(price_events_path)],
+    paths = CheckpointPaths.from_output(output_path)
+    with acquire_run_lock(paths):
+        validate_output_namespace(paths, include_checkpoint=False)
+        with _sigterm_as_interrupt():
+            return _export_fixture_lp_ledger_locked(
+                pool,
+                start_block,
+                end_block,
+                decoded_actions_path,
+                ownership_events_path,
+                price_events_path,
+                paths.output,
+            )
+
+
+def _export_fixture_lp_ledger_locked(
+    pool: str,
+    start_block: int,
+    end_block: int,
+    decoded_actions_path: Path,
+    ownership_events_path: Path,
+    price_events_path: Path,
+    output_path: Path,
+) -> int:
+    phase: Phase = "action_decode"
+    try:
+        rows = build_lp_ledger_rows(
+            decoded_actions=[
+                _decoded_action_from_json(item)
+                for item in _read_json_list(decoded_actions_path)
+            ],
+            ownership_events=[
+                OwnershipEvent(**item)
+                for item in _read_json_list(ownership_events_path)
+            ],
+            price_events=[
+                ReplayedEvent(**item) for item in _read_json_list(price_events_path)
+            ],
+        )
+        phase = "build"
+        ledger_bytes = _render_ledger_rows(rows)
+        coverage_bytes = build_fixture_ledger_coverage_bytes(
+            pool,
+            ledger_bytes,
+            requested_start_block=start_block,
+            requested_end_block=end_block,
+            fixture_input_sha256={
+                "decoded_actions": _sha256_path(decoded_actions_path),
+                "ownership_events": _sha256_path(ownership_events_path),
+                "price_events": _sha256_path(price_events_path),
+            },
+        )
+        phase = "publish"
+        _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
+        write_progress_atomically(
+            CheckpointPaths.from_output(output_path),
+            terminal_noncheckpoint_progress(
+                pool=pool,
+                mode="fixture",
+                start_block=start_block,
+                end_block=end_block,
+                output_filename=output_path.name,
+                ledger_row_count=len(rows),
+                candidate_transaction_count=0,
+                now=datetime.now(timezone.utc),
+            ),
+        )
+        return len(rows)
+    except KeyboardInterrupt as exc:
+        _record_noncheckpoint_failure(
+            pool,
+            "fixture",
+            start_block,
+            end_block,
+            output_path,
+            phase,
+            "interrupted",
+        )
+        raise _CheckpointExportError(
+            phase=phase,
+            error_code="interrupted",
+        ) from exc
+    except _CheckpointExportError:
+        raise
+    except Exception as exc:
+        _record_noncheckpoint_failure(
+            pool,
+            "fixture",
+            start_block,
+            end_block,
+            output_path,
+            phase,
+            _checkpoint_failure_code(phase, exc),
+        )
+        raise
+
+
+def _checkpoint_endpoint_snapshot(
+    start_block: int,
+    end_block: int,
+    endpoint: _RpcCoverageEndpointSnapshot,
+) -> EndpointSnapshot:
+    return EndpointSnapshot(
+        start=BlockHeader(
+            block_number=start_block,
+            block_hash=endpoint.start_block_hash,
+            timestamp_ms=endpoint.start_timestamp_ms,
+        ),
+        end=BlockHeader(
+            block_number=end_block,
+            block_hash=endpoint.end_block_hash,
+            timestamp_ms=endpoint.end_timestamp_ms,
+        ),
     )
-    ledger_bytes = _render_ledger_rows(rows)
-    coverage_bytes = build_fixture_ledger_coverage_bytes(
-        pool,
-        ledger_bytes,
-        requested_start_block=start_block,
-        requested_end_block=end_block,
-        fixture_input_sha256={
-            "decoded_actions": _sha256_path(decoded_actions_path),
-            "ownership_events": _sha256_path(ownership_events_path),
-            "price_events": _sha256_path(price_events_path),
-        },
+
+
+def _checkpoint_source_sha256() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (relative_path, _sha256_path(REPO_ROOT / relative_path))
+        for relative_path in CHECKPOINT_SOURCE_PATHS
     )
-    _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
-    return len(rows)
+
+
+def _checkpoint_run_identity(
+    config: ExportPoolConfig,
+    chain_id: int,
+    start_block: int,
+    end_block: int,
+    output_path: Path,
+    replay_input: ReplayInputEvidence,
+    endpoint: _RpcCoverageEndpointSnapshot,
+) -> RunIdentity:
+    return RunIdentity(
+        schema_version=CHECKPOINT_SCHEMA_VERSION,
+        exporter_version=_CHECKPOINT_EXPORTER_VERSION,
+        verification_mode="rpc_verified",
+        pool=config.name,
+        chain=config.chain,
+        chain_id=chain_id,
+        pool_id=config.pool_id.lower(),
+        pool_manager=config.pool_manager.lower(),
+        position_manager=config.position_manager.lower(),
+        wrapper_entrypoint=ENTRYPOINT_V08_ADDRESS.lower(),
+        token0_address=config.token0_address.lower(),
+        token1_address=config.token1_address.lower(),
+        token0_decimals=config.token0_decimals,
+        token1_decimals=config.token1_decimals,
+        fee_rate=format(Decimal(str(config.fee_rate)), "f"),
+        invert_price=config.invert_price,
+        start_block=start_block,
+        end_block=end_block,
+        chunk_size=config.chunk_size,
+        action_topic=V4_MODIFY_LIQUIDITY_TOPIC.lower(),
+        transfer_topic=_POSITION_MANAGER_TRANSFER_TOPIC,
+        rpc_provider_origin=_rpc_provider_origin(config.rpc_url),
+        replay_input=replay_input,
+        output_path=str(output_path),
+        endpoint=_checkpoint_endpoint_snapshot(start_block, end_block, endpoint),
+        python_version=platform.python_version(),
+        web3_version=importlib.metadata.version("web3"),
+        source_sha256=_checkpoint_source_sha256(),
+    )
+
+
+def _require_matching_endpoint(
+    expected: _RpcCoverageEndpointSnapshot,
+    observed: _RpcCoverageEndpointSnapshot,
+) -> None:
+    if observed != expected:
+        raise CrossPoolContractError(
+            "RPC coverage endpoint snapshot changed during LP ledger export"
+        )
+
+
+def _require_publication_hashes(
+    publication: PublicationState,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+) -> None:
+    if (
+        publication.expected_ledger_sha256 != hashlib.sha256(ledger_bytes).hexdigest()
+        or publication.expected_sidecar_sha256
+        != hashlib.sha256(coverage_bytes).hexdigest()
+    ):
+        raise CrossPoolContractError(
+            "checkpoint publication hashes do not match the rebuilt ledger pair"
+        )
+
+
+def _publish_checkpoint_pair(
+    run: LPLedgerCheckpoint,
+    progress: _CheckpointProgressWriter,
+    pool: str,
+    ledger_path: Path,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+) -> PublicationState:
+    with _publication_lock(ledger_path):
+        publication = run.load_publication_state()
+        if publication.state == "not_started":
+            _require_safe_publication_start_locked(
+                pool,
+                ledger_path,
+                ledger_bytes,
+                coverage_bytes,
+            )
+            progress.emit(
+                run.begin_publication(
+                    hashlib.sha256(ledger_bytes).hexdigest(),
+                    hashlib.sha256(coverage_bytes).hexdigest(),
+                )
+            )
+            publication = run.load_publication_state()
+        _require_publication_hashes(publication, ledger_bytes, coverage_bytes)
+        _publish_or_reconcile_ledger_pair_locked(
+            pool,
+            ledger_path,
+            ledger_bytes,
+            coverage_bytes,
+            publication,
+        )
+        return publication
+
+
+def _require_safe_publication_start_locked(
+    pool: str,
+    ledger_path: Path,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+) -> None:
+    sidecar_path = ledger_coverage_path(ledger_path)
+    observed_ledger_sha256 = _optional_path_sha256(ledger_path)
+    observed_sidecar_sha256 = _optional_path_sha256(sidecar_path)
+    ledger_exact = observed_ledger_sha256 == hashlib.sha256(ledger_bytes).hexdigest()
+    sidecar_exact = observed_sidecar_sha256 == hashlib.sha256(coverage_bytes).hexdigest()
+    if ledger_exact != sidecar_exact:
+        raise CrossPoolContractError(
+            "refusing to authorize an ambiguous partial LP ledger pair"
+        )
+    ledger_exists = observed_ledger_sha256 is not None
+    sidecar_exists = observed_sidecar_sha256 is not None
+    if ledger_exists != sidecar_exists:
+        raise CrossPoolContractError(
+            "refusing to authorize an ambiguous partial LP ledger pair"
+        )
+    if not ledger_exists:
+        return
+    if ledger_exact:
+        _fsync_directory(ledger_path.parent)
+        load_ledger_coverage(pool, ledger_path)
+        return
+    try:
+        load_ledger_coverage(pool, ledger_path)
+    except Exception as exc:
+        raise CrossPoolContractError(
+            "refusing to authorize an ambiguous LP ledger pair"
+        ) from exc
+
+
+def _finish_checkpoint_wal(
+    run: LPLedgerCheckpoint,
+    progress: _CheckpointProgressWriter,
+) -> None:
+    try:
+        run.checkpoint_terminal_wal()
+    except Exception as exc:
+        snapshot = run.snapshot()
+        if snapshot.status == "succeeded":
+            snapshot = run.mark_checkpoint_maintenance_failed()
+        progress.emit(snapshot, force=True)
+        raise _CheckpointExportError(
+            phase="succeeded",
+            error_code="checkpoint_maintenance_error",
+        ) from exc
+
+
+def _run_checkpointed_rpc_export(
+    run: LPLedgerCheckpoint,
+    w3: Web3,
+    config: ExportPoolConfig,
+    identity: RunIdentity,
+    initial_endpoint: _RpcCoverageEndpointSnapshot,
+    progress: _CheckpointProgressWriter,
+) -> int:
+    while True:
+        snapshot = run.snapshot()
+        phase = snapshot.phase
+        if phase == "succeeded":
+            if snapshot.status not in ("succeeded", "failed") or (
+                snapshot.status == "failed"
+                and snapshot.error_code != "checkpoint_maintenance_error"
+            ):
+                raise CrossPoolContractError(
+                    "published LP ledger checkpoint has an invalid terminal state"
+                )
+            ledger_bytes, coverage_bytes, row_count = (
+                _build_rpc_ledger_pair_from_checkpoint(run, identity, config)
+            )
+            _require_matching_endpoint(
+                initial_endpoint,
+                _capture_rpc_coverage_endpoint(
+                    w3,
+                    identity.start_block,
+                    identity.end_block,
+                ),
+            )
+            _publish_checkpoint_pair(
+                run,
+                progress,
+                identity.pool,
+                run.paths.output,
+                ledger_bytes,
+                coverage_bytes,
+            )
+            if snapshot.status == "failed":
+                progress.emit(
+                    run.mark_checkpoint_maintenance_recovered(),
+                    force=True,
+                )
+            _finish_checkpoint_wal(run, progress)
+            return row_count
+        if snapshot.status != "running":
+            raise CrossPoolContractError("LP ledger checkpoint is not runnable")
+        if phase == "preflight":
+            progress.emit(run.complete_phase("preflight"))
+        elif phase == "action_discovery":
+            _stage_action_discovery(
+                run,
+                w3,
+                config,
+                identity.start_block,
+                identity.end_block,
+                on_progress=progress.emit,
+            )
+        elif phase == "action_fetch":
+            _stage_action_bundles(
+                run,
+                w3,
+                identity.start_block,
+                identity.end_block,
+                on_progress=progress.emit,
+            )
+        elif phase == "action_decode":
+            _stage_action_decode(run, w3, config, on_progress=progress.emit)
+        elif phase == "token_set_freeze":
+            progress.emit(_freeze_action_token_set(run))
+        elif phase == "full_transfer_scan":
+            _stage_full_transfer_scan(
+                run,
+                w3,
+                config,
+                identity.start_block,
+                identity.end_block,
+                on_progress=progress.emit,
+            )
+        elif phase == "relevant_transfer_fetch":
+            _stage_relevant_transfer_bundles(
+                run,
+                w3,
+                identity.start_block,
+                identity.end_block,
+                on_progress=progress.emit,
+            )
+        elif phase == "relevant_transfer_decode":
+            _stage_relevant_transfer_decode(
+                run,
+                config,
+                on_progress=progress.emit,
+            )
+        elif phase == "replay_input_bind":
+            progress.emit(
+                _bind_frozen_replay_input(run, config, identity.replay_input)
+            )
+        elif phase == "price_replay":
+            progress.emit(_stage_price_replay(run, config))
+        elif phase in ("build", "publish"):
+            ledger_bytes, coverage_bytes, row_count = (
+                _build_rpc_ledger_pair_from_checkpoint(run, identity, config)
+            )
+            _require_matching_endpoint(
+                initial_endpoint,
+                _capture_rpc_coverage_endpoint(
+                    w3,
+                    identity.start_block,
+                    identity.end_block,
+                ),
+            )
+            publication = _publish_checkpoint_pair(
+                run,
+                progress,
+                identity.pool,
+                run.paths.output,
+                ledger_bytes,
+                coverage_bytes,
+            )
+            if publication.state == "started":
+                progress.emit(run.mark_published(), force=True)
+            _finish_checkpoint_wal(run, progress)
+            return row_count
+        else:
+            raise AssertionError(f"unsupported LP ledger checkpoint phase: {phase}")
+
+
+def _export_checkpointed_rpc_lp_ledger(
+    pool: str,
+    start_block: int,
+    end_block: int,
+    output_path: Path,
+    *,
+    fresh: bool,
+) -> int:
+    config = POOL_CONFIGS[pool]
+    _validate_frozen_range(start_block, end_block)
+    if start_block != config.default_start_block:
+        raise CrossPoolContractError(
+            "verified RPC LP-ledger export must start at the configured pool inception"
+        )
+    replay_path = _FROZEN_REPLAY_PATHS[pool]
+    frozen = _load_frozen_replay_input(replay_path, config)
+    if (
+        frozen.evidence.first_block != start_block
+        or frozen.evidence.last_block != end_block
+    ):
+        raise CrossPoolContractError(
+            "verified RPC LP-ledger range must equal the frozen replay range"
+        )
+    paths = CheckpointPaths.from_output(output_path)
+    with acquire_run_lock(paths):
+        validate_output_namespace(paths, include_checkpoint=True)
+        with _sigterm_as_interrupt():
+            w3 = _make_web3(config)
+            chain_id = _coverage_chain_id(w3, pool)
+            initial_endpoint = _capture_rpc_coverage_endpoint(w3, start_block, end_block)
+            identity = _checkpoint_run_identity(
+                config,
+                chain_id,
+                start_block,
+                end_block,
+                paths.output,
+                frozen.evidence,
+                initial_endpoint,
+            )
+            with LPLedgerCheckpoint.create_or_resume(
+                paths,
+                identity,
+                fresh=fresh,
+            ) as run:
+                progress = _CheckpointProgressWriter(paths)
+                try:
+                    progress.emit(run.snapshot(), force=True)
+                    return _run_checkpointed_rpc_export(
+                        run,
+                        w3,
+                        config,
+                        identity,
+                        initial_endpoint,
+                        progress,
+                    )
+                except KeyboardInterrupt as exc:
+                    snapshot = run.snapshot()
+                    if snapshot.status == "running":
+                        snapshot = run.mark_attempt_failed("interrupted")
+                        progress.emit(snapshot, force=True)
+                    raise _CheckpointExportError(
+                        phase=snapshot.phase,
+                        error_code="interrupted",
+                    ) from exc
+                except _CheckpointExportError:
+                    raise
+                except Exception as exc:
+                    snapshot = run.snapshot()
+                    error_code = _checkpoint_failure_code(snapshot.phase, exc)
+                    if snapshot.status == "running":
+                        snapshot = run.mark_attempt_failed(error_code)
+                        progress.emit(snapshot, force=True)
+                    raise _CheckpointExportError(
+                        phase=snapshot.phase,
+                        error_code=error_code,
+                    ) from exc
 
 
 def export_rpc_lp_ledger(
@@ -1965,61 +2582,191 @@ def export_rpc_lp_ledger(
     end_block: int,
     output_path: Path,
     candidate_tx_hashes: Sequence[str] | None = None,
+    *,
+    fresh: bool = False,
 ) -> int:
     ledger_coverage_path(output_path)
     if candidate_tx_hashes is None:
-        raise CrossPoolContractError(
-            "verified RPC LP-ledger export is disabled until the checkpointed "
-            "action-first runner is wired"
+        return _export_checkpointed_rpc_lp_ledger(
+            pool,
+            start_block,
+            end_block,
+            output_path,
+            fresh=fresh,
         )
+    if fresh:
+        raise CrossPoolContractError(
+            "--fresh is available only for verified full-RPC LP-ledger exports"
+        )
+    paths = CheckpointPaths.from_output(output_path)
+    with acquire_run_lock(paths):
+        validate_output_namespace(paths, include_checkpoint=False)
+        with _sigterm_as_interrupt():
+            return _export_candidate_list_lp_ledger_locked(
+                pool,
+                start_block,
+                end_block,
+                paths.output,
+                candidate_tx_hashes,
+            )
+
+
+def export_candidate_csv_lp_ledger(
+    pool: str,
+    start_block: int,
+    end_block: int,
+    output_path: Path,
+    candidate_tx_csv: Path,
+) -> int:
+    ledger_coverage_path(output_path)
+    paths = CheckpointPaths.from_output(output_path)
+    with acquire_run_lock(paths):
+        validate_output_namespace(paths, include_checkpoint=False)
+        with _sigterm_as_interrupt():
+            try:
+                candidate_tx_hashes = _candidate_tx_hashes_from_csv(
+                    candidate_tx_csv,
+                    start_block,
+                    end_block,
+                )
+            except KeyboardInterrupt as exc:
+                _record_noncheckpoint_failure(
+                    pool,
+                    "candidate_list_unverified",
+                    start_block,
+                    end_block,
+                    paths.output,
+                    "action_discovery",
+                    "interrupted",
+                )
+                raise _CheckpointExportError(
+                    phase="action_discovery",
+                    error_code="interrupted",
+                ) from exc
+            except Exception as exc:
+                _record_noncheckpoint_failure(
+                    pool,
+                    "candidate_list_unverified",
+                    start_block,
+                    end_block,
+                    paths.output,
+                    "action_discovery",
+                    "decode_error",
+                )
+                raise _CheckpointExportError(
+                    phase="action_discovery",
+                    error_code="decode_error",
+                ) from exc
+            return _export_candidate_list_lp_ledger_locked(
+                pool,
+                start_block,
+                end_block,
+                paths.output,
+                candidate_tx_hashes,
+            )
+
+
+def _export_candidate_list_lp_ledger_locked(
+    pool: str,
+    start_block: int,
+    end_block: int,
+    output_path: Path,
+    candidate_tx_hashes: Sequence[str],
+) -> int:
     config = POOL_CONFIGS[pool]
-    w3 = _make_web3(config)
-    chain_id = _coverage_chain_id(w3, pool)
-    initial_endpoint = _capture_rpc_coverage_endpoint(
-        w3,
-        start_block,
-        end_block,
-    )
-    resolved_candidate_hashes = tuple(candidate_tx_hashes)
-    required_action_hashes: frozenset[str] = frozenset()
-    decoded_actions, ownership_events = _decode_rpc_lp_inputs(
-        w3,
-        config,
-        resolved_candidate_hashes,
-        required_action_tx_hashes=required_action_hashes,
-    )
-    price_events = _replayed_price_events_for_actions(
-        w3,
-        config,
-        start_block,
-        end_block,
-        decoded_actions,
-    )
-    rows = build_lp_ledger_rows(decoded_actions, ownership_events, price_events)
-    final_endpoint = _capture_rpc_coverage_endpoint(
-        w3,
-        start_block,
-        end_block,
-    )
-    if final_endpoint != initial_endpoint:
-        raise CrossPoolContractError(
-            "RPC coverage endpoint snapshot changed during LP ledger export"
+    phase: Phase = "preflight"
+    try:
+        w3 = _make_web3(config)
+        chain_id = _coverage_chain_id(w3, pool)
+        initial_endpoint = _capture_rpc_coverage_endpoint(
+            w3,
+            start_block,
+            end_block,
         )
-    ledger_bytes = _render_ledger_rows(rows)
-    coverage_bytes = build_candidate_list_ledger_coverage_bytes(
-        pool,
-        ledger_bytes,
-        chain_id=chain_id,
-        covered_start_block=start_block,
-        covered_start_block_hash=initial_endpoint.start_block_hash,
-        covered_start_timestamp_ms=initial_endpoint.start_timestamp_ms,
-        covered_end_block=end_block,
-        covered_end_block_hash=initial_endpoint.end_block_hash,
-        covered_end_timestamp_ms=initial_endpoint.end_timestamp_ms,
-        candidate_transaction_hashes=resolved_candidate_hashes,
-    )
-    _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
-    return len(rows)
+        phase = "action_fetch"
+        resolved_candidate_hashes = tuple(candidate_tx_hashes)
+        required_action_hashes: frozenset[str] = frozenset()
+        decoded_actions, ownership_events = _decode_rpc_lp_inputs(
+            w3,
+            config,
+            resolved_candidate_hashes,
+            required_action_tx_hashes=required_action_hashes,
+        )
+        phase = "price_replay"
+        price_events = _replayed_price_events_for_actions(
+            w3,
+            config,
+            start_block,
+            end_block,
+            decoded_actions,
+        )
+        rows = build_lp_ledger_rows(decoded_actions, ownership_events, price_events)
+        final_endpoint = _capture_rpc_coverage_endpoint(
+            w3,
+            start_block,
+            end_block,
+        )
+        if final_endpoint != initial_endpoint:
+            raise CrossPoolContractError(
+                "RPC coverage endpoint snapshot changed during LP ledger export"
+            )
+        phase = "build"
+        ledger_bytes = _render_ledger_rows(rows)
+        coverage_bytes = build_candidate_list_ledger_coverage_bytes(
+            pool,
+            ledger_bytes,
+            chain_id=chain_id,
+            covered_start_block=start_block,
+            covered_start_block_hash=initial_endpoint.start_block_hash,
+            covered_start_timestamp_ms=initial_endpoint.start_timestamp_ms,
+            covered_end_block=end_block,
+            covered_end_block_hash=initial_endpoint.end_block_hash,
+            covered_end_timestamp_ms=initial_endpoint.end_timestamp_ms,
+            candidate_transaction_hashes=resolved_candidate_hashes,
+        )
+        phase = "publish"
+        _publish_ledger_pair(pool, output_path, ledger_bytes, coverage_bytes)
+        write_progress_atomically(
+            CheckpointPaths.from_output(output_path),
+            terminal_noncheckpoint_progress(
+                pool=pool,
+                mode="candidate_list_unverified",
+                start_block=start_block,
+                end_block=end_block,
+                output_filename=output_path.name,
+                ledger_row_count=len(rows),
+                candidate_transaction_count=len(resolved_candidate_hashes),
+                now=datetime.now(timezone.utc),
+            ),
+        )
+        return len(rows)
+    except KeyboardInterrupt as exc:
+        _record_noncheckpoint_failure(
+            pool,
+            "candidate_list_unverified",
+            start_block,
+            end_block,
+            output_path,
+            phase,
+            "interrupted",
+        )
+        raise _CheckpointExportError(
+            phase=phase,
+            error_code="interrupted",
+        ) from exc
+    except _CheckpointExportError:
+        raise
+    except Exception as exc:
+        _record_noncheckpoint_failure(
+            pool,
+            "candidate_list_unverified",
+            start_block,
+            end_block,
+            output_path,
+            phase,
+            _checkpoint_failure_code(phase, exc),
+        )
+        raise
 
 
 def _decode_rpc_lp_inputs(
@@ -2466,13 +3213,102 @@ def _publish_ledger_pair(
         _publish_ledger_pair_locked(pool, ledger_path, ledger_bytes, coverage_bytes)
 
 
+def _publish_or_reconcile_ledger_pair(
+    pool: str,
+    ledger_path: Path,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+    publication: PublicationState,
+) -> None:
+    _require_publication_hashes(publication, ledger_bytes, coverage_bytes)
+    with _publication_lock(ledger_path):
+        _publish_or_reconcile_ledger_pair_locked(
+            pool,
+            ledger_path,
+            ledger_bytes,
+            coverage_bytes,
+            publication,
+        )
+
+
+def _publish_or_reconcile_ledger_pair_locked(
+    pool: str,
+    ledger_path: Path,
+    ledger_bytes: bytes,
+    coverage_bytes: bytes,
+    publication: PublicationState,
+) -> None:
+    sidecar_path = ledger_coverage_path(ledger_path)
+    expected_ledger_sha256 = hashlib.sha256(ledger_bytes).hexdigest()
+    expected_sidecar_sha256 = hashlib.sha256(coverage_bytes).hexdigest()
+    observed_ledger_sha256 = _optional_path_sha256(ledger_path)
+    observed_sidecar_sha256 = _optional_path_sha256(sidecar_path)
+    ledger_exact = observed_ledger_sha256 == expected_ledger_sha256
+    sidecar_exact = observed_sidecar_sha256 == expected_sidecar_sha256
+
+    if publication.state == "published":
+        if not ledger_exact or not sidecar_exact:
+            raise CrossPoolContractError(
+                "published LP ledger final pair is not the exact checkpoint pair"
+            )
+        _fsync_directory(ledger_path.parent)
+        load_ledger_coverage(pool, ledger_path)
+        return
+    if publication.state != "started":
+        raise CrossPoolContractError(
+            "LP ledger publication must be durably started before final reconciliation"
+        )
+    if ledger_exact and sidecar_exact:
+        _fsync_directory(ledger_path.parent)
+        load_ledger_coverage(pool, ledger_path)
+        return
+    if ledger_exact != sidecar_exact:
+        destination = sidecar_path if ledger_exact else ledger_path
+        payload = coverage_bytes if ledger_exact else ledger_bytes
+        staged = _temporary_output_path(destination, "reconcile")
+        try:
+            _write_durable_bytes(staged, payload)
+            _replace_path(staged, destination)
+            load_ledger_coverage(pool, ledger_path)
+        finally:
+            _cleanup_temporary_path(staged)
+        return
+
+    ledger_exists = observed_ledger_sha256 is not None
+    sidecar_exists = observed_sidecar_sha256 is not None
+    if ledger_exists != sidecar_exists:
+        raise CrossPoolContractError(
+            "refusing to reconcile an ambiguous partial LP ledger pair"
+        )
+    if ledger_exists:
+        try:
+            load_ledger_coverage(pool, ledger_path)
+        except Exception as exc:
+            raise CrossPoolContractError(
+                "refusing to replace an ambiguous LP ledger pair"
+            ) from exc
+    _publish_ledger_pair_locked(pool, ledger_path, ledger_bytes, coverage_bytes)
+
+
+def _optional_path_sha256(path: Path) -> str | None:
+    if not validate_regular_leaf(path, allow_missing=True):
+        return None
+    return hashlib.sha256(_read_regular_bytes(path)).hexdigest()
+
+
 @contextmanager
 def _publication_lock(ledger_path: Path) -> Iterator[None]:
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = ledger_path.with_name(f"{ledger_path.name}.publish.lock")
-    with lock_path.open("a+b") as handle:
+    paths = CheckpointPaths.from_output(ledger_path)
+    validate_output_namespace(paths, include_checkpoint=False)
+    descriptor = open_regular_leaf(
+        paths.publish_lock,
+        os.O_RDWR | os.O_CREAT,
+        mode=0o600,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise CrossPoolContractError(
                 f"LP ledger publication is already active: {ledger_path}"
@@ -2480,7 +3316,9 @@ def _publication_lock(ledger_path: Path) -> Iterator[None]:
         try:
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _publish_ledger_pair_locked(
@@ -2490,8 +3328,8 @@ def _publish_ledger_pair_locked(
     coverage_bytes: bytes,
 ) -> None:
     sidecar_path = ledger_coverage_path(ledger_path)
-    ledger_exists = ledger_path.is_file()
-    sidecar_exists = sidecar_path.is_file()
+    ledger_exists = validate_regular_leaf(ledger_path, allow_missing=True)
+    sidecar_exists = validate_regular_leaf(sidecar_path, allow_missing=True)
     if ledger_exists != sidecar_exists:
         raise CrossPoolContractError(
             "refusing to replace a partial LP ledger and coverage pair"
@@ -2511,16 +3349,16 @@ def _publish_ledger_pair_locked(
         if ledger_exists:
             backup_ledger = _temporary_ledger_path(ledger_path, "backup")
             backup_sidecar = ledger_coverage_path(backup_ledger)
-            _write_durable_bytes(backup_ledger, ledger_path.read_bytes())
-            _write_durable_bytes(backup_sidecar, sidecar_path.read_bytes())
+            _write_durable_bytes(backup_ledger, _read_regular_bytes(ledger_path))
+            _write_durable_bytes(backup_sidecar, _read_regular_bytes(sidecar_path))
             load_ledger_coverage(pool, backup_ledger)
 
         # Publishing the ledger first makes every intermediate state fail closed
         # against the old or missing sidecar until the matching sidecar is visible.
-        _replace_path(staged_ledger, ledger_path)
         ledger_published = True
-        _replace_path(staged_sidecar, sidecar_path)
+        _replace_path(staged_ledger, ledger_path)
         sidecar_published = True
+        _replace_path(staged_sidecar, sidecar_path)
         load_ledger_coverage(pool, ledger_path)
     except BaseException:
         try:
@@ -2531,15 +3369,16 @@ def _publish_ledger_pair_locked(
                     _replace_path(backup_sidecar, sidecar_path)
             else:
                 if ledger_published:
-                    ledger_path.unlink(missing_ok=True)
+                    _unlink_path(ledger_path)
                 if sidecar_published:
-                    sidecar_path.unlink(missing_ok=True)
+                    _unlink_path(sidecar_path)
         except BaseException as rollback_error:
             preserve_backups = True
             retained_backups = tuple(
                 path
                 for path in (backup_ledger, backup_sidecar)
-                if path is not None and path.exists()
+                if path is not None
+                and validate_regular_leaf(path, allow_missing=True)
             )
             retained_text = ", ".join(str(path) for path in retained_backups)
             raise RuntimeError(
@@ -2548,34 +3387,99 @@ def _publish_ledger_pair_locked(
             ) from rollback_error
         raise
     finally:
-        staged_ledger.unlink(missing_ok=True)
-        staged_sidecar.unlink(missing_ok=True)
+        _cleanup_temporary_path(staged_ledger)
+        _cleanup_temporary_path(staged_sidecar)
         if not preserve_backups:
             if backup_ledger is not None:
-                backup_ledger.unlink(missing_ok=True)
+                _cleanup_temporary_path(backup_ledger)
             if backup_sidecar is not None:
-                backup_sidecar.unlink(missing_ok=True)
+                _cleanup_temporary_path(backup_sidecar)
 
 
 def _temporary_ledger_path(ledger_path: Path, purpose: str) -> Path:
+    validate_output_namespace(
+        CheckpointPaths.from_output(ledger_path),
+        include_checkpoint=False,
+    )
     descriptor, raw_path = tempfile.mkstemp(
         prefix=f".{ledger_path.stem}.{purpose}.",
         suffix=".csv",
         dir=ledger_path.parent,
     )
-    os.close(descriptor)
-    return Path(raw_path)
+    try:
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+    path = Path(raw_path)
+    validate_regular_leaf(path, allow_missing=False)
+    return path
+
+
+def _temporary_output_path(destination: Path, purpose: str) -> Path:
+    validate_regular_leaf(destination, allow_missing=True)
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{destination.name}.{purpose}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+    path = Path(raw_path)
+    validate_regular_leaf(path, allow_missing=False)
+    return path
 
 
 def _write_durable_bytes(path: Path, payload: bytes) -> None:
-    with path.open("wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
+    exists = validate_regular_leaf(path, allow_missing=True)
+    flags = os.O_WRONLY | (os.O_TRUNC if exists else os.O_CREAT | os.O_EXCL)
+    descriptor = open_regular_leaf(path, flags, mode=0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("LP ledger durable write returned no bytes")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _read_regular_bytes(path: Path) -> bytes:
+    descriptor = open_regular_leaf(path, os.O_RDONLY, mode=0o600)
+    try:
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def _replace_path(source: Path, destination: Path) -> None:
-    source.replace(destination)
+    validate_regular_leaf(source, allow_missing=False)
+    validate_regular_leaf(destination, allow_missing=True)
+    os.replace(source, destination)
+    _fsync_directory(destination.parent)
+
+
+def _unlink_path(path: Path) -> None:
+    if not validate_regular_leaf(path, allow_missing=True):
+        return
+    os.unlink(path)
+    _fsync_directory(path.parent)
+
+
+def _cleanup_temporary_path(path: Path) -> None:
+    if validate_regular_leaf(path, allow_missing=True):
+        os.unlink(path)
+
+
+def _fsync_directory(path: Path) -> None:
+    fsync_directory(path)
 
 
 def _csv_row(row: LPLedgerRow) -> dict[str, object]:
@@ -2595,6 +3499,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decoded-actions", type=Path)
     parser.add_argument("--ownership-events", type=Path)
     parser.add_argument("--price-events", type=Path)
+    parser.add_argument("--fresh", action="store_true")
     return parser
 
 
@@ -2602,6 +3507,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
         fixture_paths = (args.decoded_actions, args.ownership_events, args.price_events)
+        if args.fresh and (
+            args.candidate_tx_csv is not None
+            or any(path is not None for path in fixture_paths)
+        ):
+            raise ValueError(
+                "--fresh is available only for verified full-RPC LP-ledger exports"
+            )
         if all(path is not None for path in fixture_paths):
             count = export_fixture_lp_ledger(
                 args.pool,
@@ -2619,28 +3531,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "provide all fixture inputs together: --decoded-actions, "
                 "--ownership-events, and --price-events"
             )
-        candidate_tx_hashes = (
-            _candidate_tx_hashes_from_csv(
-                args.candidate_tx_csv,
+        if args.candidate_tx_csv is not None:
+            count = export_candidate_csv_lp_ledger(
+                args.pool,
                 args.start_block,
                 args.end_block,
+                args.out,
+                args.candidate_tx_csv,
             )
-            if args.candidate_tx_csv is not None
-            else None
-        )
-        count = export_rpc_lp_ledger(
-            args.pool,
-            args.start_block,
-            args.end_block,
-            args.out,
-            candidate_tx_hashes=candidate_tx_hashes,
-        )
+        else:
+            count = export_rpc_lp_ledger(
+                args.pool,
+                args.start_block,
+                args.end_block,
+                args.out,
+                candidate_tx_hashes=None,
+                fresh=args.fresh,
+            )
     except Exception as exc:
+        phase: Phase = "preflight"
+        error_code: ErrorCode = "unknown_error"
+        if isinstance(exc, _CheckpointExportError):
+            phase = exc.phase
+            error_code = exc.error_code
+        elif isinstance(exc, CheckpointContractError):
+            error_code = "checkpoint_incompatible"
         print(
             render_safe_failure(
                 pool=args.pool,
-                phase="preflight",
-                error_code="unknown_error",
+                phase=phase,
+                error_code=error_code,
                 exception=exc,
             ),
             file=sys.stderr,

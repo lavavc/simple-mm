@@ -533,6 +533,39 @@ def acquire_run_lock(paths: CheckpointPaths) -> Iterator[RunLock]:
             os.close(descriptor)
 
 
+def validate_output_namespace(
+    paths: CheckpointPaths,
+    *,
+    include_checkpoint: bool,
+) -> None:
+    _ensure_secure_parent(paths.output)
+    leaves = [
+        paths.output,
+        _coverage_path(paths.output),
+        paths.progress,
+        paths.run_lock,
+        paths.publish_lock,
+    ]
+    if include_checkpoint:
+        leaves.extend((paths.database, paths.wal, paths.shm))
+    for path in leaves:
+        _validate_regular_leaf(path, allow_missing=True)
+
+
+def validate_regular_leaf(path: Path, *, allow_missing: bool) -> bool:
+    _ensure_secure_parent(path)
+    return _validate_regular_leaf(path, allow_missing=allow_missing)
+
+
+def open_regular_leaf(path: Path, flags: int, *, mode: int) -> int:
+    _ensure_secure_parent(path)
+    return _open_regular_leaf(path, flags, mode=mode)
+
+
+def fsync_directory(directory: Path) -> None:
+    _fsync_directory(directory)
+
+
 class LPLedgerCheckpoint:
     def __init__(
         self,
@@ -2283,6 +2316,56 @@ class LPLedgerCheckpoint:
             raise
         return self.snapshot()
 
+    def mark_checkpoint_maintenance_recovered(self) -> CheckpointSnapshot:
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                """
+                SELECT r.generation, r.status, r.phase, r.output_published,
+                       r.error_code, p.state AS publication_state
+                FROM run_state AS r
+                JOIN publication_state AS p ON p.singleton = r.singleton
+                WHERE r.singleton = 1
+                """
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "failed"
+                or row["phase"] != "succeeded"
+                or row["output_published"] != 1
+                or row["error_code"] != "checkpoint_maintenance_error"
+                or row["publication_state"] != "published"
+            ):
+                raise CheckpointContractError(
+                    "checkpoint maintenance recovery requires a durable maintenance failure"
+                )
+            generation = cast(int, row["generation"]) + 1
+            now = _utc_now()
+            self._connection.execute(
+                """
+                UPDATE run_state
+                SET generation = ?, status = 'succeeded', updated_at_utc = ?,
+                    finished_at_utc = ?, error_code = NULL
+                WHERE singleton = 1
+                """,
+                (generation, now, now),
+            )
+            _mutation_hook("before_commit")
+            self._connection.commit()
+            _mutation_hook("after_commit")
+        except CheckpointContractError:
+            self._connection.rollback()
+            raise
+        except sqlite3.DatabaseError as exc:
+            self._connection.rollback()
+            raise CheckpointContractError(
+                "checkpoint maintenance recovery could not be persisted"
+            ) from exc
+        except BaseException:
+            self._connection.rollback()
+            raise
+        return self.snapshot()
+
     def mark_attempt_failed(self, error_code: ErrorCode) -> CheckpointSnapshot:
         code = _require_error_code(error_code)
         status: RunStatus = "interrupted" if code == "interrupted" else "failed"
@@ -2437,6 +2520,181 @@ def progress_from_snapshot(
         output_published=snapshot.output_published,
         error_code=snapshot.error_code,
         sample_monotonic_seconds=monotonic_seconds,
+    )
+    _validate_progress(progress)
+    return progress
+
+
+def terminal_noncheckpoint_progress(
+    *,
+    pool: str,
+    mode: Literal["candidate_list_unverified", "fixture"],
+    start_block: int,
+    end_block: int,
+    output_filename: str,
+    ledger_row_count: int,
+    candidate_transaction_count: int,
+    now: datetime,
+) -> ProgressSnapshot:
+    """Build terminal operational status for an unverified one-shot export."""
+
+    timestamp = _format_utc_datetime(now)
+    phase_units = {
+        "preflight": "checks",
+        "action_discovery": "chunks",
+        "action_fetch": "transactions",
+        "action_decode": "transactions",
+        "token_set_freeze": "token_ids",
+        "full_transfer_scan": "chunks",
+        "relevant_transfer_fetch": "transactions",
+        "relevant_transfer_decode": "transactions",
+        "replay_input_bind": "input",
+        "price_replay": "actions",
+        "build": "rows",
+        "publish": "files",
+        "succeeded": "output",
+    }
+    completed = {
+        "preflight": 1,
+        "action_discovery": 0,
+        "action_fetch": candidate_transaction_count,
+        "action_decode": candidate_transaction_count,
+        "token_set_freeze": 0,
+        "full_transfer_scan": 0,
+        "relevant_transfer_fetch": 0,
+        "relevant_transfer_decode": 0,
+        "replay_input_bind": 0,
+        "price_replay": ledger_row_count,
+        "build": ledger_row_count,
+        "publish": 2,
+        "succeeded": 1,
+    }
+    phases = tuple(
+        PhaseProgress(
+            phase=cast(Phase, phase),
+            status="completed",
+            unit=phase_units[phase],
+            completed=completed[phase],
+            total=completed[phase],
+        )
+        for phase in _PHASES
+    )
+    progress = ProgressSnapshot(
+        schema_version=PROGRESS_SCHEMA_VERSION,
+        run_id=str(uuid.uuid4()),
+        attempt_number=1,
+        checkpoint_generation=None,
+        status="succeeded",
+        pool=pool,
+        mode=mode,
+        start_block=start_block,
+        end_block=end_block,
+        output_filename=output_filename,
+        phase="succeeded",
+        phases=phases,
+        last_durable=(("files", "2"), ("rows", str(ledger_row_count))),
+        action_candidate_transaction_count=candidate_transaction_count,
+        action_count=ledger_row_count,
+        frozen_token_count=0,
+        full_transfer_log_count=0,
+        relevant_transfer_witness_count=0,
+        relevant_transfer_transaction_count=0,
+        ownership_event_count=0,
+        bound_action_count=ledger_row_count,
+        ledger_row_count=ledger_row_count,
+        rate_per_second=None,
+        eta_seconds=None,
+        started_at=timestamp,
+        resumed_at=timestamp,
+        updated_at=timestamp,
+        finished_at=timestamp,
+        output_published=True,
+        error_code=None,
+        sample_monotonic_seconds=None,
+    )
+    _validate_progress(progress)
+    return progress
+
+
+def terminal_noncheckpoint_failure_progress(
+    *,
+    pool: str,
+    mode: Literal["candidate_list_unverified", "fixture"],
+    start_block: int,
+    end_block: int,
+    output_filename: str,
+    phase: Phase,
+    error_code: ErrorCode,
+    now: datetime,
+) -> ProgressSnapshot:
+    if phase == "succeeded" or error_code == "checkpoint_maintenance_error":
+        raise CheckpointContractError("unverified failure progress is not terminal-valid")
+    timestamp = _format_utc_datetime(now)
+    phase_units = {
+        "preflight": "checks",
+        "action_discovery": "chunks",
+        "action_fetch": "transactions",
+        "action_decode": "transactions",
+        "token_set_freeze": "token_ids",
+        "full_transfer_scan": "chunks",
+        "relevant_transfer_fetch": "transactions",
+        "relevant_transfer_decode": "transactions",
+        "replay_input_bind": "input",
+        "price_replay": "actions",
+        "build": "rows",
+        "publish": "files",
+        "succeeded": "output",
+    }
+    current_index = _PHASES.index(phase)
+    phases = tuple(
+        PhaseProgress(
+            phase=cast(Phase, stored_phase),
+            status=(
+                "completed"
+                if index < current_index
+                else "running"
+                if index == current_index
+                else "pending"
+            ),
+            unit=phase_units[stored_phase],
+            completed=0,
+            total=0 if index < current_index else None,
+        )
+        for index, stored_phase in enumerate(_PHASES)
+    )
+    status: RunStatus = "interrupted" if error_code == "interrupted" else "failed"
+    progress = ProgressSnapshot(
+        schema_version=PROGRESS_SCHEMA_VERSION,
+        run_id=str(uuid.uuid4()),
+        attempt_number=1,
+        checkpoint_generation=None,
+        status=status,
+        pool=pool,
+        mode=mode,
+        start_block=start_block,
+        end_block=end_block,
+        output_filename=output_filename,
+        phase=phase,
+        phases=phases,
+        last_durable=None,
+        action_candidate_transaction_count=0,
+        action_count=0,
+        frozen_token_count=0,
+        full_transfer_log_count=0,
+        relevant_transfer_witness_count=0,
+        relevant_transfer_transaction_count=0,
+        ownership_event_count=0,
+        bound_action_count=0,
+        ledger_row_count=0,
+        rate_per_second=None,
+        eta_seconds=None,
+        started_at=timestamp,
+        resumed_at=timestamp,
+        updated_at=timestamp,
+        finished_at=timestamp,
+        output_published=False,
+        error_code=error_code,
+        sample_monotonic_seconds=None,
     )
     _validate_progress(progress)
     return progress
@@ -5331,18 +5589,7 @@ def _coverage_path(output: Path) -> Path:
 
 
 def _ensure_checkpoint_namespace_secure(paths: CheckpointPaths) -> None:
-    _ensure_secure_parent(paths.database)
-    for path in (
-        paths.output,
-        _coverage_path(paths.output),
-        paths.database,
-        paths.wal,
-        paths.shm,
-        paths.progress,
-        paths.run_lock,
-        paths.publish_lock,
-    ):
-        _validate_regular_leaf(path, allow_missing=True)
+    validate_output_namespace(paths, include_checkpoint=True)
 
 
 def _remove_fresh_namespace(paths: CheckpointPaths) -> None:
@@ -5356,6 +5603,7 @@ def _remove_fresh_namespace(paths: CheckpointPaths) -> None:
 
 
 def _fsync_directory(directory: Path) -> None:
+    _validate_existing_parent(directory / ".checkpoint-directory-sync")
     descriptor = os.open(
         directory,
         os.O_RDONLY
@@ -6620,6 +6868,13 @@ def _validate_phase_consistency(connection: sqlite3.Connection) -> None:
             raise CheckpointContractError("checkpoint terminal phase is inconsistent")
         return
 
+    publication_state = cast(str, publication["state"])
+    if (
+        current_phase == "publish" and publication_state != "started"
+    ) or (
+        current_phase != "publish" and publication_state != "not_started"
+    ):
+        raise CheckpointContractError("checkpoint publication phase is inconsistent")
     if (
         run["status"] == "succeeded"
         or run["output_published"] != 0

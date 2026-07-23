@@ -2,6 +2,8 @@ import copy
 import csv
 import hashlib
 import json
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -27,10 +29,10 @@ from engine.lp.types import (
     _V4_LP_TAKE_PAIR,
 )
 from research.backtester.lp_ledger_attribution import (
+    FROZEN_REPLAY_PARSER_VERSION,
     AcquisitionPolicyCoverage,
     BundleDigestCoverage,
     EligibleBundleCoverage,
-    FROZEN_REPLAY_PARSER_VERSION,
     FrozenTokenCoverage,
     FullTransferCoverage,
     ReconciliationCoverage,
@@ -50,15 +52,18 @@ from research.backtester.lp_ledger_checkpoint import (
     BlockHeader,
     BlockRange,
     CandidateBundle,
+    CheckpointContractError,
     CheckpointPaths,
     DecoderStateUpsert,
     DiscoveryWitness,
     EndpointSnapshot,
     LPLedgerCheckpoint,
     PositionKeyMapping,
+    PublicationState,
     ReplayInputEvidence,
     RunIdentity,
     acquire_run_lock,
+    read_export_status,
 )
 from research.backtester.v4_event_replay import ReplayedEvent
 from research.backtester.v4_export import (
@@ -723,6 +728,73 @@ def _minimal_coverage_pair_bytes(block_number: int) -> tuple[bytes, bytes]:
         ),
     )
     return ledger_bytes, coverage_bytes
+
+
+def _install_empty_checkpoint_export_fixture(
+    tmp_path: Path,
+    monkeypatch,
+) -> tuple[int, int, bytes, bytes, dict[str, int]]:
+    config = replace(
+        POOL_CONFIGS["uni-base"],
+        default_start_block=100,
+        chunk_size=5,
+    )
+    monkeypatch.setitem(POOL_CONFIGS, "uni-base", config)
+    identity = _action_decode_checkpoint_identity(tmp_path / "identity.csv", config)
+    frozen = lp_ledger_export._FrozenReplayInput(
+        evidence=identity.replay_input,
+        price_events=(),
+    )
+    fake_w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            chain_id=8453,
+            contract=lambda **_kwargs: object(),
+        )
+    )
+    reads = {"actions": 0, "transfers": 0}
+
+    def action_logs(*_args, **_kwargs):
+        reads["actions"] += 1
+        return []
+
+    def transfer_logs(*_args, **_kwargs):
+        reads["transfers"] += 1
+        return []
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_load_frozen_replay_input",
+        lambda *_args: frozen,
+    )
+    monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_coverage_block_header",
+        lambda _w3, block_number: (
+            identity.endpoint.start.block_hash
+            if block_number == identity.start_block
+            else identity.endpoint.end.block_hash,
+            block_number * 1_000,
+        ),
+    )
+    monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", action_logs)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_transfer_scan_web3",
+        lambda w3, _config: w3,
+    )
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_bounded_position_transfer_logs",
+        transfer_logs,
+    )
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_build_rpc_ledger_pair_from_checkpoint",
+        lambda *_args: (ledger_bytes, coverage_bytes, 1),
+    )
+    return 100, 109, ledger_bytes, coverage_bytes, reads
 
 
 def _minimal_rpc_evidence(
@@ -1904,6 +1976,75 @@ def test_action_bundle_staging_fetches_only_pending_and_completes_zero_work() ->
     assert reused_run.completed == []
 
 
+def test_committed_action_bundle_resume_skips_transaction_rpc(
+    tmp_path: Path,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    witness = _expected_action_witness(_raw_action_log())
+    transaction, receipt = _candidate_rpc_payloads(witness)
+    calls = {"transaction": 0, "receipt": 0}
+
+    def transaction_rpc(_transaction_hash: str):
+        calls["transaction"] += 1
+        return transaction
+
+    def receipt_rpc(_transaction_hash: str):
+        calls["receipt"] += 1
+        return receipt
+
+    w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=transaction_rpc,
+            get_transaction_receipt=receipt_rpc,
+        )
+    )
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _action_decode_checkpoint_identity(paths.output, config)
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            identity,
+            fresh=False,
+        ) as run:
+            run.complete_phase("preflight")
+            for block_range in run.incomplete_action_chunks():
+                run.commit_action_chunk(
+                    block_range,
+                    (witness,)
+                    if block_range.start_block
+                    <= witness.block_number
+                    <= block_range.end_block
+                    else (),
+                )
+            staged = lp_ledger_export._stage_action_bundles(run, w3, 100, 109)
+            assert staged.phase == "action_decode"
+
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            identity,
+            fresh=False,
+        ) as resumed:
+            resumed_snapshot = lp_ledger_export._stage_action_bundles(
+                resumed,
+                SimpleNamespace(
+                    eth=SimpleNamespace(
+                        get_transaction=lambda _hash: (_ for _ in ()).throw(
+                            AssertionError("committed transaction was refetched")
+                        ),
+                        get_transaction_receipt=lambda _hash: (_ for _ in ()).throw(
+                            AssertionError("committed receipt was refetched")
+                        ),
+                    )
+                ),
+                100,
+                109,
+            )
+
+    assert resumed_snapshot.phase == "action_decode"
+    assert calls == {"transaction": 1, "receipt": 1}
+
+
 def test_relevant_transfer_bundles_reuse_cache_and_fetch_only_missing_hashes() -> None:
     cached_witness = _expected_position_transfer_witness(
         _raw_position_transfer_log(
@@ -1964,6 +2105,389 @@ def test_relevant_transfer_bundles_reuse_cache_and_fetch_only_missing_hashes() -
     assert [bundle.transaction_hash for bundle in run.commits] == [
         missing_witness.transaction_hash
     ]
+
+
+def test_committed_relevant_transfer_bundle_resume_skips_transaction_rpc(
+    tmp_path: Path,
+) -> None:
+    config = POOL_CONFIGS["uni-base"]
+    action_witness = _expected_action_witness(_raw_action_log())
+    action_transaction, action_receipt = _candidate_rpc_payloads(action_witness)
+    action_w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=lambda _hash: action_transaction,
+            get_transaction_receipt=lambda _hash: action_receipt,
+        )
+    )
+    transfer_witness = _expected_position_transfer_witness(
+        _raw_position_transfer_log(
+            block_number=102,
+            transaction_hash="0x" + "88" * 32,
+            transaction_index=2,
+            log_index=7,
+            token_id=77,
+        )
+    )
+    transfer_transaction, transfer_receipt = _candidate_rpc_payloads(transfer_witness)
+    calls = {"transaction": 0, "receipt": 0}
+
+    def transaction_rpc(_transaction_hash: str):
+        calls["transaction"] += 1
+        return transfer_transaction
+
+    def receipt_rpc(_transaction_hash: str):
+        calls["receipt"] += 1
+        return transfer_receipt
+
+    transfer_w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            get_transaction=transaction_rpc,
+            get_transaction_receipt=receipt_rpc,
+        )
+    )
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    identity = _action_decode_checkpoint_identity(paths.output, config)
+
+    with acquire_run_lock(paths):
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            identity,
+            fresh=False,
+        ) as run:
+            run.complete_phase("preflight")
+            for block_range in run.incomplete_action_chunks():
+                run.commit_action_chunk(
+                    block_range,
+                    (action_witness,)
+                    if block_range.start_block
+                    <= action_witness.block_number
+                    <= block_range.end_block
+                    else (),
+                )
+            lp_ledger_export._stage_action_bundles(run, action_w3, 100, 109)
+            action_bundle = run.undecoded_action_bundles()[0]
+            action = DecodedLiquidityAction(
+                action_type="mint",
+                block_number=101,
+                log_index=11,
+                event_order=0,
+                token_id=77,
+                lp_owner=None,
+                tick_lower=-120,
+                tick_upper=120,
+                liquidity_delta=999,
+                amount0=0,
+                amount1=0,
+                collect_amount0=0,
+                chain=config.chain,
+                pool_id=config.pool_id,
+                block_time="1970-01-01T00:01:41+00:00",
+                tx_hash=action_witness.transaction_hash,
+                position_manager=config.position_manager,
+                amount0_raw="0",
+                amount1_raw="0",
+                timestamp_ms=101_000,
+            )
+            run.commit_decoded_action_transaction(
+                action_bundle,
+                headers=(BlockHeader(101, action_witness.block_hash, 101_000),),
+                resolutions=(),
+                state_upserts=(
+                    DecoderStateUpsert(
+                        77,
+                        LedgerPositionState(config.pool_id, -120, 120, 999),
+                        101,
+                        11,
+                        0,
+                    ),
+                ),
+                state_deletes=(),
+                actions=(action,),
+                position_keys=(
+                    PositionKeyMapping(
+                        token_id=77,
+                        pool_id=config.pool_id,
+                        tick_lower=-120,
+                        tick_upper=120,
+                        salt="0x" + "99" * 32,
+                        mint_block_number=101,
+                        mint_log_index=11,
+                        mint_event_order=0,
+                    ),
+                ),
+            )
+            run.freeze_action_token_set()
+            for block_range in run.incomplete_transfer_chunks():
+                relevant = (
+                    (transfer_witness,)
+                    if block_range.start_block
+                    <= transfer_witness.block_number
+                    <= block_range.end_block
+                    else ()
+                )
+                run.commit_transfer_chunk(
+                    block_range,
+                    unfiltered_count=len(relevant),
+                    unfiltered_sha256=hashlib.sha256(
+                        b"relevant" if relevant else b"[]"
+                    ).hexdigest(),
+                    relevant_witnesses=relevant,
+                )
+            staged = lp_ledger_export._stage_relevant_transfer_bundles(
+                run,
+                transfer_w3,
+                100,
+                109,
+            )
+            assert staged.phase == "relevant_transfer_decode"
+
+        with LPLedgerCheckpoint.create_or_resume(
+            paths,
+            identity,
+            fresh=False,
+        ) as resumed:
+            resumed_snapshot = lp_ledger_export._stage_relevant_transfer_bundles(
+                resumed,
+                SimpleNamespace(
+                    eth=SimpleNamespace(
+                        get_transaction=lambda _hash: (_ for _ in ()).throw(
+                            AssertionError("committed transaction was refetched")
+                        ),
+                        get_transaction_receipt=lambda _hash: (_ for _ in ()).throw(
+                            AssertionError("committed receipt was refetched")
+                        ),
+                    )
+                ),
+                100,
+                109,
+            )
+
+    assert resumed_snapshot.phase == "relevant_transfer_decode"
+    assert calls == {"transaction": 1, "receipt": 1}
+
+
+@pytest.mark.parametrize(
+    ("boundary", "expected_phase"),
+    (("action", "action_decode"), ("relevant", "relevant_transfer_decode")),
+)
+def test_process_death_after_bundle_commit_never_refetches_rpc(
+    boundary: str,
+    expected_phase: str,
+    tmp_path: Path,
+) -> None:
+    worker = """
+import hashlib
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import research.tests.test_v4_lp_ledger as fixtures
+from research.backtester.lp_ledger_checkpoint import (
+    BlockHeader,
+    CheckpointPaths,
+    DecoderStateUpsert,
+    LPLedgerCheckpoint,
+    PositionKeyMapping,
+    acquire_run_lock,
+)
+from research.backtester.v4_export import POOL_CONFIGS
+from research.backtester.v4_lp_ledger import (
+    DecodedLiquidityAction,
+    LedgerPositionState,
+)
+from research.scripts import export_v4_lp_ledger as exporter
+
+output = Path(sys.argv[1])
+mode = sys.argv[2]
+boundary = mode.split("_", 1)[0]
+config = POOL_CONFIGS["uni-base"]
+paths = CheckpointPaths.from_output(output)
+identity = fixtures._action_decode_checkpoint_identity(paths.output, config)
+action_witness = fixtures._expected_action_witness(fixtures._raw_action_log())
+action_transaction, action_receipt = fixtures._candidate_rpc_payloads(action_witness)
+action_w3 = SimpleNamespace(
+    eth=SimpleNamespace(
+        get_transaction=lambda _hash: action_transaction,
+        get_transaction_receipt=lambda _hash: action_receipt,
+    )
+)
+
+def forbidden_rpc(_hash):
+    raise AssertionError("committed bundle was refetched")
+
+with acquire_run_lock(paths):
+    with LPLedgerCheckpoint.create_or_resume(
+        paths,
+        identity,
+        fresh=False,
+    ) as run:
+        if mode.endswith("resume"):
+            forbidden_w3 = SimpleNamespace(
+                eth=SimpleNamespace(
+                    get_transaction=forbidden_rpc,
+                    get_transaction_receipt=forbidden_rpc,
+                )
+            )
+            if boundary == "action":
+                snapshot = exporter._stage_action_bundles(
+                    run,
+                    forbidden_w3,
+                    100,
+                    109,
+                )
+                assert snapshot.phase == "action_decode"
+            else:
+                snapshot = exporter._stage_relevant_transfer_bundles(
+                    run,
+                    forbidden_w3,
+                    100,
+                    109,
+                )
+                assert snapshot.phase == "relevant_transfer_decode"
+            raise SystemExit(0)
+
+        run.complete_phase("preflight")
+        for block_range in run.incomplete_action_chunks():
+            run.commit_action_chunk(
+                block_range,
+                (action_witness,)
+                if block_range.start_block
+                <= action_witness.block_number
+                <= block_range.end_block
+                else (),
+            )
+
+        def crash_after_commit(_snapshot):
+            os._exit(88)
+
+        if boundary == "action":
+            exporter._stage_action_bundles(
+                run,
+                action_w3,
+                100,
+                109,
+                on_progress=crash_after_commit,
+            )
+            raise AssertionError("action bundle crash hook did not run")
+
+        exporter._stage_action_bundles(run, action_w3, 100, 109)
+        action_bundle = run.undecoded_action_bundles()[0]
+        action = DecodedLiquidityAction(
+            action_type="mint",
+            block_number=101,
+            log_index=11,
+            event_order=0,
+            token_id=77,
+            lp_owner=None,
+            tick_lower=-120,
+            tick_upper=120,
+            liquidity_delta=999,
+            amount0=0,
+            amount1=0,
+            collect_amount0=0,
+            chain=config.chain,
+            pool_id=config.pool_id,
+            block_time="1970-01-01T00:01:41+00:00",
+            tx_hash=action_witness.transaction_hash,
+            position_manager=config.position_manager,
+            amount0_raw="0",
+            amount1_raw="0",
+            timestamp_ms=101_000,
+        )
+        run.commit_decoded_action_transaction(
+            action_bundle,
+            headers=(BlockHeader(101, action_witness.block_hash, 101_000),),
+            resolutions=(),
+            state_upserts=(
+                DecoderStateUpsert(
+                    77,
+                    LedgerPositionState(config.pool_id, -120, 120, 999),
+                    101,
+                    11,
+                    0,
+                ),
+            ),
+            state_deletes=(),
+            actions=(action,),
+            position_keys=(
+                PositionKeyMapping(
+                    token_id=77,
+                    pool_id=config.pool_id,
+                    tick_lower=-120,
+                    tick_upper=120,
+                    salt="0x" + "99" * 32,
+                    mint_block_number=101,
+                    mint_log_index=11,
+                    mint_event_order=0,
+                ),
+            ),
+        )
+        run.freeze_action_token_set()
+        transfer_witness = fixtures._expected_position_transfer_witness(
+            fixtures._raw_position_transfer_log(
+                block_number=102,
+                transaction_hash="0x" + "88" * 32,
+                transaction_index=2,
+                log_index=7,
+                token_id=77,
+            )
+        )
+        for block_range in run.incomplete_transfer_chunks():
+            relevant = (
+                (transfer_witness,)
+                if block_range.start_block
+                <= transfer_witness.block_number
+                <= block_range.end_block
+                else ()
+            )
+            run.commit_transfer_chunk(
+                block_range,
+                unfiltered_count=len(relevant),
+                unfiltered_sha256=hashlib.sha256(
+                    b"relevant" if relevant else b"[]"
+                ).hexdigest(),
+                relevant_witnesses=relevant,
+            )
+        transfer_transaction, transfer_receipt = fixtures._candidate_rpc_payloads(
+            transfer_witness
+        )
+        transfer_w3 = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_transaction=lambda _hash: transfer_transaction,
+                get_transaction_receipt=lambda _hash: transfer_receipt,
+            )
+        )
+        exporter._stage_relevant_transfer_bundles(
+            run,
+            transfer_w3,
+            100,
+            109,
+            on_progress=crash_after_commit,
+        )
+        raise AssertionError("relevant bundle crash hook did not run")
+"""
+    output = tmp_path / f"{boundary}-bundle.csv"
+    crashed = subprocess.run(
+        [sys.executable, "-c", worker, str(output), f"{boundary}_crash"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert crashed.returncode == 88, crashed.stderr
+    crashed_status = read_export_status(CheckpointPaths.from_output(output))
+    assert crashed_status.state == "interrupted"
+    assert crashed_status.phase == expected_phase
+
+    resumed = subprocess.run(
+        [sys.executable, "-c", worker, str(output), f"{boundary}_resume"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert resumed.returncode == 0, resumed.stderr
 
 
 def test_relevant_transfer_decode_filters_and_orders_frozen_ownership() -> None:
@@ -2733,23 +3257,1178 @@ def test_action_decode_rejects_target_position_missing_its_inception_mint(
     assert run.commits == []
 
 
-def test_verified_rpc_entrypoint_fails_closed_before_legacy_scan(
+def test_verified_rpc_entrypoint_rejects_non_inception_before_rpc(
     tmp_path,
     monkeypatch,
 ) -> None:
+    config = POOL_CONFIGS["uni-base"]
     monkeypatch.setattr(
         lp_ledger_export,
         "_make_web3",
         lambda _config: (_ for _ in ()).throw(AssertionError("RPC must not start")),
     )
 
-    with pytest.raises(CrossPoolContractError, match="action-first"):
+    with pytest.raises(CrossPoolContractError, match="pool inception"):
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            config.default_start_block + 1,
+            config.default_start_block + 10,
+            tmp_path / "ledger.csv",
+        )
+
+    paths = CheckpointPaths.from_output(tmp_path / "ledger.csv")
+    assert not paths.database.exists()
+    assert not paths.progress.exists()
+
+
+def test_checkpointed_full_rpc_phase_run_resumes_without_rpc_restage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    base_config = POOL_CONFIGS["uni-base"]
+    replay_path = REPO_ROOT / "research/data/derived/uni_base_pool_history_replay.csv"
+    frozen = lp_ledger_export._load_frozen_replay_input(replay_path, base_config)
+    config = replace(
+        base_config,
+        chunk_size=frozen.evidence.last_block - frozen.evidence.first_block + 1,
+    )
+    monkeypatch.setitem(POOL_CONFIGS, "uni-base", config)
+    output = tmp_path / "ledger.csv"
+    action_log_reads = 0
+    transfer_log_reads = 0
+    fake_w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            chain_id=8453,
+            contract=lambda **_kwargs: object(),
+        )
+    )
+
+    def header(_w3, block_number: int) -> tuple[str, int]:
+        if block_number == frozen.evidence.first_block:
+            return "0x" + "11" * 32, frozen.evidence.first_timestamp_ms
+        assert block_number == frozen.evidence.last_block
+        return "0x" + "22" * 32, frozen.evidence.last_timestamp_ms
+
+    def action_logs(*_args, **_kwargs):
+        nonlocal action_log_reads
+        action_log_reads += 1
+        return []
+
+    def transfer_logs(*_args, **_kwargs):
+        nonlocal transfer_log_reads
+        transfer_log_reads += 1
+        return []
+
+    monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
+    monkeypatch.setattr(lp_ledger_export, "_coverage_block_header", header)
+    monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", action_logs)
+    monkeypatch.setattr(lp_ledger_export, "_transfer_scan_web3", lambda w3, _config: w3)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_bounded_position_transfer_logs",
+        transfer_logs,
+    )
+    ledger_bytes = (
+        "chain,pool_id,block_number\n"
+        f"base,{config.pool_id},{frozen.evidence.first_block}\n"
+    ).encode()
+    coverage_bytes = build_rpc_ledger_coverage_bytes(
+        "uni-base",
+        ledger_bytes,
+        chain_id=8453,
+        covered_start_block=frozen.evidence.first_block,
+        covered_start_block_hash="0x" + "11" * 32,
+        covered_start_timestamp_ms=frozen.evidence.first_timestamp_ms,
+        covered_end_block=frozen.evidence.last_block,
+        covered_end_block_hash="0x" + "22" * 32,
+        covered_end_timestamp_ms=frozen.evidence.last_timestamp_ms,
+        evidence=_minimal_rpc_evidence(
+            start_block=frozen.evidence.first_block,
+            end_block=frozen.evidence.last_block,
+            start_timestamp_ms=frozen.evidence.first_timestamp_ms,
+            end_timestamp_ms=frozen.evidence.last_timestamp_ms,
+        ),
+    )
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_build_rpc_ledger_pair_from_checkpoint",
+        lambda *_args: (ledger_bytes, coverage_bytes, 1),
+    )
+
+    first_count = lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        frozen.evidence.first_block,
+        frozen.evidence.last_block,
+        output,
+        fresh=True,
+    )
+    first_ledger = output.read_bytes()
+    first_sidecar = ledger_coverage_path(output).read_bytes()
+    first_action_reads = action_log_reads
+    first_transfer_reads = transfer_log_reads
+
+    second_count = lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        frozen.evidence.first_block,
+        frozen.evidence.last_block,
+        output,
+    )
+
+    assert first_count == second_count == 1
+    assert output.read_bytes() == first_ledger
+    assert ledger_coverage_path(output).read_bytes() == first_sidecar
+    assert action_log_reads == first_action_reads == 1
+    assert transfer_log_reads == first_transfer_reads == 1
+    coverage = load_ledger_coverage("uni-base", output)
+    assert coverage.verification_mode == "rpc_verified"
+    assert coverage.schema_version == "2.0.0"
+    paths = CheckpointPaths.from_output(output)
+    with LPLedgerCheckpoint.open_status(paths) as run:
+        snapshot = run.snapshot()
+    assert snapshot.status == "succeeded"
+    assert snapshot.phase == "succeeded"
+    assert snapshot.output_published is True
+    progress = json.loads(paths.progress.read_text())
+    assert progress["status"] == "succeeded"
+    assert progress["phase"] == "succeeded"
+    assert progress["checkpoint_generation"] == snapshot.generation
+
+
+def test_checkpointed_full_rpc_failure_is_classified_and_secret_free(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret = "injected-current-provider-secret"
+    output = tmp_path / "ledger.csv"
+    base_config = replace(
+        POOL_CONFIGS["uni-base"],
+        rpc_url=f"https://base-mainnet.g.alchemy.com/v2/{secret}",
+        default_start_block=100,
+        chunk_size=5,
+    )
+    monkeypatch.setitem(POOL_CONFIGS, "uni-base", base_config)
+    identity = _action_decode_checkpoint_identity(output, base_config)
+    frozen = lp_ledger_export._FrozenReplayInput(
+        evidence=identity.replay_input,
+        price_events=(),
+    )
+    fake_w3 = SimpleNamespace(eth=SimpleNamespace(chain_id=8453))
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_load_frozen_replay_input",
+        lambda *_args: frozen,
+    )
+    monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_coverage_block_header",
+        lambda _w3, block_number: (
+            identity.endpoint.start.block_hash
+            if block_number == 100
+            else identity.endpoint.end.block_hash,
+            block_number * 1_000,
+        ),
+    )
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_stage_action_discovery",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RequestsConnectionError(f"provider rejected {secret}")
+        ),
+    )
+
+    with pytest.raises(Exception) as caught:
         lp_ledger_export.export_rpc_lp_ledger(
             "uni-base",
             100,
             109,
-            tmp_path / "ledger.csv",
+            output,
+            fresh=True,
         )
+
+    assert getattr(caught.value, "phase", None) == "action_discovery"
+    assert getattr(caught.value, "error_code", None) == "rpc_error"
+    assert secret not in str(caught.value)
+    paths = CheckpointPaths.from_output(output)
+    with LPLedgerCheckpoint.open_status(paths) as run:
+        snapshot = run.snapshot()
+    assert snapshot.status == "failed"
+    assert snapshot.phase == "action_discovery"
+    assert snapshot.error_code == "rpc_error"
+    progress = json.loads(paths.progress.read_text())
+    assert progress["status"] == "failed"
+    assert progress["error_code"] == "rpc_error"
+    for path in (paths.database, paths.wal, paths.shm, paths.progress):
+        if path.exists():
+            assert secret.encode() not in path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "leak_form",
+    (
+        "endpoint_path",
+        "userinfo",
+        "query",
+        "bearer",
+        "api_key_header",
+        "environment",
+        "nested_exception",
+    ),
+)
+def test_full_rpc_failure_artifacts_never_persist_credential_forms(
+    leak_form: str,
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    output = tmp_path / f"{leak_form}.csv"
+    start_block, end_block, _ledger, _coverage, _reads = (
+        _install_empty_checkpoint_export_fixture(tmp_path, monkeypatch)
+    )
+    secret = f"credential-{leak_form}"
+    rpc_url = "https://base-mainnet.g.alchemy.com"
+    if leak_form == "endpoint_path":
+        rpc_url = f"{rpc_url}/v2/{secret}"
+    elif leak_form == "userinfo":
+        rpc_url = f"https://operator:{secret}@base-mainnet.g.alchemy.com"
+    elif leak_form == "query":
+        rpc_url = f"{rpc_url}/rpc?api_key={secret}"
+    config = replace(POOL_CONFIGS["uni-base"], rpc_url=rpc_url)
+    monkeypatch.setitem(POOL_CONFIGS, "uni-base", config)
+    message = {
+        "bearer": f"Authorization: Bearer {secret}",
+        "api_key_header": f"X-API-Key: {secret}",
+        "environment": f"ALCHEMY_KEY={secret}",
+    }.get(leak_form, f"provider rejected {secret}")
+    failure = RuntimeError(message)
+    if leak_form == "nested_exception":
+        failure.__cause__ = ValueError(f"nested credential {secret}")
+
+    def fail_discovery(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_stage_action_discovery",
+        fail_discovery,
+    )
+
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            str(start_block),
+            "--end-block",
+            str(end_block),
+            "--out",
+            str(output),
+            "--fresh",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.out
+    assert secret not in captured.err
+    paths = CheckpointPaths.from_output(output)
+    for path in (paths.database, paths.wal, paths.shm, paths.progress):
+        if path.exists():
+            assert secret.encode() not in path.read_bytes()
+def test_terminal_wal_failure_uses_closed_maintenance_error() -> None:
+    succeeded = SimpleNamespace(status="succeeded", phase="succeeded")
+    failed = SimpleNamespace(
+        status="failed",
+        phase="succeeded",
+        error_code="checkpoint_maintenance_error",
+    )
+
+    class Run:
+        def checkpoint_terminal_wal(self):
+            raise OSError("injected WAL failure")
+
+        def snapshot(self):
+            return succeeded
+
+        def mark_checkpoint_maintenance_failed(self):
+            return failed
+
+    emitted = []
+    progress = SimpleNamespace(
+        emit=lambda snapshot, *, force=False: emitted.append((snapshot, force))
+    )
+
+    with pytest.raises(lp_ledger_export._CheckpointExportError) as caught:
+        lp_ledger_export._finish_checkpoint_wal(Run(), progress)
+
+    assert caught.value.phase == "succeeded"
+    assert caught.value.error_code == "checkpoint_maintenance_error"
+    assert emitted == [(failed, True)]
+
+
+def test_not_started_publication_rejects_partial_expected_pair_before_authority(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    output.write_bytes(ledger_bytes)
+
+    class Run:
+        begin_calls = 0
+
+        def load_publication_state(self) -> PublicationState:
+            return PublicationState(
+                state="not_started",
+                expected_ledger_sha256=None,
+                expected_sidecar_sha256=None,
+                started_generation=None,
+                published_generation=None,
+            )
+
+        def begin_publication(self, *_hashes: str):
+            self.begin_calls += 1
+            raise AssertionError("ambiguous files must not gain publication authority")
+
+    run = Run()
+    progress = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+
+    with pytest.raises(CrossPoolContractError, match="ambiguous partial"):
+        lp_ledger_export._publish_checkpoint_pair(
+            run,
+            progress,
+            "uni-base",
+            output,
+            ledger_bytes,
+            coverage_bytes,
+        )
+
+    assert run.begin_calls == 0
+    assert output.read_bytes() == ledger_bytes
+    assert not ledger_coverage_path(output).exists()
+
+
+def test_checkpoint_maintenance_failure_retries_without_rpc_restage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    start_block, end_block, ledger_bytes, coverage_bytes, reads = (
+        _install_empty_checkpoint_export_fixture(tmp_path, monkeypatch)
+    )
+    original_checkpoint = LPLedgerCheckpoint.checkpoint_terminal_wal
+    fail_once = True
+
+    def checkpoint_with_one_failure(self):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise OSError("injected terminal checkpoint failure")
+        return original_checkpoint(self)
+
+    monkeypatch.setattr(
+        LPLedgerCheckpoint,
+        "checkpoint_terminal_wal",
+        checkpoint_with_one_failure,
+    )
+
+    with pytest.raises(lp_ledger_export._CheckpointExportError) as caught:
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+            fresh=True,
+        )
+
+    assert caught.value.error_code == "checkpoint_maintenance_error"
+    assert output.read_bytes() == ledger_bytes
+    assert ledger_coverage_path(output).read_bytes() == coverage_bytes
+    reads_after_failure = dict(reads)
+
+    assert (
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+        )
+        == 1
+    )
+    assert reads == reads_after_failure
+    with LPLedgerCheckpoint.open_status(CheckpointPaths.from_output(output)) as run:
+        snapshot = run.snapshot()
+    assert snapshot.status == "succeeded"
+    assert snapshot.error_code is None
+
+
+def test_busy_terminal_wal_is_retried_without_rpc_restage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    start_block, end_block, _ledger, _coverage, reads = (
+        _install_empty_checkpoint_export_fixture(tmp_path, monkeypatch)
+    )
+    original_checkpoint = LPLedgerCheckpoint.checkpoint_terminal_wal
+    checkpoint_calls = 0
+
+    def busy_then_truncated(self):
+        nonlocal checkpoint_calls
+        checkpoint_calls += 1
+        if checkpoint_calls == 1:
+            return "busy"
+        return original_checkpoint(self)
+
+    monkeypatch.setattr(
+        LPLedgerCheckpoint,
+        "checkpoint_terminal_wal",
+        busy_then_truncated,
+    )
+
+    assert (
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+            fresh=True,
+        )
+        == 1
+    )
+    reads_after_first_attempt = dict(reads)
+    assert checkpoint_calls == 1
+
+    assert (
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+        )
+        == 1
+    )
+    assert checkpoint_calls == 2
+    assert reads == reads_after_first_attempt
+
+
+def test_sigterm_marks_checkpoint_interrupted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    start_block, end_block, ledger_bytes, coverage_bytes, _reads = (
+        _install_empty_checkpoint_export_fixture(tmp_path, monkeypatch)
+    )
+    original_stage = lp_ledger_export._stage_action_discovery
+
+    def terminate_after_preflight(*_args, **_kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_stage_action_discovery",
+        terminate_after_preflight,
+    )
+
+    with pytest.raises(lp_ledger_export._CheckpointExportError) as caught:
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+            fresh=True,
+        )
+
+    assert caught.value.error_code == "interrupted"
+    paths = CheckpointPaths.from_output(output)
+    with LPLedgerCheckpoint.open_status(paths) as run:
+        snapshot = run.snapshot()
+    assert snapshot.status == "interrupted"
+    assert snapshot.error_code == "interrupted"
+    progress = json.loads(paths.progress.read_text())
+    assert progress["status"] == "interrupted"
+    assert progress["error_code"] == "interrupted"
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_stage_action_discovery",
+        original_stage,
+    )
+    assert (
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+        )
+        == 1
+    )
+    assert output.read_bytes() == ledger_bytes
+    assert ledger_coverage_path(output).read_bytes() == coverage_bytes
+    terminal = read_export_status(paths)
+    assert terminal.state == "succeeded"
+    assert terminal.output_published is True
+
+
+def test_sigterm_during_initial_progress_marks_checkpoint_interrupted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    start_block, end_block, _ledger, _coverage, _reads = (
+        _install_empty_checkpoint_export_fixture(tmp_path, monkeypatch)
+    )
+    original_emit = lp_ledger_export._CheckpointProgressWriter.emit
+    armed = True
+
+    def terminate_on_initial_emit(self, snapshot, *, force=False):
+        nonlocal armed
+        if armed:
+            armed = False
+            os.kill(os.getpid(), signal.SIGTERM)
+        original_emit(self, snapshot, force=force)
+
+    monkeypatch.setattr(
+        lp_ledger_export._CheckpointProgressWriter,
+        "emit",
+        terminate_on_initial_emit,
+    )
+
+    with pytest.raises(lp_ledger_export._CheckpointExportError) as caught:
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            start_block,
+            end_block,
+            output,
+            fresh=True,
+        )
+
+    assert armed is False
+    assert caught.value.error_code == "interrupted"
+    paths = CheckpointPaths.from_output(output)
+    with LPLedgerCheckpoint.open_status(paths) as run:
+        snapshot = run.snapshot()
+    assert snapshot.status == "interrupted"
+    assert json.loads(paths.progress.read_text())["status"] == "interrupted"
+
+
+@pytest.mark.parametrize("mode", ("full", "candidate", "fixture"))
+@pytest.mark.parametrize("leaf", ("output", "coverage", "publish_lock"))
+def test_every_export_mode_rejects_output_namespace_symlinks_before_work(
+    mode: str,
+    leaf: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    paths = CheckpointPaths.from_output(output)
+    selected = {
+        "output": paths.output,
+        "coverage": ledger_coverage_path(paths.output),
+        "publish_lock": paths.publish_lock,
+    }[leaf]
+    sentinel = tmp_path / f"{mode}-{leaf}-sentinel"
+    sentinel.write_bytes(b"sentinel")
+    selected.symlink_to(sentinel)
+    work_started = False
+
+    def forbidden_work(*_args, **_kwargs):
+        nonlocal work_started
+        work_started = True
+        raise AssertionError("export work must not start for an unsafe output namespace")
+
+    if mode == "full":
+        config = POOL_CONFIGS["uni-base"]
+        frozen = lp_ledger_export._load_frozen_replay_input(
+            lp_ledger_export._FROZEN_REPLAY_PATHS["uni-base"],
+            config,
+        )
+        monkeypatch.setattr(lp_ledger_export, "_make_web3", forbidden_work)
+
+        def invoke():
+            return lp_ledger_export.export_rpc_lp_ledger(
+                "uni-base",
+                frozen.evidence.first_block,
+                frozen.evidence.last_block,
+                output,
+                fresh=True,
+            )
+    elif mode == "candidate":
+        monkeypatch.setattr(lp_ledger_export, "_make_web3", forbidden_work)
+
+        def invoke():
+            return lp_ledger_export.export_rpc_lp_ledger(
+                "uni-base",
+                100,
+                100,
+                output,
+                candidate_tx_hashes=(),
+            )
+    else:
+        monkeypatch.setattr(lp_ledger_export, "_read_json_list", forbidden_work)
+
+        def invoke():
+            return lp_ledger_export.export_fixture_lp_ledger(
+                "uni-base",
+                100,
+                100,
+                tmp_path / "actions.json",
+                tmp_path / "owners.json",
+                tmp_path / "prices.json",
+                output,
+            )
+
+    with pytest.raises(CheckpointContractError, match="symlink"):
+        invoke()
+
+    assert work_started is False
+    assert sentinel.read_bytes() == b"sentinel"
+    assert not paths.progress.exists()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_phase", "expected_error"),
+    (
+        ("candidate", "preflight", "rpc_error"),
+        ("fixture", "action_decode", "decode_error"),
+    ),
+)
+def test_unverified_export_failures_write_redacted_terminal_progress(
+    mode: str,
+    expected_phase: str,
+    expected_error: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    secret = "terminal-progress-secret"
+    if mode == "candidate":
+        monkeypatch.setattr(
+            lp_ledger_export,
+            "_make_web3",
+            lambda _config: (_ for _ in ()).throw(
+                RequestsConnectionError(f"provider rejected {secret}")
+            ),
+        )
+
+        def invoke():
+            return lp_ledger_export.export_rpc_lp_ledger(
+                "uni-base",
+                100,
+                100,
+                output,
+                candidate_tx_hashes=(),
+            )
+    else:
+        monkeypatch.setattr(
+            lp_ledger_export,
+            "_read_json_list",
+            lambda _path: (_ for _ in ()).throw(
+                ValueError(f"fixture rejected {secret}")
+            ),
+        )
+
+        def invoke():
+            return lp_ledger_export.export_fixture_lp_ledger(
+                "uni-base",
+                100,
+                100,
+                tmp_path / "actions.json",
+                tmp_path / "owners.json",
+                tmp_path / "prices.json",
+                output,
+            )
+
+    expected_exception = RequestsConnectionError if mode == "candidate" else ValueError
+    with pytest.raises(expected_exception):
+        invoke()
+
+    paths = CheckpointPaths.from_output(output)
+    raw_progress = paths.progress.read_bytes()
+    assert secret.encode() not in raw_progress
+    progress = json.loads(raw_progress)
+    assert progress["status"] == "failed"
+    assert progress["phase"] == expected_phase
+    assert progress["error_code"] == expected_error
+
+
+@pytest.mark.parametrize(
+    "crash_phase",
+    (
+        "action_discovery",
+        "action_fetch",
+        "action_decode",
+        "token_set_freeze",
+        "full_transfer_scan",
+        "relevant_transfer_fetch",
+        "relevant_transfer_decode",
+        "replay_input_bind",
+        "price_replay",
+        "build",
+        "publish",
+        "succeeded",
+    ),
+)
+def test_checkpointed_full_rpc_crash_resume_is_byte_equal_at_each_phase(
+    crash_phase,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    config = replace(
+        POOL_CONFIGS["uni-base"],
+        default_start_block=100,
+        chunk_size=5,
+    )
+    monkeypatch.setitem(POOL_CONFIGS, "uni-base", config)
+    identity = _action_decode_checkpoint_identity(tmp_path / "identity.csv", config)
+    frozen = lp_ledger_export._FrozenReplayInput(
+        evidence=identity.replay_input,
+        price_events=(),
+    )
+    fake_w3 = SimpleNamespace(
+        eth=SimpleNamespace(
+            chain_id=8453,
+            contract=lambda **_kwargs: object(),
+        )
+    )
+    action_reads = 0
+    transfer_reads = 0
+
+    def action_logs(*_args, **_kwargs):
+        nonlocal action_reads
+        action_reads += 1
+        return []
+
+    def transfer_logs(*_args, **_kwargs):
+        nonlocal transfer_reads
+        transfer_reads += 1
+        return []
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_load_frozen_replay_input",
+        lambda *_args: frozen,
+    )
+    monkeypatch.setattr(lp_ledger_export, "_make_web3", lambda _config: fake_w3)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_coverage_block_header",
+        lambda _w3, block_number: (
+            identity.endpoint.start.block_hash
+            if block_number == 100
+            else identity.endpoint.end.block_hash,
+            block_number * 1_000,
+        ),
+    )
+    monkeypatch.setattr(lp_ledger_export, "_fetch_logs_with_debug", action_logs)
+    monkeypatch.setattr(lp_ledger_export, "_transfer_scan_web3", lambda w3, _config: w3)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_fetch_bounded_position_transfer_logs",
+        transfer_logs,
+    )
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_build_rpc_ledger_pair_from_checkpoint",
+        lambda *_args: (ledger_bytes, coverage_bytes, 1),
+    )
+    clean_output = tmp_path / "clean.csv"
+    resumed_output = tmp_path / "resumed.csv"
+    lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        100,
+        109,
+        clean_output,
+        fresh=True,
+    )
+    action_reads = 0
+    transfer_reads = 0
+    original_emit = lp_ledger_export._CheckpointProgressWriter.emit
+    armed = True
+
+    def crash_after_phase(self, snapshot, *, force=False):
+        nonlocal armed
+        original_emit(self, snapshot, force=force)
+        if armed and snapshot.phase == crash_phase:
+            armed = False
+            raise SimulatedProcessDeath
+
+    monkeypatch.setattr(
+        lp_ledger_export._CheckpointProgressWriter,
+        "emit",
+        crash_after_phase,
+    )
+
+    with pytest.raises(SimulatedProcessDeath):
+        lp_ledger_export.export_rpc_lp_ledger(
+            "uni-base",
+            100,
+            109,
+            resumed_output,
+            fresh=True,
+        )
+    assert armed is False
+
+    monkeypatch.setattr(
+        lp_ledger_export._CheckpointProgressWriter,
+        "emit",
+        original_emit,
+    )
+    lp_ledger_export.export_rpc_lp_ledger(
+        "uni-base",
+        100,
+        109,
+        resumed_output,
+    )
+
+    assert resumed_output.read_bytes() == clean_output.read_bytes()
+    assert ledger_coverage_path(resumed_output).read_bytes() == ledger_coverage_path(
+        clean_output
+    ).read_bytes()
+    assert action_reads == 2
+    assert transfer_reads == 2
+    assert load_ledger_coverage("uni-base", resumed_output).schema_version == "2.0.0"
+
+
+def test_checkpointed_export_recovers_from_process_death_at_every_phase(
+    tmp_path: Path,
+) -> None:
+    worker = """
+import os
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import research.scripts.export_v4_lp_ledger as exporter
+
+output = Path(sys.argv[1])
+ledger_source = Path(sys.argv[2])
+coverage_source = Path(sys.argv[3])
+mode = sys.argv[4]
+counter = Path(sys.argv[5])
+base_config = exporter.POOL_CONFIGS["uni-base"]
+frozen = exporter._load_frozen_replay_input(
+    exporter._FROZEN_REPLAY_PATHS["uni-base"],
+    base_config,
+)
+config = replace(
+    base_config,
+    chunk_size=frozen.evidence.last_block - frozen.evidence.first_block + 1,
+)
+exporter.POOL_CONFIGS["uni-base"] = config
+fake_w3 = SimpleNamespace(
+    eth=SimpleNamespace(chain_id=8453, contract=lambda **_kwargs: object())
+)
+exporter._make_web3 = lambda _config: fake_w3
+
+def header(_w3, block_number):
+    if block_number == frozen.evidence.first_block:
+        return "0x" + "11" * 32, frozen.evidence.first_timestamp_ms
+    if block_number == frozen.evidence.last_block:
+        return "0x" + "22" * 32, frozen.evidence.last_timestamp_ms
+    raise AssertionError("unexpected endpoint block")
+
+def record_scan(label):
+    with counter.open("a", encoding="utf-8") as handle:
+        handle.write(label + "\\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return []
+
+exporter._coverage_block_header = header
+exporter._fetch_logs_with_debug = lambda *_args, **_kwargs: record_scan("action")
+exporter._transfer_scan_web3 = lambda w3, _config: w3
+exporter._fetch_bounded_position_transfer_logs = (
+    lambda *_args, **_kwargs: record_scan("transfer")
+)
+ledger_bytes = ledger_source.read_bytes()
+coverage_bytes = coverage_source.read_bytes()
+exporter._build_rpc_ledger_pair_from_checkpoint = (
+    lambda *_args: (ledger_bytes, coverage_bytes, 1)
+)
+
+if mode not in ("clean", "resume"):
+    original_emit = exporter._CheckpointProgressWriter.emit
+    armed = True
+
+    def crash_after_phase(self, snapshot, *, force=False):
+        global armed
+        original_emit(self, snapshot, force=force)
+        if armed and snapshot.phase == mode:
+            armed = False
+            os._exit(87)
+
+    exporter._CheckpointProgressWriter.emit = crash_after_phase
+
+count = exporter.export_rpc_lp_ledger(
+    "uni-base",
+    frozen.evidence.first_block,
+    frozen.evidence.last_block,
+    output,
+    fresh=mode != "resume",
+)
+if count != 1:
+    raise AssertionError("unexpected row count")
+"""
+    phases = (
+        "preflight",
+        "action_discovery",
+        "action_fetch",
+        "action_decode",
+        "token_set_freeze",
+        "full_transfer_scan",
+        "relevant_transfer_fetch",
+        "relevant_transfer_decode",
+        "replay_input_bind",
+        "price_replay",
+        "build",
+        "publish",
+        "succeeded",
+    )
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    ledger_source = tmp_path / "phase-expected-ledger.bin"
+    coverage_source = tmp_path / "phase-expected-coverage.bin"
+    ledger_source.write_bytes(ledger_bytes)
+    coverage_source.write_bytes(coverage_bytes)
+    clean_output = tmp_path / "phase-clean.csv"
+    clean_counter = tmp_path / "phase-clean-counter.txt"
+    clean = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            worker,
+            str(clean_output),
+            str(ledger_source),
+            str(coverage_source),
+            "clean",
+            str(clean_counter),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert clean.returncode == 0, clean.stderr
+
+    for phase in phases:
+        output = tmp_path / f"phase-{phase}.csv"
+        counter = tmp_path / f"phase-{phase}-counter.txt"
+        crashed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                worker,
+                str(output),
+                str(ledger_source),
+                str(coverage_source),
+                phase,
+                str(counter),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert crashed.returncode == 87, (phase, crashed.stderr)
+        crashed_status = read_export_status(CheckpointPaths.from_output(output))
+        assert crashed_status.phase == phase
+        expected_state = "succeeded" if phase == "succeeded" else "interrupted"
+        assert crashed_status.state == expected_state
+
+        resumed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                worker,
+                str(output),
+                str(ledger_source),
+                str(coverage_source),
+                "resume",
+                str(counter),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert resumed.returncode == 0, (phase, resumed.stderr)
+        assert output.read_bytes() == clean_output.read_bytes()
+        assert ledger_coverage_path(output).read_bytes() == ledger_coverage_path(
+            clean_output
+        ).read_bytes()
+        scans = counter.read_text().splitlines()
+        assert scans.count("action") == 1, phase
+        assert scans.count("transfer") == 1, phase
+        terminal = read_export_status(CheckpointPaths.from_output(output))
+        assert terminal.state == "succeeded"
+        assert terminal.output_published is True
+
+
+@pytest.mark.parametrize(
+    ("crash_boundary", "sidecar_visible_after_crash"),
+    (("ledger", False), ("sidecar", True)),
+)
+def test_checkpointed_export_recovers_after_uncatchable_final_rename_crash(
+    crash_boundary: str,
+    sidecar_visible_after_crash: bool,
+    tmp_path: Path,
+) -> None:
+    worker = """
+import os
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import research.scripts.export_v4_lp_ledger as exporter
+
+output = Path(sys.argv[1])
+ledger_source = Path(sys.argv[2])
+coverage_source = Path(sys.argv[3])
+mode = sys.argv[4]
+base_config = exporter.POOL_CONFIGS["uni-base"]
+frozen = exporter._load_frozen_replay_input(
+    exporter._FROZEN_REPLAY_PATHS["uni-base"],
+    base_config,
+)
+config = replace(
+    base_config,
+    chunk_size=frozen.evidence.last_block - frozen.evidence.first_block + 1,
+)
+exporter.POOL_CONFIGS["uni-base"] = config
+fake_w3 = SimpleNamespace(
+    eth=SimpleNamespace(chain_id=8453, contract=lambda **_kwargs: object())
+)
+exporter._make_web3 = lambda _config: fake_w3
+
+def header(_w3, block_number):
+    if block_number == frozen.evidence.first_block:
+        return "0x" + "11" * 32, frozen.evidence.first_timestamp_ms
+    if block_number == frozen.evidence.last_block:
+        return "0x" + "22" * 32, frozen.evidence.last_timestamp_ms
+    raise AssertionError("unexpected endpoint block")
+
+def no_scan(*_args, **_kwargs):
+    if mode == "resume":
+        raise AssertionError("resume repeated a completed log scan")
+    return []
+
+exporter._coverage_block_header = header
+exporter._fetch_logs_with_debug = no_scan
+exporter._transfer_scan_web3 = lambda w3, _config: w3
+exporter._fetch_bounded_position_transfer_logs = no_scan
+ledger_bytes = ledger_source.read_bytes()
+coverage_bytes = coverage_source.read_bytes()
+exporter._build_rpc_ledger_pair_from_checkpoint = (
+    lambda *_args: (ledger_bytes, coverage_bytes, 1)
+)
+
+if mode in ("ledger", "sidecar"):
+    original_replace = exporter._replace_path
+    sidecar = exporter.ledger_coverage_path(output)
+
+    def crash_after_replace(source, destination):
+        original_replace(source, destination)
+        target = output if mode == "ledger" else sidecar
+        if destination == target:
+            os._exit(86)
+
+    exporter._replace_path = crash_after_replace
+
+count = exporter.export_rpc_lp_ledger(
+    "uni-base",
+    frozen.evidence.first_block,
+    frozen.evidence.last_block,
+    output,
+    fresh=mode != "resume",
+)
+if count != 1:
+    raise AssertionError("unexpected row count")
+"""
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    ledger_source = tmp_path / "expected-ledger.bin"
+    coverage_source = tmp_path / "expected-coverage.bin"
+    ledger_source.write_bytes(ledger_bytes)
+    coverage_source.write_bytes(coverage_bytes)
+    clean_output = tmp_path / "clean.csv"
+    resumed_output = tmp_path / f"resumed-{crash_boundary}.csv"
+
+    clean = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            worker,
+            str(clean_output),
+            str(ledger_source),
+            str(coverage_source),
+            "clean",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert clean.returncode == 0, clean.stderr
+
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            worker,
+            str(resumed_output),
+            str(ledger_source),
+            str(coverage_source),
+            crash_boundary,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert crashed.returncode == 86, crashed.stderr
+    paths = CheckpointPaths.from_output(resumed_output)
+    status = read_export_status(paths)
+    assert status.state == "interrupted"
+    assert status.phase == "publish"
+    assert status.output_published is False
+    assert resumed_output.read_bytes() == ledger_bytes
+    assert ledger_coverage_path(resumed_output).exists() is sidecar_visible_after_crash
+    if sidecar_visible_after_crash:
+        assert ledger_coverage_path(resumed_output).read_bytes() == coverage_bytes
+        load_ledger_coverage("uni-base", resumed_output)
+
+    resumed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            worker,
+            str(resumed_output),
+            str(ledger_source),
+            str(coverage_source),
+            "resume",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert resumed_output.read_bytes() == clean_output.read_bytes()
+    assert ledger_coverage_path(resumed_output).read_bytes() == ledger_coverage_path(
+        clean_output
+    ).read_bytes()
+    coverage = load_ledger_coverage("uni-base", resumed_output)
+    assert coverage.verification_mode == "rpc_verified"
+    terminal = read_export_status(paths)
+    assert terminal.state == "succeeded"
+    assert terminal.phase == "succeeded"
+    assert terminal.output_published is True
 
 
 def test_verified_decode_rejects_an_unrepresentable_target_pool_action(
@@ -3006,6 +4685,46 @@ def test_fixture_export_rejects_non_csv_output_before_reading_inputs(tmp_path):
     assert not output.exists()
 
 
+def test_fixture_export_obeys_output_run_lock_before_reading_inputs(tmp_path) -> None:
+    output = tmp_path / "ledger.csv"
+    paths = CheckpointPaths.from_output(output)
+
+    with acquire_run_lock(paths):
+        with pytest.raises(CheckpointContractError, match="already active"):
+            lp_ledger_export.export_fixture_lp_ledger(
+                "uni-base",
+                100,
+                100,
+                tmp_path / "missing-actions.json",
+                tmp_path / "missing-ownership.json",
+                tmp_path / "missing-prices.json",
+                output,
+            )
+
+
+def test_candidate_export_obeys_output_run_lock_before_rpc(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    paths = CheckpointPaths.from_output(output)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_make_web3",
+        lambda _config: (_ for _ in ()).throw(AssertionError("RPC must not start")),
+    )
+
+    with acquire_run_lock(paths):
+        with pytest.raises(CheckpointContractError, match="already active"):
+            lp_ledger_export.export_rpc_lp_ledger(
+                "uni-base",
+                100,
+                100,
+                output,
+                candidate_tx_hashes=(),
+            )
+
+
 @pytest.mark.parametrize("preexisting_pair", (False, True))
 def test_pair_publication_rolls_back_when_sidecar_replace_fails(
     tmp_path,
@@ -3054,6 +4773,221 @@ def test_pair_publication_rolls_back_when_sidecar_replace_fails(
     else:
         assert not output.exists()
         assert not sidecar.exists()
+
+
+@pytest.mark.parametrize("preexisting_pair", (False, True))
+@pytest.mark.parametrize("failing_sync", (1, 2))
+def test_pair_publication_rolls_back_when_directory_sync_fails_after_rename(
+    tmp_path,
+    monkeypatch,
+    preexisting_pair,
+    failing_sync,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    sidecar = ledger_coverage_path(output)
+    old_ledger, old_coverage = _minimal_coverage_pair_bytes(100)
+    new_ledger, new_coverage = _minimal_coverage_pair_bytes(101)
+    if preexisting_pair:
+        lp_ledger_export._publish_ledger_pair(
+            "uni-base",
+            output,
+            old_ledger,
+            old_coverage,
+        )
+    original_fsync = lp_ledger_export._fsync_directory
+    sync_calls = 0
+
+    def fail_selected_sync(path: Path) -> None:
+        nonlocal sync_calls
+        sync_calls += 1
+        if sync_calls == failing_sync:
+            raise OSError("injected directory sync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(lp_ledger_export, "_fsync_directory", fail_selected_sync)
+
+    with pytest.raises(OSError, match="directory sync"):
+        lp_ledger_export._publish_ledger_pair(
+            "uni-base",
+            output,
+            new_ledger,
+            new_coverage,
+        )
+
+    if preexisting_pair:
+        assert output.read_bytes() == old_ledger
+        assert sidecar.read_bytes() == old_coverage
+        load_ledger_coverage("uni-base", output)
+    else:
+        assert not output.exists()
+        assert not sidecar.exists()
+
+
+def test_durable_replace_and_rollback_unlink_sync_the_parent_immediately(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"payload")
+    events: list[str] = []
+    original_replace = os.replace
+    original_unlink = os.unlink
+
+    def recorded_replace(source_path, destination_path):
+        original_replace(source_path, destination_path)
+        events.append("replace")
+
+    def recorded_unlink(path):
+        original_unlink(path)
+        events.append("unlink")
+
+    def recorded_fsync(_directory: Path) -> None:
+        events.append("fsync")
+
+    monkeypatch.setattr(lp_ledger_export.os, "replace", recorded_replace)
+    monkeypatch.setattr(lp_ledger_export.os, "unlink", recorded_unlink)
+    monkeypatch.setattr(lp_ledger_export, "_fsync_directory", recorded_fsync)
+
+    lp_ledger_export._replace_path(source, destination)
+    assert events == ["replace", "fsync"]
+
+    events.clear()
+    lp_ledger_export._unlink_path(destination)
+    assert events == ["unlink", "fsync"]
+
+
+def test_pair_publication_rejects_a_symlinked_staging_leaf(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    sentinel = tmp_path / "stage-sentinel"
+    sentinel.write_bytes(b"sentinel")
+    staged = tmp_path / ".ledger.stage.injected.csv"
+    staged.symlink_to(sentinel)
+    ledger_bytes, coverage_bytes = _minimal_coverage_pair_bytes(100)
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_temporary_ledger_path",
+        lambda _ledger, _purpose: staged,
+    )
+
+    with pytest.raises(CheckpointContractError, match="symlink"):
+        lp_ledger_export._publish_ledger_pair(
+            "uni-base",
+            output,
+            ledger_bytes,
+            coverage_bytes,
+        )
+
+    assert sentinel.read_bytes() == b"sentinel"
+    assert not output.exists()
+    assert not ledger_coverage_path(output).exists()
+
+
+def test_pair_publication_rejects_a_symlinked_backup_leaf(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    old_ledger, old_coverage = _minimal_coverage_pair_bytes(100)
+    new_ledger, new_coverage = _minimal_coverage_pair_bytes(101)
+    lp_ledger_export._publish_ledger_pair(
+        "uni-base",
+        output,
+        old_ledger,
+        old_coverage,
+    )
+    sentinel = tmp_path / "backup-sentinel"
+    sentinel.write_bytes(b"sentinel")
+    backup = tmp_path / ".ledger.backup.injected.csv"
+    backup.symlink_to(sentinel)
+    original_temporary_path = lp_ledger_export._temporary_ledger_path
+
+    def controlled_temporary_path(ledger_path: Path, purpose: str) -> Path:
+        if purpose == "backup":
+            return backup
+        return original_temporary_path(ledger_path, purpose)
+
+    monkeypatch.setattr(
+        lp_ledger_export,
+        "_temporary_ledger_path",
+        controlled_temporary_path,
+    )
+
+    with pytest.raises(CheckpointContractError, match="symlink"):
+        lp_ledger_export._publish_ledger_pair(
+            "uni-base",
+            output,
+            new_ledger,
+            new_coverage,
+        )
+
+    assert sentinel.read_bytes() == b"sentinel"
+    assert output.read_bytes() == old_ledger
+    assert ledger_coverage_path(output).read_bytes() == old_coverage
+    load_ledger_coverage("uni-base", output)
+
+
+def test_started_publication_repairs_only_the_stale_expected_counterpart(
+    tmp_path,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    sidecar = ledger_coverage_path(output)
+    old_ledger, old_coverage = _minimal_coverage_pair_bytes(100)
+    new_ledger, new_coverage = _minimal_coverage_pair_bytes(101)
+    output.write_bytes(new_ledger)
+    sidecar.write_bytes(old_coverage)
+    publication = PublicationState(
+        state="started",
+        expected_ledger_sha256=hashlib.sha256(new_ledger).hexdigest(),
+        expected_sidecar_sha256=hashlib.sha256(new_coverage).hexdigest(),
+        started_generation=12,
+        published_generation=None,
+    )
+
+    lp_ledger_export._publish_or_reconcile_ledger_pair(
+        "uni-base",
+        output,
+        new_ledger,
+        new_coverage,
+        publication,
+    )
+
+    assert output.read_bytes() == new_ledger
+    assert sidecar.read_bytes() == new_coverage
+    assert load_ledger_coverage("uni-base", output).ledger_first_block == 101
+
+
+def test_published_checkpoint_refuses_to_repair_a_changed_final_pair(
+    tmp_path,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    sidecar = ledger_coverage_path(output)
+    old_ledger, old_coverage = _minimal_coverage_pair_bytes(100)
+    new_ledger, new_coverage = _minimal_coverage_pair_bytes(101)
+    output.write_bytes(new_ledger)
+    sidecar.write_bytes(old_coverage)
+    publication = PublicationState(
+        state="published",
+        expected_ledger_sha256=hashlib.sha256(new_ledger).hexdigest(),
+        expected_sidecar_sha256=hashlib.sha256(new_coverage).hexdigest(),
+        started_generation=12,
+        published_generation=13,
+    )
+
+    with pytest.raises(CrossPoolContractError, match="published.*exact"):
+        lp_ledger_export._publish_or_reconcile_ledger_pair(
+            "uni-base",
+            output,
+            new_ledger,
+            new_coverage,
+            publication,
+        )
+
+    assert output.read_bytes() == new_ledger
+    assert sidecar.read_bytes() == old_coverage
 
 
 def test_pair_publication_rejects_a_concurrent_writer(tmp_path) -> None:
@@ -5887,6 +7821,12 @@ def test_export_rpc_lp_ledger_writes_rows_from_rpc_inputs(tmp_path, monkeypatch)
     assert coverage["covered_start_block"] == 100
     assert coverage["covered_end_block"] == 100
     assert coverage["ledger_sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    paths = CheckpointPaths.from_output(output)
+    progress = json.loads(paths.progress.read_text())
+    assert progress["mode"] == "candidate_list_unverified"
+    assert progress["checkpoint_generation"] is None
+    assert progress["status"] == "succeeded"
+    assert not paths.database.exists()
 
 def test_export_rpc_lp_ledger_decodes_candidate_transactions_chronologically(tmp_path, monkeypatch):
     config = POOL_CONFIGS["uni-base"]
@@ -6148,3 +8088,147 @@ def test_export_v4_lp_ledger_cli_writes_fixture_rows(tmp_path):
         "ownership_events": hashlib.sha256(ownership_events.read_bytes()).hexdigest(),
         "price_events": hashlib.sha256(price_events.read_bytes()).hexdigest(),
     }
+    paths = CheckpointPaths.from_output(output)
+    progress = json.loads(paths.progress.read_text())
+    assert progress["mode"] == "fixture"
+    assert progress["checkpoint_generation"] is None
+    assert progress["status"] == "succeeded"
+    assert not paths.database.exists()
+
+
+@pytest.mark.parametrize(
+    "mode_args",
+    (
+        (
+            "--candidate-tx-csv",
+            "missing-candidates.csv",
+        ),
+        (
+            "--decoded-actions",
+            "missing-actions.json",
+            "--ownership-events",
+            "missing-owners.json",
+            "--price-events",
+            "missing-prices.json",
+        ),
+    ),
+)
+def test_cli_rejects_fresh_for_unverified_modes_before_reading_inputs(
+    mode_args,
+    capsys,
+) -> None:
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            "100",
+            "--end-block",
+            "100",
+            "--out",
+            "unused.csv",
+            "--fresh",
+            *mode_args,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == "[lp-ledger][uni-base] phase=preflight error=unknown_error\n"
+
+
+def test_candidate_csv_cli_failure_is_locked_and_writes_terminal_progress(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    output = tmp_path / "ledger.csv"
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            "100",
+            "--end-block",
+            "100",
+            "--out",
+            str(output),
+            "--candidate-tx-csv",
+            str(tmp_path / "missing-candidates.csv"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert capsys.readouterr().err == (
+        "[lp-ledger][uni-base] phase=action_discovery error=decode_error\n"
+    )
+    paths = CheckpointPaths.from_output(output)
+    progress = json.loads(paths.progress.read_text())
+    assert progress["mode"] == "candidate_list_unverified"
+    assert progress["status"] == "failed"
+    assert progress["phase"] == "action_discovery"
+    assert progress["error_code"] == "decode_error"
+    assert paths.run_lock.is_file()
+    assert not paths.database.exists()
+
+
+def test_cli_passes_fresh_only_to_full_rpc_mode(monkeypatch, capsys) -> None:
+    observed: dict[str, object] = {}
+
+    def export(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return 0
+
+    monkeypatch.setattr(lp_ledger_export, "export_rpc_lp_ledger", export)
+    config = POOL_CONFIGS["uni-base"]
+
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            str(config.default_start_block),
+            "--end-block",
+            str(config.default_start_block + 1),
+            "--out",
+            "unused.csv",
+            "--fresh",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["kwargs"] == {"candidate_tx_hashes": None, "fresh": True}
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_renders_checkpoint_failure_phase_and_closed_code(
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "classified-secret"
+
+    def fail(*_args, **_kwargs):
+        raise lp_ledger_export._CheckpointExportError(
+            phase="action_fetch",
+            error_code="rpc_error",
+        ) from RuntimeError(secret)
+
+    monkeypatch.setattr(lp_ledger_export, "export_rpc_lp_ledger", fail)
+
+    exit_code = lp_ledger_export.main(
+        [
+            "--pool",
+            "uni-base",
+            "--start-block",
+            "100",
+            "--end-block",
+            "109",
+            "--out",
+            "unused.csv",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert captured.err == "[lp-ledger][uni-base] phase=action_fetch error=rpc_error\n"
