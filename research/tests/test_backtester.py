@@ -733,10 +733,19 @@ class TestSimulationCompatibility:
             token0_symbol="cNGN",
             token1_symbol="USDC",
         )
-        sim = simulate_pool([event], BacktestParams(gas_cost_usd=1000.0), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            [event],
+            BacktestParams(gas_cost_usd=1000.0),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
         assert sim.final_value == pytest.approx(500.0)
         assert sim.divergent_loss == pytest.approx(0.0)
-        assert sim.value_samples == [(event.block_time, pytest.approx(500.0))]
+        assert sim.value_samples == [
+            (event.block_time, pytest.approx(500.0)),
+            (event.block_time, pytest.approx(500.0)),
+        ]
 
 
 class TestPaperStyleSimulation:
@@ -821,7 +830,13 @@ class TestPaperStyleSimulation:
 
     def test_upward_in_range_harvest_records_episode_accounting(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
-        sim = simulate_pool(events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            self._params(),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 1
         first = sim.episodes[0]
@@ -846,7 +861,13 @@ class TestPaperStyleSimulation:
             out_of_range_overshoot_fraction=None,
         )
 
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 0
         assert len(sim.episodes) == 1
@@ -872,8 +893,20 @@ class TestPaperStyleSimulation:
             ),
         )
 
-        marked = simulate_pool(events, base_params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
-        closed = simulate_pool(events, closed_params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        marked = simulate_pool(
+            events,
+            base_params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
+        closed = simulate_pool(
+            events,
+            closed_params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert closed.rebalance_count == 0
         assert closed.episodes[0].exit_reason == "end_of_data_close"
@@ -883,14 +916,22 @@ class TestPaperStyleSimulation:
 
     def test_deploy_full_wallet_is_the_status_quo(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
-        legacy = simulate_pool(events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        legacy = simulate_pool(
+            events,
+            self._params(),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
         explicit = simulate_pool(
             events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0,
             sizing_policy=DeployFullWallet(),
+            settle_to_cash=False,
         )
         oversized = simulate_pool(
             events, self._params(), UNISWAP_BASE_POOL, initial_capital_usd=500.0,
             sizing_policy=FixedDeployment(capital_usd=10_000.0),
+            settle_to_cash=False,
         )
         for sim in (explicit, oversized):
             assert sim.final_value == pytest.approx(legacy.final_value)
@@ -904,6 +945,7 @@ class TestPaperStyleSimulation:
             self._params(),
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
+            settle_to_cash=False,
         )
         assert expected.episodes
 
@@ -913,6 +955,7 @@ class TestPaperStyleSimulation:
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
             entry_eligibility=AlwaysEligibleOverlay(),
+            settle_to_cash=False,
         )
 
         assert actual == expected
@@ -930,6 +973,7 @@ class TestPaperStyleSimulation:
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
             entry_eligibility=NeverEligibleOverlay(),
+            settle_to_cash=False,
         )
 
         assert result.episodes == []
@@ -940,10 +984,17 @@ class TestPaperStyleSimulation:
     def test_fixed_deployment_keeps_remainder_idle(self):
         cost_kwargs = {"transaction_costs": TransactionCostModel(mint_gas_usd=0.0, remove_gas_usd=0.0)}
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 0)]
-        full = simulate_pool(events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        full = simulate_pool(
+            events,
+            self._params(**cost_kwargs),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
         partial = simulate_pool(
             events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0,
             sizing_policy=FixedDeployment(capital_usd=250.0),
+            settle_to_cash=False,
         )
         assert partial.episodes[0].entry_value == pytest.approx(250.0, rel=0.05)
         # Smaller position -> smaller fee share, but the idle half is preserved:
@@ -962,6 +1013,7 @@ class TestPaperStyleSimulation:
         sim = simulate_pool(
             [first, second], self._params(gas_cost_usd=1000.0), UNISWAP_BASE_POOL,
             initial_capital_usd=500.0, idle_apr=0.0425,
+            settle_to_cash=False,
         )
         assert sim.idle_hurdle_credit == pytest.approx(500.0 * 0.0425 / 2, rel=1e-6)
         assert sim.final_value == pytest.approx(500.0)  # credit is report-only
@@ -972,9 +1024,21 @@ class TestPaperStyleSimulation:
         # Our $500 position dwarfs the fixture's recorded pool depth (1e9);
         # its fee share approaches but must never exceed 100% of each swap's
         # total fee. Against a deep pool (1e15) the share collapses.
-        shallow = simulate_pool(events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        shallow = simulate_pool(
+            events,
+            self._params(**cost_kwargs),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
         deep_events = [replace(event, active_liquidity=10**15) for event in events]
-        deep = simulate_pool(deep_events, self._params(**cost_kwargs), UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        deep = simulate_pool(
+            deep_events,
+            self._params(**cost_kwargs),
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
         per_event_fee_ceiling = 1.0 * 0.0015  # max(amount0, amount1) * fee_rate
         assert 0 < deep.total_fees < shallow.total_fees
         assert shallow.total_fees < per_event_fee_ceiling * len(events)
@@ -990,6 +1054,7 @@ class TestPaperStyleSimulation:
             self._params(**base_params),
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
+            settle_to_cash=False,
         )
         shallow_events = [
             replace(event, active_liquidity=1_000_000)
@@ -1000,6 +1065,7 @@ class TestPaperStyleSimulation:
             self._params(**base_params),
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
+            settle_to_cash=False,
         )
 
         assert shallow_liquidity.total_price_impact_cost > deep_liquidity.total_price_impact_cost
@@ -1014,6 +1080,7 @@ class TestPaperStyleSimulation:
             ),
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
+            settle_to_cash=False,
         )
         cash_unwind = simulate_pool(
             events,
@@ -1027,6 +1094,7 @@ class TestPaperStyleSimulation:
             ),
             UNISWAP_BASE_POOL,
             initial_capital_usd=500.0,
+            settle_to_cash=False,
         )
 
         assert len(true_route.episodes) == 2
@@ -1072,7 +1140,13 @@ class TestPaperStyleSimulation:
     def test_profit_after_cost_gates_harvest(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 120)]
         params = self._params(require_profit_after_cost=True, gas_cost_usd=300.0)
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 0
         assert all(episode.exit_reason != "harvest_upward" for episode in sim.episodes)
@@ -1080,7 +1154,13 @@ class TestPaperStyleSimulation:
     def test_favorable_out_of_range_exit_is_profit_harvest(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, 600)]
         params = self._params(profit_take_return=-1.0, require_profit_after_cost=False)
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 1
         assert sim.episodes[0].exit_reason == "harvest_upward"
@@ -1089,7 +1169,13 @@ class TestPaperStyleSimulation:
     def test_adverse_out_of_range_exit_is_defensive(self):
         events = [self._event(0, 0), self._event(1, 0), self._event(2, -600)]
         params = self._params(stop_loss_return=None, require_profit_after_cost=False)
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 1
         assert sim.episodes[0].exit_reason == "adverse_out_of_range"
@@ -1098,7 +1184,13 @@ class TestPaperStyleSimulation:
     def test_stop_loss_exits_in_range_position(self):
         events = [self._event(0, 0, amount_usd=0), self._event(1, 0, amount_usd=0), self._event(2, -100, amount_usd=0)]
         params = self._params(harvest_upward_range_fraction=None, stop_loss_return=0.0)
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 1
         assert sim.episodes[0].exit_reason == "stop_loss"
@@ -1115,7 +1207,13 @@ class TestPaperStyleSimulation:
             stop_loss_return=0.0,
             min_exit_swap_volume_usd=1.0,
         )
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 0
         assert sim.episodes[0].exit_reason == "end_of_data"
@@ -1133,7 +1231,13 @@ class TestPaperStyleSimulation:
             exit_price_min_swap_volume_usd=1.0,
             exit_price_twap_lookback_minutes=60.0,
         )
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 0
         assert sim.episodes[0].exit_reason == "end_of_data"
@@ -1150,7 +1254,13 @@ class TestPaperStyleSimulation:
             stop_loss_return=-0.005,
             exit_price_mode="fair_price",
         )
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 0
         assert sim.episodes[0].exit_reason == "end_of_data"
@@ -1167,7 +1277,13 @@ class TestPaperStyleSimulation:
             stop_loss_return=0.0,
             exit_confirmation_swaps=2,
         )
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 1
         assert sim.episodes[0].exit_reason == "stop_loss"
@@ -1181,7 +1297,13 @@ class TestPaperStyleSimulation:
             self._event(3, 0),
         ]
         params = self._params(harvest_upward_range_fraction=None, cooldown_minutes=10.0)
-        sim = simulate_pool(events, params, UNISWAP_BASE_POOL, initial_capital_usd=500.0)
+        sim = simulate_pool(
+            events,
+            params,
+            UNISWAP_BASE_POOL,
+            initial_capital_usd=500.0,
+            settle_to_cash=False,
+        )
 
         assert sim.rebalance_count == 1
         assert len(sim.episodes) == 1

@@ -636,6 +636,7 @@ def evaluate_frozen_windows(
                 _BASE_EXPERIMENT.pool_config,
                 float(plan.initial_capital_usd),
                 initial_pool_state=initial_pool_state,
+                settle_to_cash=False,
             )
             rows.append(
                 _simulation_row(
@@ -657,6 +658,7 @@ def evaluate_frozen_windows(
                     timeline=timeline,
                     threshold_bps=FROZEN_FORECAST_AGREEMENT_THRESHOLD_BPS,
                 ),
+                settle_to_cash=False,
             )
             rows.append(
                 _simulation_row(
@@ -674,6 +676,7 @@ def evaluate_frozen_windows(
             _BASE_EXPERIMENT.pool_config,
             float(plan.initial_capital_usd),
             initial_pool_state=initial_pool_state,
+            settle_to_cash=False,
         )
         rows.append(
             _simulation_row(

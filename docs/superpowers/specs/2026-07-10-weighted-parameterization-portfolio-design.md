@@ -1,5 +1,13 @@
 # Weighted Parameterization Portfolio Backtest Design
 
+> **Protocol amendment (2026-07-23):** The running implementation audit exposed
+> conflicts in cross-family deduplication, boundary accounting, mixed-action
+> netting, comparators, attribution, and checkpointing. The dated correction
+> contract in
+> `docs/superpowers/specs/2026-07-23-weighted-portfolio-correction.md` supersedes
+> only those clauses. This file remains the historical source for every
+> unaffected hypothesis, guardrail, and publication boundary.
+
 Date: 2026-07-10
 
 ## Purpose

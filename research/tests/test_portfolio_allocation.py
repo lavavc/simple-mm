@@ -18,12 +18,15 @@ from research.backtester.portfolio_allocation import (
     equal_config_weights,
     equal_family_weights,
     is_eligible,
+    rank_one_comparator_allocation,
+    select_rank_one,
     shrinkage_weights,
 )
-from research.backtester.portfolio_catalog import SleeveDefinition
+from research.backtester.portfolio_catalog import SleeveAlias, SleeveDefinition
 
 
 def sleeve(sleeve_id: str, family: str) -> SleeveDefinition:
+    declared_family = "paper" if family == "paper_exclusive" else family
     return SleeveDefinition(
         sleeve_id=sleeve_id,
         family=family,  # type: ignore[arg-type]
@@ -31,6 +34,13 @@ def sleeve(sleeve_id: str, family: str) -> SleeveDefinition:
         parameter_payload="{}",
         parameter_fingerprint=sleeve_id,
         source_constructor="test",
+        aliases=(
+            SleeveAlias(
+                declared_family,  # type: ignore[arg-type]
+                sleeve_id,
+                "test",
+            ),
+        ),
     )
 
 
@@ -58,6 +68,10 @@ def test_frozen_constants() -> None:
         passing_metrics(net_return=math.nan),
         passing_metrics(net_return=math.inf),
         passing_metrics(fee_to_transaction_cost_ratio=math.nan),
+        passing_metrics(max_drawdown=math.nan),
+        passing_metrics(max_drawdown=math.inf),
+        passing_metrics(max_drawdown=-math.inf),
+        passing_metrics(max_drawdown=0.01),
     ],
 )
 def test_eligibility_fails_closed(metrics: TrainingMetrics) -> None:
@@ -65,7 +79,11 @@ def test_eligibility_fails_closed(metrics: TrainingMetrics) -> None:
 
 
 def test_eligible_sleeves_require_metrics_and_preserve_catalog_order() -> None:
-    sleeves = [sleeve("b", "paper"), sleeve("missing", "paper"), sleeve("a", "ewma")]
+    sleeves = [
+        sleeve("b", "paper_exclusive"),
+        sleeve("missing", "paper_exclusive"),
+        sleeve("a", "ewma"),
+    ]
     metrics = {"a": passing_metrics(), "b": passing_metrics()}
 
     assert [item.sleeve_id for item in eligible_sleeves(sleeves, metrics)] == ["b", "a"]
@@ -83,7 +101,11 @@ def test_equal_config_weights_apply_sleeve_and_family_caps_without_redistributio
 
 
 def test_equal_family_weights_ignore_family_grid_size() -> None:
-    sleeves = [sleeve("a", "ewma"), sleeve("b", "ewma"), sleeve("c", "paper")]
+    sleeves = [
+        sleeve("a", "ewma"),
+        sleeve("b", "ewma"),
+        sleeve("c", "paper_exclusive"),
+    ]
     metrics = {item.sleeve_id: passing_metrics() for item in sleeves}
 
     allocation = equal_family_weights(sleeves, metrics)
@@ -95,7 +117,7 @@ def test_equal_family_weights_ignore_family_grid_size() -> None:
 
 
 def test_equal_family_weights_leave_sleeve_cap_residual_as_cash() -> None:
-    sleeves = [sleeve("a", "ewma"), sleeve("b", "paper")]
+    sleeves = [sleeve("a", "ewma"), sleeve("b", "paper_exclusive")]
     metrics = {item.sleeve_id: passing_metrics() for item in sleeves}
 
     allocation = equal_family_weights(sleeves, metrics)
@@ -109,6 +131,55 @@ def test_no_eligible_sleeves_holds_cash() -> None:
 
     allocation = equal_family_weights([sleeve("a", "ewma")], metrics)
 
+    assert allocation.weights == {}
+    assert allocation.cash_weight == 1.0
+
+
+def test_rank_one_selection_is_deterministic_and_uses_all_frozen_tiebreaks() -> None:
+    sleeves = [
+        sleeve("z", "ewma"),
+        sleeve("drawdown", "ewma"),
+        sleeve("fee", "ewma"),
+        sleeve("a", "ewma"),
+    ]
+    metrics = {
+        "z": passing_metrics(net_return=0.2, fee_to_transaction_cost_ratio=2.0, max_drawdown=-0.2),
+        "drawdown": passing_metrics(
+            net_return=0.2,
+            fee_to_transaction_cost_ratio=2.0,
+            max_drawdown=-0.1,
+        ),
+        "fee": passing_metrics(
+            net_return=0.2,
+            fee_to_transaction_cost_ratio=3.0,
+            max_drawdown=-0.2,
+        ),
+        "a": passing_metrics(
+            net_return=0.2,
+            fee_to_transaction_cost_ratio=3.0,
+            max_drawdown=-0.2,
+        ),
+    }
+
+    selected = select_rank_one(sleeves, metrics)
+    reversed_selected = select_rank_one(list(reversed(sleeves)), metrics)
+
+    assert selected is not None
+    assert reversed_selected is not None
+    assert selected.sleeve_id == "a"
+    assert reversed_selected.sleeve_id == "a"
+    allocation = rank_one_comparator_allocation(sleeves, metrics)
+    assert allocation.rule == "rank_one_comparator"
+    assert allocation.weights == {"a": SLEEVE_CAP}
+    assert allocation.cash_weight == pytest.approx(1.0 - SLEEVE_CAP)
+
+
+def test_rank_one_selection_returns_cash_when_no_candidate_is_eligible() -> None:
+    sleeves = [sleeve("a", "ewma")]
+    metrics = {"a": passing_metrics(net_return=-0.01)}
+
+    assert select_rank_one(sleeves, metrics) is None
+    allocation = rank_one_comparator_allocation(sleeves, metrics)
     assert allocation.weights == {}
     assert allocation.cash_weight == 1.0
 
@@ -146,11 +217,15 @@ def test_shrinkage_is_deterministic_and_clips_risk_score() -> None:
     assert first.cash_weight == pytest.approx(0.65)
 
 
-def test_shrinkage_rejects_non_finite_drawdown() -> None:
+def test_shrinkage_treats_non_finite_drawdown_as_ineligible() -> None:
     item = sleeve("a", "ewma")
 
-    with pytest.raises(ValueError, match="finite max_drawdown"):
-        shrinkage_weights([item], {"a": passing_metrics(max_drawdown=math.nan)})
+    allocation = shrinkage_weights(
+        [item], {"a": passing_metrics(max_drawdown=math.nan)}
+    )
+
+    assert allocation.weights == {}
+    assert allocation.cash_weight == 1.0
 
 
 @pytest.mark.parametrize("cash_weight", [math.nan, math.inf, -0.01])
@@ -166,3 +241,5 @@ def test_allocation_rejects_invalid_weights_and_overallocation() -> None:
         Allocation("equal_config", {"a": -0.01}, 1.0)
     with pytest.raises(ValueError, match="exceeds bankroll"):
         Allocation("equal_config", {"a": 0.1}, 0.91)
+    with pytest.raises(ValueError, match="reconcile exactly"):
+        Allocation("equal_config", {"a": 0.1}, 0.8)

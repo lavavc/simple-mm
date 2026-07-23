@@ -132,6 +132,7 @@ def main() -> None:
                         initial_pool_state=_build_pool_state(window_slice.train_events),
                         sizing_policy=FixedDeployment(capital_usd=capital),
                         idle_apr=IDLE_APR,
+                        settle_to_cash=False,
                     )
                     duration_years = (
                         (sim.end_time - sim.start_time).total_seconds() / (365.25 * 86400)

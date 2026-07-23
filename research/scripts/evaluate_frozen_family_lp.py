@@ -621,6 +621,7 @@ def _simulate_config_rows(
                 pool_config,
                 params.initial_capital_usd,
                 initial_pool_state=initial_pool_state,
+                settle_to_cash=False,
             )
             metrics = _compute_metrics(sim, params.initial_capital_usd)
             rows.append(

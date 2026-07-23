@@ -721,6 +721,7 @@ def _simulate_static_rows(
                 pool_config,
                 params.initial_capital_usd,
                 initial_pool_state=initial_pool_state,
+                settle_to_cash=False,
             )
             rows.append(
                 _metrics_result_row(
@@ -755,6 +756,7 @@ def _simulate_directional_component_rows(
                 pool_config,
                 config.params.initial_capital_usd,
                 initial_pool_state=initial_pool_state,
+                settle_to_cash=False,
             )
             rows.append(
                 _metrics_result_row(
@@ -819,6 +821,7 @@ def _simulate_directional_policy_rows(
                 pool_config,
                 config.params.initial_capital_usd,
                 initial_pool_state=initial_pool_state,
+                settle_to_cash=False,
             )
             rows.append(
                 _metrics_result_row(

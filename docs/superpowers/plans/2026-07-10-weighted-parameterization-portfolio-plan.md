@@ -1,5 +1,11 @@
 # Weighted Parameterization Portfolio Implementation Plan
 
+> **Correction plan (2026-07-23):** Do not execute the remaining run or closeout
+> steps in this historical plan directly. Continue through
+> `docs/superpowers/plans/2026-07-23-weighted-portfolio-correction-plan.md`, which
+> repairs the design/implementation mismatches found during the first full-run
+> audit while preserving unaffected July 10 constraints.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build and run one causal, pool-local backtest that treats the repository's existing LP parameterizations as jointly funded virtual positions, compares three frozen allocation rules against existing baselines, and closes the July 2026 research branch with an article-ready result.

@@ -1,9 +1,11 @@
+import math
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
 
+import research.backtester.position_runtime as position_runtime_module
 from research.backtester.clmm_math import tick_to_sqrt_price_x96
 from research.backtester.data import Event, V4Event
 from research.backtester.entry_eligibility import (
@@ -14,6 +16,7 @@ from research.backtester.params import BacktestParams, TransactionCostModel
 from research.backtester.position_runtime import (
     SleeveRuntime,
     SleeveSettlement,
+    TerminalLiquidationError,
     create_sleeve_runtime,
 )
 from research.backtester.simulator import (
@@ -114,7 +117,13 @@ def _paper_params_with_zero_gas() -> BacktestParams:
 def test_runtime_matches_simulate_pool_for_complete_lifecycle() -> None:
     events = _events_that_enter_accrue_fee_exit_and_reenter()
     params = _paper_params_with_zero_gas()
-    expected = simulate_pool(events, params, UNISWAP_BASE_POOL, 500.0)
+    expected = simulate_pool(
+        events,
+        params,
+        UNISWAP_BASE_POOL,
+        500.0,
+        settle_to_cash=False,
+    )
     assert expected.total_fees > 0
     assert expected.rebalance_count == 1
     assert len(expected.episodes) == 2
@@ -125,7 +134,7 @@ def test_runtime_matches_simulate_pool_for_complete_lifecycle() -> None:
         pool_config=UNISWAP_BASE_POOL,
         capital_usd=500.0,
     )
-    actual = runtime.run(events)
+    actual = runtime.run(events, settle_to_cash=False)
 
     assert actual == expected
 
@@ -153,7 +162,13 @@ def test_runtime_exposes_ordered_phases_and_preserves_complete_lifecycle() -> No
     ):
         assert callable(getattr(runtime, method_name, None)), method_name
 
-    assert runtime.run(events) == simulate_pool(events, params, UNISWAP_BASE_POOL, 500.0)
+    assert runtime.run(events, settle_to_cash=False) == simulate_pool(
+        events,
+        params,
+        UNISWAP_BASE_POOL,
+        500.0,
+        settle_to_cash=False,
+    )
 
 
 def test_exit_decision_does_not_mutate_wallet_or_position() -> None:
@@ -165,7 +180,7 @@ def test_exit_decision_does_not_mutate_wallet_or_position() -> None:
         pool_config=UNISWAP_BASE_POOL,
         capital_usd=500.0,
     )
-    runtime.run(events[:3])
+    runtime.run(events[:3], settle_to_cash=False)
     assert runtime.position is not None
 
     exit_event = events[3]
@@ -215,7 +230,7 @@ def _runtime_ready_to_exit() -> tuple[SleeveRuntime, V4Event, int]:
         pool_config=UNISWAP_BASE_POOL,
         capital_usd=500.0,
     )
-    runtime.run(events[:3])
+    runtime.run(events[:3], settle_to_cash=False)
     exit_event = events[3]
     assert isinstance(exit_event, V4Event)
     active_liquidity, price_is_valid = runtime._observe_swap(exit_event)
@@ -355,7 +370,7 @@ def test_factory_preserves_entry_overlay_identity() -> None:
     assert runtime.entry_eligibility is overlay
 
 
-def test_normal_exit_precedes_fresh_same_event_entry_eligibility_check() -> None:
+def test_normal_exit_defers_fresh_entry_eligibility_until_the_next_swap() -> None:
     events = _events_that_enter_accrue_fee_exit_and_reenter()
     overlay = RecordingEligibilityOverlay((True, False))
     runtime = create_sleeve_runtime(
@@ -366,14 +381,270 @@ def test_normal_exit_precedes_fresh_same_event_entry_eligibility_check() -> None
         entry_eligibility=overlay,
     )
 
-    result = runtime.run(events[:4])
+    result = runtime.run(events[:4], settle_to_cash=False)
 
-    assert [context.block_time for context in overlay.contexts] == [
-        events[1].block_time,
-        events[3].block_time,
-    ]
+    assert [context.block_time for context in overlay.contexts] == [events[1].block_time]
     assert result.rebalance_count == 1
     assert len(result.episodes) == 1
+    assert runtime.position is None
+
+    next_event = events[4]
+    assert isinstance(next_event, V4Event)
+    active_liquidity, price_is_valid = runtime._observe_swap(next_event)
+    assert price_is_valid
+    runtime._accrue_position_fee(next_event, active_liquidity)
+    assert runtime.propose_exit(next_event, active_liquidity) is None
+    assert runtime.propose_entry(next_event, active_liquidity) is None
+    assert [context.block_time for context in overlay.contexts] == [
+        events[1].block_time,
+        events[4].block_time,
+    ]
+
+
+def test_cash_boundary_overrides_strategy_flags_and_liquidates_every_token() -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()[:3]
+    params = replace(
+        _paper_params_with_zero_gas(),
+        transaction_costs=replace(
+            _paper_params_with_zero_gas().transaction_costs,
+            remove_gas_usd=1.0,
+            unwind_to_cash_on_exit=False,
+            close_position_on_end=False,
+        ),
+    )
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=params,
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+
+    result = runtime.run(events, settle_to_cash=True)
+
+    assert result.settled_to_cash
+    assert result.terminal_liquidation_cost > 0.0
+    assert result.terminal_open_position_count == 0
+    assert result.terminal_cngn_amount == pytest.approx(0.0, abs=1e-12)
+    assert runtime.position is None
+    assert runtime.wallet.cngn_amount == pytest.approx(0.0, abs=1e-12)
+    assert result.final_value == pytest.approx(runtime.wallet.stable_usd)
+    assert result.episodes[-1].exit_reason == "validation_boundary"
+    assert result.value_samples[-2][0] == events[-1].block_time
+    assert result.value_samples[-1][0] == events[-1].block_time
+    assert result.value_samples[-1][1] == pytest.approx(result.final_value)
+
+
+def test_cash_boundary_path_starts_with_pre_action_opening_capital() -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()[:3]
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+
+    result = runtime.run(events, settle_to_cash=True)
+
+    assert result.value_samples[0] == (events[0].block_time, 500.0)
+    assert result.value_samples[1][0] == events[0].block_time
+    assert result.value_samples[-1] == (events[-1].block_time, result.final_value)
+
+
+def test_cash_boundary_requires_a_valid_swap() -> None:
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=500.0,
+    )
+
+    with pytest.raises(ValueError, match="requires a valid swap"):
+        runtime.run([], settle_to_cash=True)
+
+
+def test_terminal_liquidation_converts_loose_cngn_without_a_position() -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    event = events[2]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+    runtime.wallet = PortfolioComposition(stable_usd=0.0, cngn_amount=100.0)
+
+    action = runtime.propose_terminal_liquidation(event, active_liquidity)
+    runtime.apply_action(action)
+
+    assert runtime.position is None
+    assert runtime.wallet.cngn_amount == 0.0
+    assert runtime.wallet.stable_usd == pytest.approx(
+        100.0 * runtime.current_price - action.transaction_cost.total
+    )
+
+
+def test_terminal_liquidation_removes_stable_only_position_without_swap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    event = events[2]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    runtime.run(events[:3], settle_to_cash=False)
+    assert runtime.position is not None
+    active_liquidity = runtime.current_active_liquidity
+    monkeypatch.setattr(
+        position_runtime_module,
+        "_wallet_with_position_removed",
+        lambda *args, **kwargs: PortfolioComposition(
+            stable_usd=95.0,
+            cngn_amount=0.0,
+        ),
+    )
+
+    action = runtime.propose_terminal_liquidation(event, active_liquidity)
+
+    assert action.wallet_after == PortfolioComposition(
+        stable_usd=95.0,
+        cngn_amount=0.0,
+    )
+    assert action.transaction_cost.swap_notional_usd == 0.0
+
+
+def test_terminal_liquidation_clears_one_ulp_token_residual() -> None:
+    event = _events_that_enter_accrue_fee_exit_and_reenter()[0]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+    runtime.current_price = 0.0007202179285973757
+    runtime.wallet = PortfolioComposition(
+        stable_usd=0.0,
+        cngn_amount=56_450.34375389696,
+    )
+    represented_round_trip = (
+        runtime.wallet.cngn_amount * runtime.current_price
+    ) / runtime.current_price
+    assert abs(represented_round_trip - runtime.wallet.cngn_amount) == math.ulp(
+        runtime.wallet.cngn_amount
+    )
+
+    action = runtime.propose_terminal_liquidation(event, active_liquidity)
+
+    assert action.wallet_after.cngn_amount == 0.0
+
+
+def test_terminal_liquidation_swaps_sub_epsilon_token_balance() -> None:
+    event = _events_that_enter_accrue_fee_exit_and_reenter()[0]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+    runtime.wallet = PortfolioComposition(stable_usd=0.0, cngn_amount=5e-13)
+
+    action = runtime.propose_terminal_liquidation(event, active_liquidity)
+
+    assert action.wallet_after.cngn_amount == 0.0
+    assert action.transaction_cost.swap_notional_usd > 0.0
+
+
+@pytest.mark.parametrize(
+    ("cngn_amount", "price", "message"),
+    (
+        (5e-324, 5e-324, "swap notional is invalid"),
+        (1e308, 1e308, "wallet value is invalid"),
+    ),
+)
+def test_terminal_liquidation_rejects_unrepresentable_swap_notional(
+    cngn_amount: float,
+    price: float,
+    message: str,
+) -> None:
+    event = _events_that_enter_accrue_fee_exit_and_reenter()[0]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+    runtime.current_price = price
+    runtime.wallet = PortfolioComposition(
+        stable_usd=0.0,
+        cngn_amount=cngn_amount,
+    )
+
+    with pytest.raises(
+        TerminalLiquidationError,
+        match=message,
+    ):
+        runtime.propose_terminal_liquidation(event, active_liquidity)
+
+
+def test_empty_terminal_wallet_emits_a_zero_cost_settlement() -> None:
+    event = _events_that_enter_accrue_fee_exit_and_reenter()[0]
+    assert isinstance(event, V4Event)
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=_paper_params_with_zero_gas(),
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=100.0,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+
+    action = runtime.propose_terminal_liquidation(event, active_liquidity)
+
+    assert action.transaction_cost.total == 0.0
+    assert action.inventory_swap_notional_usd == 0.0
+    assert action.wallet_after == runtime.wallet
+
+
+def test_underfunded_terminal_fixed_cost_fails_without_mutation() -> None:
+    event = _events_that_enter_accrue_fee_exit_and_reenter()[0]
+    assert isinstance(event, V4Event)
+    params = replace(
+        _paper_params_with_zero_gas(),
+        transaction_costs=replace(
+            _paper_params_with_zero_gas().transaction_costs,
+            remove_gas_usd=1.0,
+        ),
+    )
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=params,
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=0.5,
+    )
+    active_liquidity, price_is_valid = runtime._observe_swap(event)
+    assert price_is_valid
+    runtime.wallet = PortfolioComposition(stable_usd=0.0, cngn_amount=0.5)
+    before = deepcopy(runtime.wallet)
+
+    with pytest.raises(TerminalLiquidationError, match="fixed cost exceeds"):
+        runtime.propose_terminal_liquidation(event, active_liquidity)
+
+    assert runtime.wallet == before
     assert runtime.position is None
 
 

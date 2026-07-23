@@ -307,6 +307,14 @@ class SimResult:
     divergent_loss: float = 0.0
     start_time: datetime | None = None
     end_time: datetime | None = None
+    settled_to_cash: bool = False
+    terminal_liquidation_cost: float = 0.0
+    terminal_open_position_count: int = 0
+    terminal_cngn_amount: float = 0.0
+    external_swap_notional_usd: float = 0.0
+    external_input_value_usd: float = 0.0
+    external_output_value_usd: float = 0.0
+    total_variable_execution_cost_usd: float = 0.0
     # Post-event mark-to-market equity at each processed swap, for path metrics.
     value_samples: list[tuple[datetime, float]] = field(default_factory=list)
     # Report-only hurdle interest accrued on the undeployed wallet balance
@@ -1039,7 +1047,7 @@ def _same_spacing_range(
 
 def _exact_clmm_input_costs(
     input_notional_usd: float,
-    active_liquidity: int,
+    active_liquidity: float,
     fee_rate: float,
     current_tick: int,
     current_sqrt_price_x96: int,
@@ -1070,7 +1078,7 @@ def _exact_clmm_input_costs(
 
 def _exact_clmm_output_costs(
     output_notional_usd: float,
-    active_liquidity: int,
+    active_liquidity: float,
     fee_rate: float,
     current_tick: int,
     current_sqrt_price_x96: int,
@@ -1109,7 +1117,7 @@ def _exact_clmm_output_costs(
 def _swap_cost_breakdown(
     action: str,
     swap_notional_usd: float,
-    active_liquidity: int,
+    active_liquidity: float,
     fee_rate: float,
     current_tick: int,
     params: BacktestParams,
@@ -1395,6 +1403,8 @@ def simulate_pool(
     sizing_policy: SizingPolicy | None = None,
     entry_eligibility: EntryEligibilityOverlay | None = None,
     idle_apr: float = 0.0,
+    *,
+    settle_to_cash: bool,
 ) -> SimResult:
     from research.backtester.position_runtime import create_sleeve_runtime
 
@@ -1407,4 +1417,8 @@ def simulate_pool(
         entry_eligibility=entry_eligibility,
         idle_apr=idle_apr,
     )
-    return runtime.run(events, initial_pool_state)
+    return runtime.run(
+        events,
+        initial_pool_state,
+        settle_to_cash=settle_to_cash,
+    )

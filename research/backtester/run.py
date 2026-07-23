@@ -189,6 +189,7 @@ def _run_grid(
             pool_config,
             params.initial_capital_usd,
             initial_pool_state=initial_pool_state,
+            settle_to_cash=False,
         )
         rows.append((params, sim, _compute_metrics(sim, params.initial_capital_usd)))
     return rows

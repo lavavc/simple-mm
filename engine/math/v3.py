@@ -127,7 +127,7 @@ def constrain_tick_width(
 
 def compute_swap_step(
     sqrt_price: float,
-    liquidity: int,
+    liquidity: float,
     amount_in: float,
     fee_rate: float,
     zero_for_one: bool,
