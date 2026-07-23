@@ -99,6 +99,56 @@ def test_replay_inspection_exposes_provenance_interval_and_cutoff_block(
     ) == INCEPTION_BLOCKS["uni-base"] + 102
 
 
+def test_active_v2_replay_cannot_bind_archived_v1_ledger_coverage(
+    tmp_path: Path,
+) -> None:
+    replay_path = _write_csv(
+        tmp_path / "base_replay.csv",
+        REPLAY_FIELDS,
+        _replay_rows("uni-base"),
+    )
+    replay = inspect_replay_stream("uni-base", replay_path)
+    ledger_path = _write_ledger(
+        tmp_path,
+        "uni-base",
+        replay_path=replay_path,
+    )
+    active_coverage = load_verified_ledger_attribution_rows(
+        "uni-base",
+        ledger_path,
+        required_end_block=replay.last_block,
+        required_end_timestamp_ms=replay.artifact_last_timestamp_ms,
+    ).coverage
+
+    assert replay.parser_version == "pool-history-replay-v2"
+    market_structure.validate_ledger_replay_binding(active_coverage, replay)
+
+    sidecar_path = ledger_coverage_path(ledger_path)
+    payload = json.loads(sidecar_path.read_bytes())
+    replay_input = payload["evidence"]["replay_input"]
+    replay_input["parser_version"] = "pool-history-replay-v1"
+    replay_input["price_semantics_sha256"] = (
+        "0cef03f965d8879f52faba6dfb7bbfe52be6c998c5e66b7d453ee548d33be885"
+    )
+    payload["attestation_sha256"] = ledger_attribution._canonical_set_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "attestation_sha256"
+        }
+    )
+    _write_canonical_json(sidecar_path, payload)
+    archived_coverage = load_verified_ledger_attribution_rows(
+        "uni-base",
+        ledger_path,
+        required_end_block=replay.last_block,
+        required_end_timestamp_ms=replay.artifact_last_timestamp_ms,
+    ).coverage
+
+    with pytest.raises(CrossPoolContractError, match="exact replay artifact"):
+        market_structure.validate_ledger_replay_binding(archived_coverage, replay)
+
+
 def test_stored_cngn_price_cannot_change_replay_state_evidence(
     tmp_path: Path,
 ) -> None:

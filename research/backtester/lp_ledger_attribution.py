@@ -33,7 +33,7 @@ CandidateScanSource: TypeAlias = Literal[
 
 LEDGER_COVERAGE_SCHEMA_VERSION = "2.0.0"
 UNVERIFIED_LEDGER_COVERAGE_SCHEMA_VERSION = "1.0.0"
-FROZEN_REPLAY_PARSER_VERSION = "pool-history-replay-v1"
+FROZEN_REPLAY_PARSER_VERSION = "pool-history-replay-v2"
 FROZEN_REPLAY_INPUT_FIELDS = (
     "block_time",
     "chain",
@@ -88,9 +88,9 @@ class _FrozenReplayProfile:
     price_semantics_sha256: str
 
 
-# Profiles are immutable so sealed evidence remains inspectable after code changes.
-_ACTIVE_FROZEN_REPLAY_PROFILE = _FrozenReplayProfile(
-    parser_version=FROZEN_REPLAY_PARSER_VERSION,
+# Never revise a historical profile: sealed evidence selects it by stored version.
+_FROZEN_REPLAY_V1_PROFILE = _FrozenReplayProfile(
+    parser_version="pool-history-replay-v1",
     header_sha256="f847154f8e83e3db56ea1a7519128cece8832156bf932460b4d5e3eca3616b33",
     parser_contract_sha256=(
         "90b7905bf596f48c52a9e6d3dc957fd496f6f3188d9d48bdc20af1b8666ca462"
@@ -99,8 +99,21 @@ _ACTIVE_FROZEN_REPLAY_PROFILE = _FrozenReplayProfile(
         "0cef03f965d8879f52faba6dfb7bbfe52be6c998c5e66b7d453ee548d33be885"
     ),
 )
+_ACTIVE_FROZEN_REPLAY_PROFILE = _FrozenReplayProfile(
+    parser_version=FROZEN_REPLAY_PARSER_VERSION,
+    header_sha256="f847154f8e83e3db56ea1a7519128cece8832156bf932460b4d5e3eca3616b33",
+    parser_contract_sha256=(
+        "90b7905bf596f48c52a9e6d3dc957fd496f6f3188d9d48bdc20af1b8666ca462"
+    ),
+    price_semantics_sha256=(
+        "1e42262f314bcbfc3c32f319ca97504511131b964781fe667c788c09cace2d53"
+    ),
+)
 _FROZEN_REPLAY_PROFILES: Mapping[str, _FrozenReplayProfile] = MappingProxyType(
-    {FROZEN_REPLAY_PARSER_VERSION: _ACTIVE_FROZEN_REPLAY_PROFILE}
+    {
+        _FROZEN_REPLAY_V1_PROFILE.parser_version: _FROZEN_REPLAY_V1_PROFILE,
+        _ACTIVE_FROZEN_REPLAY_PROFILE.parser_version: _ACTIVE_FROZEN_REPLAY_PROFILE,
+    }
 )
 _FROZEN_REPLAY_PRICE_SEMANTICS_SOURCE_PATHS = (
     "engine/math/v3.py",

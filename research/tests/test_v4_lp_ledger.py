@@ -85,6 +85,45 @@ from research.backtester.v4_lp_ledger import (
 from research.cross_pool.contracts import CrossPoolContractError
 
 
+_REPLAY_V1_VERSION = "pool-history-replay-v1"
+_REPLAY_V2_VERSION = "pool-history-replay-v2"
+_REPLAY_HEADER_SHA256 = (
+    "f847154f8e83e3db56ea1a7519128cece8832156bf932460b4d5e3eca3616b33"
+)
+_REPLAY_PARSER_SHA256 = (
+    "90b7905bf596f48c52a9e6d3dc957fd496f6f3188d9d48bdc20af1b8666ca462"
+)
+_REPLAY_V1_PRICE_SHA256 = (
+    "0cef03f965d8879f52faba6dfb7bbfe52be6c998c5e66b7d453ee548d33be885"
+)
+_REPLAY_V2_PRICE_SHA256 = (
+    "1e42262f314bcbfc3c32f319ca97504511131b964781fe667c788c09cace2d53"
+)
+
+
+def _replay_coverage_for_profile(
+    parser_version: str,
+    price_semantics_sha256: str,
+) -> ReplayCoverage:
+    return ReplayCoverage(
+        sha256="1" * 64,
+        byte_length=1,
+        row_count=1,
+        header_sha256=_REPLAY_HEADER_SHA256,
+        parser_version=parser_version,
+        parser_contract_sha256=_REPLAY_PARSER_SHA256,
+        price_semantics_sha256=price_semantics_sha256,
+        chain="base",
+        pool_id=POOL_CONFIGS["uni-base"].pool_id,
+        first_block=1,
+        last_block=1,
+        first_timestamp_ms=1,
+        last_timestamp_ms=1,
+        price_event_count=1,
+        price_events_sha256="2" * 64,
+    )
+
+
 def test_lp_ledger_cli_boundary_redacts_uncaught_rpc_credentials(
     monkeypatch,
     capsys,
@@ -1016,12 +1055,10 @@ def test_verified_rpc_coverage_v2_rejects_each_attested_group_mutation(
 def test_archived_replay_profile_loading_is_independent_of_live_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    replay = _minimal_rpc_evidence(
-        start_block=100,
-        end_block=200,
-        start_timestamp_ms=1_700_000_000_000,
-        end_timestamp_ms=1_700_001_000_000,
-    ).replay_input
+    replay = _replay_coverage_for_profile(
+        _REPLAY_V1_VERSION,
+        _REPLAY_V1_PRICE_SHA256,
+    )
     monkeypatch.setattr(
         "research.backtester.lp_ledger_attribution."
         "_active_frozen_replay_price_semantics_sha256",
@@ -1032,6 +1069,42 @@ def test_archived_replay_profile_loading_is_independent_of_live_sources(
     assert ReplayCoverage(**asdict(replay)) == replay
     with pytest.raises(CrossPoolContractError, match="active frozen replay profile"):
         frozen_replay_price_semantics_sha256()
+
+
+def test_active_replay_profile_v2_matches_live_sources() -> None:
+    ledger_attribution._active_frozen_replay_profile.cache_clear()
+
+    assert FROZEN_REPLAY_PARSER_VERSION == _REPLAY_V2_VERSION
+    assert frozen_replay_header_sha256() == _REPLAY_HEADER_SHA256
+    assert frozen_replay_parser_contract_sha256() == _REPLAY_PARSER_SHA256
+    assert frozen_replay_price_semantics_sha256() == _REPLAY_V2_PRICE_SHA256
+    assert _replay_coverage_for_profile(
+        _REPLAY_V2_VERSION,
+        _REPLAY_V2_PRICE_SHA256,
+    ).parser_version == _REPLAY_V2_VERSION
+
+
+@pytest.mark.parametrize(
+    ("parser_version", "price_semantics_sha256"),
+    (
+        (_REPLAY_V1_VERSION, _REPLAY_V2_PRICE_SHA256),
+        (_REPLAY_V2_VERSION, _REPLAY_V1_PRICE_SHA256),
+    ),
+)
+def test_replay_coverage_rejects_cross_profile_hashes(
+    parser_version: str,
+    price_semantics_sha256: str,
+) -> None:
+    with pytest.raises(CrossPoolContractError, match="parser contract"):
+        _replay_coverage_for_profile(parser_version, price_semantics_sha256)
+
+
+def test_replay_coverage_rejects_unknown_profile() -> None:
+    with pytest.raises(CrossPoolContractError, match="unsupported"):
+        _replay_coverage_for_profile(
+            "pool-history-replay-v3",
+            _REPLAY_V2_PRICE_SHA256,
+        )
 
 
 def test_replay_coverage_rejects_parser_contract_drift() -> None:

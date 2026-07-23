@@ -2523,7 +2523,7 @@ def test_compatible_resume_increments_attempt_and_generation(tmp_path: Path) -> 
 
 @pytest.mark.parametrize(
     "mutation",
-    ("range", "endpoint", "source", "output", "provider"),
+    ("range", "endpoint", "source", "output", "provider", "replay_profile"),
 )
 def test_incompatible_resume_fails_without_mutating_state(
     tmp_path: Path,
@@ -4028,6 +4028,15 @@ def _mutated_identity(identity: RunIdentity, mutation: str) -> RunIdentity:
         return replace(identity, output_path=f"{identity.output_path}.other")
     if mutation == "provider":
         return replace(identity, rpc_provider_origin="https://bsc-mainnet.g.alchemy.com")
+    if mutation == "replay_profile":
+        return replace(
+            identity,
+            replay_input=replace(
+                identity.replay_input,
+                parser_version="pool-history-replay-v2",
+                price_semantics_sha256="e" * 64,
+            ),
+        )
     raise AssertionError(f"unsupported identity mutation: {mutation}")
 
 

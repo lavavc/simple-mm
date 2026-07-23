@@ -23,6 +23,12 @@ python3 research/scripts/run_cross_pool_lead_lag.py \
   --out-dir research/results/cross_pool_lead_lag
 ```
 
+Replay profiles are append-only provenance contracts. New replay inspection and
+LP-ledger exports use `pool-history-replay-v2`; sealed v1 sidecars and reviewed
+manifests remain valid through the immutable v1 registry entry. A fresh v2
+replay cannot bind a v1 ledger sidecar, and a v1 exporter checkpoint cannot be
+resumed as v2. The reviewed v1 evidence does not need to be rerun.
+
 After that stage produces a QA-pass manifest with economics pending, run:
 
 ```bash
