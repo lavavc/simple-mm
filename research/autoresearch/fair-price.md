@@ -160,13 +160,13 @@ Reasoning:
 
 Conclusion:
 
-- Use Bybit P2P as the external fair-price sanity check and forward-collection
-  anchor.
+- If genuinely new overlapping data is supplied, prefer an external Bybit P2P
+  series to a circular DEX label for fair-price sanity checks.
 - Use Uniswap v4 only as DEX context: premium, pool stress, LP inventory mark,
   and route-specific comparator.
 - Do not use Uniswap v4 as the primary Fair Price label.
 - Do not treat the current Bybit sample as promotion-grade. It is too short and
-  should be expanded with forward capture before estimator promotion.
+  cannot support estimator promotion.
 
 ## Quidax And Uniswap v4 Overlap Check
 
@@ -229,6 +229,11 @@ promotion paths:
 - Bank, CBN, FMDQ/NAFEM, and fintech quote APIs are useful for slower context,
   but not for 60-600 second fair-price labels or LP edge marks.
 
+The July 2026 branch no longer includes fintech quote APIs, CBN/FMDQ/NAFEM
+rates, or renewed Bybit historical searches. External-reference hooks remain
+available only for genuinely new timestamped overlapping data supplied later;
+acquiring that data is not an open task.
+
 Allowed conclusion:
 
 - Quidax top-book data is useful for quote-cadence, spread, self-markout, and
@@ -236,8 +241,8 @@ Allowed conclusion:
 - Quidax top-book data is not enough for depth-walk execution, fill-probability,
   or realized CEX PnL claims.
 - Uniswap v4 remains DEX context and LP inventory mark, not Fair Price truth.
-- Bybit P2P remains the best forward external anchor, but only if a new capture
-  produces dense, timestamped overlap.
+- Among the evaluated candidates, Bybit P2P would be the preferred external
+  anchor only if a dense, timestamped overlapping dataset is supplied later.
 
 Rejected conclusion:
 

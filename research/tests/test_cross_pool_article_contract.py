@@ -49,6 +49,20 @@ REVIEWED_ARTICLE_PATHS = (
     Path("research/articles/evidence-pack-2026-07-cngn-market-making.md"),
 )
 
+CLOSED_ACQUISITION_PATHS = (
+    Path("research/autoresearch/README.md"),
+    Path("research/autoresearch/fair-price.md"),
+    Path("research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"),
+)
+
+CLOSED_ACQUISITION = (
+    "The July 2026 branch no longer includes fintech quote APIs, "
+    "CBN/FMDQ/NAFEM rates, or renewed Bybit historical searches. "
+    "External-reference hooks remain available only for genuinely new "
+    "timestamped overlapping data supplied later; acquiring that data is not "
+    "an open task."
+)
+
 LP_RESULT_ROWS = (
     "| Base | `gate_strict_qts_20_25` | 4 | +1.039% | +0.118% | 100.0% | +0.228 pp | +0.796% |",
     "| BSC | `gate_strict_qts_20_25` | 7 | -1.272% | -0.842% | 14.3% | -1.602 pp | +0.400% |",
@@ -218,20 +232,46 @@ def test_reviewed_blocks_use_the_approved_document_anchors() -> None:
     assert evidence.index(REVIEWED_BLOCK) < evidence.index("## Source Map")
 
 
-def test_pending_handoff_addendum_keeps_results_unreviewed() -> None:
+def test_handoff_addendum_records_reviewed_cross_pool_result() -> None:
     handoff = Path(
         "research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"
     ).read_text()
-    normalized = " ".join(handoff.split())
+    addendum = _section_between(
+        handoff,
+        "## July 15, 2026 Addendum",
+        "## Current Research State",
+    )
+    normalized = " ".join(addendum.split())
 
     assert handoff.count("## July 15, 2026 Addendum") == 1
     assert "docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md" in handoff
-    assert "results remain pending" in normalized
-    assert (
-        "No directional, economic, or robustness claim from this new cross-pool "
-        "experiment should enter the durable evidence pack"
-    ) in normalized
+    assert "results remain pending" not in normalized
+    assert "`leadership_unresolved`" in addendum
+    assert "`no_net_return_improvement`" in addendum
+    assert "`dtw_band_unstable`" in addendum
+    assert "research/results/cross_pool_lead_lag/article_manifest.json" in addendum
     assert handoff.index("## July 15, 2026 Addendum") < handoff.index("## Current Research State")
+
+
+@pytest.mark.parametrize("path", CLOSED_ACQUISITION_PATHS)
+def test_external_reference_acquisition_is_explicitly_closed(path: Path) -> None:
+    normalized = " ".join(path.read_text().split())
+
+    assert CLOSED_ACQUISITION in normalized
+
+
+def test_closeout_docs_do_not_reopen_rejected_external_search() -> None:
+    handoff = Path(
+        "research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md"
+    ).read_text()
+    fair_price = Path("research/autoresearch/fair-price.md").read_text()
+    lp = Path("research/autoresearch/lp.md").read_text()
+
+    assert "Try, in order:" not in handoff
+    assert "should be expanded with forward capture" not in fair_price
+    assert "Bybit P2P remains the best forward external anchor" not in fair_price
+    assert "Deferred until new comparator data exists:" not in lp
+    assert "Deferred only if genuinely new comparator data is supplied:" in lp
 
 
 def test_article_two_contains_reviewed_cross_pool_result_and_boundaries() -> None:

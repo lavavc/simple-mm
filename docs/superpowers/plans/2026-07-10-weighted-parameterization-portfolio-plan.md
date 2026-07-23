@@ -828,32 +828,105 @@ Expected: one complete Base run and one complete BSC run; no `max_windows` or ca
 python3 - <<'PY'
 import csv
 import json
+import math
+from collections import defaultdict
 from pathlib import Path
 
+from research.scripts.evaluate_parameter_portfolio import (
+    ALLOCATION_RULE_NAMES,
+    ARTIFACT_NAMES,
+)
+
 root = Path("research/results/parameter_portfolio")
-for pool in ("uni-base", "uni-bsc"):
-    portfolio = list(csv.DictReader((root / pool / "portfolio_validation_matrix.csv").open()))
+performance_fields = (
+    "net_return",
+    "max_drawdown",
+    "final_value",
+    "cash_value",
+    "total_fees",
+    "total_transaction_cost",
+    "max_aggregate_liquidity_share",
+)
+for pool, directory in (("uni-base", "uni_base"), ("uni-bsc", "uni_bsc")):
+    pool_root = root / directory
+    assert {path.name for path in pool_root.iterdir()} == set(ARTIFACT_NAMES)
+    assert "run label: **FULL RUN**" in (pool_root / "summary.md").read_text()
+    portfolio = list(
+        csv.DictReader((pool_root / "portfolio_validation_matrix.csv").open())
+    )
     assert portfolio
     assert {row["pool"] for row in portfolio} == {pool}
-    assert {row["allocation_rule"] for row in portfolio} == {
-        "equal_config", "equal_family", "shrinkage", "equal_family_without_best_sleeve"
-    }
-    assert all(float(row["max_aggregate_liquidity_share"]) <= 0.10 + 1e-12 for row in portfolio)
-    pbo = json.loads((root / pool / "pbo_allocation_rules.json").read_text())
-    assert pbo["pool"] == pool
+    assert {row["rule"] for row in portfolio} == set(ALLOCATION_RULE_NAMES)
+    window_indexes = {int(row["window_index"]) for row in portfolio}
+    assert len(portfolio) == len(window_indexes) * len(ALLOCATION_RULE_NAMES)
+    assert len({(row["window_index"], row["rule"]) for row in portfolio}) == len(
+        portfolio
+    )
+    invalid_by_rule = defaultdict(list)
+    for row in portfolio:
+        assert math.isclose(
+            float(row["deployed_weight"]) + float(row["cash_weight"]),
+            1.0,
+            abs_tol=1e-12,
+        )
+        if row["status"] == "valid":
+            assert row["observed_share"] == row["cap"] == ""
+            assert all(
+                field and math.isfinite(float(field))
+                for field in (row[name] for name in performance_fields)
+            )
+            assert float(row["max_aggregate_liquidity_share"]) <= 0.10 + 1e-12
+        else:
+            assert row["status"] == "invalid_liquidity_cap"
+            assert 0 < float(row["cap"]) < float(row["observed_share"]) <= 1
+            assert all(row[name] == "" for name in performance_fields)
+            invalid_by_rule[row["rule"]].append(int(row["window_index"]))
+
+    pbo = json.loads((pool_root / "pbo_allocation_rules.json").read_text())
+    if invalid_by_rule:
+        allocation_pbo = pbo["allocation_rules"]
+        assert allocation_pbo["status"] == "invalid_incomplete_matrix"
+        assert allocation_pbo["invalid_window_indexes_by_rule"] == {
+            rule: sorted(indexes) for rule, indexes in invalid_by_rule.items()
+        }
+    else:
+        assert pbo["allocation_rules"]["config_count"] == len(
+            ALLOCATION_RULE_NAMES
+        )
 print("full portfolio artifacts: ok")
 PY
 ```
 
 Expected: `full portfolio artifacts: ok`.
 
+Also audit `window_weights.csv` against the per-window catalog: every weight is
+nonnegative; weights plus cash sum to one; and HHI/largest-weight values exactly
+recompute `concentration_and_contribution.csv`. Apply the same valid/invalid
+field contract to every best-sleeve-removal row. Sleeve and family PBO are
+separate complete-matrix diagnostics and must not be described as allocation-rule
+PBO.
+
 - [ ] **Step 4: Record the evidence table before writing prose**
 
-Extract, for every pool and allocation rule: validation return, worst window,
-maximum drawdown, positive-window rate, total fees, transaction cost, turnover,
-effective sleeve count, maximum family contribution, return versus static LP,
-return versus hold, PBO, and without-best-sleeve result. Do not choose only the
-favorable pool or allocation rule.
+For every pool and all three allocation rules, first record valid-window count,
+invalid-window count, reason, and allocation-PBO eligibility. Produce aggregate
+portfolio metrics only when the rule is valid in every completed window. The
+allowed aggregate is the sum and arithmetic mean of reset-capital window net
+returns, explicitly labeled as such; do not compound returns or stitch a
+synthetic equity path. Also record worst window, worst within-window drawdown,
+positive-window rate, total fees, transaction cost, and maximum liquidity share.
+
+Report best-sleeve removal from `concentration_and_contribution.csv` only when
+that diagnostic is valid in every window, and label its sleeve selection as
+ex-post. Do not invent a fourth allocation rule or a removal PBO. Report the
+emitted raw sleeve-weight HHI and largest weight directly. Because HHI excludes
+residual cash while sleeve weights may sum to less than one, raw `1 / HHI` can
+exceed the catalog size and must not be labeled an effective sleeve count. Any
+cash-inclusive or deployed-weight-normalized concentration statistic is post hoc
+and must be identified as a separate diagnostic. Turnover, maximum family P&L
+contribution, static-LP delta, and hold-cNGN delta are not direct outputs of the
+frozen artifact contract; mark them unavailable unless a separate validated
+derivation is added. Do not choose only the favorable pool or rule.
 
 ### Task 8: Close the Research Branch and Update Article Evidence
 
@@ -872,14 +945,21 @@ favorable pool or allocation rule.
 - [ ] **Step 1: Write the closeout result from the complete evidence table**
 
 Add a dated `Weighted Parameterization Portfolio Result` section to the handoff
-and LP guide. Copy the Base and BSC rows for `equal_family` from
-`portfolio_validation_matrix.csv`, including cumulative validation return,
-worst window, maximum drawdown, positive-window rate, total fees, transaction
-cost, turnover, effective sleeve count, static-LP delta, and hold-cNGN delta.
-Then add the matching `equal_family_without_best_sleeve` row and the exact PBO
-fields from `pbo_allocation_rules.json`. End with a diagnostic verdict that
-states the pool-marked inventory limitation. Every number must be traceable to
-one named generated column.
+and LP guide. Include Base and BSC rows for `equal_config`, `equal_family`, and
+`shrinkage`, with full matrix coverage and frozen-cap feasibility before any
+performance field. If a rule has even one invalid row, report its invalid window
+count and `invalid_incomplete_matrix` allocation-PBO status, and leave aggregate
+performance not adjudicable; blank cells are not zero returns. For a complete
+valid rule, report only the reset-window aggregates allowed by Task 7.
+
+Add best-sleeve-removal as a separate ex-post diagnostic from
+`concentration_and_contribution.csv`, not as
+`equal_family_without_best_sleeve`. Distinguish sleeve/family PBO from
+allocation-rule PBO. Mark non-emitted comparator and turnover metrics
+unavailable rather than substituting standalone sleeve results for joint
+portfolio accounting. End with a diagnostic verdict that states the pool-marked
+inventory and exogenous-price/small-participant limitations. Every number must
+be traceable to one named generated column or documented formula.
 
 - [ ] **Step 2: Close external-rate acquisition explicitly**
 

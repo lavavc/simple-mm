@@ -177,7 +177,7 @@ Completed path:
    pool-internal regime slice, but the evidence is insufficient for live LP
    promotion.
 
-Deferred until new comparator data exists:
+Deferred only if genuinely new comparator data is supplied:
 
 1. Run H12 capacity curves only on accepted frozen configs, or explicitly label
    them diagnostic if run before acceptance.

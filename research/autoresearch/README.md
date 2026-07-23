@@ -15,6 +15,13 @@ Historical progress notes live in `research/autoresearch/archive/`.
 | Quidax latency | `research/autoresearch/quidax-latency.md` | Measure execution latency so markout horizons and execution-risk assumptions are defensible. |
 | Cross-venue lead/lag | `research/autoresearch/cross-venue-lead-lag-2026-07-15.md` | Establish which venue leads cNGN price discovery, quote-level and swap-level, with own-trade exclusion. |
 
+## Closed External-Reference Acquisition
+
+The July 2026 branch no longer includes fintech quote APIs, CBN/FMDQ/NAFEM
+rates, or renewed Bybit historical searches. External-reference hooks remain
+available only for genuinely new timestamped overlapping data supplied later;
+acquiring that data is not an open task.
+
 ## Rules
 
 - Treat every strategy change as a falsifiable hypothesis.

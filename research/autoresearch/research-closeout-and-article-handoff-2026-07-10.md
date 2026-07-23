@@ -28,10 +28,16 @@ approved in
 whether lagged BSC pool prices add information about future Base price changes,
 with a reverse-direction falsification and an unconditional frozen-policy test.
 
-Implementation, portfolio integration, and article scaffolding may proceed in
-parallel, but results remain pending. No directional, economic, or robustness
-claim from this new cross-pool experiment should enter the durable evidence
-pack until the generated manifest has passed QA and final evidence review.
+The sealed run passed data and causal-alignment QA. Both one-hour directional
+tests were `inconclusive`, and constrained-DTW direction was
+`dtw_band_unstable`. The reviewed manifest therefore selects
+`leadership_unresolved`; its independent frozen economic result is
+`no_net_return_improvement`.
+
+Review authority and the complete claim boundary are recorded in
+`research/results/cross_pool_lead_lag/article_manifest.json`. The result does
+not establish either directional lead, an affirmative no-lead finding, causal
+price discovery, toxic flow, external-LP profitability, or deployable alpha.
 
 ## Current Research State
 
@@ -141,7 +147,12 @@ Conclusion: the non-pool comparator cannot be populated from currently
 available data. Do not rerun this search unless genuinely new timestamped
 external data arrives.
 
-Try, in order:
+The July 2026 branch no longer includes fintech quote APIs, CBN/FMDQ/NAFEM
+rates, or renewed Bybit historical searches. External-reference hooks remain
+available only for genuinely new timestamped overlapping data supplied later;
+acquiring that data is not an open task.
+
+Historical attempt order (closed):
 
 1. Authorized Bybit P2P API access for `USDT`/`NGN` ads.
    - Endpoint from Bybit docs: `POST /v5/p2p/item/online`.
