@@ -750,20 +750,54 @@ Expected: both commands exit zero.
 
 - [ ] **Step 3: Inspect smoke artifacts for accounting identities**
 
-Run:
+Regenerate the two-window smoke output with the exact Step 7 command after any
+harness correction. Do not validate smoke files produced by an earlier schema;
+the status branches below are part of the evidence contract.
+
+Then run:
 
 ```bash
 python3 - <<'PY'
 import csv
+import math
 from pathlib import Path
 
+from research.scripts.evaluate_parameter_portfolio import ARTIFACT_NAMES
+
 root = Path("research/results/parameter_portfolio_smoke")
-for path in sorted(root.glob("*/portfolio_validation_matrix.csv")):
+performance_fields = (
+    "net_return",
+    "max_drawdown",
+    "final_value",
+    "cash_value",
+    "total_fees",
+    "total_transaction_cost",
+    "max_aggregate_liquidity_share",
+)
+for directory in ("uni_base", "uni_bsc"):
+    pool_root = root / directory
+    assert {path.name for path in pool_root.iterdir()} == set(ARTIFACT_NAMES)
+    path = pool_root / "portfolio_validation_matrix.csv"
     rows = list(csv.DictReader(path.open()))
     assert rows
     for row in rows:
-        assert float(row["deployed_weight"]) + float(row["cash_weight"]) <= 1.0 + 1e-12
-        assert float(row["max_aggregate_liquidity_share"]) <= 0.10 + 1e-12
+        assert math.isclose(
+            float(row["deployed_weight"]) + float(row["cash_weight"]),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        if row["status"] == "valid":
+            assert row["observed_share"] == row["cap"] == ""
+            assert all(
+                row[name] and math.isfinite(float(row[name]))
+                for name in performance_fields
+            )
+            assert float(row["max_aggregate_liquidity_share"]) <= 0.10 + 1e-12
+        else:
+            assert row["status"] == "invalid_liquidity_cap"
+            assert 0 < float(row["cap"]) < float(row["observed_share"]) <= 1
+            assert all(row[name] == "" for name in performance_fields)
 print("portfolio smoke accounting: ok")
 PY
 ```
@@ -977,12 +1011,14 @@ acquiring that data is not an open task.
 Explain:
 
 - parameterizations as a portfolio of hypotheses rather than a unique optimum;
-- why equal-family allocation is the primary benchmark;
+- why equal-family allocation was the predeclared benchmark, while frozen-cap
+  infeasibility prevents treating it as a performance benchmark;
 - why optimized weights can create a second overfitting layer;
 - joint fee dilution and net execution across simultaneous positions;
 - the exogenous-price/small-participant limitation;
 - the exact Base and BSC outcomes;
-- the shadow-allocation path required before any live consideration.
+- why no shadow-allocation or live-consideration path follows unless the frozen
+  feasibility and evidence gates first pass.
 
 Retain the claims-to-avoid list and do not call a positive pool-marked result live alpha.
 
