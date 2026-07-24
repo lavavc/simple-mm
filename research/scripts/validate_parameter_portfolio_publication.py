@@ -52,7 +52,7 @@ from research.backtester.run import WindowSpec
 from research.scripts.evaluate_frozen_family_lp import POOL_EXPERIMENTS
 from research.scripts.evaluate_parameter_portfolio import _catalog_sha256
 
-FROZEN_SOURCE_COMMIT = "b331b432bf612ed21413d54a0fd6c0eb76b7c38f"
+FROZEN_SOURCE_COMMIT = "07d5dfe1a2ae7a03eac068fe341655421ff6b984"
 PROTOCOL_VERSION = "2026-07-24"
 FROZEN_SOURCE_CLOSURE = (
     "engine/math/v3.py",

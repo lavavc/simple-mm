@@ -62,10 +62,11 @@ artifacts per pool only after every primary and removal window is durable. Use
 fresh pool-local v3 roots; final output directories are created by atomic
 replacement.
 
-The v3 source closure is not frozen yet. Commit the closure as `X`, pin the
-validator to `X` in a follow-on commit, and replace this paragraph with the exact
-SHA before running either command below. Until then, no v3 package is valid and
-no article claim is authorized.
+The v3 source closure is frozen at
+`07d5dfe1a2ae7a03eac068fe341655421ff6b984`; the validator is pinned to that
+exact commit from a follow-on commit outside the closure. Run only from a
+worktree whose closure bytes match that commit. A complete package must still
+pass validation before it can authorize any article claim.
 
 ```bash
 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python \

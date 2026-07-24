@@ -5,6 +5,8 @@
 **Protocol:** `2026-07-24`
 
 **Artifact schema:** `weighted-portfolio-artifacts/v3`
+
+**Frozen source closure:** `07d5dfe1a2ae7a03eac068fe341655421ff6b984`
 **Status:** binding amendment; fresh frozen execution pending
 
 This amendment replaces only the entry-scaling, terminal-settlement, diagnostic,

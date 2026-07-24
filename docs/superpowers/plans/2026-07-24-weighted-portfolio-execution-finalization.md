@@ -532,13 +532,15 @@ changed-file scope.
 
 Review the complete diff and evidence for exact accounting, Base/BSC orientation, atomic failure, causal evaluation, comments, documentation, schema/version consistency, deterministic serialization, and preservation of the 10% cap. Resolve every material finding before committing.
 
-- [ ] **Step 5: Freeze the source closure in two commits**
+- [x] **Step 5: Freeze the source closure in two commits**
 
 Commit every changed source-closure file as immutable commit `X` while retaining
 the old validator pin. In a follow-on commit outside the closure, update the
 validator pin and documentation to the exact SHA `X`. Run final attestation only
 from a worktree whose closure bytes equal `X`; do not claim the publication gate
 is green between the two commits.
+
+Frozen closure `X`: `07d5dfe1a2ae7a03eac068fe341655421ff6b984`.
 
 - [ ] **Step 6: Run the complete post-freeze suite and attestation**
 
