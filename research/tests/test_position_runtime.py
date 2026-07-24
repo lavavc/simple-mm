@@ -23,6 +23,7 @@ from research.backtester.simulator import (
     UNISWAP_BASE_POOL,
     PortfolioComposition,
     TransactionCostBreakdown,
+    _portfolio_value,
     simulate_pool,
 )
 from research.backtester.sizing import EntryContext, SizingPolicy
@@ -280,6 +281,67 @@ def test_entry_overlay_and_sizing_receive_the_same_context_object() -> None:
     )
 
 
+def test_scaled_fixed_cost_intent_keeps_the_frozen_entry() -> None:
+    params = _paper_params_with_zero_gas()
+    params = replace(
+        params,
+        gas_cost_usd=0.05,
+        transaction_costs=replace(
+            params.transaction_costs,
+            mint_gas_usd=0.05,
+        ),
+    )
+    events = _events_that_enter_accrue_fee_exit_and_reenter()
+    runtime = create_sleeve_runtime(
+        sleeve_id="paper",
+        params=params,
+        pool_config=UNISWAP_BASE_POOL,
+        capital_usd=0.112732,
+    )
+    runtime.wallet = PortfolioComposition(
+        stable_usd=0.056366,
+        cngn_amount=0.056366,
+    )
+    for event in events[:3]:
+        assert isinstance(event, V4Event)
+        active_liquidity, price_is_valid = runtime._observe_swap(event)
+        assert price_is_valid
+        runtime.previous_swap_time = event.block_time
+
+    intent = runtime.propose_entry_intent(event, active_liquidity)
+    assert intent is not None
+
+    with pytest.raises(ValueError, match="lattice"):
+        runtime.materialize_entry(intent, scale=1 / 3)
+
+    action = runtime.materialize_entry(intent, scale=1 / 256)
+
+    assert action.sleeve_id == intent.sleeve_id
+    assert action.position_after is not None
+    assert intent.full_action.position_after is not None
+    assert (
+        action.position_after.tick_lower,
+        action.position_after.tick_upper,
+    ) == (
+        intent.full_action.position_after.tick_lower,
+        intent.full_action.position_after.tick_upper,
+    )
+    assert action.transaction_cost.gas_cost == pytest.approx(0.05)
+    before_value = action.wallet_before.value_usd(runtime.current_price)
+    after_value = _portfolio_value(
+        action.position_after,
+        action.wallet_after,
+        runtime.current_price,
+        runtime.current_tick,
+        runtime.current_sqrt_price_x96,
+        UNISWAP_BASE_POOL,
+    )
+    assert after_value == pytest.approx(
+        before_value - action.transaction_cost.total,
+        abs=1e-10,
+    )
+
+
 def test_entry_denial_precedes_sizing_and_preserves_runtime_state() -> None:
     overlay = RecordingEligibilityOverlay((False,))
     sizing = RecordingSizingPolicy()
@@ -323,9 +385,7 @@ def test_intrinsic_entry_filters_run_before_overlay_and_open_positions_skip_it()
     assert runtime.propose_entry(first, first_liquidity) is None
     assert overlay.contexts == []
 
-    runtime, event, active_liquidity = _runtime_ready_to_enter(
-        entry_eligibility=overlay
-    )
+    runtime, event, active_liquidity = _runtime_ready_to_enter(entry_eligibility=overlay)
     runtime.cooldown_until_time = event.block_time + timedelta(minutes=1)
     assert runtime.propose_entry(event, active_liquidity) is None
     assert overlay.contexts == []
@@ -567,8 +627,7 @@ def test_terminal_liquidation_swaps_sub_epsilon_token_balance() -> None:
     assert action.transaction_cost.swap_notional_usd > 0.0
     assert runtime.result.external_output_value_usd >= 0.0
     assert (
-        runtime.result.external_input_value_usd
-        - runtime.result.external_output_value_usd
+        runtime.result.external_input_value_usd - runtime.result.external_output_value_usd
     ) == pytest.approx(runtime.result.total_variable_execution_cost_usd)
 
 

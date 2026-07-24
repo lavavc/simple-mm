@@ -1,5 +1,11 @@
 # Weighted LP Portfolio Correction Contract
 
+> **Historical contract:** the July 24 execution-finalization amendment
+> [`2026-07-24-weighted-portfolio-execution-finalization.md`](2026-07-24-weighted-portfolio-execution-finalization.md)
+> supersedes this document's entry-scaling, terminal-settlement, diagnostics,
+> checkpoint-compatibility, and source-freeze clauses. Preserve this document as
+> v2 audit provenance; do not use its conflicting clauses for a v3 run.
+
 **Date frozen:** 2026-07-23
 **Status:** approved amendment; implementation complete, final verification and
 frozen Base/BSC execution pending

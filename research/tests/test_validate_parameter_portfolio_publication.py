@@ -23,13 +23,18 @@ from research.backtester.portfolio_evaluation import (
     COMPARATOR_IDS,
 )
 from research.backtester.portfolio_publication import (
+    ARTIFACT_SCHEMA_VERSION,
     CSV_FIELDS,
     ECONOMIC_FIELDS,
     REQUIRED_ARTIFACTS,
 )
 from research.backtester.run import WindowSpec
 from research.scripts.evaluate_frozen_family_lp import POOL_EXPERIMENTS
-from research.scripts.evaluate_parameter_portfolio import _run_identity
+from research.scripts.evaluate_parameter_portfolio import (
+    PROTOCOL_VERSION,
+    SOURCE_CLOSURE,
+    _run_identity,
+)
 from research.scripts.validate_parameter_portfolio_publication import (
     FROZEN_SOURCE_CLOSURE,
     FROZEN_SOURCE_COMMIT,
@@ -42,6 +47,7 @@ from research.scripts.validate_parameter_portfolio_publication import (
     _validate_attribution_rows,
     _validate_candidate_rows,
     _validate_comparator_rows,
+    _validate_method_stability,
     _validate_path_status,
     _validate_pbo_payload,
     _validate_reset_rows,
@@ -61,6 +67,64 @@ from research.scripts.validate_parameter_portfolio_publication import (
     validate_source_closure,
     validate_summary,
 )
+
+
+def _economic_row(**overrides: str | int | float) -> dict[str, str]:
+    row = {
+        "opening_capital_usd": "100",
+        "closing_cash_usd": "101",
+        "window_net_return": "0.01",
+        "max_drawdown": "-0.02",
+        "terminal_liquidation_cost_usd": "0.1",
+        "total_fees_usd": "0.5",
+        "total_fixed_cost_usd": "0.2",
+        "total_variable_cost_usd": "0.3",
+        "external_marked_notional_usd": "10",
+        "external_input_value_usd": "5",
+        "external_output_value_usd": "4.7",
+        "internal_cross_notional_usd": "2",
+        "entry_action_batch_count": "2",
+        "scaled_entry_action_batch_count": "1",
+        "minimum_entry_execution_scale": "0.5",
+        "terminal_position_settlement_count": "1",
+        "terminal_loose_cngn_settlement_count": "0",
+        "terminal_zero_settlement_count": "0",
+        "terminal_inventory_swap_count": "1",
+        "terminal_fixed_cost_usd": "0.06",
+        "terminal_variable_cost_usd": "0.04",
+        "terminal_external_marked_notional_usd": "1",
+        "value_sample_count": "3",
+    }
+    row.update({key: str(value) for key, value in overrides.items()})
+    return row
+
+
+def _zero_economic_row(capital: float) -> dict[str, str]:
+    return _economic_row(
+        opening_capital_usd=capital,
+        closing_cash_usd=capital,
+        window_net_return=0,
+        max_drawdown=0,
+        terminal_liquidation_cost_usd=0,
+        total_fees_usd=0,
+        total_fixed_cost_usd=0,
+        total_variable_cost_usd=0,
+        external_marked_notional_usd=0,
+        external_input_value_usd=0,
+        external_output_value_usd=0,
+        internal_cross_notional_usd=0,
+        entry_action_batch_count=0,
+        scaled_entry_action_batch_count=0,
+        minimum_entry_execution_scale=1,
+        terminal_position_settlement_count=0,
+        terminal_loose_cngn_settlement_count=0,
+        terminal_zero_settlement_count=0,
+        terminal_inventory_swap_count=0,
+        terminal_fixed_cost_usd=0,
+        terminal_variable_cost_usd=0,
+        terminal_external_marked_notional_usd=0,
+        value_sample_count=2,
+    )
 
 
 def test_strict_json_rejects_duplicate_keys_and_nonfinite_values(
@@ -110,21 +174,7 @@ def test_identity_hash_uses_canonical_newline_terminated_json() -> None:
 
 
 def test_economic_rows_are_complete_finite_and_reconciled() -> None:
-    row = {
-        "opening_capital_usd": "100",
-        "closing_cash_usd": "101",
-        "window_net_return": "0.01",
-        "max_drawdown": "-0.02",
-        "terminal_liquidation_cost_usd": "0.1",
-        "total_fees_usd": "0.5",
-        "total_fixed_cost_usd": "0.2",
-        "total_variable_cost_usd": "0.3",
-        "external_marked_notional_usd": "10",
-        "external_input_value_usd": "5",
-        "external_output_value_usd": "4.7",
-        "internal_cross_notional_usd": "2",
-        "value_sample_count": "3",
-    }
+    row = _economic_row()
 
     validate_economic_row(row, status="valid")
 
@@ -151,6 +201,33 @@ def test_economic_rows_are_complete_finite_and_reconciled() -> None:
         match=r"^FAIL code=ECONOMIC_RECONCILIATION$",
     ):
         validate_economic_row(excessive_terminal_cost, status="valid")
+
+    inconsistent_terminal_breakdown = {
+        **row,
+        "terminal_variable_cost_usd": "0.05",
+    }
+    with pytest.raises(
+        ValidationFailure,
+        match=r"^FAIL code=ECONOMIC_RECONCILIATION$",
+    ):
+        validate_economic_row(inconsistent_terminal_breakdown, status="valid")
+
+    invalid_scale_counts = {
+        **row,
+        "entry_action_batch_count": "1",
+        "scaled_entry_action_batch_count": "2",
+    }
+    with pytest.raises(ValidationFailure, match=r"^FAIL code=ECONOMIC_VALUE$"):
+        validate_economic_row(invalid_scale_counts, status="valid")
+
+    invalid_zero_entry_scale = {
+        **row,
+        "entry_action_batch_count": "0",
+        "scaled_entry_action_batch_count": "0",
+        "minimum_entry_execution_scale": "0.5",
+    }
+    with pytest.raises(ValidationFailure, match=r"^FAIL code=ECONOMIC_VALUE$"):
+        validate_economic_row(invalid_zero_entry_scale, status="valid")
 
 
 def test_validation_failure_output_never_includes_private_detail() -> None:
@@ -228,8 +305,8 @@ def test_artifact_set_rejects_extra_files_and_symlinks(tmp_path: Path) -> None:
 
 def test_manifest_shape_accepts_only_compatible_full_run_gates() -> None:
     identity = {
-        "protocol_version": "2026-07-23",
-        "artifact_schema_version": "weighted-portfolio-artifacts/v2",
+        "protocol_version": PROTOCOL_VERSION,
+        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
         "phase": "primary",
         "pool": "uni-base",
         "run_kind": "full",
@@ -237,8 +314,8 @@ def test_manifest_shape_accepts_only_compatible_full_run_gates() -> None:
     }
     identity["identity_sha256"] = hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
     manifest = {
-        "schema_version": "weighted-portfolio-artifacts/v2",
-        "protocol_version": "2026-07-23",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "protocol_version": PROTOCOL_VERSION,
         "run_kind": "completed_amended_protocol_run",
         "publication_status": "completed",
         "pool": "uni-base",
@@ -363,6 +440,10 @@ def test_source_closure_is_bound_to_the_frozen_commit() -> None:
         validate_source_closure(repo_root, mutated, pool="uni-base")
 
 
+def test_runner_and_validator_bind_the_same_source_closure() -> None:
+    assert FROZEN_SOURCE_CLOSURE == SOURCE_CLOSURE
+
+
 def test_run_identity_rebuilds_inputs_catalog_config_and_constants() -> None:
     experiment = POOL_EXPERIMENTS["uni-base"]
     catalog = build_portfolio_catalog(
@@ -424,7 +505,7 @@ def test_training_eligibility_is_recomputed_from_metrics(
         writer.writeheader()
         writer.writerow(
             {
-                "schema_version": "weighted-portfolio-artifacts/v2",
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
                 "pool": "uni-base",
                 "window_index": 0,
                 "window_start": "2026-01-01T00:00:00+00:00",
@@ -433,6 +514,8 @@ def test_training_eligibility_is_recomputed_from_metrics(
                 "family": "static",
                 "routed_config_name": "static-a",
                 "status": "valid",
+                "failure_type": "",
+                "failure_reason": "",
                 "eligible": "false",
                 "net_return": 0.01,
                 "episode_count": 1,
@@ -476,7 +559,7 @@ def test_candidate_routed_status_requires_a_concrete_configuration(
         writer.writeheader()
         writer.writerow(
             {
-                "schema_version": "weighted-portfolio-artifacts/v2",
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
                 "pool": "uni-base",
                 "window_index": 0,
                 "window_start": "2026-01-01T00:00:00+00:00",
@@ -486,6 +569,8 @@ def test_candidate_routed_status_requires_a_concrete_configuration(
                 "routed_config_name": "no_position",
                 "route_status": "routed",
                 "status": "invalid_terminal_liquidation",
+                "failure_type": "TerminalLiquidationError",
+                "failure_reason": "terminal settlement failed",
                 "episode_count": "",
                 **{field: "" for field in ECONOMIC_FIELDS},
             }
@@ -528,13 +613,15 @@ def test_reset_liquidity_failure_binds_the_frozen_aggregate_cap(
         for rule in ALLOCATION_RULE_IDS:
             writer.writerow(
                 {
-                    "schema_version": "weighted-portfolio-artifacts/v2",
+                    "schema_version": ARTIFACT_SCHEMA_VERSION,
                     "pool": "uni-base",
                     "window_index": 0,
                     "window_start": "2026-01-01T00:00:00+00:00",
                     "window_end": "2026-01-02T00:00:00+00:00",
                     "allocation_rule": rule,
                     "status": "invalid_liquidity_cap",
+                    "failure_type": "LiquidityShareExceeded",
+                    "failure_reason": "aggregate synthetic liquidity share exceeded cap",
                     "observed_share": "0.21",
                     "cap": "0.20",
                     "deployed_weight": "0.1",
@@ -570,6 +657,142 @@ def test_reset_liquidity_failure_binds_the_frozen_aggregate_cap(
         )
 
 
+def test_failure_diagnostics_flow_from_csv_into_invalid_pbo_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        FULL_DIMENSIONS,
+        "uni-base",
+        PoolDimensions(windows=1, canonical_units=1, declarations=1),
+    )
+    common = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "pool": "uni-base",
+        "window_index": 0,
+        "window_start": "2026-01-01T00:00:00+00:00",
+        "window_end": "2026-01-02T00:00:00+00:00",
+    }
+    candidate_artifact = "sleeve_validation_matrix.csv"
+    with (tmp_path / candidate_artifact).open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=CSV_FIELDS[candidate_artifact],
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                **common,
+                "economic_id": "unit-a",
+                "family": "static",
+                "routed_config_name": "static-a",
+                "route_status": "routed",
+                "status": "invalid_terminal_liquidation",
+                "failure_type": "TerminalLiquidationError",
+                "failure_reason": "terminal inventory swap exceeded value",
+                "episode_count": "",
+                **{field: "" for field in ECONOMIC_FIELDS},
+            }
+        )
+    _, candidate_failures = _validate_candidate_rows(
+        tmp_path,
+        pool="uni-base",
+        catalog_ids=("unit-a",),
+        families={"unit-a": "static"},
+        routed_names={(0, "unit-a"): "static-a"},
+        bounds={},
+    )
+
+    reset_artifact = "reset_portfolio_validation_matrix.csv"
+    with (tmp_path / reset_artifact).open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=CSV_FIELDS[reset_artifact],
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for rule in ALLOCATION_RULE_IDS:
+            writer.writerow(
+                {
+                    **common,
+                    "allocation_rule": rule,
+                    "status": "invalid_execution_accounting",
+                    "failure_type": "ExecutionAccountingError",
+                    "failure_reason": "joint action value did not reconcile",
+                    "observed_share": "",
+                    "cap": "",
+                    "deployed_weight": "0.1",
+                    "cash_weight": "0.9",
+                    **{field: "" for field in ECONOMIC_FIELDS},
+                }
+            )
+    weights = {
+        (0, rule): WeightSummary(
+            deployed_weight=0.1,
+            cash_weight=0.9,
+            herfindahl=0.01,
+            largest_weight=0.1,
+            effective_sleeve_count=100.0,
+            removed_weight=None,
+            weights={"unit-a": 0.1},
+        )
+        for rule in ALLOCATION_RULE_IDS
+    }
+    _, reset_failures = _validate_reset_rows(
+        tmp_path,
+        pool="uni-base",
+        weights=weights,
+        bounds={},
+    )
+    payload = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "pool": "uni-base",
+        "candidate_sleeves": {
+            "status": "invalid_incomplete_matrix",
+            "expected_rows": 1,
+            "observed_rows": 1,
+            "valid_rows": 0,
+            "invalid_rows": 1,
+            "invalid_status_counts": {"invalid_terminal_liquidation": 1},
+            "invalid_observations": candidate_failures,
+        },
+        "allocation_rules": {
+            "status": "invalid_incomplete_matrix",
+            "invalid_observations": reset_failures,
+        },
+        "carried_paths": {"status": "not_applicable_path_dependent_carried_bankroll"},
+    }
+    (tmp_path / "pbo_allocation_rules.json").write_bytes(canonical_json_bytes(payload))
+    manifest = {
+        "candidate_reset_matrix": {
+            "status": "invalid_incomplete_matrix",
+            "valid_rows": 0,
+            "invalid_rows": 1,
+            "invalid_status_counts": {"invalid_terminal_liquidation": 1},
+        },
+        "pbo_status": {
+            "candidate_sleeves": "invalid_incomplete_matrix",
+            "allocation_rules": "invalid_incomplete_matrix",
+        },
+        "best_sleeve_removal_economic_id": None,
+    }
+    evidence = CsvEvidence(
+        catalog_ids=("unit-a",),
+        window_bounds={},
+        candidate_returns={"unit-a": []},
+        candidate_failures=candidate_failures,
+        reset_returns={rule: [] for rule in ALLOCATION_RULE_IDS},
+        reset_failures=reset_failures,
+        carried_rows={},
+        comparator_rows={},
+        weight_summaries={},
+        removal_all_valid=False,
+    )
+
+    _validate_pbo_payload(tmp_path, manifest, evidence, pool="uni-base")
+
+
 def test_attribution_opening_values_are_bound_to_frozen_weights(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -581,7 +804,7 @@ def test_attribution_opening_values_are_bound_to_frozen_weights(
     )
     artifact = "joint_attribution.csv"
     common = {
-        "schema_version": "weighted-portfolio-artifacts/v2",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
         "pool": "uni-base",
         "window_index": 0,
         "window_start": "2026-01-01T00:00:00+00:00",
@@ -589,7 +812,11 @@ def test_attribution_opening_values_are_bound_to_frozen_weights(
         "allocation_rule": "equal_config",
     }
 
-    def values(opening: float, closing: float) -> dict[str, float]:
+    def values(
+        opening: float,
+        closing: float,
+        terminal_transfer: float = 0.0,
+    ) -> dict[str, float]:
         return {
             "opening_value_usd": opening,
             "closing_value_usd": closing,
@@ -602,6 +829,7 @@ def test_attribution_opening_values_are_bound_to_frozen_weights(
             "external_input_value_usd": 0.0,
             "external_output_value_usd": 0.0,
             "internal_cross_notional_usd": 0.0,
+            "terminal_funding_transfer_usd": terminal_transfer,
         }
 
     def write_rows(*, mutate: bool) -> None:
@@ -681,6 +909,34 @@ def test_attribution_opening_values_are_bound_to_frozen_weights(
         bounds={},
     )
 
+    funding_rows = list(csv.DictReader((tmp_path / artifact).read_text().splitlines()))
+    funding_rows[-1]["terminal_funding_transfer_usd"] = "-0.4"
+    with (tmp_path / artifact).open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=CSV_FIELDS[artifact],
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(funding_rows)
+
+    with pytest.raises(
+        ValidationFailure,
+        match=(
+            r"^FAIL code=ATTRIBUTION_ALLOCATION pool=uni-base "
+            r"artifact=joint_attribution.csv$"
+        ),
+    ):
+        _validate_attribution_rows(
+            tmp_path,
+            pool="uni-base",
+            catalog_ids=("unit-a",),
+            families={"unit-a": "directional"},
+            carried=carried,
+            weights=weights,
+            bounds={},
+        )
+
     write_rows(mutate=True)
     with pytest.raises(
         ValidationFailure,
@@ -698,6 +954,51 @@ def test_attribution_opening_values_are_bound_to_frozen_weights(
             weights=weights,
             bounds={},
         )
+
+    with (tmp_path / artifact).open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=CSV_FIELDS[artifact],
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                **common,
+                "row_type": "sleeve",
+                "economic_id": "unit-a",
+                "family": "directional",
+                **values(10.0, 10.5, 0.5),
+            }
+        )
+        writer.writerow(
+            {
+                **common,
+                "row_type": "family",
+                "economic_id": "family:directional",
+                "family": "directional",
+                **values(10.0, 10.5, 0.5),
+            }
+        )
+        writer.writerow(
+            {
+                **common,
+                "row_type": "cash",
+                "economic_id": "cash",
+                "family": "cash",
+                **values(90.0, 89.5, -0.5),
+            }
+        )
+
+    _validate_attribution_rows(
+        tmp_path,
+        pool="uni-base",
+        catalog_ids=("unit-a",),
+        families={"unit-a": "directional"},
+        carried=carried,
+        weights=weights,
+        bounds={},
+    )
 
 
 def test_weight_vectors_must_equal_the_frozen_allocation_rules(
@@ -748,7 +1049,7 @@ def test_weight_vectors_must_equal_the_frozen_allocation_rules(
                 for economic_id in catalog_ids:
                     writer.writerow(
                         {
-                            "schema_version": "weighted-portfolio-artifacts/v2",
+                            "schema_version": ARTIFACT_SCHEMA_VERSION,
                             "pool": "uni-base",
                             "window_index": 0,
                             "window_start": "2026-01-01T00:00:00+00:00",
@@ -840,7 +1141,7 @@ def test_comparator_plans_are_rebuilt_from_catalog_and_training(
                     selected = ""
                 writer.writerow(
                     {
-                        "schema_version": "weighted-portfolio-artifacts/v2",
+                        "schema_version": ARTIFACT_SCHEMA_VERSION,
                         "pool": "uni-base",
                         "window_index": 0,
                         "window_start": "2026-01-01T00:00:00+00:00",
@@ -849,21 +1150,11 @@ def test_comparator_plans_are_rebuilt_from_catalog_and_training(
                         "status": "valid",
                         "blocking_status": "",
                         "blocking_window_index": "",
+                        "failure_type": "",
+                        "failure_reason": "",
                         "selection_status": selection,
                         "selected_economic_id": selected,
-                        "opening_capital_usd": initial_capital,
-                        "closing_cash_usd": initial_capital,
-                        "window_net_return": 0,
-                        "max_drawdown": 0,
-                        "terminal_liquidation_cost_usd": 0,
-                        "total_fees_usd": 0,
-                        "total_fixed_cost_usd": 0,
-                        "total_variable_cost_usd": 0,
-                        "external_marked_notional_usd": 0,
-                        "external_input_value_usd": 0,
-                        "external_output_value_usd": 0,
-                        "internal_cross_notional_usd": 0,
-                        "value_sample_count": 2,
+                        **_zero_economic_row(initial_capital),
                     }
                 )
 
@@ -897,25 +1188,15 @@ def test_comparator_plans_are_rebuilt_from_catalog_and_training(
 
 def test_path_status_enforces_continuity_and_irreversible_blocking() -> None:
     valid = {
+        **_economic_row(),
         "status": "valid",
         "blocking_status": "",
         "blocking_window_index": "",
-        "opening_capital_usd": "100",
-        "closing_cash_usd": "101",
-        "window_net_return": "0.01",
-        "max_drawdown": "-0.02",
-        "terminal_liquidation_cost_usd": "0.1",
-        "total_fees_usd": "0.5",
-        "total_fixed_cost_usd": "0.2",
-        "total_variable_cost_usd": "0.3",
-        "external_marked_notional_usd": "10",
-        "external_input_value_usd": "5",
-        "external_output_value_usd": "4.7",
-        "internal_cross_notional_usd": "2",
-        "value_sample_count": "3",
+        "failure_type": "",
+        "failure_reason": "",
     }
     next_capital = {"rule": 100.0}
-    blocked: dict[str, tuple[str, int]] = {}
+    blocked: dict[str, tuple[str, int, str, str]] = {}
 
     _validate_path_status(
         valid,
@@ -933,6 +1214,8 @@ def test_path_status_enforces_continuity_and_irreversible_blocking() -> None:
         "status": "invalid_terminal_liquidation",
         "blocking_status": "invalid_terminal_liquidation",
         "blocking_window_index": "1",
+        "failure_type": "TerminalLiquidationError",
+        "failure_reason": "terminal inventory swap exceeded available value",
     }
     _validate_path_status(
         invalid,
@@ -943,13 +1226,22 @@ def test_path_status_enforces_continuity_and_irreversible_blocking() -> None:
         pool="uni-base",
         artifact="carried_portfolio_path.csv",
     )
-    assert blocked == {"rule": ("invalid_terminal_liquidation", 1)}
+    assert blocked == {
+        "rule": (
+            "invalid_terminal_liquidation",
+            1,
+            "TerminalLiquidationError",
+            "terminal inventory swap exceeded available value",
+        )
+    }
 
     blocked_row = {
         **{field: "" for field in ECONOMIC_FIELDS},
         "status": "blocked_prior_invalid",
         "blocking_status": "invalid_terminal_liquidation",
         "blocking_window_index": "1",
+        "failure_type": "TerminalLiquidationError",
+        "failure_reason": "terminal inventory swap exceeded available value",
     }
     _validate_path_status(
         blocked_row,
@@ -960,6 +1252,50 @@ def test_path_status_enforces_continuity_and_irreversible_blocking() -> None:
         pool="uni-base",
         artifact="carried_portfolio_path.csv",
     )
+
+    with pytest.raises(
+        ValidationFailure,
+        match=(
+            r"^FAIL code=PATH_STATUS pool=uni-base "
+            r"artifact=carried_portfolio_path.csv$"
+        ),
+    ):
+        _validate_path_status(
+            {
+                **blocked_row,
+                "failure_reason": "a different terminal failure",
+            },
+            method_id="rule",
+            index=3,
+            next_capital=next_capital,
+            blocked=blocked,
+            pool="uni-base",
+            artifact="carried_portfolio_path.csv",
+        )
+
+    with pytest.raises(
+        ValidationFailure,
+        match=(
+            r"^FAIL code=PATH_STATUS pool=uni-base "
+            r"artifact=carried_portfolio_path.csv$"
+        ),
+    ):
+        _validate_path_status(
+            {
+                **{field: "" for field in ECONOMIC_FIELDS},
+                "status": "invalid_terminal_liquidation",
+                "blocking_status": "invalid_terminal_liquidation",
+                "blocking_window_index": "0",
+                "failure_type": "TerminalLiquidationError",
+                "failure_reason": "x" * 513,
+            },
+            method_id="bounded",
+            index=0,
+            next_capital={"bounded": 100.0},
+            blocked={},
+            pool="uni-base",
+            artifact="carried_portfolio_path.csv",
+        )
 
     drifted = {
         **valid,
@@ -1000,7 +1336,7 @@ def test_pbo_payload_is_recomputed_from_candidate_and_reset_matrices(
     candidate_matrix = list(candidate_returns.values())
     reset_matrix = [reset_returns[rule] for rule in ALLOCATION_RULE_IDS]
     payload = {
-        "schema_version": "weighted-portfolio-artifacts/v2",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
         "pool": "uni-base",
         "candidate_sleeves": {
             "status": "computed",
@@ -1058,6 +1394,90 @@ def test_pbo_payload_is_recomputed_from_candidate_and_reset_matrices(
         ),
     ):
         _validate_pbo_payload(tmp_path, manifest, evidence, pool="uni-base")
+
+
+def test_method_stability_repeats_the_first_failure_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        FULL_DIMENSIONS,
+        "uni-base",
+        PoolDimensions(windows=1),
+    )
+    diagnostic = {
+        "status": "invalid_terminal_liquidation",
+        "blocking_status": "invalid_terminal_liquidation",
+        "blocking_window_index": "0",
+        "failure_type": "TerminalLiquidationError",
+        "failure_reason": "terminal inventory swap exceeded value",
+    }
+    evidence = CsvEvidence(
+        catalog_ids=(),
+        window_bounds={},
+        candidate_returns={},
+        candidate_failures=[],
+        reset_returns={},
+        reset_failures=[],
+        carried_rows={(method_id, 0): dict(diagnostic) for method_id in ALLOCATION_RULE_IDS},
+        comparator_rows={(method_id, 0): dict(diagnostic) for method_id in COMPARATOR_IDS},
+        weight_summaries={},
+        removal_all_valid=False,
+    )
+    artifact = "method_stability.csv"
+
+    def write_rows(*, mutate: bool) -> None:
+        with (tmp_path / artifact).open("w", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=CSV_FIELDS[artifact],
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            for method_id in (*ALLOCATION_RULE_IDS, *COMPARATOR_IDS):
+                writer.writerow(
+                    {
+                        "schema_version": ARTIFACT_SCHEMA_VERSION,
+                        "pool": "uni-base",
+                        "method_id": method_id,
+                        "method_kind": (
+                            "allocation_rule" if method_id in ALLOCATION_RULE_IDS else "comparator"
+                        ),
+                        "completed_windows": 1,
+                        "valid_windows": 0,
+                        "invalid_windows": 1,
+                        "first_invalid_status": "invalid_terminal_liquidation",
+                        "first_invalid_window_index": 0,
+                        "first_failure_type": "TerminalLiquidationError",
+                        "first_failure_reason": (
+                            "a different reason"
+                            if mutate and method_id == ALLOCATION_RULE_IDS[0]
+                            else diagnostic["failure_reason"]
+                        ),
+                        "cumulative_return": "",
+                        "mean_window_return": "",
+                        "median_window_return": "",
+                        "positive_window_rate": "",
+                        "worst_window_return": "",
+                        "continuous_max_drawdown": "",
+                        "total_fees_usd": "",
+                        "total_fixed_cost_usd": "",
+                        "total_variable_cost_usd": "",
+                    }
+                )
+
+    write_rows(mutate=False)
+    _validate_method_stability(tmp_path, evidence, pool="uni-base")
+
+    write_rows(mutate=True)
+    with pytest.raises(
+        ValidationFailure,
+        match=(
+            r"^FAIL code=STABILITY_STATUS pool=uni-base "
+            r"artifact=method_stability.csv$"
+        ),
+    ):
+        _validate_method_stability(tmp_path, evidence, pool="uni-base")
 
 
 def test_cli_failure_is_sanitized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

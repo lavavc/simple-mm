@@ -60,7 +60,7 @@ from research.backtester.run import (
 from research.scripts.evaluate_flow_gated_lp import build_entry_states
 from research.scripts.evaluate_frozen_family_lp import POOL_EXPERIMENTS, PoolExperiment
 
-PROTOCOL_VERSION = "2026-07-23"
+PROTOCOL_VERSION = "2026-07-24"
 SOURCE_CLOSURE = (
     "engine/math/v3.py",
     "engine/venues/dex/uniswap_base.py",
@@ -105,23 +105,15 @@ def _limit_catalog(catalog: PortfolioCatalog, limit: int | None) -> PortfolioCat
     for family, family_sleeves in by_family.items():
         if family == "static":
             comparator = [
-                sleeve
-                for sleeve in family_sleeves
-                if sleeve.config_name == "static_spot_w0025"
+                sleeve for sleeve in family_sleeves if sleeve.config_name == "static_spot_w0025"
             ]
             if len(comparator) != 1:
-                raise ValueError(
-                    "smoke catalog requires exactly one static_spot_w0025"
-                )
-            ordered = comparator + [
-                sleeve for sleeve in family_sleeves if sleeve not in comparator
-            ]
+                raise ValueError("smoke catalog requires exactly one static_spot_w0025")
+            ordered = comparator + [sleeve for sleeve in family_sleeves if sleeve not in comparator]
         else:
             ordered = family_sleeves
         selected_ids.update(sleeve.sleeve_id for sleeve in ordered[:limit])
-    sleeves = [
-        sleeve for sleeve in catalog.sleeves if sleeve.sleeve_id in selected_ids
-    ]
+    sleeves = [sleeve for sleeve in catalog.sleeves if sleeve.sleeve_id in selected_ids]
     policies = catalog.directional_policies[:limit]
     return PortfolioCatalog(catalog.pool, tuple(sleeves), tuple(policies))
 
@@ -184,10 +176,7 @@ def _run_identity(
     *,
     full_run: bool,
 ) -> dict[str, object]:
-    sources = {
-        relative: _sha256_file(REPO_ROOT / relative)
-        for relative in SOURCE_CLOSURE
-    }
+    sources = {relative: _sha256_file(REPO_ROOT / relative) for relative in SOURCE_CLOSURE}
     inputs = {
         "history_csv": _sha256_file(experiment.history_csv),
         "feature_csv": _sha256_file(experiment.feature_csv),
@@ -226,9 +215,7 @@ def _run_identity(
 
 def _require_checkpoint_mode(root: Path, *, resume: bool) -> None:
     if root.exists() and any(root.iterdir()) and not resume:
-        raise FileExistsError(
-            f"checkpoint directory already contains state; pass --resume: {root}"
-        )
+        raise FileExistsError(f"checkpoint directory already contains state; pass --resume: {root}")
 
 
 def evaluate_pool(
@@ -303,15 +290,13 @@ def evaluate_pool(
         phase="primary",
     )
     primary_store.initialize()
-    records = [
-        primary_window_from_payload(payload)
-        for payload in primary_store.load_windows()
-    ]
+    records = [primary_window_from_payload(payload) for payload in primary_store.load_windows()]
     path_states = restore_primary_path_states(
         records,
         experiment.initial_capital_usd,
     )
     for item in slices[len(records) :]:
+
         def report_unit_progress(
             phase: str,
             completed_units: int,
@@ -348,9 +333,7 @@ def evaluate_pool(
         raise ValueError("primary checkpoint did not reach the complete window count")
 
     removal_root = checkpoint_dir / "best_sleeve_removal"
-    expected_economic_ids = tuple(
-        unit.sleeve_id for unit in catalog.allocation_units
-    )
+    expected_economic_ids = tuple(unit.sleeve_id for unit in catalog.allocation_units)
     candidate_matrix = assess_candidate_reset_matrix(
         records,
         expected_economic_ids,
@@ -379,8 +362,7 @@ def evaluate_pool(
         )
         removal_store.initialize()
         removal_records.extend(
-            removal_window_from_payload(payload)
-            for payload in removal_store.load_windows()
+            removal_window_from_payload(payload) for payload in removal_store.load_windows()
         )
         removal_states = restore_removal_path_states(
             removal_records,
@@ -402,19 +384,14 @@ def evaluate_pool(
             )
             removal_records.append(removal_record)
             print(
-                f"{experiment.pool} removal "
-                f"{len(removal_records)}/{len(slices)} windows durable",
+                f"{experiment.pool} removal {len(removal_records)}/{len(slices)} windows durable",
                 file=sys.stderr,
                 flush=True,
             )
         if len(removal_records) != len(slices):
-            raise ValueError(
-                "removal checkpoint did not reach the complete window count"
-            )
+            raise ValueError("removal checkpoint did not reach the complete window count")
     elif removal_root.exists() and any(removal_root.iterdir()):
-        raise ValueError(
-            "invalid candidate matrix conflicts with an existing removal checkpoint"
-        )
+        raise ValueError("invalid candidate matrix conflicts with an existing removal checkpoint")
     publication_run_kind = (
         "smoke"
         if not full_run

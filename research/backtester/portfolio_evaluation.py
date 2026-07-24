@@ -33,20 +33,24 @@ from research.backtester.portfolio_comparators import (
     routed_hold_cngn_result,
     valid_valuation_swaps,
 )
-from research.backtester.portfolio_errors import NoValidationSwapError
+from research.backtester.portfolio_errors import (
+    ExecutionAccountingError,
+    NoValidationSwapError,
+)
 from research.backtester.portfolio_path import (
     CarriedPathSnapshot,
     CarriedPathState,
     CarriedWindowOutcome,
     EconomicAttribution,
     EconomicResult,
+    FailureDiagnostic,
     InvalidStatus,
     PathStatus,
     economic_result_from_portfolio,
     economic_result_from_sim,
 )
 from research.backtester.portfolio_simulator import (
-    ExecutionAccountingError,
+    EntryScaleEvent,
     LiquidityShareExceeded,
     simulate_portfolio,
 )
@@ -107,6 +111,16 @@ class EconomicSummary:
     external_input_value_usd: float
     external_output_value_usd: float
     internal_cross_notional_usd: float
+    entry_action_batch_count: int
+    scaled_entry_action_batch_count: int
+    minimum_entry_execution_scale: float
+    terminal_position_settlement_count: int
+    terminal_loose_cngn_settlement_count: int
+    terminal_zero_settlement_count: int
+    terminal_inventory_swap_count: int
+    terminal_fixed_cost_usd: float
+    terminal_variable_cost_usd: float
+    terminal_external_marked_notional_usd: float
     value_sample_count: int
 
     def __post_init__(self) -> None:
@@ -123,14 +137,16 @@ class EconomicSummary:
             self.external_input_value_usd,
             self.external_output_value_usd,
             self.internal_cross_notional_usd,
+            self.minimum_entry_execution_scale,
+            self.terminal_fixed_cost_usd,
+            self.terminal_variable_cost_usd,
+            self.terminal_external_marked_notional_usd,
         )
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError("economic summary values must be finite")
         if self.opening_capital_usd <= 0.0 or self.closing_cash_usd < 0.0:
             raise ValueError("economic summary capital is invalid")
-        expected_return = (
-            self.closing_cash_usd / self.opening_capital_usd - 1.0
-        )
+        expected_return = self.closing_cash_usd / self.opening_capital_usd - 1.0
         if not math.isclose(
             self.window_net_return,
             expected_return,
@@ -149,6 +165,9 @@ class EconomicSummary:
             self.external_input_value_usd,
             self.external_output_value_usd,
             self.internal_cross_notional_usd,
+            self.terminal_fixed_cost_usd,
+            self.terminal_variable_cost_usd,
+            self.terminal_external_marked_notional_usd,
         )
         if any(value < 0.0 for value in non_negative):
             raise ValueError("economic summary accounting fields must be non-negative")
@@ -158,12 +177,49 @@ class EconomicSummary:
             self.external_output_value_usd,
             self.total_variable_cost_usd,
         )
-        if abs(
-            self.external_input_value_usd
-            - self.external_output_value_usd
-            - self.total_variable_cost_usd
-        ) > tolerance:
+        if (
+            abs(
+                self.external_input_value_usd
+                - self.external_output_value_usd
+                - self.total_variable_cost_usd
+            )
+            > tolerance
+        ):
             raise ValueError("economic summary execution values do not reconcile")
+        if (
+            any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in (
+                    self.entry_action_batch_count,
+                    self.scaled_entry_action_batch_count,
+                    self.terminal_position_settlement_count,
+                    self.terminal_loose_cngn_settlement_count,
+                    self.terminal_zero_settlement_count,
+                    self.terminal_inventory_swap_count,
+                )
+            )
+            or self.scaled_entry_action_batch_count > self.entry_action_batch_count
+            or not 0.0 <= self.minimum_entry_execution_scale <= 1.0
+            or self.terminal_inventory_swap_count > 1
+        ):
+            raise ValueError("economic summary execution diagnostics are invalid")
+        if self.entry_action_batch_count == 0 and self.minimum_entry_execution_scale != 1.0:
+            raise ValueError("empty entry trace must have unit minimum scale")
+        terminal_tolerance = 1e-9 * max(
+            1.0,
+            self.terminal_liquidation_cost_usd,
+            self.terminal_fixed_cost_usd,
+            self.terminal_variable_cost_usd,
+        )
+        if (
+            abs(
+                self.terminal_fixed_cost_usd
+                + self.terminal_variable_cost_usd
+                - self.terminal_liquidation_cost_usd
+            )
+            > terminal_tolerance
+        ):
+            raise ValueError("economic summary terminal costs do not reconcile")
         if (
             isinstance(self.value_sample_count, bool)
             or not isinstance(self.value_sample_count, int)
@@ -180,6 +236,14 @@ class TrainingRecord:
     status: TrainingStatus
     eligible: bool
     metrics: TrainingMetrics | None
+    failure: FailureDiagnostic | None
+
+    def __post_init__(self) -> None:
+        if self.status in {"valid", "no_position"}:
+            if self.failure is not None:
+                raise ValueError("valid training record cannot contain a failure")
+        elif self.failure is None:
+            raise ValueError("invalid training record requires a failure")
 
 
 @dataclass(frozen=True)
@@ -191,6 +255,7 @@ class CandidateResetRecord:
     status: PathStatus
     episode_count: int | None
     economics: EconomicSummary | None
+    failure: FailureDiagnostic | None
 
     def __post_init__(self) -> None:
         if not self.economic_id or not self.family or not self.routed_config_name:
@@ -201,16 +266,14 @@ class CandidateResetRecord:
             and self.episode_count >= 0
         )
         if self.status == "valid":
-            if self.economics is None or not valid_episode_count:
-                raise ValueError(
-                    "valid candidate requires economics and non-negative episodes"
-                )
+            if self.economics is None or not valid_episode_count or self.failure is not None:
+                raise ValueError("valid candidate requires economics and non-negative episodes")
         elif self.status in {
             "invalid_no_validation_swap",
             "invalid_execution_accounting",
             "invalid_terminal_liquidation",
         }:
-            if self.economics is not None or self.episode_count is not None:
+            if self.economics is not None or self.episode_count is not None or self.failure is None:
                 raise ValueError("invalid candidate cannot contain economic results")
         else:
             raise ValueError("candidate reset status is unsupported")
@@ -222,8 +285,7 @@ class CandidateResetRecord:
                 or self.episode_count != 0
                 or self.economics is None
                 or self.economics.window_net_return != 0.0
-                or self.economics.closing_cash_usd
-                != self.economics.opening_capital_usd
+                or self.economics.closing_cash_usd != self.economics.opening_capital_usd
                 or any(
                     value != 0.0
                     for value in (
@@ -236,8 +298,18 @@ class CandidateResetRecord:
                         self.economics.external_input_value_usd,
                         self.economics.external_output_value_usd,
                         self.economics.internal_cross_notional_usd,
+                        self.economics.entry_action_batch_count,
+                        self.economics.scaled_entry_action_batch_count,
+                        self.economics.terminal_position_settlement_count,
+                        self.economics.terminal_loose_cngn_settlement_count,
+                        self.economics.terminal_zero_settlement_count,
+                        self.economics.terminal_inventory_swap_count,
+                        self.economics.terminal_fixed_cost_usd,
+                        self.economics.terminal_variable_cost_usd,
+                        self.economics.terminal_external_marked_notional_usd,
                     )
                 )
+                or self.economics.minimum_entry_execution_scale != 1.0
             ):
                 raise ValueError("no-position candidate must be an exact cash result")
         elif self.route_status == "routed":
@@ -252,6 +324,7 @@ class CandidateMatrixFailure:
     economic_id: str
     window_index: int
     status: str
+    failure: FailureDiagnostic
 
 
 @dataclass(frozen=True)
@@ -270,6 +343,7 @@ class ResetOutcome:
     method_id: str
     status: PathStatus
     economics: EconomicSummary | None
+    failure: FailureDiagnostic | None
     observed_share: float | None = None
     cap: float | None = None
 
@@ -287,11 +361,12 @@ class ResetOutcome:
         if self.status == "valid":
             if (
                 self.economics is None
+                or self.failure is not None
                 or self.observed_share is not None
                 or self.cap is not None
             ):
                 raise ValueError("valid reset outcome requires only economics")
-        elif self.economics is not None:
+        elif self.economics is not None or self.failure is None:
             raise ValueError("invalid reset outcome cannot contain economics")
         if self.status == "invalid_liquidity_cap":
             if self.observed_share is None or self.cap is None:
@@ -482,9 +557,7 @@ def restore_primary_path_states(
         ),
     )
     return {
-        method_id: CarriedPathState.from_snapshot(
-            records[-1].path_snapshots[method_id]
-        )
+        method_id: CarriedPathState.from_snapshot(records[-1].path_snapshots[method_id])
         for method_id in PRIMARY_METHOD_IDS
     }
 
@@ -531,12 +604,11 @@ def _validate_path_sequence(
     outcome_for: Callable[[PathRecord, str], CarriedWindowOutcome],
 ) -> None:
     _validate_record_prefix(records)
-    expected_capital = {
-        method_id: reference_bankroll_usd for method_id in method_ids
-    }
-    blocking: dict[str, tuple[InvalidStatus, int] | None] = {
-        method_id: None for method_id in method_ids
-    }
+    expected_capital = {method_id: reference_bankroll_usd for method_id in method_ids}
+    blocking: dict[
+        str,
+        tuple[InvalidStatus, int, FailureDiagnostic] | None,
+    ] = {method_id: None for method_id in method_ids}
     for record in records:
         for method_id in method_ids:
             outcome = outcome_for(record, method_id)
@@ -568,6 +640,8 @@ def _validate_path_sequence(
                     or outcome.blocking_window_index != prior_block[1]
                     or snapshot.blocking_status != prior_block[0]
                     or snapshot.blocking_window_index != prior_block[1]
+                    or outcome.failure != prior_block[2]
+                    or snapshot.failure != prior_block[2]
                     or not _same_capital(
                         snapshot.next_opening_capital_usd,
                         expected,
@@ -584,6 +658,8 @@ def _validate_path_sequence(
                     or outcome.blocking_window_index is not None
                     or snapshot.blocking_status is not None
                     or snapshot.blocking_window_index is not None
+                    or outcome.failure is not None
+                    or snapshot.failure is not None
                     or not _same_capital(outcome.opening_capital_usd, expected)
                     or not _same_capital(
                         outcome.result.opening_capital_usd,
@@ -612,10 +688,16 @@ def _validate_path_sequence(
                 or outcome.blocking_window_index != record.window_index
                 or snapshot.blocking_status != outcome.status
                 or snapshot.blocking_window_index != record.window_index
+                or outcome.failure is None
+                or snapshot.failure != outcome.failure
                 or not _same_capital(snapshot.next_opening_capital_usd, expected)
             ):
                 raise ValueError("invalid checkpoint path is incoherent")
-            blocking[method_id] = (outcome.status, record.window_index)
+            blocking[method_id] = (
+                outcome.status,
+                record.window_index,
+                outcome.failure,
+            )
 
 
 def route_directional_catalog(
@@ -656,6 +738,16 @@ def economic_summary(result: EconomicResult) -> EconomicSummary:
         external_input_value_usd=result.external_input_value_usd,
         external_output_value_usd=result.external_output_value_usd,
         internal_cross_notional_usd=result.internal_cross_notional_usd,
+        entry_action_batch_count=result.entry_action_batch_count,
+        scaled_entry_action_batch_count=result.scaled_entry_action_batch_count,
+        minimum_entry_execution_scale=result.minimum_entry_execution_scale,
+        terminal_position_settlement_count=(result.terminal_position_settlement_count),
+        terminal_loose_cngn_settlement_count=(result.terminal_loose_cngn_settlement_count),
+        terminal_zero_settlement_count=result.terminal_zero_settlement_count,
+        terminal_inventory_swap_count=result.terminal_inventory_swap_count,
+        terminal_fixed_cost_usd=result.terminal_fixed_cost_usd,
+        terminal_variable_cost_usd=result.terminal_variable_cost_usd,
+        terminal_external_marked_notional_usd=(result.terminal_external_marked_notional_usd),
         value_sample_count=len(result.value_samples),
     )
 
@@ -666,9 +758,7 @@ def _report_unit_progress(
     completed_units: int,
     total_units: int,
 ) -> None:
-    if callback is not None and (
-        completed_units == total_units or completed_units % 250 == 0
-    ):
+    if callback is not None and (completed_units == total_units or completed_units % 250 == 0):
         callback(phase, completed_units, total_units)
 
 
@@ -696,6 +786,7 @@ def _training_records(
                     status="no_position",
                     eligible=False,
                     metrics=None,
+                    failure=None,
                 )
             )
             _report_unit_progress(
@@ -705,6 +796,7 @@ def _training_records(
                 total_units,
             )
             continue
+        failure: FailureDiagnostic | None = None
         try:
             simulation = simulate_pool(
                 list(events),
@@ -717,20 +809,21 @@ def _training_records(
             training = TrainingMetrics(
                 net_return=result.window_net_return,
                 episode_count=len(simulation.episodes),
-                fee_to_transaction_cost_ratio=metrics.fee_to_transaction_cost_ratio(
-                    simulation
-                ),
+                fee_to_transaction_cost_ratio=metrics.fee_to_transaction_cost_ratio(simulation),
                 max_drawdown=result.max_drawdown,
             )
-        except NoValidationSwapError:
+        except NoValidationSwapError as exc:
             status: TrainingStatus = "invalid_no_validation_swap"
             training = None
-        except TerminalLiquidationError:
+            failure = FailureDiagnostic.from_exception(exc)
+        except TerminalLiquidationError as exc:
             status = "invalid_terminal_liquidation"
             training = None
-        except ExecutionAccountingError:
+            failure = FailureDiagnostic.from_exception(exc)
+        except ExecutionAccountingError as exc:
             status = "invalid_execution_accounting"
             training = None
+            failure = FailureDiagnostic.from_exception(exc)
         else:
             status = "valid"
         records.append(
@@ -741,6 +834,7 @@ def _training_records(
                 status=status,
                 eligible=training is not None and is_eligible(training),
                 metrics=training,
+                failure=failure,
             )
         )
         _report_unit_progress(
@@ -783,6 +877,7 @@ def _candidate_records(
                     status="valid",
                     episode_count=0,
                     economics=economic_summary(result),
+                    failure=None,
                 )
             )
             _report_unit_progress(
@@ -795,6 +890,7 @@ def _candidate_records(
         status: PathStatus = "valid"
         result_summary: EconomicSummary | None = None
         episode_count: int | None = None
+        failure: FailureDiagnostic | None = None
         try:
             simulation = simulate_pool(
                 events,
@@ -808,12 +904,15 @@ def _candidate_records(
                 economic_result_from_sim(simulation, reference_bankroll_usd)
             )
             episode_count = len(simulation.episodes)
-        except NoValidationSwapError:
+        except NoValidationSwapError as exc:
             status = "invalid_no_validation_swap"
-        except TerminalLiquidationError:
+            failure = FailureDiagnostic.from_exception(exc)
+        except TerminalLiquidationError as exc:
             status = "invalid_terminal_liquidation"
-        except ExecutionAccountingError:
+            failure = FailureDiagnostic.from_exception(exc)
+        except ExecutionAccountingError as exc:
             status = "invalid_execution_accounting"
+            failure = FailureDiagnostic.from_exception(exc)
         records.append(
             CandidateResetRecord(
                 economic_id=unit.sleeve_id,
@@ -823,6 +922,7 @@ def _candidate_records(
                 status=status,
                 episode_count=episode_count,
                 economics=result_summary,
+                failure=failure,
             )
         )
         _report_unit_progress(
@@ -866,16 +966,32 @@ def _reset_outcome(
             method_id,
             "invalid_liquidity_cap",
             None,
+            FailureDiagnostic.from_exception(exc),
             observed_share=exc.observed_share,
             cap=exc.cap,
         )
-    except NoValidationSwapError:
-        return ResetOutcome(method_id, "invalid_no_validation_swap", None)
-    except TerminalLiquidationError:
-        return ResetOutcome(method_id, "invalid_terminal_liquidation", None)
-    except ExecutionAccountingError:
-        return ResetOutcome(method_id, "invalid_execution_accounting", None)
-    return ResetOutcome(method_id, "valid", economic_summary(result))
+    except NoValidationSwapError as exc:
+        return ResetOutcome(
+            method_id,
+            "invalid_no_validation_swap",
+            None,
+            FailureDiagnostic.from_exception(exc),
+        )
+    except TerminalLiquidationError as exc:
+        return ResetOutcome(
+            method_id,
+            "invalid_terminal_liquidation",
+            None,
+            FailureDiagnostic.from_exception(exc),
+        )
+    except ExecutionAccountingError as exc:
+        return ResetOutcome(
+            method_id,
+            "invalid_execution_accounting",
+            None,
+            FailureDiagnostic.from_exception(exc),
+        )
+    return ResetOutcome(method_id, "valid", economic_summary(result), None)
 
 
 def _portfolio_evaluator(
@@ -916,17 +1032,14 @@ def _comparator_plans(
     static = tuple(
         unit
         for unit in catalog.allocation_units
-        if unit.family == "static"
-        and getattr(unit, "config_name", None) == "static_spot_w0025"
+        if unit.family == "static" and getattr(unit, "config_name", None) == "static_spot_w0025"
     )
     if len(static) != 1:
         raise ValueError("catalog requires exactly one static_spot_w0025 comparator")
     static_unit = static[0]
     plans: dict[str, ComparatorPlan] = {
         "cash": ComparatorPlan("cash", "not_applicable", None, None),
-        "hold_cngn_mark": ComparatorPlan(
-            "hold_cngn_mark", "not_applicable", None, None
-        ),
+        "hold_cngn_mark": ComparatorPlan("hold_cngn_mark", "not_applicable", None, None),
         "hold_cngn_pool_routed": ComparatorPlan(
             "hold_cngn_pool_routed", "not_applicable", None, None
         ),
@@ -972,11 +1085,15 @@ def _evaluate_comparator(
     static_params: BacktestParams,
 ) -> CarriedWindowOutcome:
     allocation = plan.allocation
-    if comparator_id not in {
-        "cash",
-        "hold_cngn_mark",
-        "hold_cngn_pool_routed",
-    } and allocation is None:
+    if (
+        comparator_id
+        not in {
+            "cash",
+            "hold_cngn_mark",
+            "hold_cngn_pool_routed",
+        }
+        and allocation is None
+    ):
         raise ValueError(f"LP comparator {comparator_id!r} lacks an allocation")
 
     def evaluator(opening: float) -> EconomicResult:
@@ -1031,11 +1148,7 @@ def evaluate_primary_window(
         reference_bankroll_usd,
         progress_callback,
     )
-    training_metrics = {
-        row.economic_id: row.metrics
-        for row in training
-        if row.metrics is not None
-    }
+    training_metrics = {row.economic_id: row.metrics for row in training if row.metrics is not None}
     allocation_functions = (
         equal_config_weights,
         equal_family_weights,
@@ -1048,10 +1161,7 @@ def evaluate_primary_window(
         )
         for function in allocation_functions
     }
-    allocations = {
-        rule: allocations[rule]
-        for rule in ALLOCATION_RULE_IDS
-    }
+    allocations = {rule: allocations[rule] for rule in ALLOCATION_RULE_IDS}
     initial_pool_state = _build_pool_state(window_slice.train_events)
     candidates = _candidate_records(
         catalog,
@@ -1082,9 +1192,7 @@ def evaluate_primary_window(
         )
     comparator_plans = _comparator_plans(catalog, training_metrics)
     static_id = cast(str, comparator_plans["static_spot_w0025"].selected_economic_id)
-    static_sleeve = next(
-        sleeve for sleeve in routed.sleeves if sleeve.sleeve_id == static_id
-    )
+    static_sleeve = next(sleeve for sleeve in routed.sleeves if sleeve.sleeve_id == static_id)
     comparators = {
         comparator_id: _evaluate_comparator(
             comparator_id,
@@ -1112,10 +1220,7 @@ def evaluate_primary_window(
         )
         for unit in catalog.allocation_units
     }
-    snapshots = {
-        method_id: path_states[method_id].snapshot()
-        for method_id in PRIMARY_METHOD_IDS
-    }
+    snapshots = {method_id: path_states[method_id].snapshot() for method_id in PRIMARY_METHOD_IDS}
     return PrimaryWindowRecord(
         pool=catalog.pool,
         window_index=window_slice.window.index,
@@ -1148,14 +1253,29 @@ def _economic_result_payload(result: EconomicResult) -> dict[str, object]:
         "external_input_value_usd": result.external_input_value_usd,
         "external_output_value_usd": result.external_output_value_usd,
         "internal_cross_notional_usd": result.internal_cross_notional_usd,
-        "value_samples": [
-            [timestamp.isoformat(), value]
-            for timestamp, value in result.value_samples
+        "entry_scale_events": [
+            {
+                "block_time": event.block_time.isoformat(),
+                "block_number": event.block_number,
+                "tx_hash": event.tx_hash,
+                "log_index": event.log_index,
+                "scale": event.scale,
+                "intended_entry_count": event.intended_entry_count,
+                "executed_entry_count": event.executed_entry_count,
+            }
+            for event in result.entry_scale_events
         ],
-        "attribution": {
-            key: asdict(result.attribution[key])
-            for key in sorted(result.attribution)
-        },
+        "terminal_position_settlement_count": (result.terminal_position_settlement_count),
+        "terminal_loose_cngn_settlement_count": (result.terminal_loose_cngn_settlement_count),
+        "terminal_zero_settlement_count": result.terminal_zero_settlement_count,
+        "terminal_inventory_swap_count": result.terminal_inventory_swap_count,
+        "terminal_fixed_cost_usd": result.terminal_fixed_cost_usd,
+        "terminal_variable_cost_usd": result.terminal_variable_cost_usd,
+        "terminal_external_marked_notional_usd": (result.terminal_external_marked_notional_usd),
+        "value_samples": [
+            [timestamp.isoformat(), value] for timestamp, value in result.value_samples
+        ],
+        "attribution": {key: asdict(result.attribution[key]) for key in sorted(result.attribution)},
     }
 
 
@@ -1174,6 +1294,16 @@ def _payload_int(value: object) -> int:
     return value
 
 
+def _payload_failure(value: object) -> FailureDiagnostic | None:
+    if value is None:
+        return None
+    payload = cast(Mapping[str, object], value)
+    return FailureDiagnostic(
+        exception_type=cast(str, payload["exception_type"]),
+        reason=cast(str, payload["reason"]),
+    )
+
+
 def _payload_attribution(payload: Mapping[str, object]) -> EconomicAttribution:
     return EconomicAttribution(
         economic_id=cast(str, payload["economic_id"]),
@@ -1182,18 +1312,11 @@ def _payload_attribution(payload: Mapping[str, object]) -> EconomicAttribution:
         fees_usd=_payload_float(payload["fees_usd"]),
         fixed_cost_usd=_payload_float(payload["fixed_cost_usd"]),
         variable_cost_usd=_payload_float(payload["variable_cost_usd"]),
-        external_marked_notional_usd=_payload_float(
-            payload["external_marked_notional_usd"]
-        ),
-        external_input_value_usd=_payload_float(
-            payload["external_input_value_usd"]
-        ),
-        external_output_value_usd=_payload_float(
-            payload["external_output_value_usd"]
-        ),
-        internal_cross_notional_usd=_payload_float(
-            payload["internal_cross_notional_usd"]
-        ),
+        external_marked_notional_usd=_payload_float(payload["external_marked_notional_usd"]),
+        external_input_value_usd=_payload_float(payload["external_input_value_usd"]),
+        external_output_value_usd=_payload_float(payload["external_output_value_usd"]),
+        internal_cross_notional_usd=_payload_float(payload["internal_cross_notional_usd"]),
+        terminal_funding_transfer_usd=_payload_float(payload["terminal_funding_transfer_usd"]),
     )
 
 
@@ -1201,9 +1324,7 @@ def _payload_training_metrics(payload: Mapping[str, object]) -> TrainingMetrics:
     return TrainingMetrics(
         net_return=_payload_float(payload["net_return"]),
         episode_count=_payload_int(payload["episode_count"]),
-        fee_to_transaction_cost_ratio=_payload_float(
-            payload["fee_to_transaction_cost_ratio"]
-        ),
+        fee_to_transaction_cost_ratio=_payload_float(payload["fee_to_transaction_cost_ratio"]),
         max_drawdown=_payload_float(payload["max_drawdown"]),
     )
 
@@ -1214,23 +1335,29 @@ def _payload_economic_summary(payload: Mapping[str, object]) -> EconomicSummary:
         closing_cash_usd=_payload_float(payload["closing_cash_usd"]),
         window_net_return=_payload_float(payload["window_net_return"]),
         max_drawdown=_payload_float(payload["max_drawdown"]),
-        terminal_liquidation_cost_usd=_payload_float(
-            payload["terminal_liquidation_cost_usd"]
-        ),
+        terminal_liquidation_cost_usd=_payload_float(payload["terminal_liquidation_cost_usd"]),
         total_fees_usd=_payload_float(payload["total_fees_usd"]),
         total_fixed_cost_usd=_payload_float(payload["total_fixed_cost_usd"]),
         total_variable_cost_usd=_payload_float(payload["total_variable_cost_usd"]),
-        external_marked_notional_usd=_payload_float(
-            payload["external_marked_notional_usd"]
+        external_marked_notional_usd=_payload_float(payload["external_marked_notional_usd"]),
+        external_input_value_usd=_payload_float(payload["external_input_value_usd"]),
+        external_output_value_usd=_payload_float(payload["external_output_value_usd"]),
+        internal_cross_notional_usd=_payload_float(payload["internal_cross_notional_usd"]),
+        entry_action_batch_count=_payload_int(payload["entry_action_batch_count"]),
+        scaled_entry_action_batch_count=_payload_int(payload["scaled_entry_action_batch_count"]),
+        minimum_entry_execution_scale=_payload_float(payload["minimum_entry_execution_scale"]),
+        terminal_position_settlement_count=_payload_int(
+            payload["terminal_position_settlement_count"]
         ),
-        external_input_value_usd=_payload_float(
-            payload["external_input_value_usd"]
+        terminal_loose_cngn_settlement_count=_payload_int(
+            payload["terminal_loose_cngn_settlement_count"]
         ),
-        external_output_value_usd=_payload_float(
-            payload["external_output_value_usd"]
-        ),
-        internal_cross_notional_usd=_payload_float(
-            payload["internal_cross_notional_usd"]
+        terminal_zero_settlement_count=_payload_int(payload["terminal_zero_settlement_count"]),
+        terminal_inventory_swap_count=_payload_int(payload["terminal_inventory_swap_count"]),
+        terminal_fixed_cost_usd=_payload_float(payload["terminal_fixed_cost_usd"]),
+        terminal_variable_cost_usd=_payload_float(payload["terminal_variable_cost_usd"]),
+        terminal_external_marked_notional_usd=_payload_float(
+            payload["terminal_external_marked_notional_usd"]
         ),
         value_sample_count=_payload_int(payload["value_sample_count"]),
     )
@@ -1241,13 +1368,12 @@ def _payload_path_snapshot(payload: Mapping[str, object]) -> CarriedPathSnapshot
     return CarriedPathSnapshot(
         method_id=cast(str, payload["method_id"]),
         method_kind=cast(str, payload["method_kind"]),
-        next_opening_capital_usd=_payload_float(
-            payload["next_opening_capital_usd"]
-        ),
+        next_opening_capital_usd=_payload_float(payload["next_opening_capital_usd"]),
         blocking_status=cast(InvalidStatus | None, payload["blocking_status"]),
         blocking_window_index=(
             _payload_int(blocking_index) if blocking_index is not None else None
         ),
+        failure=_payload_failure(payload["failure"]),
     )
 
 
@@ -1260,27 +1386,48 @@ def _economic_result_from_payload(payload: Mapping[str, object]) -> EconomicResu
         key: _payload_attribution(cast(Mapping[str, object], value))
         for key, value in cast(Mapping[str, object], payload["attribution"]).items()
     }
+    entry_scale_events = tuple(
+        EntryScaleEvent(
+            block_time=datetime.fromisoformat(cast(str, row["block_time"])),
+            block_number=(
+                _payload_int(row["block_number"]) if row["block_number"] is not None else None
+            ),
+            tx_hash=cast(str | None, row["tx_hash"]),
+            log_index=(_payload_int(row["log_index"]) if row["log_index"] is not None else None),
+            scale=_payload_float(row["scale"]),
+            intended_entry_count=_payload_int(row["intended_entry_count"]),
+            executed_entry_count=_payload_int(row["executed_entry_count"]),
+        )
+        for row in cast(
+            Sequence[Mapping[str, object]],
+            payload["entry_scale_events"],
+        )
+    )
     return EconomicResult(
         opening_capital_usd=_payload_float(payload["opening_capital_usd"]),
         closing_cash_usd=_payload_float(payload["closing_cash_usd"]),
         max_drawdown=_payload_float(payload["max_drawdown"]),
-        terminal_liquidation_cost_usd=_payload_float(
-            payload["terminal_liquidation_cost_usd"]
-        ),
+        terminal_liquidation_cost_usd=_payload_float(payload["terminal_liquidation_cost_usd"]),
         total_fees_usd=_payload_float(payload["total_fees_usd"]),
         total_fixed_cost_usd=_payload_float(payload["total_fixed_cost_usd"]),
         total_variable_cost_usd=_payload_float(payload["total_variable_cost_usd"]),
-        external_marked_notional_usd=_payload_float(
-            payload["external_marked_notional_usd"]
+        external_marked_notional_usd=_payload_float(payload["external_marked_notional_usd"]),
+        external_input_value_usd=_payload_float(payload["external_input_value_usd"]),
+        external_output_value_usd=_payload_float(payload["external_output_value_usd"]),
+        internal_cross_notional_usd=_payload_float(payload["internal_cross_notional_usd"]),
+        entry_scale_events=entry_scale_events,
+        terminal_position_settlement_count=_payload_int(
+            payload["terminal_position_settlement_count"]
         ),
-        external_input_value_usd=_payload_float(
-            payload["external_input_value_usd"]
+        terminal_loose_cngn_settlement_count=_payload_int(
+            payload["terminal_loose_cngn_settlement_count"]
         ),
-        external_output_value_usd=_payload_float(
-            payload["external_output_value_usd"]
-        ),
-        internal_cross_notional_usd=_payload_float(
-            payload["internal_cross_notional_usd"]
+        terminal_zero_settlement_count=_payload_int(payload["terminal_zero_settlement_count"]),
+        terminal_inventory_swap_count=_payload_int(payload["terminal_inventory_swap_count"]),
+        terminal_fixed_cost_usd=_payload_float(payload["terminal_fixed_cost_usd"]),
+        terminal_variable_cost_usd=_payload_float(payload["terminal_variable_cost_usd"]),
+        terminal_external_marked_notional_usd=_payload_float(
+            payload["terminal_external_marked_notional_usd"]
         ),
         value_samples=samples,
         attribution=attribution,
@@ -1297,10 +1444,9 @@ def _carried_payload(outcome: CarriedWindowOutcome) -> dict[str, object]:
         "blocking_window_index": outcome.blocking_window_index,
         "opening_capital_usd": outcome.opening_capital_usd,
         "closing_cash_usd": outcome.closing_cash_usd,
+        "failure": asdict(outcome.failure) if outcome.failure is not None else None,
         "result": (
-            _economic_result_payload(outcome.result)
-            if outcome.result is not None
-            else None
+            _economic_result_payload(outcome.result) if outcome.result is not None else None
         ),
     }
 
@@ -1333,6 +1479,7 @@ def _carried_from_payload(payload: Mapping[str, object]) -> CarriedWindowOutcome
             if result_payload is not None
             else None
         ),
+        failure=_payload_failure(payload["failure"]),
     )
 
 
@@ -1362,13 +1509,9 @@ def primary_window_to_payload(record: PrimaryWindowRecord) -> dict[str, object]:
             for rule, allocation in record.allocations.items()
         },
         "candidates": [asdict(row) for row in record.candidates],
-        "reset_rules": {
-            rule: asdict(outcome)
-            for rule, outcome in record.reset_rules.items()
-        },
+        "reset_rules": {rule: asdict(outcome) for rule, outcome in record.reset_rules.items()},
         "carried_rules": {
-            rule: _carried_payload(outcome)
-            for rule, outcome in record.carried_rules.items()
+            rule: _carried_payload(outcome) for rule, outcome in record.carried_rules.items()
         },
         "comparator_plans": {
             comparator_id: {
@@ -1392,8 +1535,7 @@ def primary_window_to_payload(record: PrimaryWindowRecord) -> dict[str, object]:
             for comparator_id, outcome in record.comparators.items()
         },
         "path_snapshots": {
-            method_id: asdict(snapshot)
-            for method_id, snapshot in record.path_snapshots.items()
+            method_id: asdict(snapshot) for method_id, snapshot in record.path_snapshots.items()
         },
         "carried_closing_cash_usd": {
             method_id: snapshot.next_opening_capital_usd
@@ -1423,12 +1565,11 @@ def primary_window_from_payload(payload: Mapping[str, object]) -> PrimaryWindowR
             status=cast(TrainingStatus, row["status"]),
             eligible=cast(bool, row["eligible"]),
             metrics=(
-                _payload_training_metrics(
-                    cast(Mapping[str, object], row["metrics"])
-                )
+                _payload_training_metrics(cast(Mapping[str, object], row["metrics"]))
                 if row["metrics"] is not None
                 else None
             ),
+            failure=_payload_failure(row["failure"]),
         )
         for row in cast(Sequence[Mapping[str, object]], payload["training"])
     )
@@ -1440,17 +1581,14 @@ def primary_window_from_payload(payload: Mapping[str, object]) -> PrimaryWindowR
             route_status=cast(RouteStatus, row["route_status"]),
             status=cast(PathStatus, row["status"]),
             episode_count=(
-                _payload_int(row["episode_count"])
-                if row["episode_count"] is not None
-                else None
+                _payload_int(row["episode_count"]) if row["episode_count"] is not None else None
             ),
             economics=(
-                _payload_economic_summary(
-                    cast(Mapping[str, object], row["economics"])
-                )
+                _payload_economic_summary(cast(Mapping[str, object], row["economics"]))
                 if row["economics"] is not None
                 else None
             ),
+            failure=_payload_failure(row["failure"]),
         )
         for row in cast(Sequence[Mapping[str, object]], payload["candidates"])
     )
@@ -1459,26 +1597,17 @@ def primary_window_from_payload(payload: Mapping[str, object]) -> PrimaryWindowR
             method_id=cast(str, row["method_id"]),
             status=cast(PathStatus, row["status"]),
             economics=(
-                _payload_economic_summary(
-                    cast(Mapping[str, object], row["economics"])
-                )
+                _payload_economic_summary(cast(Mapping[str, object], row["economics"]))
                 if row["economics"] is not None
                 else None
             ),
+            failure=_payload_failure(row["failure"]),
             observed_share=(
-                _payload_float(row["observed_share"])
-                if row["observed_share"] is not None
-                else None
+                _payload_float(row["observed_share"]) if row["observed_share"] is not None else None
             ),
-            cap=(
-                _payload_float(row["cap"])
-                if row["cap"] is not None
-                else None
-            ),
+            cap=(_payload_float(row["cap"]) if row["cap"] is not None else None),
         )
-        for rule, row in cast(
-            Mapping[str, Mapping[str, object]], payload["reset_rules"]
-        ).items()
+        for rule, row in cast(Mapping[str, Mapping[str, object]], payload["reset_rules"]).items()
     }
     reset_rules = {rule: reset_rules[rule] for rule in ALLOCATION_RULE_IDS}
     comparator_plans: dict[str, ComparatorPlan] = {}
@@ -1491,16 +1620,13 @@ def primary_window_from_payload(payload: Mapping[str, object]) -> PrimaryWindowR
             selection_status=cast(SelectionStatus, row["selection_status"]),
             selected_economic_id=cast(str | None, row["selected_economic_id"]),
             allocation=(
-                _allocation_from_payload(
-                    cast(Mapping[str, object], allocation_payload)
-                )
+                _allocation_from_payload(cast(Mapping[str, object], allocation_payload))
                 if allocation_payload is not None
                 else None
             ),
         )
     comparator_plans = {
-        comparator_id: comparator_plans[comparator_id]
-        for comparator_id in COMPARATOR_IDS
+        comparator_id: comparator_plans[comparator_id] for comparator_id in COMPARATOR_IDS
     }
     snapshots = {
         method_id: _payload_path_snapshot(row)
@@ -1515,9 +1641,7 @@ def primary_window_from_payload(payload: Mapping[str, object]) -> PrimaryWindowR
         window_end=cast(str, payload["window_end"]),
         train_swap_count=_payload_int(payload["train_swap_count"]),
         val_swap_count=_payload_int(payload["val_swap_count"]),
-        routed_config_names=cast(
-            Mapping[str, str], payload["routed_config_names"]
-        ),
+        routed_config_names=cast(Mapping[str, str], payload["routed_config_names"]),
         training=training,
         allocations={
             rule: _allocation_from_payload(
@@ -1574,14 +1698,9 @@ def assess_candidate_reset_matrix(
             raise ValueError("candidate matrix identities do not match the catalog")
         observed_rows += len(record.candidates)
         for row in record.candidates:
-            values = (
-                tuple(asdict(row.economics).values())
-                if row.economics is not None
-                else ()
-            )
+            values = tuple(asdict(row.economics).values()) if row.economics is not None else ()
             economics_are_finite = bool(values) and all(
-                not isinstance(value, float) or math.isfinite(value)
-                for value in values
+                not isinstance(value, float) or math.isfinite(value) for value in values
             )
             if (
                 row.status != "valid"
@@ -1604,6 +1723,14 @@ def assess_candidate_reset_matrix(
                         economic_id=row.economic_id,
                         window_index=record.window_index,
                         status=failure_status,
+                        failure=(
+                            row.failure
+                            if row.failure is not None
+                            else FailureDiagnostic(
+                                "CandidateMatrixError",
+                                failure_status,
+                            )
+                        ),
                     )
                 )
                 continue
@@ -1622,10 +1749,7 @@ def assess_candidate_reset_matrix(
             invalid_observations=tuple(failures),
             selected_economic_id=None,
         )
-    means = {
-        economic_id: sum(values) / len(values)
-        for economic_id, values in returns.items()
-    }
+    means = {economic_id: sum(values) / len(values) for economic_id, values in returns.items()}
     selected = min(
         means,
         key=lambda economic_id: (-means[economic_id], economic_id),
@@ -1671,9 +1795,7 @@ def evaluate_removal_window(
 ) -> RemovalWindowRecord:
     if primary_record.window_index != window_slice.window.index:
         raise ValueError("removal window does not match its primary record")
-    if removed_economic_id not in {
-        unit.sleeve_id for unit in catalog.allocation_units
-    }:
+    if removed_economic_id not in {unit.sleeve_id for unit in catalog.allocation_units}:
         raise ValueError("removed economic ID is not canonical")
     if set(path_states) != set(ALLOCATION_RULE_IDS):
         raise ValueError("removal path state set is incomplete")
@@ -1708,10 +1830,7 @@ def evaluate_removal_window(
         removed_economic_id=removed_economic_id,
         removed_allocations=removed_allocations,
         outcomes=outcomes,
-        path_snapshots={
-            rule: path_states[rule].snapshot()
-            for rule in ALLOCATION_RULE_IDS
-        },
+        path_snapshots={rule: path_states[rule].snapshot() for rule in ALLOCATION_RULE_IDS},
     )
 
 
@@ -1731,13 +1850,9 @@ def removal_window_to_payload(record: RemovalWindowRecord) -> dict[str, object]:
             }
             for rule, allocation in record.removed_allocations.items()
         },
-        "outcomes": {
-            rule: _carried_payload(outcome)
-            for rule, outcome in record.outcomes.items()
-        },
+        "outcomes": {rule: _carried_payload(outcome) for rule, outcome in record.outcomes.items()},
         "path_snapshots": {
-            rule: asdict(snapshot)
-            for rule, snapshot in record.path_snapshots.items()
+            rule: asdict(snapshot) for rule, snapshot in record.path_snapshots.items()
         },
         "carried_closing_cash_usd": {
             rule: snapshot.next_opening_capital_usd
@@ -1764,9 +1879,7 @@ def removal_window_from_payload(
         },
         outcomes={
             rule: _carried_from_payload(row)
-            for rule, row in cast(
-                Mapping[str, Mapping[str, object]], payload["outcomes"]
-            ).items()
+            for rule, row in cast(Mapping[str, Mapping[str, object]], payload["outcomes"]).items()
         },
         path_snapshots={
             rule: _payload_path_snapshot(row)

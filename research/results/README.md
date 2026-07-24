@@ -49,46 +49,57 @@ forecast or economic input is recorded as
 `not_adjudicable_qa` without fabricated performance rows. Filesystem and
 publication failures leave the pending statistical evidence unchanged.
 
-## Frozen weighted-portfolio evidence
+## Weighted-portfolio evidence
 
-The corrected Base and BSC portfolio study runs each pool independently and
-publishes exactly 14 artifacts per pool only after every primary and removal
-window is durable. Checkpoints are pool-local and resumable; final output
-directories are created by atomic replacement.
+`research/results/parameter_portfolio/` and
+`research/results/parameter_portfolio_checkpoints/` contain the July 23 v2
+attempt bound to source commit `b331b432bf612ed21413d54a0fd6c0eb76b7c38f`.
+They are preserved only as historical audit evidence. Do not resume, overwrite,
+or validate either root with the v3 runner or validator.
+
+The July 24 protocol runs each pool independently and publishes exactly 14 v3
+artifacts per pool only after every primary and removal window is durable. Use
+fresh pool-local v3 roots; final output directories are created by atomic
+replacement.
+
+The v3 source closure is not frozen yet. Commit the closure as `X`, pin the
+validator to `X` in a follow-on commit, and replace this paragraph with the exact
+SHA before running either command below. Until then, no v3 package is valid and
+no article claim is authorized.
 
 ```bash
 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python \
   research/scripts/evaluate_parameter_portfolio.py \
   --pool uni-base \
-  --out-dir research/results/parameter_portfolio \
-  --checkpoint-dir research/results/parameter_portfolio_checkpoints \
+  --out-dir research/results/parameter_portfolio_v3 \
+  --checkpoint-dir research/results/parameter_portfolio_v3_checkpoints \
   --full-run
 
 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python \
   research/scripts/evaluate_parameter_portfolio.py \
   --pool uni-bsc \
-  --out-dir research/results/parameter_portfolio \
-  --checkpoint-dir research/results/parameter_portfolio_checkpoints \
+  --out-dir research/results/parameter_portfolio_v3 \
+  --checkpoint-dir research/results/parameter_portfolio_v3_checkpoints \
   --full-run
 ```
 
-The July 23 frozen source closure is bound to commit
-`b331b432bf612ed21413d54a0fd6c0eb76b7c38f`. Validate both packages from that
-unchanged closure before using them in publication:
+Once frozen, validate both packages from the unchanged closure:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python \
   research/scripts/validate_parameter_portfolio_publication.py \
-  --publication-root research/results/parameter_portfolio \
+  --publication-root research/results/parameter_portfolio_v3 \
   --repo-root . \
   --pool all
 ```
 
 The validator independently checks canonical bytes, source and input identity,
 the catalog, eligibility, frozen allocation rules, comparator selection, row
-coverage, carried-capital continuity, joint attribution, removal evidence, and
-both reset-matrix PBO calculations. Exit zero is a publication gate: candidate
-and allocation PBO must both be computed, and every required carried,
+coverage, carried-capital continuity, joint attribution, removal evidence, both
+reset-matrix PBO calculations, entry trace-to-scalar diagnostics, typed failure
+propagation, terminal settlement counts and costs, and zero-sum terminal funding
+transfers. Exit zero is a publication gate: candidate and allocation PBO must
+both be computed, and every required carried,
 comparator, and removal path must remain valid. Structurally valid fail-closed
 artifacts are preserved, but the validator emits `FAIL code=CLAIM_GATE` instead
 of authorizing an article result. Add `--integrity-only` only when attesting a

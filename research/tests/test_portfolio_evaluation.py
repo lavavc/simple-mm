@@ -18,9 +18,11 @@ from research.backtester.portfolio_catalog import (
     SleeveDefinition,
     parameter_fingerprint,
 )
+from research.backtester.portfolio_errors import ExecutionAccountingError
 from research.backtester.portfolio_evaluation import (
     ALLOCATION_RULE_IDS,
     COMPARATOR_IDS,
+    _reset_outcome,
     assess_candidate_reset_matrix,
     create_primary_path_states,
     create_removal_path_states,
@@ -34,6 +36,7 @@ from research.backtester.portfolio_evaluation import (
     restore_removal_path_states,
     select_best_reset_sleeve,
 )
+from research.backtester.portfolio_path import FailureDiagnostic
 from research.backtester.portfolio_publication import (
     CSV_FIELDS,
     build_artifact_rows,
@@ -134,6 +137,18 @@ def _window(index: int, offset: int = 0) -> WindowSlice:
     )
 
 
+def test_invalid_reset_retains_exception_type_and_reason() -> None:
+    def fail() -> object:
+        raise ExecutionAccountingError("joint entry scale lattice has no feasible point")
+
+    outcome = _reset_outcome("equal_config", fail)  # type: ignore[arg-type]
+
+    assert outcome.failure == FailureDiagnostic(
+        "ExecutionAccountingError",
+        "joint entry scale lattice has no feasible point",
+    )
+
+
 def test_primary_window_has_complete_reset_and_independent_carried_methods() -> None:
     catalog = _catalog()
     states = create_primary_path_states(100.0)
@@ -159,9 +174,7 @@ def test_primary_window_has_complete_reset_and_independent_carried_methods() -> 
     assert tuple(first.carried_rules) == ALLOCATION_RULE_IDS
     assert tuple(first.comparators) == COMPARATOR_IDS
     assert len(first.candidates) == len(catalog.allocation_units)
-    directional = next(
-        row for row in first.candidates if row.family == "directional"
-    )
+    directional = next(row for row in first.candidates if row.family == "directional")
     assert directional.route_status == "no_position"
     assert directional.status == "valid"
     assert directional.economics is not None
@@ -245,9 +258,7 @@ def test_restore_rejects_snapshot_closing_cash_mismatch() -> None:
             **record.path_snapshots,
             "cash": replace(
                 cash_snapshot,
-                next_opening_capital_usd=(
-                    cash_snapshot.next_opening_capital_usd + 1.0
-                ),
+                next_opening_capital_usd=(cash_snapshot.next_opening_capital_usd + 1.0),
             ),
         },
     )
@@ -402,9 +413,7 @@ def test_publication_rows_have_frozen_cardinality_and_no_legacy_family_pbo() -> 
         "carried_paths",
     }
     assert "families" not in pbo
-    assert pbo["carried_paths"] == {
-        "status": "not_applicable_path_dependent_carried_bankroll"
-    }
+    assert pbo["carried_paths"] == {"status": "not_applicable_path_dependent_carried_bankroll"}
 
 
 def test_publication_bytes_are_resume_history_independent(tmp_path: Path) -> None:
@@ -436,7 +445,7 @@ def test_publication_bytes_are_resume_history_independent(tmp_path: Path) -> Non
         for index in range(2)
     )
     identity = {
-        "protocol_version": "2026-07-23",
+        "protocol_version": "2026-07-24",
         "pool": "uni-base",
         "identity_sha256": "a" * 64,
         "total_windows": 2,
@@ -451,12 +460,10 @@ def test_publication_bytes_are_resume_history_independent(tmp_path: Path) -> Non
         run_kind="smoke",
     )
     restored_primary = tuple(
-        primary_window_from_payload(primary_window_to_payload(record))
-        for record in primary
+        primary_window_from_payload(primary_window_to_payload(record)) for record in primary
     )
     restored_removal = tuple(
-        removal_window_from_payload(removal_window_to_payload(record))
-        for record in removal
+        removal_window_from_payload(removal_window_to_payload(record)) for record in removal
     )
     publish_artifacts(
         tmp_path / "resumed",
@@ -492,14 +499,16 @@ def test_invalid_candidate_matrix_publishes_primary_only_fail_closed_artifacts(
         status="invalid_terminal_liquidation",
         episode_count=None,
         economics=None,
+        failure=FailureDiagnostic(
+            "TerminalLiquidationError",
+            "terminal liquidation failed",
+        ),
     )
     invalid_primary = replace(
         primary,
         candidates=(failed, *primary.candidates[1:]),
     )
-    expected_ids = tuple(
-        unit.sleeve_id for unit in catalog.allocation_units
-    )
+    expected_ids = tuple(unit.sleeve_id for unit in catalog.allocation_units)
 
     assessment = assess_candidate_reset_matrix((invalid_primary,), expected_ids)
     rows = build_artifact_rows(catalog, (invalid_primary,), ())
@@ -524,9 +533,7 @@ def test_invalid_candidate_matrix_publishes_primary_only_fail_closed_artifacts(
     assert candidate_row["episode_count"] == ""
     assert candidate_row["closing_cash_usd"] == ""
     for row in rows["concentration_and_contribution.csv"]:
-        assert row["removal_status"] == (
-            "not_run_incomplete_candidate_reset_matrix"
-        )
+        assert row["removal_status"] == ("not_run_incomplete_candidate_reset_matrix")
         assert row["best_sleeve_removed_economic_id"] == ""
         assert row["removal_closing_cash_usd"] == ""
     assert pbo["candidate_sleeves"] == {
@@ -541,12 +548,14 @@ def test_invalid_candidate_matrix_publishes_primary_only_fail_closed_artifacts(
                 "economic_id": failed.economic_id,
                 "window_index": 0,
                 "status": "invalid_terminal_liquidation",
+                "failure": {
+                    "exception_type": "TerminalLiquidationError",
+                    "reason": "terminal liquidation failed",
+                },
             }
         ],
     }
-    assert manifest["publication_status"] == (
-        "completed_with_invalid_candidate_reset_matrix"
-    )
+    assert manifest["publication_status"] == ("completed_with_invalid_candidate_reset_matrix")
     assert manifest["best_sleeve_removal_economic_id"] is None
     assert manifest["removal_phase"] == {
         "status": "not_run_incomplete_candidate_reset_matrix",
@@ -611,8 +620,7 @@ def test_publication_rejects_misaligned_removal_windows() -> None:
         removal[1],
         window_index=2,
         outcomes={
-            rule: replace(outcome, window_index=2)
-            for rule, outcome in removal[1].outcomes.items()
+            rule: replace(outcome, window_index=2) for rule, outcome in removal[1].outcomes.items()
         },
     )
     malformed = (removal[0], malformed_second)

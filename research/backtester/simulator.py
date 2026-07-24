@@ -141,14 +141,16 @@ class TransactionCostBreakdown:
 class VirtualPosition:
     tick_lower: int
     tick_upper: int
-    liquidity_L: float
+    liquidity_L: float  # noqa: N815 - retained Uniswap liquidity notation
     entry_price: float
     entry_value: float
     entry_time: datetime
     entry_tick: int
     entry_active_liquidity: int
     deployed_capital: float
-    entry_transaction_cost: TransactionCostBreakdown = field(default_factory=lambda: TransactionCostBreakdown("enter"))
+    entry_transaction_cost: TransactionCostBreakdown = field(
+        default_factory=lambda: TransactionCostBreakdown("enter")
+    )
     accrued_fee_stable: float = 0.0
     accrued_fee_cngn: float = 0.0
     observed_swaps: int = 0
@@ -168,7 +170,9 @@ class VirtualPosition:
             current_sqrt_price_x96,
         )
 
-    def value_at_usd(self, current_tick: int, cngn_usd_price: float, pool_config: PoolConfig) -> float:
+    def value_at_usd(
+        self, current_tick: int, cngn_usd_price: float, pool_config: PoolConfig
+    ) -> float:
         amount0, amount1 = self.amounts_at_tick(current_tick)
         usd0, usd1 = _raw_amounts_to_usd(amount0, amount1, cngn_usd_price, pool_config)
         return usd0 + usd1 + self.fee_value_usd(cngn_usd_price)
@@ -187,20 +191,24 @@ class VirtualPosition:
         return self.accrued_fee_stable + self.accrued_fee_cngn * cngn_usd_price
 
 
-def _raw_amounts_to_usd(amount0: float, amount1: float, cngn_usd_price: float, pool_config: PoolConfig) -> tuple[float, float]:
+def _raw_amounts_to_usd(
+    amount0: float, amount1: float, cngn_usd_price: float, pool_config: PoolConfig
+) -> tuple[float, float]:
     if pool_config.cngn_is_token0:
-        usd0 = (amount0 / 10 ** pool_config.token0_decimals) * cngn_usd_price
-        usd1 = amount1 / 10 ** pool_config.token1_decimals
+        usd0 = (amount0 / 10**pool_config.token0_decimals) * cngn_usd_price
+        usd1 = amount1 / 10**pool_config.token1_decimals
     else:
-        usd0 = amount0 / 10 ** pool_config.token0_decimals
-        usd1 = (amount1 / 10 ** pool_config.token1_decimals) * cngn_usd_price
+        usd0 = amount0 / 10**pool_config.token0_decimals
+        usd1 = (amount1 / 10**pool_config.token1_decimals) * cngn_usd_price
     return usd0, usd1
 
 
-def _cngn_notional_usd(amount0: float, amount1: float, cngn_usd_price: float, pool_config: PoolConfig) -> float:
+def _cngn_notional_usd(
+    amount0: float, amount1: float, cngn_usd_price: float, pool_config: PoolConfig
+) -> float:
     if pool_config.cngn_is_token0:
-        return (amount0 / 10 ** pool_config.token0_decimals) * cngn_usd_price
-    return (amount1 / 10 ** pool_config.token1_decimals) * cngn_usd_price
+        return (amount0 / 10**pool_config.token0_decimals) * cngn_usd_price
+    return (amount1 / 10**pool_config.token1_decimals) * cngn_usd_price
 
 
 def _token0_usd_price(cngn_usd_price: float, pool_config: PoolConfig) -> float:
@@ -212,11 +220,15 @@ def _token1_usd_price(cngn_usd_price: float, pool_config: PoolConfig) -> float:
 
 
 def _stable_token_decimals(pool_config: PoolConfig) -> int:
-    return pool_config.token1_decimals if pool_config.cngn_is_token0 else pool_config.token0_decimals
+    return (
+        pool_config.token1_decimals if pool_config.cngn_is_token0 else pool_config.token0_decimals
+    )
 
 
 def _cngn_token_decimals(pool_config: PoolConfig) -> int:
-    return pool_config.token0_decimals if pool_config.cngn_is_token0 else pool_config.token1_decimals
+    return (
+        pool_config.token0_decimals if pool_config.cngn_is_token0 else pool_config.token1_decimals
+    )
 
 
 def compute_liquidity_raw(
@@ -321,6 +333,13 @@ class SimResult:
     end_time: datetime | None = None
     settled_to_cash: bool = False
     terminal_liquidation_cost: float = 0.0
+    terminal_position_settlement_count: int = 0
+    terminal_loose_cngn_settlement_count: int = 0
+    terminal_zero_settlement_count: int = 0
+    terminal_inventory_swap_count: int = 0
+    terminal_fixed_cost_usd: float = 0.0
+    terminal_variable_cost_usd: float = 0.0
+    terminal_external_marked_notional_usd: float = 0.0
     terminal_open_position_count: int = 0
     terminal_cngn_amount: float = 0.0
     external_swap_notional_usd: float = 0.0
@@ -343,7 +362,9 @@ def _snapshot_composition(
     pool_config: PoolConfig,
 ) -> PortfolioComposition:
     if position is None:
-        return PortfolioComposition(stable_usd=max(wallet.stable_usd, 0.0), cngn_amount=max(wallet.cngn_amount, 0.0))
+        return PortfolioComposition(
+            stable_usd=max(wallet.stable_usd, 0.0), cngn_amount=max(wallet.cngn_amount, 0.0)
+        )
 
     amount0, amount1 = position.amounts_at_sqrt_price_x96(current_sqrt_price_x96)
     position_wallet = _raw_amounts_to_wallet(amount0, amount1, cngn_usd_price, pool_config)
@@ -361,12 +382,12 @@ def _raw_amounts_to_wallet(
 ) -> PortfolioComposition:
     if pool_config.cngn_is_token0:
         return PortfolioComposition(
-            stable_usd=amount1 / 10 ** pool_config.token1_decimals,
-            cngn_amount=amount0 / 10 ** pool_config.token0_decimals,
+            stable_usd=amount1 / 10**pool_config.token1_decimals,
+            cngn_amount=amount0 / 10**pool_config.token0_decimals,
         )
     return PortfolioComposition(
-        stable_usd=amount0 / 10 ** pool_config.token0_decimals,
-        cngn_amount=amount1 / 10 ** pool_config.token1_decimals,
+        stable_usd=amount0 / 10**pool_config.token0_decimals,
+        cngn_amount=amount1 / 10**pool_config.token1_decimals,
     )
 
 
@@ -386,7 +407,9 @@ def _wallet_with_position_removed(
     )
 
 
-def _pay_wallet_cost(wallet: PortfolioComposition, cost_usd: float, cngn_usd_price: float) -> PortfolioComposition:
+def _pay_wallet_cost(
+    wallet: PortfolioComposition, cost_usd: float, cngn_usd_price: float
+) -> PortfolioComposition:
     if cost_usd <= 0:
         return wallet
     stable = wallet.stable_usd
@@ -486,7 +509,8 @@ def _apply_inventory_swap(
         if direction == "stable_to_cngn":
             return PortfolioComposition(
                 stable_usd=max(wallet.stable_usd - notional_usd, 0.0),
-                cngn_amount=wallet.cngn_amount + max(notional_usd - variable_cost_usd, 0.0) / cngn_usd_price,
+                cngn_amount=wallet.cngn_amount
+                + max(notional_usd - variable_cost_usd, 0.0) / cngn_usd_price,
             )
         return PortfolioComposition(
             stable_usd=wallet.stable_usd + max(notional_usd - variable_cost_usd, 0.0),
@@ -500,7 +524,9 @@ def _apply_inventory_swap(
         )
     return PortfolioComposition(
         stable_usd=wallet.stable_usd + notional_usd,
-        cngn_amount=max(wallet.cngn_amount - (notional_usd + variable_cost_usd) / cngn_usd_price, 0.0),
+        cngn_amount=max(
+            wallet.cngn_amount - (notional_usd + variable_cost_usd) / cngn_usd_price, 0.0
+        ),
     )
 
 
@@ -518,18 +544,20 @@ def _inventory_delta_swap(
     return None, 0.0
 
 
-def _route_wallet_to_position(
-    wallet: PortfolioComposition,
+def _route_funded_wallet_to_position(
+    funded_wallet: PortfolioComposition,
+    fixed_entry_cost: TransactionCostBreakdown,
     tick_lower: int,
     tick_upper: int,
     current_tick: int,
     current_sqrt_price_x96: int,
     cngn_usd_price: float,
-    active_liquidity: int,
+    active_liquidity: float,
     fee_rate: float,
     pool_config: PoolConfig,
     params: BacktestParams,
 ) -> PositionEntryRoute:
+    """Route capital after its unscaled fixed entry cost has been paid."""
     cngn_per_l, stable_per_l = _position_token_values_per_liquidity(
         tick_lower,
         tick_upper,
@@ -539,55 +567,39 @@ def _route_wallet_to_position(
         pool_config,
     )
     value_per_l = cngn_per_l + stable_per_l
-    wallet_value = wallet.value_usd(cngn_usd_price)
+    funded_value = funded_wallet.value_usd(cngn_usd_price)
     empty_route = PositionEntryRoute(
         liquidity=0.0,
         deployed_capital=0.0,
-        transaction_cost=TransactionCostBreakdown("enter"),
-        remaining_wallet=wallet,
+        transaction_cost=fixed_entry_cost,
+        remaining_wallet=funded_wallet,
         inventory_swap_direction=None,
     )
     if (
         not math.isfinite(cngn_usd_price)
         or cngn_usd_price <= 0
-        or not math.isfinite(wallet.stable_usd)
-        or not math.isfinite(wallet.cngn_amount)
-        or wallet.stable_usd < 0
-        or wallet.cngn_amount < 0
-        or not math.isfinite(wallet_value)
+        or not math.isfinite(funded_wallet.stable_usd)
+        or not math.isfinite(funded_wallet.cngn_amount)
+        or funded_wallet.stable_usd < 0
+        or funded_wallet.cngn_amount < 0
+        or not math.isfinite(funded_value)
     ):
         raise ExecutionAccountingError("entry routing requires a valid non-negative wallet")
-    if not math.isfinite(value_per_l) or value_per_l <= 0 or wallet_value <= 0:
+    fixed_cost = fixed_entry_cost.gas_cost + fixed_entry_cost.failed_tx_expected_cost
+    if (
+        fixed_entry_cost.action != "enter"
+        or not math.isfinite(fixed_cost)
+        or fixed_cost < 0
+        or fixed_entry_cost.swap_fee_cost != 0.0
+        or fixed_entry_cost.price_impact_cost != 0.0
+        or fixed_entry_cost.slippage_cost != 0.0
+        or fixed_entry_cost.latency_slippage_cost != 0.0
+        or fixed_entry_cost.swap_notional_usd != 0.0
+    ):
+        raise ExecutionAccountingError("funded entry route requires a fixed-only entry cost")
+    if not math.isfinite(value_per_l) or value_per_l <= 0 or funded_value <= 0:
         return empty_route
-
-    fixed_entry_cost = _swap_cost_breakdown(
-        "enter",
-        0.0,
-        active_liquidity,
-        fee_rate,
-        current_tick,
-        params,
-        current_price=cngn_usd_price,
-        current_sqrt_price_x96=current_sqrt_price_x96,
-        pool_config=pool_config,
-        exact_output=True,
-    )
-    fixed_cost = fixed_entry_cost.total
-    if not math.isfinite(fixed_cost) or fixed_cost < 0:
-        raise ExecutionAccountingError("entry routing produced an invalid fixed cost")
-    if fixed_cost >= wallet_value:
-        return PositionEntryRoute(
-            liquidity=0.0,
-            deployed_capital=0.0,
-            transaction_cost=fixed_entry_cost,
-            remaining_wallet=wallet,
-            inventory_swap_direction=None,
-        )
-    funded_wallet = _pay_wallet_cost(wallet, fixed_cost, cngn_usd_price)
-    funded_value = funded_wallet.value_usd(cngn_usd_price)
-    value_tolerance = 1e-12 * max(1.0, wallet_value, fixed_cost, funded_value)
-    if abs(funded_value - (wallet_value - fixed_cost)) > value_tolerance:
-        raise ExecutionAccountingError("fixed entry cost does not reconcile to the wallet")
+    value_tolerance = 1e-12 * max(1.0, fixed_cost, funded_value)
 
     max_liquidity = None
     if (
@@ -726,10 +738,10 @@ def _route_wallet_to_position(
     remaining_wallet = _subtract_wallet(routed_wallet, required)
     deployed_capital = required.value_usd(cngn_usd_price)
     after_value = deployed_capital + remaining_wallet.value_usd(cngn_usd_price)
-    expected_value = wallet_value - entry_cost.total
+    expected_value = funded_value - variable_cost
     reconciliation_tolerance = 1e-10 * max(
         1.0,
-        wallet_value,
+        funded_value,
         after_value,
         entry_cost.total,
     )
@@ -742,6 +754,83 @@ def _route_wallet_to_position(
         remaining_wallet=remaining_wallet,
         inventory_swap_direction=direction,
     )
+
+
+def _route_wallet_to_position(
+    wallet: PortfolioComposition,
+    tick_lower: int,
+    tick_upper: int,
+    current_tick: int,
+    current_sqrt_price_x96: int,
+    cngn_usd_price: float,
+    active_liquidity: int,
+    fee_rate: float,
+    pool_config: PoolConfig,
+    params: BacktestParams,
+) -> PositionEntryRoute:
+    wallet_value = wallet.value_usd(cngn_usd_price)
+    if (
+        not math.isfinite(cngn_usd_price)
+        or cngn_usd_price <= 0
+        or not math.isfinite(wallet.stable_usd)
+        or not math.isfinite(wallet.cngn_amount)
+        or wallet.stable_usd < 0
+        or wallet.cngn_amount < 0
+        or not math.isfinite(wallet_value)
+    ):
+        raise ExecutionAccountingError("entry routing requires a valid non-negative wallet")
+    fixed_entry_cost = _swap_cost_breakdown(
+        "enter",
+        0.0,
+        active_liquidity,
+        fee_rate,
+        current_tick,
+        params,
+        current_price=cngn_usd_price,
+        current_sqrt_price_x96=current_sqrt_price_x96,
+        pool_config=pool_config,
+        exact_output=True,
+    )
+    fixed_cost = fixed_entry_cost.total
+    if not math.isfinite(fixed_cost) or fixed_cost < 0:
+        raise ExecutionAccountingError("entry routing produced an invalid fixed cost")
+    if fixed_cost >= wallet_value:
+        return PositionEntryRoute(
+            liquidity=0.0,
+            deployed_capital=0.0,
+            transaction_cost=fixed_entry_cost,
+            remaining_wallet=wallet,
+            inventory_swap_direction=None,
+        )
+    funded_wallet = _pay_wallet_cost(wallet, fixed_cost, cngn_usd_price)
+    funded_value = funded_wallet.value_usd(cngn_usd_price)
+    value_tolerance = 1e-12 * max(1.0, wallet_value, fixed_cost, funded_value)
+    if abs(funded_value - (wallet_value - fixed_cost)) > value_tolerance:
+        raise ExecutionAccountingError("fixed entry cost does not reconcile to the wallet")
+    route = _route_funded_wallet_to_position(
+        funded_wallet,
+        fixed_entry_cost,
+        tick_lower,
+        tick_upper,
+        current_tick,
+        current_sqrt_price_x96,
+        cngn_usd_price,
+        active_liquidity,
+        fee_rate,
+        pool_config,
+        params,
+    )
+    after_value = route.deployed_capital + route.remaining_wallet.value_usd(cngn_usd_price)
+    expected_value = wallet_value - route.transaction_cost.total
+    tolerance = 1e-10 * max(
+        1.0,
+        wallet_value,
+        after_value,
+        route.transaction_cost.total,
+    )
+    if route.liquidity > 0 and abs(after_value - expected_value) > tolerance:
+        raise ExecutionAccountingError("entry route does not conserve marked value")
+    return route
 
 
 def _portfolio_value(
@@ -769,7 +858,9 @@ def _pay_or_unwind_exit_cost(
         + exit_cost.slippage_cost
         + exit_cost.latency_slippage_cost
     )
-    wallet = _pay_wallet_cost(wallet, exit_cost.gas_cost + exit_cost.failed_tx_expected_cost, cngn_usd_price)
+    wallet = _pay_wallet_cost(
+        wallet, exit_cost.gas_cost + exit_cost.failed_tx_expected_cost, cngn_usd_price
+    )
     wallet = _apply_inventory_swap(
         wallet,
         "cngn_to_stable" if exit_cost.swap_notional_usd > 0 else None,
@@ -825,7 +916,9 @@ def _event_sqrt_price_x96(event: Event, current_tick: int) -> int:
 
 def _tick_from_cngn_price(price: float, pool_config: PoolConfig) -> int:
     native_price = _cngn_to_native_price(price, pool_config)
-    return _fast_price_to_tick(native_price, pool_config.token0_decimals, pool_config.token1_decimals)
+    return _fast_price_to_tick(
+        native_price, pool_config.token0_decimals, pool_config.token1_decimals
+    )
 
 
 def _qualified_pool_twap(
@@ -919,7 +1012,9 @@ def _event_fee_wallet(
             candidates.append((wallet.value_usd(current_price), wallet))
         if candidates:
             return max(candidates, key=lambda item: item[0])[1]
-        return PortfolioComposition(stable_usd=event.amount_usd * fee_rate * liquidity_share, cngn_amount=0.0)
+        return PortfolioComposition(
+            stable_usd=event.amount_usd * fee_rate * liquidity_share, cngn_amount=0.0
+        )
 
     sold_amount = event.token_sold_amount * fee_rate * liquidity_share
     if event.token_sold_symbol == "cNGN":
@@ -964,8 +1059,12 @@ def _quote_pct_tick_range(
         native_lower = _cngn_to_native_price(quote_upper, pool_config)
         native_upper = _cngn_to_native_price(quote_lower, pool_config)
         native_center = _cngn_to_native_price(quote_center, pool_config)
-        native_lower_pct = abs(native_center - native_lower) / native_center if native_center > 0 else 0.0
-        native_upper_pct = abs(native_upper - native_center) / native_center if native_center > 0 else 0.0
+        native_lower_pct = (
+            abs(native_center - native_lower) / native_center if native_center > 0 else 0.0
+        )
+        native_upper_pct = (
+            abs(native_upper - native_center) / native_center if native_center > 0 else 0.0
+        )
         return calculate_fixed_pct_tick_range(
             native_center,
             width_pct,
@@ -999,14 +1098,18 @@ def _calculate_entry_range(
     current_tick: int,
     pool_config: PoolConfig,
 ) -> tuple[int, int]:
-    quote_center, native_center = _center_price_for_event(event, params, ewma, current_price, pool_config)
+    quote_center, native_center = _center_price_for_event(
+        event, params, ewma, current_price, pool_config
+    )
     if params.range_mode == "fixed_pct_width":
         return _quote_pct_tick_range(quote_center, params, pool_config)
     if params.range_mode == "fixed_tick_width":
         if params.fixed_tick_width is None:
             raise ValueError("fixed_tick_width is required for fixed_tick_width range mode")
         return calculate_fixed_tick_range(
-            current_tick if params.center_mode == "spot" else _fast_price_to_tick(
+            current_tick
+            if params.center_mode == "spot"
+            else _fast_price_to_tick(
                 native_center, pool_config.token0_decimals, pool_config.token1_decimals
             ),
             params.fixed_tick_width,
@@ -1028,13 +1131,17 @@ def _calculate_entry_range(
     )
 
 
-def _quote_upward_tick_delta(position: VirtualPosition, current_tick: int, pool_config: PoolConfig) -> int:
+def _quote_upward_tick_delta(
+    position: VirtualPosition, current_tick: int, pool_config: PoolConfig
+) -> int:
     if pool_config.cngn_is_token0:
         return current_tick - position.entry_tick
     return position.entry_tick - current_tick
 
 
-def _range_traversal_fraction(position: VirtualPosition, current_tick: int, pool_config: PoolConfig) -> float:
+def _range_traversal_fraction(
+    position: VirtualPosition, current_tick: int, pool_config: PoolConfig
+) -> float:
     tick_width = position.tick_upper - position.tick_lower
     if tick_width <= 0:
         return 0.0
@@ -1099,20 +1206,32 @@ def _expected_fee_apr_passes(
     elapsed_seconds = (event.block_time - previous_swap_time).total_seconds()
     if elapsed_seconds <= 0:
         return False
-    expected_fee = event.amount_usd * _event_pool_fee_rate(event, pool_config) * (liquidity / (active_liquidity + liquidity))
+    expected_fee = (
+        event.amount_usd
+        * _event_pool_fee_rate(event, pool_config)
+        * (liquidity / (active_liquidity + liquidity))
+    )
     elapsed_years = elapsed_seconds / (365 * 86400)
     expected_apr = (expected_fee / deployed_capital) / elapsed_years if elapsed_years > 0 else 0.0
     return expected_apr >= min_apr
 
 
-def _gas_cost_for_action(cost_model: TransactionCostModel, action: str, fallback_gas_cost_usd: float) -> float:
+def _gas_cost_for_action(
+    cost_model: TransactionCostModel, action: str, fallback_gas_cost_usd: float
+) -> float:
     if action == "enter":
         return fallback_gas_cost_usd if cost_model.mint_gas_usd is None else cost_model.mint_gas_usd
     return fallback_gas_cost_usd if cost_model.remove_gas_usd is None else cost_model.remove_gas_usd
 
 
-def _failed_tx_expected_cost(cost_model: TransactionCostModel, fallback_gas_cost_usd: float) -> float:
-    failed_gas = fallback_gas_cost_usd if cost_model.failed_tx_gas_usd is None else cost_model.failed_tx_gas_usd
+def _failed_tx_expected_cost(
+    cost_model: TransactionCostModel, fallback_gas_cost_usd: float
+) -> float:
+    failed_gas = (
+        fallback_gas_cost_usd
+        if cost_model.failed_tx_gas_usd is None
+        else cost_model.failed_tx_gas_usd
+    )
     return max(cost_model.failed_tx_probability, 0.0) * max(failed_gas, 0.0)
 
 
@@ -1167,8 +1286,12 @@ def _raw_output_usd(
 ) -> float:
     output_is_token0 = not zero_for_one
     if output_is_token0:
-        return (amount_out_raw / 10 ** pool_config.token0_decimals) * _token0_usd_price(current_price, pool_config)
-    return (amount_out_raw / 10 ** pool_config.token1_decimals) * _token1_usd_price(current_price, pool_config)
+        return (amount_out_raw / 10**pool_config.token0_decimals) * _token0_usd_price(
+            current_price, pool_config
+        )
+    return (amount_out_raw / 10**pool_config.token1_decimals) * _token1_usd_price(
+        current_price, pool_config
+    )
 
 
 def _current_spacing_tick_range(current_tick: int, tick_spacing: int) -> tuple[int, int]:
@@ -1245,9 +1368,7 @@ def _exact_clmm_output_costs(
         if output_ratio >= 1:
             return None
         sqrt_next = sqrt_price / (1 - output_ratio)
-        effective_input_raw = (
-            output_raw * sqrt_price * sqrt_price / (1 - output_ratio)
-        )
+        effective_input_raw = output_raw * sqrt_price * sqrt_price / (1 - output_ratio)
 
     if not _same_spacing_range(sqrt_next, current_tick, pool_config.tick_spacing, zero_for_one):
         return None
@@ -1277,7 +1398,9 @@ def _swap_cost_breakdown(
     gas_cost = _gas_cost_for_action(model, action, params.gas_cost_usd)
     failed_cost = _failed_tx_expected_cost(model, params.gas_cost_usd)
     if swap_notional_usd <= 0:
-        return TransactionCostBreakdown(action=action, gas_cost=gas_cost, failed_tx_expected_cost=failed_cost)
+        return TransactionCostBreakdown(
+            action=action, gas_cost=gas_cost, failed_tx_expected_cost=failed_cost
+        )
 
     exact_costs = None
     if direction is not None and current_price is not None and pool_config is not None:
@@ -1313,11 +1436,11 @@ def _swap_cost_breakdown(
             price_impact = swap_notional_usd * model.fallback_price_impact_bps / 10_000
         else:
             sqrt_p = tick_to_sqrt_price(current_tick)
-            spot_p = sqrt_p ** 2
+            spot_p = sqrt_p**2
             if spot_p <= 0:
                 price_impact = swap_notional_usd * model.fallback_price_impact_bps / 10_000
             else:
-                price_impact = (swap_notional_usd ** 2) / (2 * active_liquidity * spot_p)
+                price_impact = (swap_notional_usd**2) / (2 * active_liquidity * spot_p)
 
     slippage = swap_notional_usd * max(model.swap_slippage_bps, 0.0) / 10_000
     latency = swap_notional_usd * max(model.latency_slippage_bps, 0.0) / 10_000
@@ -1374,7 +1497,9 @@ def _profit_basis_return(
         return 0.0
     cost = exit_cost if params.require_profit_after_cost else 0.0
     if params.profit_take_pnl_mode == "fees":
-        return (position.fee_value_usd(current_price) - cost - position.entry_transaction_cost.total) / episode_capital
+        return (
+            position.fee_value_usd(current_price) - cost - position.entry_transaction_cost.total
+        ) / episode_capital
     return (position_value - cost) / episode_capital - 1.0
 
 
@@ -1390,7 +1515,9 @@ def _paper_exit_reason(
     pool_config: PoolConfig,
     params: BacktestParams,
 ) -> tuple[str | None, TransactionCostBreakdown]:
-    position_value = position.value_at_sqrt_price_x96(current_sqrt_price_x96, current_price, pool_config)
+    position_value = position.value_at_sqrt_price_x96(
+        current_sqrt_price_x96, current_price, pool_config
+    )
     defensive_position_value = position.value_at_sqrt_price_x96(
         tick_to_sqrt_price_x96(defensive_tick),
         defensive_price,
@@ -1418,19 +1545,29 @@ def _paper_exit_reason(
 
     tick_width = position.tick_upper - position.tick_lower
     defensive_traversal = _range_traversal_fraction(position, defensive_tick, pool_config)
-    if params.downward_range_fraction is not None and tick_width > 0 and defensive_traversal <= -params.downward_range_fraction:
+    if (
+        params.downward_range_fraction is not None
+        and tick_width > 0
+        and defensive_traversal <= -params.downward_range_fraction
+    ):
         return "downward_move", exit_cost
 
     profit_take_return = params.profit_take_return if params.profit_take_return is not None else 0.0
     current_traversal = _range_traversal_fraction(position, current_tick, pool_config)
 
     if not position.is_in_range(defensive_tick):
-        overshoot_threshold = 0.0 if params.out_of_range_overshoot_fraction is None else params.out_of_range_overshoot_fraction
+        overshoot_threshold = (
+            0.0
+            if params.out_of_range_overshoot_fraction is None
+            else params.out_of_range_overshoot_fraction
+        )
         if _out_of_range_overshoot_fraction(position, defensive_tick) >= overshoot_threshold:
             if defensive_traversal > 0 and params.harvest_upward_range_fraction is not None:
                 if (
                     current_traversal >= params.harvest_upward_range_fraction
-                    and _profit_basis_return(position, position_value, exit_cost.total, current_price, params)
+                    and _profit_basis_return(
+                        position, position_value, exit_cost.total, current_price, params
+                    )
                     >= profit_take_return
                     and (not params.require_profit_after_cost or net_return_after_cost > 0)
                 ):
@@ -1446,7 +1583,10 @@ def _paper_exit_reason(
     if current_traversal < params.harvest_upward_range_fraction:
         return None, TransactionCostBreakdown("exit")
 
-    if _profit_basis_return(position, position_value, exit_cost.total, current_price, params) < profit_take_return:
+    if (
+        _profit_basis_return(position, position_value, exit_cost.total, current_price, params)
+        < profit_take_return
+    ):
         return None, TransactionCostBreakdown("exit")
     if params.require_profit_after_cost and net_return_after_cost <= 0:
         return None, TransactionCostBreakdown("exit")
@@ -1519,7 +1659,9 @@ def _record_episode(
             net_pnl=net_pnl,
             net_return=net_pnl / episode_capital if episode_capital > 0 else 0.0,
             range_traversal_fraction=_range_traversal_fraction(position, exit_tick, pool_config),
-            time_in_range=position.in_range_swaps / position.observed_swaps if position.observed_swaps else 0.0,
+            time_in_range=position.in_range_swaps / position.observed_swaps
+            if position.observed_swaps
+            else 0.0,
             duration_seconds=max((exit_time - position.entry_time).total_seconds(), 0.0),
             active_liquidity_share=(
                 position.liquidity_L / position.entry_active_liquidity

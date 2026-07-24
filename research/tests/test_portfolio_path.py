@@ -8,6 +8,7 @@ from research.backtester.portfolio_path import (
     CarriedPathSnapshot,
     CarriedPathState,
     EconomicResult,
+    FailureDiagnostic,
     NoValidationSwapError,
     economic_result_from_sim,
 )
@@ -33,6 +34,14 @@ def _result(opening: float, closing: float) -> EconomicResult:
         external_input_value_usd=10.5,
         external_output_value_usd=10.0,
         internal_cross_notional_usd=0.0,
+        entry_scale_events=(),
+        terminal_position_settlement_count=1,
+        terminal_loose_cngn_settlement_count=0,
+        terminal_zero_settlement_count=0,
+        terminal_inventory_swap_count=1,
+        terminal_fixed_cost_usd=0.5,
+        terminal_variable_cost_usd=0.5,
+        terminal_external_marked_notional_usd=10.0,
         value_samples=((now, opening), (now, closing)),
     )
 
@@ -77,9 +86,14 @@ def test_invalid_path_blocks_all_later_windows(
     assert trigger.status == status
     assert trigger.blocking_status == status
     assert trigger.blocking_window_index == 2
+    assert trigger.failure == FailureDiagnostic(
+        type(failure).__name__,
+        str(failure),
+    )
     assert later.status == "blocked_prior_invalid"
     assert later.blocking_status == status
     assert later.blocking_window_index == 2
+    assert later.failure == trigger.failure
     assert later.opening_capital_usd is None
     assert later.closing_cash_usd is None
 
@@ -103,9 +117,7 @@ def test_carried_path_snapshot_round_trips_live_and_blocked_state() -> None:
     blocked = CarriedPathState("equal_config", "allocation_rule", 100.0)
     blocked.evaluate_window(
         2,
-        lambda opening: (_ for _ in ()).throw(
-            ExecutionAccountingError("failed reconciliation")
-        ),
+        lambda opening: (_ for _ in ()).throw(ExecutionAccountingError("failed reconciliation")),
     )
 
     live_snapshot = live.snapshot()
@@ -117,11 +129,16 @@ def test_carried_path_snapshot_round_trips_live_and_blocked_state() -> None:
         next_opening_capital_usd=101.0,
         blocking_status=None,
         blocking_window_index=None,
+        failure=None,
     )
     assert CarriedPathState.from_snapshot(live_snapshot) == live
     assert CarriedPathState.from_snapshot(blocked_snapshot) == blocked
     assert blocked_snapshot.blocking_status == "invalid_execution_accounting"
     assert blocked_snapshot.blocking_window_index == 2
+    assert blocked_snapshot.failure == FailureDiagnostic(
+        "ExecutionAccountingError",
+        "failed reconciliation",
+    )
 
 
 def test_zero_closing_capital_checkpoints_then_blocks_the_next_window() -> None:
@@ -146,6 +163,10 @@ def test_carried_path_snapshot_rejects_incoherent_blocking_evidence() -> None:
             next_opening_capital_usd=100.0,
             blocking_status="invalid_execution_accounting",
             blocking_window_index=None,
+            failure=FailureDiagnostic(
+                "ExecutionAccountingError",
+                "failed reconciliation",
+            ),
         )
 
 
@@ -162,6 +183,11 @@ def test_standalone_simulation_converts_to_the_common_economic_contract() -> Non
         final_value=101.0,
         settled_to_cash=True,
         terminal_liquidation_cost=0.4,
+        terminal_position_settlement_count=1,
+        terminal_inventory_swap_count=1,
+        terminal_fixed_cost_usd=0.1,
+        terminal_variable_cost_usd=0.3,
+        terminal_external_marked_notional_usd=10.0,
         terminal_open_position_count=0,
         terminal_cngn_amount=0.0,
         value_samples=[(now, 100.0), (now, 101.0)],

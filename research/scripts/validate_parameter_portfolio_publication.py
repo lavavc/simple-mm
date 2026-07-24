@@ -53,7 +53,7 @@ from research.scripts.evaluate_frozen_family_lp import POOL_EXPERIMENTS
 from research.scripts.evaluate_parameter_portfolio import _catalog_sha256
 
 FROZEN_SOURCE_COMMIT = "b331b432bf612ed21413d54a0fd6c0eb76b7c38f"
-PROTOCOL_VERSION = "2026-07-23"
+PROTOCOL_VERSION = "2026-07-24"
 FROZEN_SOURCE_CLOSURE = (
     "engine/math/v3.py",
     "engine/venues/dex/uniswap_base.py",
@@ -693,17 +693,26 @@ def validate_economic_row(row: Mapping[str, str], *, status: str) -> None:
     if any(value == "" for value in cells.values()):
         raise ValidationFailure("ECONOMIC_VALUE")
 
-    numeric = {
-        field: _finite_float(value)
-        for field, value in cells.items()
-        if field != "value_sample_count"
-    }
-    try:
-        sample_count = int(cells["value_sample_count"])
-    except ValueError as exc:
-        raise ValidationFailure("ECONOMIC_VALUE") from exc
-    if sample_count < 2 or str(sample_count) != cells["value_sample_count"]:
+    count_fields = (
+        "entry_action_batch_count",
+        "scaled_entry_action_batch_count",
+        "terminal_position_settlement_count",
+        "terminal_loose_cngn_settlement_count",
+        "terminal_zero_settlement_count",
+        "terminal_inventory_swap_count",
+        "value_sample_count",
+    )
+    counts: dict[str, int] = {}
+    for field in count_fields:
+        value = cells[field]
+        if re.fullmatch(r"0|[1-9][0-9]*", value) is None:
+            raise ValidationFailure("ECONOMIC_VALUE")
+        counts[field] = int(value)
+    if counts["value_sample_count"] < 2:
         raise ValidationFailure("ECONOMIC_VALUE")
+    numeric = {
+        field: _finite_float(value) for field, value in cells.items() if field not in count_fields
+    }
 
     opening = numeric["opening_capital_usd"]
     closing = numeric["closing_cash_usd"]
@@ -729,8 +738,25 @@ def validate_economic_row(row: Mapping[str, str], *, status: str) -> None:
         "external_input_value_usd",
         "external_output_value_usd",
         "internal_cross_notional_usd",
+        "terminal_fixed_cost_usd",
+        "terminal_variable_cost_usd",
+        "terminal_external_marked_notional_usd",
     )
     if any(numeric[field] < 0.0 for field in nonnegative):
+        raise ValidationFailure("ECONOMIC_VALUE")
+    minimum_scale = numeric["minimum_entry_execution_scale"]
+    entry_count = counts["entry_action_batch_count"]
+    scaled_count = counts["scaled_entry_action_batch_count"]
+    inventory_count = counts["terminal_inventory_swap_count"]
+    if (
+        scaled_count > entry_count
+        or not 0.0 <= minimum_scale <= 1.0
+        or not (minimum_scale * 256).is_integer()
+        or inventory_count > 1
+        or (entry_count == 0 and minimum_scale != 1.0)
+        or (scaled_count == 0 and minimum_scale != 1.0)
+        or (scaled_count > 0 and minimum_scale >= 1.0)
+    ):
         raise ValidationFailure("ECONOMIC_VALUE")
     external_input = numeric["external_input_value_usd"]
     external_output = numeric["external_output_value_usd"]
@@ -740,7 +766,25 @@ def validate_economic_row(row: Mapping[str, str], *, status: str) -> None:
         raise ValidationFailure("ECONOMIC_RECONCILIATION")
     terminal_cost = numeric["terminal_liquidation_cost_usd"]
     total_execution_cost = numeric["total_fixed_cost_usd"] + variable_cost
-    if terminal_cost - total_execution_cost > tolerance:
+    terminal_fixed = numeric["terminal_fixed_cost_usd"]
+    terminal_variable = numeric["terminal_variable_cost_usd"]
+    terminal_notional = numeric["terminal_external_marked_notional_usd"]
+    terminal_tolerance = 1e-9 * max(
+        1.0,
+        terminal_cost,
+        terminal_fixed,
+        terminal_variable,
+        terminal_notional,
+    )
+    if (
+        terminal_cost - total_execution_cost > tolerance
+        or abs(terminal_fixed + terminal_variable - terminal_cost) > terminal_tolerance
+        or terminal_fixed - numeric["total_fixed_cost_usd"] > terminal_tolerance
+        or terminal_variable - variable_cost > terminal_tolerance
+        or terminal_notional - numeric["external_marked_notional_usd"] > terminal_tolerance
+        or (inventory_count == 0 and (terminal_notional != 0.0 or terminal_variable != 0.0))
+        or (inventory_count == 1 and terminal_notional <= 0.0)
+    ):
         raise ValidationFailure("ECONOMIC_RECONCILIATION")
 
 
@@ -822,6 +866,27 @@ def _close(left: float, right: float, *, scale: float = 1.0) -> bool:
         rel_tol=1e-9,
         abs_tol=1e-10 * max(1.0, scale),
     )
+
+
+def _validate_failure_diagnostic(
+    row: Mapping[str, str],
+    *,
+    status: str,
+    absent_statuses: set[str],
+    code: str,
+    pool: str,
+    artifact: str,
+    prefix: str = "",
+) -> tuple[str, str] | None:
+    failure_type = row[f"{prefix}failure_type"]
+    failure_reason = row[f"{prefix}failure_reason"]
+    if status in absent_statuses:
+        if failure_type or failure_reason:
+            raise ValidationFailure(code, pool=pool, artifact=artifact)
+        return None
+    if not failure_type or not failure_reason or len(failure_reason) > 512:
+        raise ValidationFailure(code, pool=pool, artifact=artifact)
+    return failure_type, failure_reason
 
 
 def _register_window(
@@ -969,6 +1034,14 @@ def _validate_training_rows(
                     artifact=artifact,
                 )
             status = row["status"]
+            _validate_failure_diagnostic(
+                row,
+                status=status,
+                absent_statuses={"valid", "no_position"},
+                code="TRAINING_STATUS",
+                pool=pool,
+                artifact=artifact,
+            )
             routed_names[(index, economic_id)] = row["routed_config_name"]
             metric_fields = (
                 "net_return",
@@ -1259,6 +1332,14 @@ def _validate_candidate_rows(
                 pool=pool,
                 artifact=artifact,
             )
+            failure = _validate_failure_diagnostic(
+                row,
+                status=status,
+                absent_statuses={"valid"},
+                code="CANDIDATE_STATUS",
+                pool=pool,
+                artifact=artifact,
+            )
             if status == "valid":
                 episode_count = _parse_nonnegative_int(
                     row["episode_count"],
@@ -1280,6 +1361,15 @@ def _validate_candidate_rows(
                         "external_input_value_usd",
                         "external_output_value_usd",
                         "internal_cross_notional_usd",
+                        "entry_action_batch_count",
+                        "scaled_entry_action_batch_count",
+                        "terminal_position_settlement_count",
+                        "terminal_loose_cngn_settlement_count",
+                        "terminal_zero_settlement_count",
+                        "terminal_inventory_swap_count",
+                        "terminal_fixed_cost_usd",
+                        "terminal_variable_cost_usd",
+                        "terminal_external_marked_notional_usd",
                     )
                     if (
                         families[economic_id] != "directional"
@@ -1290,6 +1380,7 @@ def _validate_candidate_rows(
                             economics["closing_cash_usd"],
                         )
                         or any(economics[field] != 0.0 for field in zero_fields)
+                        or economics["minimum_entry_execution_scale"] != 1.0
                     ):
                         raise ValidationFailure(
                             "CANDIDATE_STATUS",
@@ -1309,11 +1400,21 @@ def _validate_candidate_rows(
                         pool=pool,
                         artifact=artifact,
                     )
+                if failure is None:
+                    raise ValidationFailure(
+                        "CANDIDATE_STATUS",
+                        pool=pool,
+                        artifact=artifact,
+                    )
                 failures.append(
                     {
                         "economic_id": economic_id,
                         "window_index": index,
                         "status": status,
+                        "failure": {
+                            "exception_type": failure[0],
+                            "reason": failure[1],
+                        },
                     }
                 )
     try:
@@ -1396,6 +1497,14 @@ def _validate_reset_rows(
                 pool=pool,
                 artifact=artifact,
             )
+            failure = _validate_failure_diagnostic(
+                row,
+                status=status,
+                absent_statuses={"valid"},
+                code="RESET_STATUS",
+                pool=pool,
+                artifact=artifact,
+            )
             if status == "valid":
                 if row["observed_share"] or row["cap"]:
                     raise ValidationFailure(
@@ -1406,7 +1515,18 @@ def _validate_reset_rows(
                 assert economics is not None
                 returns[rule].append(economics["window_net_return"])
             else:
-                failures.append({"allocation_rule": rule, "window_index": index})
+                assert failure is not None
+                failures.append(
+                    {
+                        "allocation_rule": rule,
+                        "window_index": index,
+                        "status": status,
+                        "failure": {
+                            "exception_type": failure[0],
+                            "reason": failure[1],
+                        },
+                    }
+                )
                 if status == "invalid_liquidity_cap":
                     share = _parse_finite_float(
                         row["observed_share"],
@@ -1445,7 +1565,7 @@ def _validate_path_status(
     method_id: str,
     index: int,
     next_capital: dict[str, float],
-    blocked: dict[str, tuple[str, int]],
+    blocked: dict[str, tuple[str, int, str, str]],
     pool: str,
     artifact: str,
 ) -> dict[str, float] | None:
@@ -1455,6 +1575,14 @@ def _validate_path_status(
     economics = _economic_values(
         row,
         status=status,
+        pool=pool,
+        artifact=artifact,
+    )
+    failure = _validate_failure_diagnostic(
+        row,
+        status=status,
+        absent_statuses={"valid"},
+        code="PATH_STATUS",
         pool=pool,
         artifact=artifact,
     )
@@ -1482,13 +1610,15 @@ def _validate_path_status(
             raise ValidationFailure("PATH_STATUS", pool=pool, artifact=artifact)
         if row["blocking_status"] != status or row["blocking_window_index"] != str(index):
             raise ValidationFailure("PATH_STATUS", pool=pool, artifact=artifact)
-        blocked[method_id] = (status, index)
+        assert failure is not None
+        blocked[method_id] = (status, index, failure[0], failure[1])
         return None
 
     if (
         status != "blocked_prior_invalid"
         or row["blocking_status"] != prior_block[0]
         or row["blocking_window_index"] != str(prior_block[1])
+        or failure != prior_block[2:]
     ):
         raise ValidationFailure("PATH_STATUS", pool=pool, artifact=artifact)
     return None
@@ -1504,7 +1634,7 @@ def _validate_carried_rows(
     rows = iter_csv_rows(directory / artifact, CSV_FIELDS[artifact])
     initial_capital = POOL_EXPERIMENTS[pool].initial_capital_usd
     next_capital = {rule: initial_capital for rule in ALLOCATION_RULE_IDS}
-    blocked: dict[str, tuple[str, int]] = {}
+    blocked: dict[str, tuple[str, int, str, str]] = {}
     observed: dict[tuple[str, int], dict[str, str]] = {}
     for index in range(FULL_DIMENSIONS[pool].windows):
         for rule in ALLOCATION_RULE_IDS:
@@ -1562,7 +1692,7 @@ def _validate_comparator_rows(
     rows = iter_csv_rows(directory / artifact, CSV_FIELDS[artifact])
     initial_capital = POOL_EXPERIMENTS[pool].initial_capital_usd
     next_capital = {comparator: initial_capital for comparator in COMPARATOR_IDS}
-    blocked: dict[str, tuple[str, int]] = {}
+    blocked: dict[str, tuple[str, int, str, str]] = {}
     observed: dict[tuple[str, int], dict[str, str]] = {}
     catalog_set = set(catalog_ids)
     static_units = tuple(
@@ -1654,6 +1784,7 @@ ATTRIBUTION_FIELDS = (
     "external_input_value_usd",
     "external_output_value_usd",
     "internal_cross_notional_usd",
+    "terminal_funding_transfer_usd",
 )
 
 
@@ -1901,7 +2032,14 @@ def _validate_attribution_rows(
             cash_zero_fields = tuple(
                 field
                 for field in ATTRIBUTION_FIELDS
-                if field not in {"opening_value_usd", "closing_value_usd"}
+                if field
+                not in {
+                    "opening_value_usd",
+                    "closing_value_usd",
+                    "pnl_usd",
+                    "portfolio_return_contribution",
+                    "terminal_funding_transfer_usd",
+                }
             )
             if (
                 not math.isclose(
@@ -1912,9 +2050,13 @@ def _validate_attribution_rows(
                 )
                 or not math.isclose(
                     cash_values["closing_value_usd"],
-                    expected_cash,
+                    expected_cash + cash_values["terminal_funding_transfer_usd"],
                     rel_tol=1e-8,
                     abs_tol=1e-8 * max(1.0, abs(expected_cash)),
+                )
+                or not _close(
+                    cash_values["portfolio_return_contribution"],
+                    cash_values["pnl_usd"] / portfolio_opening,
                 )
                 or any(cash_values[field] != 0.0 for field in cash_zero_fields)
             ):
@@ -1937,6 +2079,7 @@ def _validate_attribution_rows(
                 "external_input_value_usd": float(carried_row["external_input_value_usd"]),
                 "external_output_value_usd": float(carried_row["external_output_value_usd"]),
                 "internal_cross_notional_usd": float(carried_row["internal_cross_notional_usd"]),
+                "terminal_funding_transfer_usd": 0.0,
             }
             _require_attribution_close(
                 total,
@@ -1957,7 +2100,7 @@ def _validate_removal_status(
     rule: str,
     index: int,
     next_capital: dict[str, float],
-    blocked: dict[str, tuple[str, int]],
+    blocked: dict[str, tuple[str, int, str, str]],
     pool: str,
     artifact: str,
 ) -> None:
@@ -1967,6 +2110,15 @@ def _validate_removal_status(
         "removal_closing_cash_usd",
         "removal_window_net_return",
         "removal_max_drawdown",
+    )
+    failure = _validate_failure_diagnostic(
+        row,
+        status=status,
+        absent_statuses={"valid"},
+        code="REMOVAL_STATUS",
+        pool=pool,
+        artifact=artifact,
+        prefix="removal_",
     )
     prior = blocked.get(rule)
     if prior is None and status == "valid":
@@ -2005,12 +2157,14 @@ def _validate_removal_status(
             index
         ):
             raise ValidationFailure("REMOVAL_STATUS", pool=pool, artifact=artifact)
-        blocked[rule] = (status, index)
+        assert failure is not None
+        blocked[rule] = (status, index, failure[0], failure[1])
         return
     if (
         status != "blocked_prior_invalid"
         or row["removal_blocking_status"] != prior[0]
         or row["removal_blocking_window_index"] != str(prior[1])
+        or failure != prior[2:]
     ):
         raise ValidationFailure("REMOVAL_STATUS", pool=pool, artifact=artifact)
 
@@ -2037,7 +2191,7 @@ def _validate_concentration_rows(
     next_capital = {
         rule: POOL_EXPERIMENTS[pool].initial_capital_usd for rule in ALLOCATION_RULE_IDS
     }
-    blocked: dict[str, tuple[str, int]] = {}
+    blocked: dict[str, tuple[str, int, str, str]] = {}
     for index in range(FULL_DIMENSIONS[pool].windows):
         for rule in ALLOCATION_RULE_IDS:
             try:
@@ -2059,6 +2213,8 @@ def _validate_concentration_rows(
                 != index
                 or row["allocation_rule"] != rule
                 or row["status"] != carried[(rule, index)]["status"]
+                or row["failure_type"] != carried[(rule, index)]["failure_type"]
+                or row["failure_reason"] != carried[(rule, index)]["failure_reason"]
             ):
                 raise ValidationFailure(
                     "CONCENTRATION_ROWS",
@@ -2126,6 +2282,8 @@ def _validate_concentration_rows(
                     "best_sleeve_removed_weight",
                     "removal_blocking_status",
                     "removal_blocking_window_index",
+                    "removal_failure_type",
+                    "removal_failure_reason",
                     "removal_opening_capital_usd",
                     "removal_closing_cash_usd",
                     "removal_window_net_return",
@@ -2369,6 +2527,8 @@ def _validate_method_stability(
             if (
                 row["first_invalid_status"] != first_status
                 or row["first_invalid_window_index"] != first["blocking_window_index"]
+                or row["first_failure_type"] != first["failure_type"]
+                or row["first_failure_reason"] != first["failure_reason"]
                 or any(row[field] for field in metric_fields)
             ):
                 raise ValidationFailure(
@@ -2377,7 +2537,12 @@ def _validate_method_stability(
                     artifact=artifact,
                 )
             continue
-        if row["first_invalid_status"] or row["first_invalid_window_index"]:
+        if (
+            row["first_invalid_status"]
+            or row["first_invalid_window_index"]
+            or row["first_failure_type"]
+            or row["first_failure_reason"]
+        ):
             raise ValidationFailure(
                 "STABILITY_STATUS",
                 pool=pool,

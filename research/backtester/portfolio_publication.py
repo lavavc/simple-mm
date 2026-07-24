@@ -29,10 +29,11 @@ from research.backtester.portfolio_evaluation import (
 from research.backtester.portfolio_path import (
     CarriedWindowOutcome,
     EconomicAttribution,
+    FailureDiagnostic,
     signed_max_drawdown,
 )
 
-ARTIFACT_SCHEMA_VERSION = "weighted-portfolio-artifacts/v2"
+ARTIFACT_SCHEMA_VERSION = "weighted-portfolio-artifacts/v3"
 
 ECONOMIC_FIELDS = (
     "opening_capital_usd",
@@ -47,6 +48,16 @@ ECONOMIC_FIELDS = (
     "external_input_value_usd",
     "external_output_value_usd",
     "internal_cross_notional_usd",
+    "entry_action_batch_count",
+    "scaled_entry_action_batch_count",
+    "minimum_entry_execution_scale",
+    "terminal_position_settlement_count",
+    "terminal_loose_cngn_settlement_count",
+    "terminal_zero_settlement_count",
+    "terminal_inventory_swap_count",
+    "terminal_fixed_cost_usd",
+    "terminal_variable_cost_usd",
+    "terminal_external_marked_notional_usd",
     "value_sample_count",
 )
 
@@ -72,6 +83,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "family",
         "routed_config_name",
         "status",
+        "failure_type",
+        "failure_reason",
         "eligible",
         "net_return",
         "episode_count",
@@ -102,6 +115,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "routed_config_name",
         "route_status",
         "status",
+        "failure_type",
+        "failure_reason",
         "episode_count",
         *ECONOMIC_FIELDS,
     ),
@@ -113,6 +128,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "window_end",
         "allocation_rule",
         "status",
+        "failure_type",
+        "failure_reason",
         "observed_share",
         "cap",
         "deployed_weight",
@@ -130,6 +147,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "status",
         "blocking_status",
         "blocking_window_index",
+        "failure_type",
+        "failure_reason",
         *ECONOMIC_FIELDS,
     ),
     "comparators.csv": (
@@ -142,6 +161,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "status",
         "blocking_status",
         "blocking_window_index",
+        "failure_type",
+        "failure_reason",
         "selection_status",
         "selected_economic_id",
         *ECONOMIC_FIELDS,
@@ -167,6 +188,7 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "external_input_value_usd",
         "external_output_value_usd",
         "internal_cross_notional_usd",
+        "terminal_funding_transfer_usd",
     ),
     "concentration_and_contribution.csv": (
         "schema_version",
@@ -176,6 +198,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "window_end",
         "allocation_rule",
         "status",
+        "failure_type",
+        "failure_reason",
         "deployed_weight",
         "cash_weight",
         "herfindahl",
@@ -186,6 +210,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "removal_status",
         "removal_blocking_status",
         "removal_blocking_window_index",
+        "removal_failure_type",
+        "removal_failure_reason",
         "removal_opening_capital_usd",
         "removal_closing_cash_usd",
         "removal_window_net_return",
@@ -201,6 +227,8 @@ CSV_FIELDS: Mapping[str, tuple[str, ...]] = {
         "invalid_windows",
         "first_invalid_status",
         "first_invalid_window_index",
+        "first_failure_type",
+        "first_failure_reason",
         "cumulative_return",
         "mean_window_return",
         "median_window_return",
@@ -251,6 +279,17 @@ def _blank_economics() -> dict[str, object]:
     return {field: "" for field in ECONOMIC_FIELDS}
 
 
+def _failure_fields(
+    failure: FailureDiagnostic | None,
+    *,
+    prefix: str = "",
+) -> dict[str, object]:
+    return {
+        f"{prefix}failure_type": (failure.exception_type if failure is not None else ""),
+        f"{prefix}failure_reason": failure.reason if failure is not None else "",
+    }
+
+
 def _summary_fields(summary: EconomicSummary) -> dict[str, object]:
     return {field: getattr(summary, field) for field in ECONOMIC_FIELDS}
 
@@ -272,6 +311,16 @@ def _carried_fields(outcome: CarriedWindowOutcome) -> dict[str, object]:
         "external_input_value_usd": result.external_input_value_usd,
         "external_output_value_usd": result.external_output_value_usd,
         "internal_cross_notional_usd": result.internal_cross_notional_usd,
+        "entry_action_batch_count": result.entry_action_batch_count,
+        "scaled_entry_action_batch_count": result.scaled_entry_action_batch_count,
+        "minimum_entry_execution_scale": result.minimum_entry_execution_scale,
+        "terminal_position_settlement_count": (result.terminal_position_settlement_count),
+        "terminal_loose_cngn_settlement_count": (result.terminal_loose_cngn_settlement_count),
+        "terminal_zero_settlement_count": result.terminal_zero_settlement_count,
+        "terminal_inventory_swap_count": result.terminal_inventory_swap_count,
+        "terminal_fixed_cost_usd": result.terminal_fixed_cost_usd,
+        "terminal_variable_cost_usd": result.terminal_variable_cost_usd,
+        "terminal_external_marked_notional_usd": (result.terminal_external_marked_notional_usd),
         "value_sample_count": len(result.value_samples),
     }
 
@@ -311,14 +360,10 @@ def build_artifact_rows(
                     removal_record.removed_economic_id,
                 )
                 if removal_record.removed_allocations[rule] != expected:
-                    raise ValueError(
-                        "removed allocation does not match the primary allocation"
-                    )
+                    raise ValueError("removed allocation does not match the primary allocation")
     elif removal_records:
         raise ValueError("invalid candidate matrix cannot contain removal records")
-    rows: dict[str, list[dict[str, object]]] = {
-        name: [] for name in CSV_FIELDS
-    }
+    rows: dict[str, list[dict[str, object]]] = {name: [] for name in CSV_FIELDS}
     for declaration in catalog.declarations:
         rows["configuration_catalog.csv"].append(
             {
@@ -362,6 +407,7 @@ def build_artifact_rows(
                     "family": unit.family,
                     "routed_config_name": training.routed_config_name,
                     "status": training.status,
+                    **_failure_fields(training.failure),
                     "eligible": training.eligible,
                     **metric_fields,
                 }
@@ -380,10 +426,9 @@ def build_artifact_rows(
                     "routed_config_name": candidate.routed_config_name,
                     "route_status": candidate.route_status,
                     "status": candidate.status,
+                    **_failure_fields(candidate.failure),
                     "episode_count": (
-                        candidate.episode_count
-                        if candidate.status == "valid"
-                        else ""
+                        candidate.episode_count if candidate.status == "valid" else ""
                     ),
                     **candidate_economics,
                 }
@@ -414,6 +459,7 @@ def build_artifact_rows(
                     **common,
                     "allocation_rule": rule,
                     "status": reset.status,
+                    **_failure_fields(reset.failure),
                     "observed_share": (
                         reset.observed_share if reset.observed_share is not None else ""
                     ),
@@ -436,6 +482,7 @@ def build_artifact_rows(
                         if carried.blocking_window_index is not None
                         else ""
                     ),
+                    **_failure_fields(carried.failure),
                     **_carried_fields(carried),
                 }
             )
@@ -458,21 +505,18 @@ def build_artifact_rows(
                         if outcome.blocking_window_index is not None
                         else ""
                     ),
+                    **_failure_fields(outcome.failure),
                     "selection_status": plan.selection_status,
                     "selected_economic_id": plan.selected_economic_id or "",
                     **_carried_fields(outcome),
                 }
             )
         removal = removal_by_window.get(record.window_index)
-        rows["concentration_and_contribution.csv"].extend(
-            _concentration_rows(record, removal)
-        )
+        rows["concentration_and_contribution.csv"].extend(_concentration_rows(record, removal))
 
     rows["method_stability.csv"].extend(_method_stability_rows(records))
     pbo = build_pbo_payload(records, expected_economic_ids=expected_ids)
-    rows["comparator_conclusions.csv"].extend(
-        _comparator_conclusion_rows(records, pbo)
-    )
+    rows["comparator_conclusions.csv"].extend(_comparator_conclusion_rows(records, pbo))
     _validate_row_shapes(rows)
     return rows
 
@@ -486,7 +530,19 @@ def _attribution_rows(
     assert outcome.result is not None
     result = outcome.result
     common = _common(record)
-    zero = EconomicAttribution("zero", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    zero = EconomicAttribution(
+        "zero",
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
     rows: list[dict[str, object]] = []
     by_family: dict[str, list[EconomicAttribution]] = {
         family: [] for family in catalog.family_names
@@ -543,16 +599,11 @@ def _sum_attribution(
         fees_usd=sum(item.fees_usd for item in items),
         fixed_cost_usd=sum(item.fixed_cost_usd for item in items),
         variable_cost_usd=sum(item.variable_cost_usd for item in items),
-        external_marked_notional_usd=sum(
-            item.external_marked_notional_usd for item in items
-        ),
+        external_marked_notional_usd=sum(item.external_marked_notional_usd for item in items),
         external_input_value_usd=sum(item.external_input_value_usd for item in items),
-        external_output_value_usd=sum(
-            item.external_output_value_usd for item in items
-        ),
-        internal_cross_notional_usd=sum(
-            item.internal_cross_notional_usd for item in items
-        ),
+        external_output_value_usd=sum(item.external_output_value_usd for item in items),
+        internal_cross_notional_usd=sum(item.internal_cross_notional_usd for item in items),
+        terminal_funding_transfer_usd=sum(item.terminal_funding_transfer_usd for item in items),
     )
 
 
@@ -582,6 +633,7 @@ def _attribution_row(
         "external_input_value_usd": item.external_input_value_usd,
         "external_output_value_usd": item.external_output_value_usd,
         "internal_cross_notional_usd": item.internal_cross_notional_usd,
+        "terminal_funding_transfer_usd": item.terminal_funding_transfer_usd,
     }
 
 
@@ -611,6 +663,7 @@ def _concentration_rows(
                 **_common(record),
                 "allocation_rule": rule,
                 "status": record.carried_rules[rule].status,
+                **_failure_fields(record.carried_rules[rule].failure),
                 "deployed_weight": sum(weights),
                 "cash_weight": allocation.cash_weight,
                 "herfindahl": sum(weight * weight for weight in weights),
@@ -634,9 +687,7 @@ def _concentration_rows(
                     else "not_run_incomplete_candidate_reset_matrix"
                 ),
                 "removal_blocking_status": (
-                    removal_outcome.blocking_status or ""
-                    if removal_outcome is not None
-                    else ""
+                    removal_outcome.blocking_status or "" if removal_outcome is not None else ""
                 ),
                 "removal_blocking_window_index": (
                     removal_outcome.blocking_window_index
@@ -644,15 +695,13 @@ def _concentration_rows(
                     and removal_outcome.blocking_window_index is not None
                     else ""
                 ),
-                "removal_opening_capital_usd": removal_economics[
-                    "opening_capital_usd"
-                ],
-                "removal_closing_cash_usd": removal_economics[
-                    "closing_cash_usd"
-                ],
-                "removal_window_net_return": removal_economics[
-                    "window_net_return"
-                ],
+                **_failure_fields(
+                    removal_outcome.failure if removal_outcome is not None else None,
+                    prefix="removal_",
+                ),
+                "removal_opening_capital_usd": removal_economics["opening_capital_usd"],
+                "removal_closing_cash_usd": removal_economics["closing_cash_usd"],
+                "removal_window_net_return": removal_economics["window_net_return"],
                 "removal_max_drawdown": removal_economics["max_drawdown"],
             }
         )
@@ -697,6 +746,14 @@ def _method_stability_rows(
                 if invalid and invalid[0].blocking_window_index is not None
                 else ""
             ),
+            "first_failure_type": (
+                invalid[0].failure.exception_type
+                if invalid and invalid[0].failure is not None
+                else ""
+            ),
+            "first_failure_reason": (
+                invalid[0].failure.reason if invalid and invalid[0].failure is not None else ""
+            ),
         }
         metrics_fields: dict[str, object]
         if invalid:
@@ -716,30 +773,21 @@ def _method_stability_rows(
             assert all(result is not None for result in results)
             realized = [result for result in results if result is not None]
             returns = [result.window_net_return for result in realized]
-            samples = tuple(
-                sample
-                for result in realized
-                for sample in result.value_samples
-            )
+            samples = tuple(sample for result in realized for sample in result.value_samples)
             metrics_fields = {
                 "cumulative_return": (
-                    realized[-1].closing_cash_usd
-                    / realized[0].opening_capital_usd
-                    - 1.0
+                    realized[-1].closing_cash_usd / realized[0].opening_capital_usd - 1.0
                 ),
                 "mean_window_return": statistics.fmean(returns),
                 "median_window_return": statistics.median(returns),
-                "positive_window_rate": sum(value > 0 for value in returns)
-                / len(returns),
+                "positive_window_rate": sum(value > 0 for value in returns) / len(returns),
                 "worst_window_return": min(returns),
                 "continuous_max_drawdown": signed_max_drawdown(
                     samples,
                     realized[0].opening_capital_usd,
                 ),
                 "total_fees_usd": sum(result.total_fees_usd for result in realized),
-                "total_fixed_cost_usd": sum(
-                    result.total_fixed_cost_usd for result in realized
-                ),
+                "total_fixed_cost_usd": sum(result.total_fixed_cost_usd for result in realized),
                 "total_variable_cost_usd": sum(
                     result.total_variable_cost_usd for result in realized
                 ),
@@ -774,9 +822,7 @@ def build_pbo_payload(
     for economic_id in candidate_ids:
         values: list[float] = []
         for record in records:
-            row = next(
-                item for item in record.candidates if item.economic_id == economic_id
-            )
+            row = next(item for item in record.candidates if item.economic_id == economic_id)
             if row.status != "valid" or row.economics is None:
                 continue
             values.append(row.economics.window_net_return)
@@ -785,9 +831,7 @@ def build_pbo_payload(
     if candidate_assessment.status == "invalid_incomplete_matrix":
         invalid_status_counts: dict[str, int] = {}
         for failure in candidate_assessment.invalid_observations:
-            invalid_status_counts[failure.status] = (
-                invalid_status_counts.get(failure.status, 0) + 1
-            )
+            invalid_status_counts[failure.status] = invalid_status_counts.get(failure.status, 0) + 1
         candidate_pbo: dict[str, object] = {
             "status": "invalid_incomplete_matrix",
             "expected_rows": candidate_assessment.expected_rows,
@@ -796,8 +840,7 @@ def build_pbo_payload(
             "invalid_rows": candidate_assessment.invalid_rows,
             "invalid_status_counts": invalid_status_counts,
             "invalid_observations": [
-                asdict(failure)
-                for failure in candidate_assessment.invalid_observations
+                asdict(failure) for failure in candidate_assessment.invalid_observations
             ],
         }
     elif len(records) < 2 or len(candidate_matrix) < 2:
@@ -817,7 +860,14 @@ def build_pbo_payload(
                 or not math.isfinite(outcome.economics.window_net_return)
             ):
                 allocation_invalid.append(
-                    {"allocation_rule": rule, "window_index": record.window_index}
+                    {
+                        "allocation_rule": rule,
+                        "window_index": record.window_index,
+                        "status": outcome.status,
+                        "failure": (
+                            asdict(outcome.failure) if outcome.failure is not None else None
+                        ),
+                    }
                 )
                 continue
             values.append(outcome.economics.window_net_return)
@@ -837,9 +887,7 @@ def build_pbo_payload(
         "pool": records[0].pool,
         "candidate_sleeves": candidate_pbo,
         "allocation_rules": allocation_pbo,
-        "carried_paths": {
-            "status": "not_applicable_path_dependent_carried_bankroll"
-        },
+        "carried_paths": {"status": "not_applicable_path_dependent_carried_bankroll"},
     }
 
 
@@ -847,12 +895,8 @@ def _comparator_conclusion_rows(
     records: Sequence[PrimaryWindowRecord],
     pbo: Mapping[str, object],
 ) -> list[dict[str, object]]:
-    candidate_status = str(
-        cast_mapping(pbo["candidate_sleeves"])["status"]
-    )
-    allocation_status = str(
-        cast_mapping(pbo["allocation_rules"])["status"]
-    )
+    candidate_status = str(cast_mapping(pbo["candidate_sleeves"])["status"])
+    allocation_status = str(cast_mapping(pbo["allocation_rules"])["status"])
     rows: list[dict[str, object]] = []
     for rule in ALLOCATION_RULE_IDS:
         for comparator_id in COMPARATOR_IDS:
@@ -873,15 +917,12 @@ def _comparator_conclusion_rows(
                     and comparator.result is not None
                 ):
                     pairs.append(
-                        rule_outcome.result.window_net_return
-                        - comparator.result.window_net_return
+                        rule_outcome.result.window_net_return - comparator.result.window_net_return
                     )
             if invalid_rule or invalid_comparator:
                 conclusion = "not_evaluable_invalid_path"
             elif (
-                candidate_status != "computed"
-                or allocation_status != "computed"
-                or len(pairs) < 2
+                candidate_status != "computed" or allocation_status != "computed" or len(pairs) < 2
             ):
                 conclusion = "insufficient_complete_matrix"
             else:
@@ -891,8 +932,7 @@ def _comparator_conclusion_rows(
                     "mean_paired_excess_return": statistics.fmean(pairs),
                     "median_paired_excess_return": statistics.median(pairs),
                     "worst_paired_excess_return": min(pairs),
-                    "positive_paired_excess_rate": sum(value > 0 for value in pairs)
-                    / len(pairs),
+                    "positive_paired_excess_rate": sum(value > 0 for value in pairs) / len(pairs),
                 }
             else:
                 paired_fields = {
@@ -931,9 +971,7 @@ def _validate_row_shapes(
     for name, fieldnames in CSV_FIELDS.items():
         for index, row in enumerate(rows[name]):
             if tuple(row) != fieldnames:
-                raise ValueError(
-                    f"{name} row {index} does not match the frozen field order"
-                )
+                raise ValueError(f"{name} row {index} does not match the frozen field order")
 
 
 def _canonical_json_bytes(payload: object) -> bytes:
@@ -968,9 +1006,7 @@ def _candidate_matrix_manifest(
 ) -> dict[str, object]:
     invalid_status_counts: dict[str, int] = {}
     for failure in assessment.invalid_observations:
-        invalid_status_counts[failure.status] = (
-            invalid_status_counts.get(failure.status, 0) + 1
-        )
+        invalid_status_counts[failure.status] = invalid_status_counts.get(failure.status, 0) + 1
     return {
         "status": assessment.status,
         "expected_rows": assessment.expected_rows,
@@ -1010,10 +1046,7 @@ def publish_artifacts(
         raise FileExistsError(f"publication directory already exists: {out_dir}")
     expected_ids = tuple(unit.sleeve_id for unit in catalog.allocation_units)
     candidate_matrix = assess_candidate_reset_matrix(records, expected_ids)
-    if (
-        run_kind == "completed_amended_protocol_run"
-        and candidate_matrix.status != "complete_valid"
-    ):
+    if run_kind == "completed_amended_protocol_run" and candidate_matrix.status != "complete_valid":
         raise ValueError("completed amended run requires a valid candidate matrix")
     if (
         run_kind == "completed_primary_invalid_candidate_matrix"
@@ -1039,11 +1072,7 @@ def publish_artifacts(
                 )
                 writer.writeheader()
                 writer.writerows(
-                    {
-                        field: _csv_cell(row[field])
-                        for field in fieldnames
-                    }
-                    for row in rows[name]
+                    {field: _csv_cell(row[field]) for field in fieldnames} for row in rows[name]
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -1078,11 +1107,7 @@ def publish_artifacts(
                 "size_bytes": path.stat().st_size,
                 "row_count": len(rows[name]) if name in rows else None,
             }
-        removed_economic_id = (
-            removal_records[0].removed_economic_id
-            if removal_records
-            else None
-        )
+        removed_economic_id = removal_records[0].removed_economic_id if removal_records else None
         removal_phase = (
             {
                 "status": "completed",
@@ -1105,7 +1130,7 @@ def publish_artifacts(
         )
         manifest: dict[str, object] = {
             "schema_version": ARTIFACT_SCHEMA_VERSION,
-            "protocol_version": "2026-07-23",
+            "protocol_version": "2026-07-24",
             "run_kind": run_kind,
             "publication_status": publication_status,
             "pool": catalog.pool,
@@ -1118,9 +1143,7 @@ def publish_artifacts(
                 "completed_windows": len(records),
                 "expected_windows": len(records),
             },
-            "candidate_reset_matrix": _candidate_matrix_manifest(
-                candidate_matrix
-            ),
+            "candidate_reset_matrix": _candidate_matrix_manifest(candidate_matrix),
             "removal_phase": removal_phase,
             "best_sleeve_removal_economic_id": removed_economic_id,
             "pbo_status": {

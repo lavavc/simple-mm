@@ -13,7 +13,7 @@ from research.backtester.data import BurnEvent, Event, MintEvent, SwapEvent, V4E
 from research.backtester.entry_eligibility import EntryEligibilityOverlay
 from research.backtester.params import BacktestParams
 from research.backtester.pool_state import PoolState
-from research.backtester.portfolio_errors import NoValidationSwapError
+from research.backtester.portfolio_errors import ExecutionAccountingError, NoValidationSwapError
 from research.backtester.simulator import (
     PoolConfig,
     PortfolioComposition,
@@ -41,13 +41,17 @@ from research.backtester.simulator import (
     _pay_wallet_cost,
     _portfolio_value,
     _record_episode,
+    _route_funded_wallet_to_position,
     _route_wallet_to_position,
     _snapshot_composition,
+    _subtract_wallet,
     _swap_cost_breakdown,
     _wallet_with_position_removed,
 )
 from research.backtester.sizing import DeployFullWallet, EntryContext, SizingPolicy
 from research.backtester.strategy import EWMACalculator
+
+ENTRY_SCALE_STEPS = 256
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,39 @@ class SleeveAction:
     variable_cost_asset: Literal["stable", "cngn"] | None
     inventory_swap_direction: Literal["stable_to_cngn", "cngn_to_stable"] | None = None
     inventory_swap_notional_usd: float = 0.0
+
+
+@dataclass(frozen=True)
+class EntryIntent:
+    sleeve_id: str
+    full_action: SleeveAction
+    funded_deployment_wallet: PortfolioComposition
+    fixed_payment_wallet: PortfolioComposition
+
+
+@dataclass(frozen=True)
+class TerminalRemovalIntent:
+    sleeve_id: str
+    event: SwapEvent | V4Event
+    active_liquidity: int
+    cngn_usd_price: float
+    wallet_before: PortfolioComposition
+    gross_wallet_after: PortfolioComposition
+    position_before: VirtualPosition | None
+    removal_cost: TransactionCostBreakdown
+
+
+@dataclass(frozen=True)
+class TerminalSleeveSettlement:
+    sleeve_id: str
+    final_wallet: PortfolioComposition
+    transaction_cost: TransactionCostBreakdown
+    external_marked_notional_usd: float
+    external_input_value_usd: float
+    external_output_value_usd: float
+    allocated_variable_cost_usd: float
+    raw_final_value_usd: float
+    terminal_funding_transfer_usd: float
 
 
 @dataclass(frozen=True)
@@ -384,9 +421,7 @@ class SleeveRuntime:
             if self.position is not None
             else deepcopy(self.wallet)
         )
-        requires_transaction = (
-            self.position is not None or wallet_after_removal.cngn_amount > 0.0
-        )
+        requires_transaction = self.position is not None or wallet_after_removal.cngn_amount > 0.0
         if requires_transaction:
             fixed = _swap_cost_breakdown(
                 "exit",
@@ -399,9 +434,7 @@ class SleeveRuntime:
             removal_value = wallet_after_removal.value_usd(self.current_price)
             fixed_cost = fixed.gas_cost + fixed.failed_tx_expected_cost
             if not math.isfinite(removal_value):
-                raise TerminalLiquidationError(
-                    "terminal liquidation wallet value is invalid"
-                )
+                raise TerminalLiquidationError("terminal liquidation wallet value is invalid")
             tolerance = 1e-12 * max(1.0, removal_value, fixed_cost)
             if removal_value + tolerance < fixed_cost:
                 raise TerminalLiquidationError(
@@ -414,13 +447,9 @@ class SleeveRuntime:
             )
             swap_notional = after_fixed.cngn_amount * self.current_price
             if not math.isfinite(swap_notional) or swap_notional < 0.0:
-                raise TerminalLiquidationError(
-                    "terminal liquidation swap notional is invalid"
-                )
+                raise TerminalLiquidationError("terminal liquidation swap notional is invalid")
             if after_fixed.cngn_amount > 0.0 and swap_notional == 0.0:
-                raise TerminalLiquidationError(
-                    "terminal liquidation swap notional is invalid"
-                )
+                raise TerminalLiquidationError("terminal liquidation swap notional is invalid")
             if swap_notional == 0.0:
                 terminal_cost = TransactionCostBreakdown(
                     action="liquidate",
@@ -466,9 +495,7 @@ class SleeveRuntime:
                     + terminal_cost.latency_slippage_cost
                 )
                 if not math.isfinite(variable_cost) or variable_cost < 0:
-                    raise TerminalLiquidationError(
-                        "terminal liquidation variable cost is invalid"
-                    )
+                    raise TerminalLiquidationError("terminal liquidation variable cost is invalid")
                 if variable_cost > swap_notional + _variable_cost_tolerance(
                     swap_notional,
                     variable_cost,
@@ -477,18 +504,13 @@ class SleeveRuntime:
                         "terminal liquidation variable cost exceeds swap output"
                     )
                 wallet_after = PortfolioComposition(
-                    stable_usd=(
-                        after_fixed.stable_usd
-                        + max(swap_notional - variable_cost, 0.0)
-                    ),
+                    stable_usd=(after_fixed.stable_usd + max(swap_notional - variable_cost, 0.0)),
                     cngn_amount=0.0,
                 )
         else:
             terminal_cost = TransactionCostBreakdown("liquidate")
             wallet_after = wallet_after_removal
-        expected_value = (
-            wallet_after_removal.value_usd(self.current_price) - terminal_cost.total
-        )
+        expected_value = wallet_after_removal.value_usd(self.current_price) - terminal_cost.total
         actual_value = wallet_after.value_usd(self.current_price)
         tolerance = 1e-9 * max(
             1.0,
@@ -502,13 +524,9 @@ class SleeveRuntime:
             or expected_value < -tolerance
             or abs(actual_value - expected_value) > tolerance
         ):
-            raise TerminalLiquidationError(
-                "terminal liquidation value reconciliation failed"
-            )
+            raise TerminalLiquidationError("terminal liquidation value reconciliation failed")
         if wallet_after.cngn_amount != 0.0:
-            raise TerminalLiquidationError(
-                "terminal liquidation left cNGN inventory"
-            )
+            raise TerminalLiquidationError("terminal liquidation left cNGN inventory")
         wallet_after = PortfolioComposition(
             stable_usd=wallet_after.stable_usd,
             cngn_amount=0.0,
@@ -530,6 +548,66 @@ class SleeveRuntime:
                 "cngn_to_stable" if terminal_cost.swap_notional_usd > 0 else None
             ),
             inventory_swap_notional_usd=terminal_cost.swap_notional_usd,
+        )
+
+    def propose_terminal_removal(
+        self,
+        event: SwapEvent | V4Event,
+        active_liquidity: int,
+    ) -> TerminalRemovalIntent:
+        """Freeze position removal without charging or swapping the resulting wallet."""
+        if not math.isfinite(self.current_price) or self.current_price <= 0:
+            raise TerminalLiquidationError("terminal removal requires a finite positive cNGN price")
+        if not math.isfinite(active_liquidity) or active_liquidity < 0:
+            raise TerminalLiquidationError(
+                "terminal removal requires non-negative active liquidity"
+            )
+        gross_wallet_after = (
+            _wallet_with_position_removed(
+                self.wallet,
+                self.position,
+                self.current_tick,
+                self.current_sqrt_price_x96,
+                self.current_price,
+                self.pool_config,
+            )
+            if self.position is not None
+            else deepcopy(self.wallet)
+        )
+        gross_values = (
+            gross_wallet_after.stable_usd,
+            gross_wallet_after.cngn_amount,
+            gross_wallet_after.value_usd(self.current_price),
+        )
+        if any(not math.isfinite(value) or value < 0 for value in gross_values):
+            raise TerminalLiquidationError("terminal removal produced an invalid wallet")
+        if self.position is None:
+            removal_cost = TransactionCostBreakdown("liquidate")
+        else:
+            fixed = _swap_cost_breakdown(
+                "exit",
+                0.0,
+                active_liquidity,
+                _event_pool_fee_rate(event, self.pool_config),
+                self.current_tick,
+                self.params,
+            )
+            removal_cost = TransactionCostBreakdown(
+                action="liquidate",
+                gas_cost=fixed.gas_cost,
+                failed_tx_expected_cost=fixed.failed_tx_expected_cost,
+            )
+        if not math.isfinite(removal_cost.total) or removal_cost.total < 0:
+            raise TerminalLiquidationError("terminal removal produced an invalid fixed cost")
+        return TerminalRemovalIntent(
+            sleeve_id=self.sleeve_id,
+            event=event,
+            active_liquidity=active_liquidity,
+            cngn_usd_price=self.current_price,
+            wallet_before=deepcopy(self.wallet),
+            gross_wallet_after=gross_wallet_after,
+            position_before=deepcopy(self.position),
+            removal_cost=removal_cost,
         )
 
     def apply_action(
@@ -561,14 +639,10 @@ class SleeveRuntime:
         if not math.isfinite(variable_cost) or variable_cost < 0:
             raise ValueError("action variable execution cost is invalid")
         external_input = (
-            external_notional + variable_cost
-            if action.kind == "enter"
-            else external_notional
+            external_notional + variable_cost if action.kind == "enter" else external_notional
         )
         external_output = (
-            external_notional
-            if action.kind == "enter"
-            else external_notional - variable_cost
+            external_notional if action.kind == "enter" else external_notional - variable_cost
         )
         if external_output < -_variable_cost_tolerance(
             external_notional,
@@ -580,9 +654,7 @@ class SleeveRuntime:
         self.result.external_output_value_usd += max(external_output, 0.0)
         self.result.total_variable_execution_cost_usd += variable_cost
         if action.kind in ("exit", "liquidate"):
-            if action.kind == "exit" and (
-                action.position_before is None or action.reason is None
-            ):
+            if action.kind == "exit" and (action.position_before is None or action.reason is None):
                 raise ValueError("exit action requires a position and reason")
             if action.kind == "liquidate" and action.reason is None:
                 raise ValueError("terminal liquidation requires a reason")
@@ -610,9 +682,7 @@ class SleeveRuntime:
                 self.result.total_swap_fee_cost += transaction_cost.swap_fee_cost
                 self.result.total_price_impact_cost += transaction_cost.price_impact_cost
                 self.result.total_slippage_cost += transaction_cost.slippage_cost
-                self.result.total_latency_slippage_cost += (
-                    transaction_cost.latency_slippage_cost
-                )
+                self.result.total_latency_slippage_cost += transaction_cost.latency_slippage_cost
                 self.result.total_failed_tx_expected_cost += (
                     transaction_cost.failed_tx_expected_cost
                 )
@@ -639,16 +709,126 @@ class SleeveRuntime:
         if settlement is not None and action.kind == "enter" and self.position is not None:
             self.position.entry_transaction_cost = transaction_cost
 
-    def propose_entry(
+    def validate_terminal_settlement(
+        self,
+        intent: TerminalRemovalIntent,
+        settlement: TerminalSleeveSettlement,
+    ) -> None:
+        if intent.sleeve_id != self.sleeve_id or settlement.sleeve_id != self.sleeve_id:
+            raise TerminalLiquidationError("terminal settlement belongs to a different sleeve")
+        if self.wallet != intent.wallet_before or self.position != intent.position_before:
+            raise TerminalLiquidationError("runtime state does not match terminal removal snapshot")
+        expected_intent = self.propose_terminal_removal(
+            intent.event,
+            intent.active_liquidity,
+        )
+        if intent != expected_intent:
+            raise TerminalLiquidationError("terminal removal intent does not match runtime state")
+        if settlement.transaction_cost.action != "liquidate":
+            raise TerminalLiquidationError("terminal settlement has an invalid transaction action")
+        cost_values = (
+            settlement.transaction_cost.gas_cost,
+            settlement.transaction_cost.swap_fee_cost,
+            settlement.transaction_cost.price_impact_cost,
+            settlement.transaction_cost.slippage_cost,
+            settlement.transaction_cost.latency_slippage_cost,
+            settlement.transaction_cost.failed_tx_expected_cost,
+            settlement.transaction_cost.swap_notional_usd,
+        )
+        if any(not math.isfinite(value) for value in cost_values):
+            raise TerminalLiquidationError(
+                "terminal settlement contains non-finite transaction costs"
+            )
+        if any(value < 0 for value in cost_values):
+            raise TerminalLiquidationError(
+                "terminal settlement contains negative transaction costs"
+            )
+        if settlement.final_wallet.cngn_amount != 0.0:
+            raise TerminalLiquidationError("terminal settlement left cNGN inventory")
+        values = (
+            settlement.final_wallet.stable_usd,
+            settlement.external_marked_notional_usd,
+            settlement.external_input_value_usd,
+            settlement.external_output_value_usd,
+            settlement.allocated_variable_cost_usd,
+            settlement.raw_final_value_usd,
+            settlement.terminal_funding_transfer_usd,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise TerminalLiquidationError("terminal settlement contains non-finite values")
+        if any(value < 0 for value in values[:5]):
+            raise TerminalLiquidationError("terminal settlement contains negative accounting")
+        variable_cost = (
+            settlement.transaction_cost.swap_fee_cost
+            + settlement.transaction_cost.price_impact_cost
+            + settlement.transaction_cost.slippage_cost
+            + settlement.transaction_cost.latency_slippage_cost
+        )
+        marked_notional = intent.gross_wallet_after.cngn_amount * intent.cngn_usd_price
+        gross_final_value = intent.gross_wallet_after.value_usd(intent.cngn_usd_price)
+        tolerance = 1e-10 * max(
+            1.0,
+            gross_final_value,
+            settlement.transaction_cost.total,
+            settlement.transaction_cost.swap_notional_usd,
+            marked_notional,
+            settlement.external_input_value_usd,
+            settlement.external_output_value_usd,
+            variable_cost,
+        )
+        if (
+            abs(settlement.transaction_cost.swap_notional_usd - marked_notional) > tolerance
+            or abs(settlement.external_marked_notional_usd - marked_notional) > tolerance
+            or abs(settlement.external_input_value_usd - marked_notional) > tolerance
+            or abs(variable_cost - settlement.allocated_variable_cost_usd) > tolerance
+            or abs(marked_notional - settlement.external_output_value_usd - variable_cost)
+            > tolerance
+            or abs(
+                settlement.raw_final_value_usd
+                - gross_final_value
+                + settlement.transaction_cost.total
+            )
+            > tolerance
+            or abs(
+                settlement.final_wallet.stable_usd
+                - settlement.raw_final_value_usd
+                - settlement.terminal_funding_transfer_usd
+            )
+            > tolerance
+        ):
+            raise TerminalLiquidationError("terminal sleeve settlement does not reconcile")
+
+    def apply_terminal_settlement(
+        self,
+        intent: TerminalRemovalIntent,
+        settlement: TerminalSleeveSettlement,
+    ) -> None:
+        self.validate_terminal_settlement(intent, settlement)
+        action = SleeveAction(
+            sleeve_id=self.sleeve_id,
+            kind="liquidate",
+            event=intent.event,
+            active_liquidity=intent.active_liquidity,
+            cngn_usd_price=intent.cngn_usd_price,
+            wallet_before=intent.wallet_before,
+            wallet_after=settlement.final_wallet,
+            position_before=intent.position_before,
+            position_after=None,
+            transaction_cost=settlement.transaction_cost,
+            reason="validation_boundary",
+            variable_cost_asset=("stable" if settlement.external_marked_notional_usd > 0 else None),
+            inventory_swap_direction=(
+                "cngn_to_stable" if settlement.external_marked_notional_usd > 0 else None
+            ),
+            inventory_swap_notional_usd=settlement.external_marked_notional_usd,
+        )
+        self.apply_action(action)
+
+    def propose_entry_intent(
         self,
         event: SwapEvent | V4Event,
         active_liquidity: int,
-        *,
-        deployment_scale: float = 1.0,
-        eligibility_preapproved: bool = False,
-    ) -> SleeveAction | None:
-        if not math.isfinite(deployment_scale) or not 0.0 <= deployment_scale <= 1.0:
-            raise ValueError("deployment_scale must be finite and between zero and one")
+    ) -> EntryIntent | None:
         in_time_cooldown = (
             self.cooldown_until_time is not None and event.block_time < self.cooldown_until_time
         )
@@ -666,14 +846,14 @@ class SleeveRuntime:
             and not in_block_cooldown
         ):
             return None
-        if not eligibility_preapproved and not _entry_filters_pass(
-                event,
-                self.params,
-                self.ewma,
-                self.current_price,
-                active_liquidity,
-                self.pool_config,
-            ):
+        if not _entry_filters_pass(
+            event,
+            self.params,
+            self.ewma,
+            self.current_price,
+            active_liquidity,
+            self.pool_config,
+        ):
             return None
         wallet_value = self.wallet.value_usd(self.current_price)
         entry_context = EntryContext(
@@ -684,13 +864,11 @@ class SleeveRuntime:
             active_liquidity=active_liquidity,
         )
         if (
-            not eligibility_preapproved
-            and
             self.entry_eligibility is not None
             and not self.entry_eligibility.evaluate(entry_context).eligible
         ):
             return None
-        deploy_target = self.sizing.deployed_capital_usd(entry_context) * deployment_scale
+        deploy_target = self.sizing.deployed_capital_usd(entry_context)
         deploy_fraction = min(deploy_target / wallet_value, 1.0) if wallet_value > 0 else 0.0
         if deploy_fraction <= 0:
             return None
@@ -724,7 +902,7 @@ class SleeveRuntime:
         )
         if route.liquidity <= 0:
             return None
-        if not eligibility_preapproved and not _expected_fee_apr_passes(
+        if not _expected_fee_apr_passes(
             event,
             self.params,
             route.liquidity,
@@ -750,7 +928,7 @@ class SleeveRuntime:
             stable_usd=route.remaining_wallet.stable_usd + idle_wallet.stable_usd,
             cngn_amount=route.remaining_wallet.cngn_amount + idle_wallet.cngn_amount,
         )
-        return SleeveAction(
+        action = SleeveAction(
             sleeve_id=self.sleeve_id,
             kind="enter",
             event=event,
@@ -772,6 +950,120 @@ class SleeveRuntime:
                 else None
             ),
         )
+        fixed_cost = (
+            route.transaction_cost.gas_cost + route.transaction_cost.failed_tx_expected_cost
+        )
+        funded_deployment_wallet = _pay_wallet_cost(
+            deploy_wallet,
+            fixed_cost,
+            self.current_price,
+        )
+        fixed_payment_wallet = _subtract_wallet(
+            deploy_wallet,
+            funded_deployment_wallet,
+        )
+        return EntryIntent(
+            sleeve_id=self.sleeve_id,
+            full_action=action,
+            funded_deployment_wallet=funded_deployment_wallet,
+            fixed_payment_wallet=fixed_payment_wallet,
+        )
+
+    def materialize_entry(self, intent: EntryIntent, scale: float) -> SleeveAction:
+        if not math.isfinite(scale) or not 0.0 < scale <= 1.0:
+            raise ValueError("entry scale must be finite and in (0, 1]")
+        if not (scale * ENTRY_SCALE_STEPS).is_integer():
+            raise ValueError("entry scale must lie on the 1/256 lattice")
+        if intent.sleeve_id != self.sleeve_id:
+            raise ValueError("entry intent belongs to a different sleeve")
+        full_action = intent.full_action
+        if full_action.kind != "enter":
+            raise ValueError("entry intent must contain an entry action")
+        if self.wallet != full_action.wallet_before or self.position != full_action.position_before:
+            raise ValueError("runtime state does not match entry intent snapshot")
+        if scale == 1.0:
+            return full_action
+
+        scaled_funded_wallet = PortfolioComposition(
+            stable_usd=intent.funded_deployment_wallet.stable_usd * scale,
+            cngn_amount=intent.funded_deployment_wallet.cngn_amount * scale,
+        )
+        committed_wallet = PortfolioComposition(
+            stable_usd=(intent.fixed_payment_wallet.stable_usd + scaled_funded_wallet.stable_usd),
+            cngn_amount=(
+                intent.fixed_payment_wallet.cngn_amount + scaled_funded_wallet.cngn_amount
+            ),
+        )
+        idle_wallet = _subtract_wallet(full_action.wallet_before, committed_wallet)
+        fixed_entry_cost = TransactionCostBreakdown(
+            action="enter",
+            gas_cost=full_action.transaction_cost.gas_cost,
+            failed_tx_expected_cost=full_action.transaction_cost.failed_tx_expected_cost,
+        )
+        full_position = full_action.position_after
+        if full_position is None:
+            raise ExecutionAccountingError("entry intent has no position")
+        route = _route_funded_wallet_to_position(
+            scaled_funded_wallet,
+            fixed_entry_cost,
+            full_position.tick_lower,
+            full_position.tick_upper,
+            self.current_tick,
+            self.current_sqrt_price_x96,
+            self.current_price,
+            full_action.active_liquidity,
+            _event_pool_fee_rate(full_action.event, self.pool_config),
+            self.pool_config,
+            self.params,
+        )
+        if route.liquidity <= 0:
+            raise ExecutionAccountingError("positive-scale entry intent produced no position")
+        position_after = VirtualPosition(
+            tick_lower=full_position.tick_lower,
+            tick_upper=full_position.tick_upper,
+            liquidity_L=route.liquidity,
+            entry_price=full_position.entry_price,
+            entry_value=route.deployed_capital,
+            entry_time=full_position.entry_time,
+            entry_tick=full_position.entry_tick,
+            entry_active_liquidity=full_position.entry_active_liquidity,
+            deployed_capital=route.deployed_capital,
+            entry_transaction_cost=route.transaction_cost,
+        )
+        wallet_after = PortfolioComposition(
+            stable_usd=route.remaining_wallet.stable_usd + idle_wallet.stable_usd,
+            cngn_amount=route.remaining_wallet.cngn_amount + idle_wallet.cngn_amount,
+        )
+        return SleeveAction(
+            sleeve_id=self.sleeve_id,
+            kind="enter",
+            event=full_action.event,
+            active_liquidity=full_action.active_liquidity,
+            cngn_usd_price=full_action.cngn_usd_price,
+            wallet_before=deepcopy(full_action.wallet_before),
+            wallet_after=wallet_after,
+            position_before=None,
+            position_after=position_after,
+            transaction_cost=route.transaction_cost,
+            reason=None,
+            inventory_swap_direction=route.inventory_swap_direction,
+            inventory_swap_notional_usd=route.transaction_cost.swap_notional_usd,
+            variable_cost_asset=(
+                "stable"
+                if route.inventory_swap_direction == "stable_to_cngn"
+                else "cngn"
+                if route.inventory_swap_direction == "cngn_to_stable"
+                else None
+            ),
+        )
+
+    def propose_entry(
+        self,
+        event: SwapEvent | V4Event,
+        active_liquidity: int,
+    ) -> SleeveAction | None:
+        intent = self.propose_entry_intent(event, active_liquidity)
+        return None if intent is None else intent.full_action
 
     def _maybe_enter(self, event: SwapEvent | V4Event, active_liquidity: int) -> None:
         action = self.propose_entry(event, active_liquidity)
@@ -801,31 +1093,39 @@ class SleeveRuntime:
     ) -> SimResult:
         if settle_to_cash:
             if terminal_event is None:
-                raise NoValidationSwapError(
-                    "terminal cash settlement requires a valid swap"
-                )
-            synthetic_liquidity = (
-                self.position.liquidity_L if self.position is not None else 0.0
-            )
+                raise NoValidationSwapError("terminal cash settlement requires a valid swap")
+            synthetic_liquidity = self.position.liquidity_L if self.position is not None else 0.0
             action = self.propose_terminal_liquidation(
                 terminal_event,
                 self.current_active_liquidity + synthetic_liquidity,
             )
             self.apply_action(action)
             if self.position is not None:
-                raise TerminalLiquidationError(
-                    "terminal cash settlement left an open position"
-                )
+                raise TerminalLiquidationError("terminal cash settlement left an open position")
             if self.wallet.cngn_amount != 0.0:
-                raise TerminalLiquidationError(
-                    "terminal cash settlement left cNGN inventory"
-                )
+                raise TerminalLiquidationError("terminal cash settlement left cNGN inventory")
             self.result.final_value = self.wallet.stable_usd
             self.result.settled_to_cash = True
             self.result.terminal_liquidation_cost = action.transaction_cost.total
-            self.result.value_samples.append(
-                (terminal_event.block_time, self.result.final_value)
+            self.result.terminal_position_settlement_count = int(action.position_before is not None)
+            self.result.terminal_loose_cngn_settlement_count = int(
+                action.position_before is None and action.inventory_swap_notional_usd > 0
             )
+            self.result.terminal_zero_settlement_count = int(
+                action.position_before is None and action.inventory_swap_notional_usd == 0
+            )
+            self.result.terminal_inventory_swap_count = int(action.inventory_swap_notional_usd > 0)
+            self.result.terminal_variable_cost_usd = (
+                action.transaction_cost.swap_fee_cost
+                + action.transaction_cost.price_impact_cost
+                + action.transaction_cost.slippage_cost
+                + action.transaction_cost.latency_slippage_cost
+            )
+            self.result.terminal_fixed_cost_usd = (
+                action.transaction_cost.gas_cost + action.transaction_cost.failed_tx_expected_cost
+            )
+            self.result.terminal_external_marked_notional_usd = action.inventory_swap_notional_usd
+            self.result.value_samples.append((terminal_event.block_time, self.result.final_value))
         elif self.position is not None and self.result.end_time is not None:
             terminal_position = self.position
             terminal_exit_reason = "end_of_data"

@@ -50,9 +50,11 @@ def cash_comparator_result(
     opening_capital_usd: float,
 ) -> EconomicResult:
     swaps = valid_valuation_swaps(events, pool_config)
-    samples = ((swaps[0].block_time, opening_capital_usd),) + tuple(
-        (event.block_time, opening_capital_usd) for event in swaps
-    ) + ((swaps[-1].block_time, opening_capital_usd),)
+    samples = (
+        ((swaps[0].block_time, opening_capital_usd),)
+        + tuple((event.block_time, opening_capital_usd) for event in swaps)
+        + ((swaps[-1].block_time, opening_capital_usd),)
+    )
     return EconomicResult(
         opening_capital_usd=opening_capital_usd,
         closing_cash_usd=opening_capital_usd,
@@ -65,6 +67,14 @@ def cash_comparator_result(
         external_input_value_usd=0.0,
         external_output_value_usd=0.0,
         internal_cross_notional_usd=0.0,
+        entry_scale_events=(),
+        terminal_position_settlement_count=0,
+        terminal_loose_cngn_settlement_count=0,
+        terminal_zero_settlement_count=0,
+        terminal_inventory_swap_count=0,
+        terminal_fixed_cost_usd=0.0,
+        terminal_variable_cost_usd=0.0,
+        terminal_external_marked_notional_usd=0.0,
         value_samples=samples,
     )
 
@@ -77,12 +87,13 @@ def mark_hold_cngn_result(
     swaps = valid_valuation_swaps(events, pool_config)
     entry_price = _event_cngn_price(swaps[0], pool_config)
     values = tuple(
-        opening_capital_usd * _event_cngn_price(event, pool_config) / entry_price
-        for event in swaps
+        opening_capital_usd * _event_cngn_price(event, pool_config) / entry_price for event in swaps
     )
-    samples = ((swaps[0].block_time, opening_capital_usd),) + tuple(
-        (event.block_time, value) for event, value in zip(swaps, values, strict=True)
-    ) + ((swaps[-1].block_time, values[-1]),)
+    samples = (
+        ((swaps[0].block_time, opening_capital_usd),)
+        + tuple((event.block_time, value) for event, value in zip(swaps, values, strict=True))
+        + ((swaps[-1].block_time, values[-1]),)
+    )
     return EconomicResult(
         opening_capital_usd=opening_capital_usd,
         closing_cash_usd=values[-1],
@@ -95,6 +106,14 @@ def mark_hold_cngn_result(
         external_input_value_usd=0.0,
         external_output_value_usd=0.0,
         internal_cross_notional_usd=0.0,
+        entry_scale_events=(),
+        terminal_position_settlement_count=0,
+        terminal_loose_cngn_settlement_count=0,
+        terminal_zero_settlement_count=0,
+        terminal_inventory_swap_count=0,
+        terminal_fixed_cost_usd=0.0,
+        terminal_variable_cost_usd=0.0,
+        terminal_external_marked_notional_usd=0.0,
         value_samples=samples,
     )
 
@@ -143,8 +162,7 @@ def routed_hold_cngn_result(
     output_notional = low
     entry_transaction_cost = entry_cost(output_notional)
     entry_fixed_cost = (
-        entry_transaction_cost.gas_cost
-        + entry_transaction_cost.failed_tx_expected_cost
+        entry_transaction_cost.gas_cost + entry_transaction_cost.failed_tx_expected_cost
     )
     entry_variable_cost = _variable_cost(entry_transaction_cost)
     stable_usd = opening_capital_usd - output_notional - entry_transaction_cost.total
@@ -154,8 +172,7 @@ def routed_hold_cngn_result(
     cngn_amount = output_notional / entry_price
 
     marked_values = tuple(
-        stable_usd + cngn_amount * _event_cngn_price(event, pool_config)
-        for event in swaps
+        stable_usd + cngn_amount * _event_cngn_price(event, pool_config) for event in swaps
     )
     pre_exit_wallet = PortfolioComposition(stable_usd, cngn_amount)
     exit_price = _event_cngn_price(exit_event, pool_config)
@@ -176,12 +193,8 @@ def routed_hold_cngn_result(
         raise TerminalLiquidationError("routed hold exit notional is invalid")
     if exit_notional > 0.0:
         round_trip_cngn = exit_notional / exit_price
-        if abs(round_trip_cngn - after_fixed.cngn_amount) > math.ulp(
-            after_fixed.cngn_amount
-        ):
-            raise TerminalLiquidationError(
-                "routed hold cannot represent the full-balance exit"
-            )
+        if abs(round_trip_cngn - after_fixed.cngn_amount) > math.ulp(after_fixed.cngn_amount):
+            raise TerminalLiquidationError("routed hold cannot represent the full-balance exit")
     exit_transaction_cost = _swap_cost_breakdown(
         "exit",
         exit_notional,
@@ -204,17 +217,17 @@ def routed_hold_cngn_result(
     if exit_variable_cost > exit_notional + 1e-12:
         raise TerminalLiquidationError("routed hold exit variable cost exceeds output")
     terminal_wallet = PortfolioComposition(
-        stable_usd=(
-            after_fixed.stable_usd
-            + max(exit_notional - exit_variable_cost, 0.0)
-        ),
+        stable_usd=(after_fixed.stable_usd + max(exit_notional - exit_variable_cost, 0.0)),
         cngn_amount=0.0,
     )
     closing_cash = terminal_wallet.stable_usd
-    samples = ((entry.block_time, opening_capital_usd),) + tuple(
-        (event.block_time, value)
-        for event, value in zip(swaps, marked_values, strict=True)
-    ) + ((exit_event.block_time, closing_cash),)
+    samples = (
+        ((entry.block_time, opening_capital_usd),)
+        + tuple(
+            (event.block_time, value) for event, value in zip(swaps, marked_values, strict=True)
+        )
+        + ((exit_event.block_time, closing_cash),)
+    )
     total_variable_cost = entry_variable_cost + exit_variable_cost
     external_input = output_notional + entry_variable_cost + exit_notional
     external_output = output_notional + exit_notional - exit_variable_cost
@@ -230,6 +243,14 @@ def routed_hold_cngn_result(
         external_input_value_usd=external_input,
         external_output_value_usd=external_output,
         internal_cross_notional_usd=0.0,
+        entry_scale_events=(),
+        terminal_position_settlement_count=0,
+        terminal_loose_cngn_settlement_count=int(exit_notional > 0),
+        terminal_zero_settlement_count=int(exit_notional == 0),
+        terminal_inventory_swap_count=int(exit_notional > 0),
+        terminal_fixed_cost_usd=exit_fixed_cost,
+        terminal_variable_cost_usd=exit_variable_cost,
+        terminal_external_marked_notional_usd=exit_notional,
         value_samples=samples,
     )
     if not math.isfinite(result.closing_cash_usd):

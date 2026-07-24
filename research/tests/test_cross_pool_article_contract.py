@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
 DESIGN_PATH = Path("docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md")
+WPP_V2_VALIDATOR_COMMIT = "1d21c576b7d63aab005edc80fd696094c83cdf2f"
 
 PUBLIC_TERMINOLOGY_PATHS = (
     Path("research/articles/02-backtesting-the-market-layer.md"),
@@ -381,13 +383,21 @@ def test_article_two_records_integrity_attested_weighted_portfolio_nonresult() -
 
 
 def test_evidence_pack_binds_the_weighted_portfolio_nonresult() -> None:
-    evidence = Path(
-        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
-    ).read_text()
-    validator_path = Path(
-        "research/scripts/validate_parameter_portfolio_publication.py"
-    )
-    validator_sha256 = hashlib.sha256(validator_path.read_bytes()).hexdigest()
+    evidence = Path("research/articles/evidence-pack-2026-07-cngn-market-making.md").read_text()
+    historical_validator = subprocess.run(
+        [
+            "git",
+            "show",
+            (
+                f"{WPP_V2_VALIDATOR_COMMIT}:"
+                "research/scripts/validate_parameter_portfolio_publication.py"
+            ),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+    validator_sha256 = hashlib.sha256(historical_validator).hexdigest()
     section = _section_between(
         evidence,
         "Frozen weighted-portfolio test:",
@@ -425,17 +435,12 @@ def test_evidence_pack_binds_the_weighted_portfolio_nonresult() -> None:
     assert evidence.index("Human review authority lives only") < evidence.index(
         "Automated integrity attestation only"
     )
-    assert (
-        "It does not report or support a weighted-portfolio performance result"
-        in evidence
-    )
+    assert "It does not report or support a weighted-portfolio performance result" in evidence
 
 
 def test_public_weighted_portfolio_nonresult_withholds_private_results() -> None:
     article = Path("research/articles/02-backtesting-the-market-layer.md").read_text()
-    evidence = Path(
-        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
-    ).read_text()
+    evidence = Path("research/articles/evidence-pack-2026-07-cngn-market-making.md").read_text()
     readme = Path("research/articles/README.md").read_text()
     public_nonresult = "\n".join(
         (
@@ -501,9 +506,7 @@ def test_reviewed_article_files_publish_only_approved_aggregate_outcomes(
 
 
 def test_durable_evidence_pack_records_complete_review_provenance_keys() -> None:
-    evidence = Path(
-        "research/articles/evidence-pack-2026-07-cngn-market-making.md"
-    ).read_text()
+    evidence = Path("research/articles/evidence-pack-2026-07-cngn-market-making.md").read_text()
     for key in (
         "CPL_MANIFEST_SHA256",
         "CPL_REVIEWED_BY",

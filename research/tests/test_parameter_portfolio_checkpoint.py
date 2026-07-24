@@ -14,6 +14,8 @@ from research.backtester.portfolio_checkpoint import (
     CheckpointStateError,
     PortfolioCheckpointStore,
 )
+from research.backtester.portfolio_publication import ARTIFACT_SCHEMA_VERSION
+from research.scripts.evaluate_parameter_portfolio import PROTOCOL_VERSION
 
 
 def _hold_checkpoint_lock(
@@ -32,6 +34,8 @@ def _hold_checkpoint_lock(
 def _identity(pool: str = "uni-base") -> dict[str, object]:
     return {
         "schema_version": "weighted-portfolio-checkpoint/v1",
+        "protocol_version": PROTOCOL_VERSION,
+        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
         "pool": pool,
         "catalog_sha256": "a" * 64,
         "input_sha256": {"history": "b" * 64, "features": "c" * 64},
@@ -76,6 +80,17 @@ def test_checkpoint_rejects_identity_drift(tmp_path: Path) -> None:
     changed["reference_capital_usd"] = 450.0
     with pytest.raises(CheckpointIdentityError, match="identity"):
         PortfolioCheckpointStore(root, changed, total_windows=1).initialize()
+
+
+def test_v3_checkpoint_refuses_a_v2_resume_root(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    legacy = _identity()
+    legacy["protocol_version"] = "2026-07-23"
+    legacy["artifact_schema_version"] = "weighted-portfolio-artifacts/v2"
+    PortfolioCheckpointStore(root, legacy, total_windows=1).initialize()
+
+    with pytest.raises(CheckpointIdentityError, match="identity"):
+        PortfolioCheckpointStore(root, _identity(), total_windows=1).initialize()
 
 
 def test_checkpoint_rejects_out_of_order_and_non_finite_cash(tmp_path: Path) -> None:
@@ -135,9 +150,7 @@ def test_resumed_and_uninterrupted_checkpoint_bytes_match(tmp_path: Path) -> Non
 
     names = ("identity.json", "progress.json", "window-000000.json", "window-000001.json")
     for name in names:
-        assert (tmp_path / "first" / name).read_bytes() == (
-            tmp_path / "second" / name
-        ).read_bytes()
+        assert (tmp_path / "first" / name).read_bytes() == (tmp_path / "second" / name).read_bytes()
 
 
 def test_checkpoint_phase_is_identity_bound_and_visible_in_progress(
