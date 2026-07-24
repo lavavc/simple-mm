@@ -6,7 +6,7 @@
 
 **Artifact schema:** `weighted-portfolio-artifacts/v4`
 
-**Status:** approved design; written-spec review pending
+**Status:** binding; implementation approved
 
 This amendment replaces only the ordinary-action funding, internal-cross
 attribution, failure-trace, artifact-version, checkpoint-compatibility, and
