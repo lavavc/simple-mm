@@ -11,6 +11,19 @@ CPL_ROBUSTNESS_FLAGS: dtw_band_unstable
 CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
 ```
 
+```text
+CSH_EDITORIAL_STATUS: EVIDENCE_REVIEWED
+CSH_RESEARCH_ROLE: post_hoc_exploratory
+CSH_PARENT_DECISION: leadership_unresolved
+CSH_PARENT_DECISION_UNCHANGED: true
+CSH_SOURCE_MANIFEST: research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json
+CSH_MANIFEST_SHA256: 9145738bb6dd4aa84512b3f62625d779e6e4ef223f5b614e1f9facc502ab7509
+```
+
+The reviewed short-horizon extension adds response, update-incidence, latency,
+staleness, and fee-only gap diagnostics. It does not change the parent
+leadership conclusion or add an economic claim.
+
 Active July 2026 sequence:
 
 1. `01-supervised-liquidity.md`
@@ -34,6 +47,8 @@ Supporting evidence:
 - `../results/cross_pool_lead_lag/article_manifest.json`
 - `../results/cross_pool_lead_lag/statistical_report.md`
 - `../results/cross_pool_lead_lag/frozen_policy_report.md`
+- `../results/cross_pool_short_horizon_v1/short_horizon_manifest.json`
+- `../results/reports/cross_pool_short_horizon_v1/short_horizon_manifest.json`
 
 Publication boundary: the reviewed manifest permits only the aggregate claim
 that directional leadership remains unresolved and the independent economic

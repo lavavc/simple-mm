@@ -36,6 +36,15 @@ CPL_ROBUSTNESS_FLAGS: dtw_band_unstable
 CPL_SOURCE_MANIFEST: research/results/cross_pool_lead_lag/article_manifest.json
 ```
 
+```text
+CSH_EDITORIAL_STATUS: EVIDENCE_REVIEWED
+CSH_RESEARCH_ROLE: post_hoc_exploratory
+CSH_PARENT_DECISION: leadership_unresolved
+CSH_PARENT_DECISION_UNCHANGED: true
+CSH_SOURCE_MANIFEST: research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json
+CSH_MANIFEST_SHA256: 9145738bb6dd4aa84512b3f62625d779e6e4ef223f5b614e1f9facc502ab7509
+```
+
 ## Narrative Progression
 
 ### 1. The wrong label can make any strategy look smart
@@ -210,6 +219,80 @@ external-LP profitability, or deployable alpha from two pool histories.
 Implementation-specific parameters and execution details remain outside the
 article.
 
+#### A reviewed post-hoc short-horizon extension
+
+The reviewed extension asks a narrower question: after a shock in one pool,
+what does the other pool's recorded as-of state look like from 30 seconds to 15
+minutes? It reuses the parent's event and common-support construction, covers
+all seven horizons, and applies 2,000 paired UTC shock-day bootstrap resamples.
+It is explicitly post-hoc and does not change the reviewed parent conclusion of
+`leadership_unresolved`.
+
+The primary estimand is the **unconditional response** across every eligible
+shock. If the target has no new observation by a horizon, its as-of price is
+unchanged and contributes a valid zero response. Pointwise intervals describe
+each horizon separately; the amber simultaneous max-z bands cover the
+seven-horizon family. Every primary unconditional simultaneous band includes
+zero.
+
+![Unconditional short-horizon response profile](../results/reports/cross_pool_short_horizon_v1/short_horizon_response.png)
+
+*How to read the response graph:* each panel follows one direction. The blue
+points are mean unconditional responses, the blue region is the pointwise 95%
+interval, and the amber region is the simultaneous 95% band. At three minutes,
+the estimates are +0.204359 bps for BSC to Base and +0.035202 bps for Base to
+BSC. At 15 minutes they are +0.878230 bps and +0.039554 bps. The
+unconditional-response simultaneous max-z bands include zero, so the visible
+oscillations are descriptive response shapes, not evidence of leadership,
+causality, or alpha.*
+
+The next graph separates four different measurements. **Update incidence** is
+the fraction of eligible shocks followed by an observed target update by the
+horizon. A **conditional response** averages only the selected subset with an
+observed target update; a shock without one is right-censored, not a conditional
+zero and not a survival estimate. The latency panel times observed updates only,
+while state staleness measures how old the last recorded target state is. The
+figure contains point estimates only; inferential intervals remain in the
+reviewed summaries and manifest.
+
+![Target update, latency, and staleness diagnostics](../results/reports/cross_pool_short_horizon_v1/short_horizon_updates.png)
+
+*How to read the update graph:* by 15 minutes, incidence reaches 39/123 (31.7%)
+for BSC to Base and 63/197 (32.0%) for Base to BSC. Conditional 15-minute means
+are +2.382769 bps and -1.237692 bps, compared with unconditional means of
++0.878230 bps and +0.039554 bps. That contrast is selection, not a stronger
+market-wide effect. Median observed-update delays are 138 and 228 seconds.
+Median target-state ages at 15 minutes are 23.5 and 35.6 minutes; these diagnose
+data freshness, not causal transmission latency or proof that the market itself
+was stale. Base-to-BSC conditional simultaneous inference is unavailable because
+too few UTC days contain observed updates at the shortest horizon.*
+
+The last graph applies both pool fees to a signed cross-venue bid/ask log gap
+under USDC/USDT parity. It is **not net executable profit** and excludes gas,
+slippage, latency, inventory constraints, fill risk, and stablecoin basis.
+
+![Fee-only cross-venue gap](../results/reports/cross_pool_short_horizon_v1/short_horizon_fee_gap.png)
+
+*How to read the fee-gap graph:* the dashed line is the mean signed gap at the
+shock, the blue line is its mean at each horizon, and the red line is the
+algebraic start-minus-end difference. At 15 minutes, BSC-to-Base moves from
+-14.774555 to -19.003638 bps and Base-to-BSC from -18.949015 to -20.881117 bps.
+The corresponding red values are positive, but both signed gaps remain negative;
+that does not mean the gap closed toward zero, became executable, or generated
+profit.*
+
+The extension also does not replicate Girum's directional magnitude pattern:
+
+| Three-minute study | Base to BSC | BSC to Base | Interpretation |
+| --- | ---: | ---: | --- |
+| Girum de-clustered | +3.4 bps | +0.4 bps | Different shocks, samples, clustering, and inference |
+| This reviewed extension | +0.035202 bps | +0.204359 bps | Same signs, opposite magnitude ordering |
+
+Sign agreement is descriptive. It does not corroborate Base leadership. Taken
+together, the extension does not establish causal price discovery, does not
+establish a unique directional leader, does not establish deployable alpha, and
+does not establish net executable profit.
+
 ### 8. Why the failures are the point
 
 The research branch produced reusable discipline:
@@ -258,6 +341,8 @@ testing conventions as much as they need code.
 - `research/results/cross_pool_lead_lag/article_manifest.json`
 - `research/results/cross_pool_lead_lag/statistical_report.md`
 - `research/results/cross_pool_lead_lag/frozen_policy_report.md`
+- `research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json`
+- `research/results/reports/cross_pool_short_horizon_v1/short_horizon_manifest.json`
 
 ## Claims To Avoid
 
@@ -275,6 +360,10 @@ testing conventions as much as they need code.
 - Do not treat constrained DTW as directional evidence when its lag is
   band-unstable.
 - Do not claim the forecast-gated policy improved LP economics.
+- Do not replace the unconditional response with the selected conditional subset.
+- Do not read update incidence or observed-update delay as causal transmission.
+- Do not read the signed fee-only gap as executable PnL.
+- Do not treat sign agreement with Girum as evidence of a directional leader.
 - Do not infer causal price discovery, toxic flow, or external-LP profitability
   from price histories or owner concentration.
 - Do not publish selected identifiers, portfolio weights, operational

@@ -4,6 +4,8 @@ Date: 2026-07-10
 
 Cross-pool evidence reviewed: 2026-07-23
 
+Short-horizon extension reviewed: 2026-07-27
+
 Weighted-portfolio evidence attested: 2026-07-23
 
 Purpose: collect the source-backed claims that can support the next two Lava
@@ -35,6 +37,33 @@ CPL_INPUT_SHA256_BSC_LEDGER: 8435d0d1924ff7906af9d8290d21884027109cf279fde478eb7
 Generated reports retain their generation-time `generated and unreviewed`
 label. Human review authority lives only in the reviewed manifest above, which
 binds those unchanged report bytes by hash.
+
+The post-hoc short-horizon extension has its own reviewed manifest and does not
+replace or amend the parent decision contract:
+
+```text
+CSH_EDITORIAL_STATUS: EVIDENCE_REVIEWED
+CSH_RESEARCH_ROLE: post_hoc_exploratory
+CSH_PARENT_DECISION: leadership_unresolved
+CSH_PARENT_DECISION_UNCHANGED: true
+CSH_SOURCE_MANIFEST: research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json
+CSH_MANIFEST_SHA256: 9145738bb6dd4aa84512b3f62625d779e6e4ef223f5b614e1f9facc502ab7509
+CSH_SCHEMA_VERSION: 1.0.0
+CSH_ARTIFACT_STATUS: reviewed
+CSH_QA_STATUS: pass
+CSH_REVIEWED_BY: sol_ultra
+CSH_REVIEWED_AT_UTC: 2026-07-27T23:15:46Z
+CSH_CODE_COMMIT: f4d43e773e4f24923226db86df9c64c9cd616cf3
+CSH_PARENT_MANIFEST_SHA256: adf4fd71fd33604cee70fcba7aa90d2b7763715d3cba68a868d26347c599abfe
+CSH_RESPONSE_FIGURE_SHA256: 2ef9ec2b7da282dccc2bd0ac4dc6f706b393298389620deca3b2f9ef26d5f99a
+CSH_UPDATES_FIGURE_SHA256: 7efeae4b654f55137de04186640b7d3b5674f0663fbd9d3205526bbc59172433
+CSH_FEE_GAP_FIGURE_SHA256: ff2fe442578bd04bfbd6cb099cb2d01d19f6c118cba1e921c65e64be57b2e09c
+```
+
+The article-ready manifest and figures in
+`research/results/reports/cross_pool_short_horizon_v1/` are byte-identical
+tracked mirrors of the reviewed canonical package. The canonical source path
+above remains the research record.
 
 Automated integrity attestation only: the weighted-portfolio metadata below
 records validator-confirmed artifact integrity. It does not extend the
@@ -82,6 +111,10 @@ Local artifacts:
 - `research/results/cross_pool_lead_lag/article_manifest.json`
 - `research/results/cross_pool_lead_lag/statistical_report.md`
 - `research/results/cross_pool_lead_lag/frozen_policy_report.md`
+- `research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json`
+- `research/results/cross_pool_short_horizon_v1/short_horizon_report.md`
+- `research/results/cross_pool_short_horizon_v1/short_horizon_summaries.csv`
+- `research/results/reports/cross_pool_short_horizon_v1/short_horizon_manifest.json`
 - `research/results/parameter_portfolio/uni_base/run_manifest.json`
 - `research/results/parameter_portfolio/uni_bsc/run_manifest.json`
 - `research/scripts/validate_parameter_portfolio_publication.py`
@@ -183,6 +216,96 @@ Cross-pool information transfer:
 - The only permitted aggregate conclusion is `leadership_unresolved`. The result
   does not establish either directional lead, bidirectional incremental evidence,
   or an affirmative finding of no material lead.
+
+Reviewed post-hoc short-horizon response extension:
+
+- The extension preserves the parent's event construction and exact 15-minute
+  anchor. It contains 123 eligible BSC-to-Base shocks across 59 UTC days and 197
+  eligible Base-to-BSC shocks across 70 UTC days, with no exclusions and no
+  same-timestamp target observations.
+- It reports 30-second, 1-, 2-, 3-, 5-, 10-, and 15-minute horizons with 2,000
+  paired UTC shock-day bootstrap resamples. Pointwise intervals describe each
+  horizon; simultaneous max-z bands address all seven horizons within a
+  direction.
+- The primary **unconditional response** averages every eligible shock. When no
+  new target observation exists by a horizon, the carried as-of state contributes
+  a valid zero response.
+- A **conditional response** uses only the selected subset with an observed
+  target update. No update is right-censored, not a conditional zero and not a
+  survival estimate. **Update incidence** is the observed-update count divided
+  by eligible shocks.
+
+| Direction | Horizon | Unconditional mean (bps) | Pointwise 95% interval | Update incidence | Median observed-update delay |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BSC to Base | 30s | -0.056066 | [-0.229707, +0.096243] | 15/123 (12.2%) | 3s |
+| BSC to Base | 1m | -0.035676 | [-0.232277, +0.144270] | 15/123 (12.2%) | 3s |
+| BSC to Base | 2m | +0.166648 | [-0.138359, +0.552520] | 17/123 (13.8%) | 4s |
+| BSC to Base | 3m | +0.204359 | [-0.108480, +0.598811] | 20/123 (16.3%) | 4.5s |
+| BSC to Base | 5m | -0.742684 | [-2.270112, +0.322445] | 26/123 (21.1%) | 12s |
+| BSC to Base | 10m | +0.540759 | [-1.746107, +2.804029] | 36/123 (29.3%) | 131.5s |
+| BSC to Base | 15m | +0.878230 | [-1.559177, +3.381749] | 39/123 (31.7%) | 138s |
+| Base to BSC | 30s | +0.006405 | [-0.153180, +0.177332] | 11/197 (5.6%) | 7s |
+| Base to BSC | 1m | -0.012742 | [-0.175046, +0.157133] | 14/197 (7.1%) | 8s |
+| Base to BSC | 2m | -0.244233 | [-0.929527, +0.178728] | 19/197 (9.6%) | 16s |
+| Base to BSC | 3m | +0.035202 | [-0.941110, +1.156460] | 29/197 (14.7%) | 67.999s |
+| Base to BSC | 5m | -0.269734 | [-1.316996, +0.825092] | 37/197 (18.8%) | 117s |
+| Base to BSC | 10m | -0.444488 | [-2.015565, +1.036461] | 53/197 (26.9%) | 164s |
+| Base to BSC | 15m | +0.039554 | [-1.886550, +2.117268] | 63/197 (32.0%) | 228s |
+
+The 15-minute unconditional simultaneous bands are [-2.308442, +4.064901]
+bps for BSC to Base and [-2.627305, +2.706414] bps for Base to BSC. Every
+primary unconditional simultaneous band spans zero, so the response profile
+does not resolve a leader.
+
+![Unconditional short-horizon response profile](../results/reports/cross_pool_short_horizon_v1/short_horizon_response.png)
+
+*Figure explanation — unconditional response:* the two panels show the mean
+target response in each direction. Blue shading is the pointwise 95% interval;
+amber shading is the simultaneous 95% max-z band. The signs vary by horizon and
+all unconditional-response simultaneous max-z bands include zero. This is a
+shape diagnostic, not directional or causal evidence.
+
+![Target update, latency, and staleness diagnostics](../results/reports/cross_pool_short_horizon_v1/short_horizon_updates.png)
+
+*Figure explanation — update diagnostics:* the top-left panel is update
+incidence. The top-right panel is conditional response among observed target
+updates only. The lower panels show median observed-update delay and the age of
+the last recorded target state. The graph contains point estimates only;
+inference is in the reviewed summary CSV and manifest. At 15 minutes, 84/123
+BSC-to-Base shocks and 134/197 Base-to-BSC shocks remain censored. Conditional
+means are +2.382769 and -1.237692 bps, versus unconditional means of +0.878230
+and +0.039554 bps; the difference reflects selection. Median target-state ages
+are 23.5 and 35.6 minutes, with p95 ages of 11.6 and 33.7 hours. These are data
+freshness diagnostics, not proof of causal transmission or of a stale market.
+The BSC-to-Base conditional 15-minute simultaneous band is
+[-6.662079, +11.427616] bps. The Base-to-BSC conditional simultaneous family is
+unavailable because too few UTC days contain an observed update at the shortest
+horizon.
+
+![Fee-only cross-venue gap](../results/reports/cross_pool_short_horizon_v1/short_horizon_fee_gap.png)
+
+*Figure explanation — signed fee-only gap:* this is a directional bid/ask log
+gap under USDC/USDT parity, not net executable profit. It excludes gas,
+slippage, latency, inventory constraints, fill risk, and stablecoin basis. At
+15 minutes, BSC-to-Base moves from -14.774555 to -19.003638 bps and Base-to-BSC
+from -18.949015 to -20.881117 bps. The red line is the algebraic start-minus-end
+difference, +4.229084 and +1.932103 bps. Because both signed gaps remain
+negative and become more negative, a positive red value does not mean the gap
+closed toward zero, became executable, or earned profit.*
+
+Girum reconciliation at three minutes:
+
+| Study | Base to BSC | BSC to Base | Reading |
+| --- | ---: | ---: | --- |
+| Girum de-clustered | +3.4 bps | +0.4 bps | Different shocks, samples, clustering, and inference |
+| This reviewed extension | +0.035202 bps | +0.204359 bps | Same signs, opposite magnitude ordering |
+
+The extension does not reproduce Girum's directional magnitude ordering. Sign
+agreement is descriptive rather than corroborating evidence of Base leadership.
+This post-hoc study does not change the reviewed parent conclusion. It does not
+establish causal price discovery, does not establish a unique directional
+leader, does not establish deployable alpha, and does not establish net
+executable profit.
 
 Frozen Base economics:
 
@@ -288,6 +411,17 @@ Mechanism:
   `price_gap.png`, `predictive_performance.png`, `event_response.png`, and
   `dtw_lag.png`. Captions must state that directional leadership is unresolved
   and that DTW is band-unstable.
+- Reviewed short-horizon response profile:
+  `short_horizon_response.png` must distinguish pointwise from simultaneous
+  bands and state that every unconditional simultaneous band includes zero.
+- Reviewed update diagnostics:
+  `short_horizon_updates.png` must define incidence, label conditional outcomes
+  as a selected observed-update subset, and distinguish state age from market
+  staleness or causal latency.
+- Reviewed fee-only diagnostic:
+  `short_horizon_fee_gap.png` must define the signed start-minus-end convention
+  and state that it excludes the costs and constraints needed for executable
+  profit.
 - Frozen economic summary:
   `frozen_policy_summary.csv`, `frozen_policy_report.md`, and
   `lp_performance.png`. Captions must state `no_net_return_improvement` and
@@ -313,6 +447,10 @@ Mechanism:
 - "The study proves there is no material incremental lead."
 - "DTW establishes which pool leads."
 - "The forecast-gated policy improved LP performance."
+- "The conditional response is the market-wide average response."
+- "Update incidence measures causal transmission speed."
+- "A positive fee-gap difference is executable profit."
+- "Girum's matching response signs establish Base leadership."
 - Any claim of causal price discovery, toxic-flow attribution, external-LP
   profitability, or deployable alpha.
 - Any publication of selected identifiers, portfolio weights, operational
