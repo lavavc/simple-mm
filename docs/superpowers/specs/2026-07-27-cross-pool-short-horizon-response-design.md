@@ -226,8 +226,9 @@ draw, compute
 percentile is the common critical value, using
 `ceil(0.95 * valid_draw_count) - 1` as its zero-based index. The band is
 `estimate_h +/- critical * s_h`, intersected with `[0, 1]` for incidence. Any
-zero/non-finite `s_h` or unsupported horizon makes that metric's simultaneous
-family unavailable with an explicit reason.
+zero or non-finite `s_h` makes that metric's simultaneous family unavailable
+with an explicit reason. A malformed or unsupported horizon family is instead
+a hard contract failure before inference begins.
 
 If a simultaneous band is unavailable, record the exact support failure rather
 than substituting a pointwise interval. Do not produce p-values or label an
