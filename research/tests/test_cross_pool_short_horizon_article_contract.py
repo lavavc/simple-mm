@@ -13,12 +13,16 @@ EVIDENCE_PACK = Path(
     "research/articles/evidence-pack-2026-07-cngn-market-making.md"
 )
 README = Path("research/articles/README.md")
+CTO_BRIEF = Path("research/articles/cto-final-research-brief-2026-07.md")
 
 MANIFEST_SHA256 = (
     "9145738bb6dd4aa84512b3f62625d779e6e4ef223f5b614e1f9facc502ab7509"
 )
 PARENT_MANIFEST_SHA256 = (
     "adf4fd71fd33604cee70fcba7aa90d2b7763715d3cba68a868d26347c599abfe"
+)
+EVIDENCE_PACK_SHA256 = (
+    "50737e3c513b100f6d1907777f2da6fa71df485793fdaf1694ed3f61b55fe8bf"
 )
 PARENT_SOURCE_MARKER = (
     "CPL_SOURCE_MANIFEST: "
@@ -249,3 +253,142 @@ def test_extension_claim_boundaries_remain_explicit() -> None:
         assert "does not establish a unique directional leader" in normalized
         assert "does not establish deployable alpha" in normalized
         assert "does not establish net executable profit" in normalized
+
+
+def test_cto_brief_is_concise_visual_and_evidence_bound() -> None:
+    text = CTO_BRIEF.read_text()
+    normalized = " ".join(text.split())
+
+    assert len(text.split()) <= 1_500
+    for filename in FIGURE_HASHES:
+        link = f"../results/reports/cross_pool_short_horizon_v1/{filename}"
+        assert text.count(f"]({link})") == 1
+    for digest in FIGURE_HASHES.values():
+        assert text.count(digest) == 1
+    for phrase in (
+        "Decision headline",
+        "Frozen confirmatory result",
+        "Post-hoc exploratory extension",
+        "Weighted-portfolio result",
+        "unconditional response",
+        "every eligible shock",
+        "valid zero response",
+        "conditional response",
+        "selected subset",
+        "update incidence",
+        "right-censored",
+        "not a survival estimate",
+        "point estimates only",
+        "not net executable profit",
+        "does not mean the gap closed toward zero",
+        "Recommended decisions",
+        "No deployment decision",
+        "Fund measurement, not a signal",
+        "Keep portfolio research quarantined",
+        "Finish the article from the sealed evidence",
+    ):
+        assert phrase in normalized
+
+
+def test_cto_brief_records_exact_outcomes_and_source_hashes() -> None:
+    text = CTO_BRIEF.read_text()
+    normalized = " ".join(text.split())
+
+    for phrase in (
+        "BSC-to-Base MAE difference was -0.241675 bps (95% [-0.289590, -0.198156])",
+        "Base-to-BSC was -0.587238 bps (95% [-0.734881, -0.466305])",
+        "26 Base windows and 37 BSC windows",
+        "4,895 canonical economic units",
+        "candidate reset matrices were complete",
+        "allocation-rule reset matrices were invalid and incomplete",
+        "integrity passed for both packages, but the default claim gate failed for both",
+        "no weighted-portfolio performance result is reportable",
+        f"{MANIFEST_SHA256}",
+        f"{PARENT_MANIFEST_SHA256}",
+        f"{EVIDENCE_PACK_SHA256}",
+        "6ce68fa8c0a05cb6339d223e9558aa9f5a425a5205de6d5b8bdddce252241ac4",
+        "81c3f01c496f137dcaf1eb7c25b425b05eb5c93adc08fd20f5397cedcf893dc7",
+    ):
+        assert phrase in normalized
+
+    manifest = _manifest(PUBLICATION_MANIFEST)
+    primary = {
+        cohort["direction"]: cohort
+        for cohort in manifest["results"]["cohorts"]
+        if cohort["cohort"] == "primary"
+    }
+    for direction in ("bsc_to_base", "base_to_bsc"):
+        summaries = {row["horizon_ms"]: row for row in primary[direction]["summaries"]}
+        for horizon_ms in (180_000, 900_000):
+            interval = summaries[horizon_ms]["unconditional_mean_response_bps"]
+            phrase = (
+                f"{interval['point']:+.6f} bps "
+                f"[{interval['lower']:+.6f}, {interval['upper']:+.6f}]"
+            ).replace("-", "−")
+            assert phrase in normalized
+
+    bsc_to_base = primary["bsc_to_base"]["summaries"][-1]
+    base_to_bsc = primary["base_to_bsc"]["summaries"][-1]
+    for summary in (bsc_to_base, base_to_bsc):
+        incidence = (
+            f"{summary['update_count']}/{summary['eligible_event_count']} "
+            f"({summary['update_incidence']:.1%})"
+        )
+        assert incidence in normalized
+    assert (
+        f"{bsc_to_base['conditional_first_update_mean_response_bps']:+.6f} bps and "
+        f"{base_to_bsc['conditional_first_update_mean_response_bps']:+.6f} bps"
+    ) in normalized
+    assert (
+        f"{bsc_to_base['conditional_first_update_median_delay_ms'] / 1_000:g} and "
+        f"{base_to_bsc['conditional_first_update_median_delay_ms'] / 1_000:g} seconds"
+    ) in normalized
+    assert (
+        f"{bsc_to_base['mean_fee_gap_start_bps']:.6f} to "
+        f"{bsc_to_base['mean_fee_gap_end_bps']:.6f} bps"
+    ) in normalized
+    assert (
+        f"{base_to_bsc['mean_fee_gap_start_bps']:.6f} to "
+        f"{base_to_bsc['mean_fee_gap_end_bps']:.6f} bps"
+    ) in normalized
+    assert (
+        f"{bsc_to_base['mean_fee_gap_closure_bps']:+.6f} and "
+        f"{base_to_bsc['mean_fee_gap_closure_bps']:+.6f} bps"
+    ) in normalized
+
+
+def test_cto_brief_binds_economics_and_girum_to_the_sealed_evidence_pack() -> None:
+    brief = " ".join(CTO_BRIEF.read_text().split())
+    evidence = " ".join(EVIDENCE_PACK.read_text().split())
+
+    assert _sha256(EVIDENCE_PACK) == EVIDENCE_PACK_SHA256
+    for phrase in (
+        "+0.515% for the original policy and +0.310% for the gated policy",
+        "| Girum de-clustered | +3.4 bps | +0.4 bps |",
+        "| This reviewed extension | +0.035202 bps | +0.204359 bps |",
+    ):
+        assert phrase in evidence
+    for phrase in (
+        "+0.515% for the original policy and +0.310% for the gated policy",
+        "+3.4 bps Base to BSC and +0.4 bps BSC to Base",
+        "+0.035202 and +0.204359 bps",
+    ):
+        assert phrase in brief
+
+
+def test_cto_brief_preserves_prohibited_inferences_and_credentials_boundary() -> None:
+    text = CTO_BRIEF.read_text()
+    normalized = " ".join(text.split())
+
+    for phrase in (
+        "does not establish causal price discovery",
+        "does not establish a unique directional leader",
+        "does not establish deployable alpha",
+        "does not establish toxic-flow attribution",
+        "does not establish external-LP profitability",
+        "does not establish net executable profit",
+        "does not establish an affirmative no-lead result",
+    ):
+        assert phrase in normalized
+    for forbidden in ("ALCHEMY", "API_KEY", "PRIVATE_KEY", "SECRET_KEY"):
+        assert forbidden not in text
