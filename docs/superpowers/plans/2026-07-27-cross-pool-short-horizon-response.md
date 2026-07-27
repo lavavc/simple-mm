@@ -64,7 +64,7 @@ Never change `.gitignore`.
 2. Run the narrow test and confirm it fails because the module is absent:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon.py
    ```
 
 3. Perform the Sol pre-write review. Confirm typed row/status invariants,
@@ -76,8 +76,8 @@ Never change `.gitignore`.
 6. Run the narrow test to green, then:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_event_study.py research/tests/test_cross_pool_short_horizon.py
-   python -m ruff check research/cross_pool/short_horizon.py research/tests/test_cross_pool_short_horizon.py
+   python3 -m pytest -q research/tests/test_cross_pool_event_study.py research/tests/test_cross_pool_short_horizon.py
+   python3 -m ruff check research/cross_pool/short_horizon.py research/tests/test_cross_pool_short_horizon.py
    ```
 
 7. Review the diff and commit only Task 1 files:
@@ -101,7 +101,7 @@ Never change `.gitignore`.
 2. Confirm red:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon_inference.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon_inference.py
    ```
 
 3. Implement per-direction paired UTC-day resampling with 2,000 draws and seed
@@ -113,8 +113,8 @@ Never change `.gitignore`.
 6. Run:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon.py research/tests/test_cross_pool_short_horizon_inference.py
-   python -m ruff check research/cross_pool/short_horizon_inference.py research/tests/test_cross_pool_short_horizon_inference.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon.py research/tests/test_cross_pool_short_horizon_inference.py
+   python3 -m ruff check research/cross_pool/short_horizon_inference.py research/tests/test_cross_pool_short_horizon_inference.py
    ```
 
 7. Review and commit:
@@ -150,24 +150,27 @@ Never change `.gitignore`.
 3. Confirm red:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py
    ```
 
 4. Implement a narrow independent schema and manifest builder. Reuse canonical
    JSON and provenance helpers where their contracts are generic; do not widen
    the v2 article-manifest schema.
-5. Implement output-scoped locking, private staging, fsync, no-replace publish,
+5. Bind a fixed source-dependency closure and require only those paths to be
+   clean. Add a regression proving unrelated protected `research/backtester/`
+   changes do not block the extension run.
+6. Implement output-scoped locking, private staging, fsync, no-replace publish,
    compare-only verification, and fail-closed evidence validation for
    `short_horizon_manifest.json`.
-6. Ensure generated code cannot stamp `reviewed`.
-7. Run the new tests plus parent publication/reporting regressions:
+7. Ensure generated builders cannot stamp `reviewed`.
+8. Run the new tests plus parent publication/reporting regressions:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py research/tests/test_cross_pool_reporting.py
-   python -m ruff check research/cross_pool/short_horizon_manifest.py research/cross_pool/short_horizon_publication.py research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py research/tests/test_cross_pool_reporting.py
+   python3 -m ruff check research/cross_pool/short_horizon_manifest.py research/cross_pool/short_horizon_publication.py research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py
    ```
 
-8. Review and commit:
+9. Review and commit:
 
    ```bash
    git commit -m "research: seal short-horizon evidence"
@@ -189,14 +192,15 @@ Never change `.gitignore`.
    horizons in both directions, the three deterministic figures, report claim
    wording, Girum method reconciliation, and credential-safe CLI failures.
 2. Add a fixed parent-anchor fixture requiring exact 15-minute shock keys,
-   response rows, counts, and point estimates from the reviewed manifest.
+   response rows, counts, and point estimates from the validated reviewed
+   parent directory, including its hash-bound `event_study.csv`.
 3. Write review-command tests: only QA-pass `generated_unreviewed` evidence may
    be stamped; review identity/time must be explicit; artifact bytes stay
    unchanged; reviewed evidence becomes immutable.
 4. Confirm red:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
    ```
 
 5. Implement deterministic CSV/JSON/Markdown rendering and figures:
@@ -207,13 +211,14 @@ Never change `.gitignore`.
    output paths. Snapshot every input before analysis and publish only a full
    candidate or a stable QA-blocked manifest.
 7. Implement the separate review command. It must validate the complete
-   package before atomically changing only the manifest review state.
+   package before atomically changing only the manifest review state and must
+   require explicit reviewer identity and UTC review timestamp arguments.
 8. Run:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
-   python -m pytest -q research/tests/test_cross_pool_event_study.py research/tests/test_cross_pool_reporting.py research/tests/test_cross_pool_cli.py
-   python -m ruff check research/cross_pool/short_horizon_reporting.py research/scripts/run_cross_pool_short_horizon.py research/scripts/review_cross_pool_short_horizon.py research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
+   python3 -m pytest -q research/tests/test_cross_pool_event_study.py research/tests/test_cross_pool_reporting.py research/tests/test_cross_pool_cli.py
+   python3 -m ruff check research/cross_pool/short_horizon_reporting.py research/scripts/run_cross_pool_short_horizon.py research/scripts/review_cross_pool_short_horizon.py research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
    ```
 
 9. Perform the full Sol pre-commit review across Tasks 1-4 and commit:
@@ -233,13 +238,13 @@ Never change `.gitignore`.
 2. Run all focused tests:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_short_horizon.py research/tests/test_cross_pool_short_horizon_inference.py research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
+   python3 -m pytest -q research/tests/test_cross_pool_short_horizon.py research/tests/test_cross_pool_short_horizon_inference.py research/tests/test_cross_pool_short_horizon_manifest.py research/tests/test_cross_pool_short_horizon_publication.py research/tests/test_cross_pool_short_horizon_reporting.py research/tests/test_cross_pool_short_horizon_cli.py
    ```
 
 3. Run the complete parent regression surface:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_bootstrap.py research/tests/test_cross_pool_event_study.py research/tests/test_cross_pool_io.py research/tests/test_cross_pool_reporting.py research/tests/test_cross_pool_cli.py research/tests/test_cross_pool_article_contract.py
+   python3 -m pytest -q research/tests/test_cross_pool_bootstrap.py research/tests/test_cross_pool_event_study.py research/tests/test_cross_pool_io.py research/tests/test_cross_pool_reporting.py research/tests/test_cross_pool_cli.py research/tests/test_cross_pool_article_contract.py
    ```
 
 4. Run the extension once:
@@ -258,7 +263,7 @@ Never change `.gitignore`.
 8. Stamp review only after the Sol evidence review:
 
    ```bash
-   python3 research/scripts/review_cross_pool_short_horizon.py --evidence-dir research/results/cross_pool_short_horizon_v1 --reviewed-by sol_ultra
+   python3 research/scripts/review_cross_pool_short_horizon.py --evidence-dir research/results/cross_pool_short_horizon_v1 --reviewed-by sol_ultra --reviewed-at-utc <UTC-Z-timestamp>
    ```
 
 9. Validate the reviewed directory and record its manifest SHA-256. Do not
@@ -294,7 +299,7 @@ Never change `.gitignore`.
 6. Run:
 
    ```bash
-   python -m pytest -q research/tests/test_cross_pool_article_contract.py research/tests/test_cross_pool_short_horizon_article_contract.py
+   python3 -m pytest -q research/tests/test_cross_pool_article_contract.py research/tests/test_cross_pool_short_horizon_article_contract.py
    rg -n 'TODO|TBD|placeholder|causal price discovery|deployable alpha|Base leads|BSC leads' research/articles/02-backtesting-the-market-layer.md research/articles/evidence-pack-2026-07-cngn-market-making.md research/articles/README.md
    git diff --check -- research/articles research/tests/test_cross_pool_article_contract.py research/tests/test_cross_pool_short_horizon_article_contract.py
    ```

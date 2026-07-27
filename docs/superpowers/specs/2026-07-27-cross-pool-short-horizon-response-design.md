@@ -89,7 +89,7 @@ not economically interpreted without a historical stablecoin-basis series.
 
 Preserve the parent event definition exactly:
 
-- source move: cumulative raw-mid log return of at least 5 basis points from
+- source move: cumulative raw-mid simple return of at least 5 basis points from
   the source state as of 15 minutes earlier;
 - crossing: retain the first inclusive threshold crossing;
 - clustering: start a half-open 15-minute refractory interval at that crossing;
@@ -116,8 +116,12 @@ For target pool `T`, shock time `t`, and horizon `h`, let `T(u)` be the last
 target state at or before `u`:
 
 ```text
-response_bps(t, h) = 10,000 * log(raw_mid_T(t + h) / raw_mid_T(t))
+response_bps(t, h) = 10,000 * (raw_mid_T(t + h) / raw_mid_T(t) - 1)
 ```
+
+This is the reviewed parent's exact event-response estimator. It is retained
+verbatim so the 15-minute anchor can reconcile byte-for-value; it must not be
+silently replaced by the predictive panel's log-return convention.
 
 An unchanged as-of state is a valid zero response. It is not proof of a new
 target observation and must be interpreted with the update diagnostics below.
@@ -177,7 +181,8 @@ This metric includes the two pool fees already encoded in bid/ask. It excludes
 gas, slippage, latency, inventory constraints, and USDC/USDT basis and therefore
 must be called a **fee-only cross-venue gap**, not net executable profit.
 
-Constant pool fees cancel from same-side within-pool log returns. The raw-mid
+Constant pool fees cancel from same-side within-pool price ratios, whether the
+move is expressed as a simple or log return. The raw-mid
 response remains the correct statistical response; no fee-adjusted midpoint is
 constructed.
 
@@ -212,10 +217,14 @@ also construct within-direction 95% max-z simultaneous bands for:
   observed update days, positive finite bootstrap variance, and at least 1,900
   valid joint resamples.
 
-For each metric and horizon, let `s_h` be the sample standard deviation of its
-valid bootstrap estimates. For each joint draw, compute
+Every family requires at least 1,900 joint-valid draws. For conditional means,
+each horizon additionally requires at least 10 distinct shock UTC days with an
+observed update. For each metric and horizon, let `s_h` be the sample standard
+deviation (`ddof=1`) of its joint-valid bootstrap estimates. For each joint
+draw, compute
 `max_h(abs((estimate_bh - estimate_h) / s_h))`; the nearest-rank 95th
-percentile is the common critical value. The band is
+percentile is the common critical value, using
+`ceil(0.95 * valid_draw_count) - 1` as its zero-based index. The band is
 `estimate_h +/- critical * s_h`, intersected with `[0, 1]` for incidence. Any
 zero/non-finite `s_h` or unsupported horizon makes that metric's simultaneous
 family unavailable with an explicit reason.
@@ -274,6 +283,12 @@ Use an independent `short_horizon_manifest.schema.json` with schema version
 - runtime and source provenance;
 - QA counts and all summary values; and
 - the exact bytes of every non-manifest artifact.
+
+Source provenance uses an explicit dependency closure for the short-horizon
+runner, its new modules, and the reused parent measurement/loading/bootstrap
+modules. Every dependency file must be clean and hash-bound at run time.
+Unrelated protected worktree changes outside that closure neither enter the
+evidence nor block the run.
 
 Generated code may emit only `generated_unreviewed` or `qa_blocked`. A separate
 Sol Ultra evidence review is required to stamp `reviewed`. Atomic publication,
