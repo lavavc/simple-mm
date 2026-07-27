@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/cross-pool-short-horizon-manifest-v1.schema.json",
+  "title": "Cross-pool short-horizon evidence manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_status",
+    "parent",
+    "provenance",
+    "contract",
+    "qa",
+    "results",
+    "publication",
+    "artifacts",
+    "review"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "artifact_status": {
+      "enum": ["generated_unreviewed", "reviewed", "qa_blocked"]
+    },
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_sha256",
+        "schema_version",
+        "artifact_status",
+        "article_branch",
+        "economic_class",
+        "allowed_claim",
+        "base_features_sha256",
+        "bsc_features_sha256"
+      ],
+      "properties": {
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "schema_version": {"const": "2.0.0"},
+        "artifact_status": {"const": "reviewed"},
+        "article_branch": {"const": "leadership_unresolved"},
+        "economic_class": {"const": "no_net_return_improvement"},
+        "allowed_claim": {"const": "aggregate_leadership_unresolved"},
+        "base_features_sha256": {"$ref": "#/$defs/sha256"},
+        "bsc_features_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs", "code_commit", "source_dependencies", "runtime"],
+      "properties": {
+        "inputs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "parent_manifest",
+            "base_features",
+            "bsc_features",
+            "girum_note"
+          ],
+          "properties": {
+            "parent_manifest": {"$ref": "#/$defs/inputIdentity"},
+            "base_features": {
+              "oneOf": [{"$ref": "#/$defs/inputIdentity"}, {"type": "null"}]
+            },
+            "bsc_features": {
+              "oneOf": [{"$ref": "#/$defs/inputIdentity"}, {"type": "null"}]
+            },
+            "girum_note": {
+              "oneOf": [{"$ref": "#/$defs/inputIdentity"}, {"type": "null"}]
+            }
+          }
+        },
+        "code_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_dependencies": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {"$ref": "#/$defs/sha256"}
+        },
+        "runtime": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "research_role",
+        "horizons_ms",
+        "shock_threshold_bps",
+        "lookback_ms",
+        "cluster_ms",
+        "bootstrap",
+        "price_field",
+        "price_orientation",
+        "response_estimator",
+        "fee_gap",
+        "timestamp_tie_policy",
+        "common_support",
+        "stablecoin_parity_assumption",
+        "economic_interpretation_floor_bps"
+      ],
+      "properties": {
+        "research_role": {"const": "post_hoc_exploratory"},
+        "horizons_ms": {
+          "const": [30000, 60000, 120000, 180000, 300000, 600000, 900000]
+        },
+        "shock_threshold_bps": {"const": 5.0},
+        "lookback_ms": {"const": 900000},
+        "cluster_ms": {"const": 900000},
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unit",
+            "resamples",
+            "seed",
+            "bit_generator",
+            "confidence_level",
+            "pointwise_rank_convention",
+            "simultaneous_method",
+            "minimum_joint_valid_resamples",
+            "minimum_conditional_update_days"
+          ],
+          "properties": {
+            "unit": {"const": "shock_utc_day"},
+            "resamples": {"const": 2000},
+            "seed": {"const": 20260715},
+            "bit_generator": {"const": "PCG64"},
+            "confidence_level": {"const": 0.95},
+            "pointwise_rank_convention": {"const": "central_nearest_rank"},
+            "simultaneous_method": {"const": "within_direction_max_z"},
+            "minimum_joint_valid_resamples": {"const": 1900},
+            "minimum_conditional_update_days": {"const": 10}
+          }
+        },
+        "price_field": {"const": "raw_sqrt_mid"},
+        "price_orientation": {"const": "stablecoin_per_cngn"},
+        "response_estimator": {"const": "simple_return_bps"},
+        "fee_gap": {"const": "direction_fixed_fee_adjusted_bid_ask_log_ratio"},
+        "timestamp_tie_policy": {"const": "exclude_complete_shock_family_sensitivity"},
+        "common_support": {"const": "both_streams_through_900000_ms"},
+        "stablecoin_parity_assumption": {"const": "usdc_equals_usdt"},
+        "economic_interpretation_floor_bps": {"const": 10.0}
+      }
+    },
+    "qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons", "counts", "parent_anchor_reconciled"],
+      "properties": {
+        "status": {"enum": ["pass", "blocked"]},
+        "reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "counts": {
+          "oneOf": [
+            {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "direction",
+                  "detected_shock_count",
+                  "eligible_shock_count",
+                  "exclusion_count",
+                  "same_timestamp_shock_count"
+                ],
+                "properties": {
+                  "direction": {"enum": ["bsc_to_base", "base_to_bsc"]},
+                  "detected_shock_count": {"type": "integer", "minimum": 0},
+                  "eligible_shock_count": {"type": "integer", "minimum": 0},
+                  "exclusion_count": {"type": "integer", "minimum": 0},
+                  "same_timestamp_shock_count": {"type": "integer", "minimum": 0}
+                }
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "parent_anchor_reconciled": {"type": ["boolean", "null"]}
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "cohorts"],
+      "properties": {
+        "status": {"enum": ["complete", "unavailable"]},
+        "cohorts": {
+          "oneOf": [
+            {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {"type": "object"}
+            },
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_decision_unchanged",
+        "permitted_claims",
+        "forbidden_claims"
+      ],
+      "properties": {
+        "parent_decision_unchanged": {"const": true},
+        "permitted_claims": {
+          "const": [
+            "short_horizon_response_profile",
+            "update_incidence_latency_staleness_profile",
+            "fee_only_cross_venue_gap_profile",
+            "girum_method_compatibility"
+          ]
+        },
+        "forbidden_claims": {
+          "const": [
+            "causal_price_discovery",
+            "unique_directional_leader",
+            "deployable_alpha",
+            "toxic_flow_attribution",
+            "external_lp_profitability",
+            "net_executable_profit"
+          ]
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "short_horizon_events.csv",
+          "short_horizon_summaries.csv",
+          "short_horizon_qa.json",
+          "short_horizon_report.md",
+          "short_horizon_response.png",
+          "short_horizon_updates.png",
+          "short_horizon_fee_gap.png"
+        ]
+      },
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewed_by", "reviewed_at_utc"],
+      "properties": {
+        "status": {"enum": ["pending", "reviewed"]},
+        "reviewed_by": {"type": ["string", "null"]},
+        "reviewed_at_utc": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "inputIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "byte_count"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "byte_count": {"type": "integer", "minimum": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"artifact_status": {"const": "reviewed"}}},
+      "then": {
+        "properties": {
+          "review": {"properties": {"status": {"const": "reviewed"}}},
+          "qa": {"properties": {"status": {"const": "pass"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"artifact_status": {"const": "generated_unreviewed"}}},
+      "then": {
+        "properties": {
+          "review": {"properties": {"status": {"const": "pending"}}},
+          "qa": {"properties": {"status": {"const": "pass"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"artifact_status": {"const": "qa_blocked"}}},
+      "then": {
+        "properties": {
+          "review": {"properties": {"status": {"const": "pending"}}},
+          "qa": {"properties": {"status": {"const": "blocked"}}}
+        }
+      }
+    }
+  ]
+}

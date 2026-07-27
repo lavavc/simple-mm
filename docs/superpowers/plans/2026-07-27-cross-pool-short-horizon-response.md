@@ -209,7 +209,9 @@ Never change `.gitignore`.
    - fee-only shock/horizon gap and closure.
 6. Implement the runner with required explicit input, parent, context-note, and
    output paths. Snapshot every input before analysis and publish only a full
-   candidate or a stable QA-blocked manifest.
+   candidate or a stable QA-blocked manifest. Treat source-attestation failure
+   as a pre-publication hard stop; emit QA-blocked evidence only after truthful
+   source provenance and the frozen parent identity are available.
 7. Implement the separate review command. It must validate the complete
    package before atomically changing only the manifest review state and must
    require explicit reviewer identity and UTC review timestamp arguments.

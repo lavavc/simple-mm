@@ -289,7 +289,10 @@ Source provenance uses an explicit dependency closure for the short-horizon
 runner, its new modules, and the reused parent measurement/loading/bootstrap
 modules. Every dependency file must be clean and hash-bound at run time.
 Unrelated protected worktree changes outside that closure neither enter the
-evidence nor block the run.
+evidence nor block the run. Source-attestation failure is a pre-publication
+hard stop because no truthful source provenance can be formed. QA-blocked
+manifests are available only after source provenance and the frozen parent
+identity have been established.
 
 Generated code may emit only `generated_unreviewed` or `qa_blocked`. A separate
 Sol Ultra evidence review is required to stamp `reviewed`. Atomic publication,

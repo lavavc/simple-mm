@@ -1,0 +1,23 @@
+{
+  "base_features_sha256": "47bae897266c00d92823fcae8d004debf9e50d22639ab52c326b121c9b7da23a",
+  "bsc_features_sha256": "aba2dbef0548d4bca4882c26f220da14f963c1727bff855cd7532784c2cfaa5c",
+  "event_study_sha256": "b9e36198523b1b4ea070dd368999fa138f58df440a8be7e95a2c9a9c18e22211",
+  "manifest_sha256": "adf4fd71fd33604cee70fcba7aa90d2b7763715d3cba68a868d26347c599abfe",
+  "projection_15m_sha256": "f795f1b58672cf32d3977bab836fb1537465ce241b8129a49626f67799faca12",
+  "summaries": {
+    "base_to_bsc": {
+      "agreement_share": 0.24873096446700507,
+      "event_count": 197,
+      "mean_response_bps": 0.03955408492685122,
+      "median_response_bps": 0.0,
+      "shock_day_count": 70
+    },
+    "bsc_to_base": {
+      "agreement_share": 0.1951219512195122,
+      "event_count": 123,
+      "mean_response_bps": 0.8782298255072702,
+      "median_response_bps": 0.0,
+      "shock_day_count": 59
+    }
+  }
+}
