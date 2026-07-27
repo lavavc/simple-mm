@@ -514,6 +514,28 @@ def short_horizon_report_bytes(evidence: ShortHorizonEvidence) -> bytes:
                 f"{primary_summary.update_incidence:.3f} | "
                 f"{sensitivity_summary.update_incidence:.3f} |"
             )
+    three_minute_means = {
+        direction: next(
+            summary.unconditional_mean_response_bps.point
+            for summary in profiles[(direction, "primary")].summaries
+            if summary.horizon_ms == 180_000
+        )
+        for direction in _DIRECTION_ORDER
+    }
+    signs_match_girum = all(value > 0.0 for value in three_minute_means.values())
+    reproduces_magnitude_order = abs(three_minute_means["base_to_bsc"]) > abs(
+        three_minute_means["bsc_to_base"]
+    )
+    sign_comparison = (
+        "Both response signs match Girum's"
+        if signs_match_girum
+        else "The two response signs do not both match Girum's"
+    )
+    ordering_comparison = (
+        "reproduces Girum's directional magnitude ordering"
+        if reproduces_magnitude_order
+        else "does not reproduce Girum's directional magnitude ordering"
+    )
     lines.extend(
         [
             "",
@@ -528,10 +550,15 @@ def short_horizon_report_bytes(evidence: ShortHorizonEvidence) -> bytes:
             "Girum uses per-swap moves of at least 10 bps, 3- and 30-minute responses, "
             "own-trade exclusions, a 10-minute de-clustering sensitivity, and "
             "circular-shift inference. This extension uses the parent cumulative "
-            "5-bps/15-minute shock and paired UTC-day bootstrap. Agreement at three "
-            "minutes is corroborating, not a direct replication; disagreement is an "
-            "estimand or sample difference, not evidence that either result should be "
-            "discarded.",
+            "5-bps/15-minute shock and paired UTC-day bootstrap.",
+            "",
+            "Girum's de-clustered three-minute means are Base to BSC +3.4 bps and "
+            "BSC to Base +0.4 bps. This extension's three-minute means are "
+            f"Base to BSC {three_minute_means['base_to_bsc']:+.6f} bps and "
+            f"BSC to Base {three_minute_means['bsc_to_base']:+.6f} bps. "
+            f"{sign_comparison}, but the extension {ordering_comparison}. Any sign "
+            "agreement is descriptive, not corroborating evidence of Base leadership; "
+            "the estimands, samples, clustering, and inferential procedures differ.",
             "",
             "No result here establishes causal price discovery, a unique directional "
             "leader, deployable alpha, toxic flow, external LP profitability, or net "

@@ -66,6 +66,8 @@ def test_rendered_package_is_complete_deterministic_and_claim_safe() -> None:
     assert "fee-only" in report
     assert "not net executable profit" in report
     assert "Girum" in report
+    assert "does not reproduce Girum's directional magnitude ordering" in report
+    assert "descriptive, not corroborating evidence of Base leadership" in report
     assert "Primary mean response" in report
     assert "Tie-excluded mean response" in report
     assert "Primary update incidence" in report
