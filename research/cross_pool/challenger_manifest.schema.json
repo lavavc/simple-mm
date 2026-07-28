@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://automated-infra.local/cross-pool-challenger-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_status",
+    "research_role",
+    "parent_decision",
+    "parent_decision_unchanged",
+    "parent_artifacts",
+    "source_identity",
+    "runtime",
+    "configuration",
+    "registry",
+    "artifacts",
+    "qa",
+    "review",
+    "claims"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "artifact_status": {
+      "enum": ["generated_unreviewed", "reviewed", "qa_blocked"]
+    },
+    "research_role": { "const": "post_hoc_exploratory" },
+    "parent_decision": { "const": "leadership_unresolved" },
+    "parent_decision_unchanged": { "const": true },
+    "parent_artifacts": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/sha256" },
+      "minProperties": 5,
+      "maxProperties": 5
+    },
+    "source_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code_commit", "source_diff_sha256", "source_paths"],
+      "properties": {
+        "code_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_diff_sha256": { "$ref": "#/$defs/sha256" },
+        "source_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python", "numpy", "matplotlib"],
+      "properties": {
+        "python": { "type": "string", "minLength": 1 },
+        "numpy": { "type": "string", "minLength": 1 },
+        "matplotlib": { "type": "string", "minLength": 1 }
+      }
+    },
+    "configuration": { "type": "object" },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_cells",
+        "contrast_cells",
+        "source_price_cells",
+        "model_fit_failures"
+      ],
+      "properties": {
+        "metric_cells": { "const": 270 },
+        "contrast_cells": { "const": 378 },
+        "source_price_cells": { "const": 126 },
+        "model_fit_failures": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/sha256" },
+      "maxProperties": 11
+    },
+    "qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons"],
+      "properties": {
+        "status": { "enum": ["pass", "blocked"] },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewed_by", "reviewed_at_utc"],
+      "properties": {
+        "status": { "enum": ["pending", "reviewed", "blocked"] },
+        "reviewed_by": { "type": ["string", "null"] },
+        "reviewed_at_utc": { "type": ["string", "null"] }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed", "forbidden"],
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "forbidden": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

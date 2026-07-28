@@ -257,6 +257,12 @@ variance. Conditional-update inference additionally requires at least 20 OOS
 update-days. Point estimates and support are retained where meaningful, but no
 interval or adjusted claim is substituted.
 
+Complete-block support is deterministic and non-circular: mark each of the 88
+ordered calendar days that contains at least one row in the evaluation support,
+split those marks into maximal consecutive runs, and sum
+`floor(run_length / 7)`. Endpoint-specific filtering, including the two-part
+update condition, does not redefine this target-support count.
+
 A model or support limitation is a cell-level `not_adjudicable` result and
 does not invalidate otherwise complete evidence. A parent hash or anchor
 mismatch, noncanonical input or output, missing registered cell, artifact hash
@@ -281,8 +287,15 @@ It contains:
 - `loss_dependence.png`
 - `challenger_manifest.json`
 
-The manifest binds the parent hashes, source identity, configuration, artifact
-hashes, QA state, and review state. Generated evidence is
+The manifest binds the parent hashes, the explicit executable-source closure,
+its Git commit, the SHA-256 of `git diff --binary HEAD` over that tracked
+closure, configuration, artifact hashes, QA state, and review state. The
+closure includes every transitively imported local module, executed package
+initializer, and loaded JSON schema. A static closure test rejects omitted local
+imports and dynamic imports. An untracked source dependency blocks execution.
+Canonical evidence is generated
+from a provenance checkpoint commit, so its scoped diff is empty and the
+recorded commit contains the executable study. Generated evidence is
 `generated_unreviewed`; a failed contract produces `qa_blocked`; only an
 explicit review operation may produce `reviewed`. Publication is atomic and a
 rerun against an existing directory must be byte-identical.

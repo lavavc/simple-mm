@@ -283,8 +283,9 @@ python3 -m pytest \
 
 **Implementation**
 
-- Capture source identity, current commit/diff identity, runtime, parent
-  identity, configuration, artifact hashes, QA reasons, and review state.
+- Capture the statically tested full transitive local source closure, current
+  commit/diff identity, runtime, parent identity, configuration, artifact
+  hashes, QA reasons, and review state.
 - Reuse established atomic-publication mechanics without importing the frozen
   parent's closed artifact contracts.
 - Add narrow run and review CLIs.
@@ -293,17 +294,22 @@ python3 -m pytest \
 
 1. Run formatting/static checks used by the research surface.
 2. Run all challenger tests, then the complete cross-pool test suite.
-3. Run the CLI against `research/results/cross_pool_lead_lag` into
+3. Complete the Sol Ultra source review, stage only the challenger implementation,
+   and create a provenance checkpoint commit. The evidence CLI rejects an
+   untracked source closure; the canonical manifest must point to a commit that
+   contains the executable study rather than a pre-implementation `HEAD` plus an
+   unrecoverable content hash.
+4. Run the CLI against `research/results/cross_pool_lead_lag` into
    `research/results/cross_pool_challengers_v1`.
-4. Validate the generated package independently, inspect all support/failure
+5. Validate the generated package independently, inspect all support/failure
    cells, and compare headline tables to direct calculations.
-5. Ask a read-only Terra reviewer to audit the complete code diff and generated
+6. Ask a read-only Terra reviewer to audit the complete code diff and generated
    results. Sol Ultra adjudicates every finding and makes any correction.
-6. Rerun the CLI against the existing generated package in compare-only mode
+7. Rerun the CLI against the existing generated package in compare-only mode
    and require byte-identical artifacts. Do not delete or clean the target.
-7. Explicitly review the final QA-pass package as `sol_ultra` with a UTC review
+8. Explicitly review the final QA-pass package as `sol_ultra` with a UTC review
    timestamp, then validate it again.
-8. Copy the five reviewed PNG artifacts byte-for-byte into
+9. Copy the five reviewed PNG artifacts byte-for-byte into
    `research/results/reports/cross_pool_challengers_v1/` and verify each copied
    hash against the reviewed manifest before editing the brief.
 
@@ -346,6 +352,7 @@ python3 research/scripts/run_cross_pool_challengers.py \
 3. Re-run focused and full verification from the final tree.
 4. Check statistical formulas, edge cases, comments, docs, deterministic bytes,
    and figure references.
-5. Stage only challenger code/tests/docs, the intended CTO brief change, and
-   the five reviewed, manifest-matched CTO figure copies.
-6. Commit in reviewable slices and push `research` only after every gate passes.
+5. Confirm the provenance checkpoint contains only challenger code/tests/docs.
+   Stage the intended CTO brief change and the five reviewed, manifest-matched
+   CTO figure copies as a separate publication commit.
+6. Push `research` only after every gate passes.

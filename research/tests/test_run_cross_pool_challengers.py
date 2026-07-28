@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import shutil
+import subprocess
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from research.cross_pool import challenger_publication
+from research.cross_pool.challenger_artifacts import (
+    CHALLENGER_ARTIFACT_NAMES,
+    ChallengerArtifact,
+)
+from research.cross_pool.challenger_manifest import canonical_challenger_manifest_bytes
+from research.cross_pool.challenger_publication import (
+    ChallengerPublicationError,
+    review_challenger_evidence,
+    validate_challenger_evidence_directory,
+    write_challenger_candidate,
+)
+from research.scripts.run_cross_pool_challengers import (
+    ChallengerCliError,
+    RunArguments,
+    _capture_source_identity_at,
+    run,
+)
+
+PARENT_DIR = Path("research/results/cross_pool_lead_lag")
+
+
+def _git(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ("git", *arguments),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    return completed.stdout.decode("utf-8").strip()
+
+
+def test_source_identity_hashes_actual_diff_and_rejects_untracked_closure(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init")
+    _git(repository, "config", "user.email", "research@example.invalid")
+    _git(repository, "config", "user.name", "Research Test")
+    source = repository / "source.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    _git(repository, "add", "source.py")
+    _git(repository, "commit", "-m", "fixture")
+    fixture_commit = _git(repository, "rev-parse", "HEAD")
+
+    clean_commit, clean_diff = _capture_source_identity_at(
+        repository_root=repository,
+        source_paths=("source.py",),
+    )
+    assert clean_commit == fixture_commit
+    assert clean_diff == hashlib.sha256(b"").hexdigest()
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    first = _capture_source_identity_at(
+        repository_root=repository,
+        source_paths=("source.py",),
+    )
+    second = _capture_source_identity_at(
+        repository_root=repository,
+        source_paths=("source.py",),
+    )
+    assert first == second
+    assert first[1] != clean_diff
+
+    (repository / "untracked.py").write_text("VALUE = 3\n", encoding="utf-8")
+    with pytest.raises(ChallengerCliError, match="must be tracked"):
+        _capture_source_identity_at(
+            repository_root=repository,
+            source_paths=("source.py", "untracked.py"),
+        )
+
+
+def test_run_publish_compare_and_review_are_atomic_and_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out_dir = tmp_path / "challengers"
+    arguments = RunArguments(parent_dir=PARENT_DIR, out_dir=out_dir)
+
+    assert run(arguments) == 0
+    generated = validate_challenger_evidence_directory(out_dir)
+    original = {path.name: path.read_bytes() for path in out_dir.iterdir()}
+    assert generated["artifact_status"] == "generated_unreviewed"
+
+    assert run(arguments) == 0
+    assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
+
+    review_challenger_evidence(
+        out_dir,
+        reviewed_by="sol_ultra",
+        reviewed_at_utc="2026-07-27T23:59:00Z",
+    )
+    reviewed = validate_challenger_evidence_directory(out_dir)
+    assert reviewed["artifact_status"] == "reviewed"
+    assert set(path.name for path in out_dir.iterdir()) == set(original)
+
+    tampered_dir = tmp_path / "self-hashed-malformed"
+    shutil.copytree(out_dir, tampered_dir)
+    metrics_path = tampered_dir / "challenger_metrics.csv"
+    metrics_path.write_bytes(
+        metrics_path.read_bytes().replace(b"family,variant", b"famxly,variant", 1)
+    )
+    tampered_manifest = deepcopy(reviewed)
+    tampered_manifest["artifacts"]["challenger_metrics.csv"] = hashlib.sha256(
+        metrics_path.read_bytes()
+    ).hexdigest()
+    (tampered_dir / "challenger_manifest.json").write_bytes(
+        canonical_challenger_manifest_bytes(tampered_manifest)
+    )
+    with pytest.raises(ChallengerPublicationError, match="projection is invalid"):
+        validate_challenger_evidence_directory(tampered_dir)
+
+    numeric_dir = tmp_path / "self-hashed-wrong-number"
+    shutil.copytree(out_dir, numeric_dir)
+    predictions_path = numeric_dir / "challenger_predictions.csv"
+    reader = csv.DictReader(io.StringIO(predictions_path.read_text(encoding="utf-8")))
+    prediction_rows = list(reader)
+    assert reader.fieldnames is not None
+    prediction_rows[0]["prediction_bps"] = repr(
+        float(prediction_rows[0]["prediction_bps"]) + 1.0
+    )
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=reader.fieldnames, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(prediction_rows)
+    predictions_path.write_text(buffer.getvalue(), encoding="utf-8", newline="")
+    numeric_manifest = deepcopy(reviewed)
+    numeric_manifest["artifacts"]["challenger_predictions.csv"] = hashlib.sha256(
+        predictions_path.read_bytes()
+    ).hexdigest()
+    (numeric_dir / "challenger_manifest.json").write_bytes(
+        canonical_challenger_manifest_bytes(numeric_manifest)
+    )
+    with pytest.raises(ChallengerPublicationError, match="quantitatively inconsistent"):
+        validate_challenger_evidence_directory(numeric_dir)
+
+    rejected_candidate = tmp_path / "rejected-candidate"
+    numeric_artifacts = tuple(
+        ChallengerArtifact(name, (numeric_dir / name).read_bytes())
+        for name in CHALLENGER_ARTIFACT_NAMES
+    )
+    with pytest.raises(ChallengerPublicationError):
+        write_challenger_candidate(
+            rejected_candidate,
+            numeric_artifacts,
+            numeric_manifest,
+        )
+    assert not rejected_candidate.exists()
+
+    fsync_candidate = tmp_path / "fsync-failure-candidate"
+    valid_artifacts = tuple(
+        ChallengerArtifact(name, (out_dir / name).read_bytes())
+        for name in CHALLENGER_ARTIFACT_NAMES
+    )
+
+    def fail_directory_fsync(_directory: Path) -> None:
+        raise OSError("injected directory fsync failure")
+
+    monkeypatch.setattr(
+        challenger_publication,
+        "_fsync_directory",
+        fail_directory_fsync,
+    )
+    with pytest.raises(ChallengerPublicationError, match="could not be sealed"):
+        write_challenger_candidate(fsync_candidate, valid_artifacts, reviewed)
+    assert not fsync_candidate.exists()
+
+
+def test_invalid_parent_publishes_only_blocked_manifest(tmp_path: Path) -> None:
+    out_dir = tmp_path / "blocked"
+
+    assert run(RunArguments(parent_dir=tmp_path / "missing", out_dir=out_dir)) == 1
+
+    manifest = validate_challenger_evidence_directory(out_dir)
+    assert manifest["artifact_status"] == "qa_blocked"
+    assert manifest["qa"]["status"] == "blocked"
+    assert manifest["qa"]["reasons"] == ["PARENT_OR_ANALYSIS_CONTRACT_INVALID"]
+    assert set(path.name for path in out_dir.iterdir()) == {"challenger_manifest.json"}
+
+
+def test_unexpected_programming_error_is_not_sealed_as_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    out_dir = tmp_path / "unexpected"
+
+    def raise_programmer_error(_parent) -> None:
+        raise RuntimeError("programmer defect")
+
+    monkeypatch.setattr(
+        "research.scripts.run_cross_pool_challengers.run_challengers",
+        raise_programmer_error,
+    )
+
+    with pytest.raises(RuntimeError, match="programmer defect"):
+        run(RunArguments(parent_dir=PARENT_DIR, out_dir=out_dir))
+    assert not out_dir.exists()
