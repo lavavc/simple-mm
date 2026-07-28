@@ -24,6 +24,10 @@ needs new data or a corrected research contract.
 - **Post-hoc exploratory extension, chosen after the parent test:** the
   seven-horizon response study adds timing and fee-gap measurements but does
   not change the pre-specified conclusion.
+- **Post-hoc predictive challengers:** autoregressive, nonlinear,
+  outlier-resistant, and two-part models found no favorable adjusted
+  source-price result. The parent
+  `leadership_unresolved` decision is unchanged.
 - **Weighted-portfolio result:** artifact files passed integrity checks, but the
   required claim gate failed, so no portfolio-performance result is reportable.
 
@@ -43,12 +47,13 @@ An **as-of price** is the newest recorded price available at or before a chosen
 time. The code never waits for information from the future. This matters when
 one pool updates less often than the other.
 
-A **confidence interval** measures sampling uncertainty. The studies use a
-**block bootstrap** that resamples whole UTC days 2,000 times. Resampling days
-keeps same-day observations together instead of pretending every nearby event
-is independent. A pointwise 95% interval covers one horizon. A simultaneous
-max-z interval is wider because it protects the conclusion across all tested
-horizons at once.
+A **confidence interval** measures sampling uncertainty. The parent and
+short-horizon studies use a **block bootstrap** that resamples whole UTC days
+2,000 times. The predictive challenger uses 10,000 draws of seven-day calendar
+blocks. Both approaches keep nearby observations together instead of pretending
+they are independent. A pointwise 95% interval covers one comparison. A
+simultaneous interval is wider because it protects a family of comparisons at
+once.
 
 A **reset-capital window** starts each evaluation window with the same capital.
 Window returns can therefore be compared and summed as isolated experiments.
@@ -314,6 +319,175 @@ pool. Lower is better. The teal bar is taller at every shown horizon and
 direction. The chart shows point estimates; the day-bootstrap intervals and
 decision classes live in the reviewed manifest.
 
+#### Post-hoc challenger checks
+
+The parent result could have been a bad fit for ordinary least squares (OLS),
+so a sealed follow-up tested four alternatives. The response variable remained
+the target pool's future return. Predictors were computed as of the forecast
+time: recent target returns, target and source state age, the source return, and
+the signed cross-pool price gap. Nothing from after the forecast timestamp
+entered a fit.
+
+The comparison used 13 expanding walk-forward folds and an 88-day
+out-of-sample calendar. Each model trained only on earlier observations. Error
+uncertainty came from 10,000 draws of seven-day circular calendar blocks. A
+single max-t adjustment covered all 126 registered source-price comparisons.
+That matters because nearby forecast errors were dependent and because trying
+many models, horizons, directions, and freshness filters creates false-positive
+risk.
+
+The three feature sets answer different questions. `target_only` uses target
+history. `source_age` adds how stale the other pool's observed state is.
+`full_source` adds the source return and signed price gap. The primary contrast
+is `source_age` MAE minus `full_source` MAE. A positive change means source-price
+information reduced error after staleness was already known. A negative change
+means it made the forecast worse.
+
+**What the models assume.** OLS fits one straight conditional-mean relationship
+inside each training fold. The out-of-sample comparison allows dependent rows;
+the loss bootstrap accounts for that dependence instead of relying on textbook
+coefficient p-values. ARX(2) is the same linear model with a
+second target-return lag, testing whether OLS merely omitted short target-pool
+memory. The restricted additive model uses a fixed piecewise-linear form, with
+knots set at each training fold's one-third and two-thirds quantiles; it has no
+interactions or smoothing search. Huber regression keeps a linear conditional
+location while reducing the weight of large residuals. The two-part model uses
+ridge-logistic regression to predict whether the target state will update, then
+Huber regression to predict the signed return among updates; multiplying the
+two gives an unconditional mean forecast across every panel row.
+
+In that last model, **incidence** is the share of rows where the target
+pool recorded a newer state before the horizon. At one hour it was 475/2,109
+(22.52%) for BSC to Base and 1,117/2,109 (52.96%) for Base to BSC. The
+conditional-return component describes only the rows that updated. The product
+also accounts for rows that did not update, which is why it is called
+unconditional.
+
+The main all-support point estimates were uniformly unfavorable for the three
+fully available model families:
+
+| Model and direction | 15-minute ΔMAE | 1-hour ΔMAE | 4-hour ΔMAE |
+| --- | ---: | ---: | ---: |
+| OLS, BSC to Base | -0.108520 bps | -0.229780 bps | -0.276148 bps |
+| OLS, Base to BSC | -0.249967 bps | -0.464223 bps | -1.671988 bps |
+| ARX(2), BSC to Base | -0.105776 bps | -0.228620 bps | -0.257757 bps |
+| ARX(2), Base to BSC | -0.253038 bps | -0.494932 bps | -0.722461 bps |
+| Restricted additive, BSC to Base | -0.079528 bps | -0.228504 bps | -0.881096 bps |
+| Restricted additive, Base to BSC | -0.219571 bps | -0.664031 bps | -2.793793 bps |
+
+At the primary one-hour horizon, every adjudicable row below used 2,109
+observations, 88 target days, and 12 complete seven-day blocks:
+
+| Model | BSC to Base ΔMAE, simultaneous 95% interval, adjusted p | Base to BSC ΔMAE, simultaneous 95% interval, adjusted p |
+| --- | --- | --- |
+| OLS | -0.229780 bps, [-0.309099, -0.150462], 0.000100 | -0.464223 bps, [-0.727192, -0.201254], 0.001100 |
+| ARX(2) | -0.228620 bps, [-0.311194, -0.146047], 0.000100 | -0.494932 bps, [-0.780116, -0.209748], 0.001200 |
+| Restricted additive | -0.228504 bps, [-0.502756, +0.045748], 0.158284 | -0.664031 bps, [-1.019637, -0.308425], 0.000600 |
+| Huber | unavailable | numerical null: -1.61e-12 bps, [-3.06e-12, -1.68e-13], 0.022998 |
+| Two-part | unavailable | -0.088346 bps, [-0.190972, +0.014280], 0.130687 |
+
+The Huber p-value needs special care. Its all-support effect is about one
+trillionth of a basis point: statistical arithmetic can distinguish that value
+from zero even though it is economically and numerically zero. The same issue
+appears when both observed states are at most four hours old: -1.82676e-12 bps
+with adjusted p=0.025697. The reviewed manifest classifies both as numerical
+nulls and excludes them from substantive counts.
+
+Across all 126 registered source-price cells, 78 were adjudicable and 48 were
+unavailable. The registry contains 90 unconditional-MAE cells, 18 two-part
+update-probability Brier-loss cells, and 18 two-part conditional-update-MAE
+cells. Forty had adjusted p no greater than 0.05. After removing the two Huber
+numerical nulls, 38 were substantively adverse and none was favorable. Six
+adjudicable cells had positive point estimates, but none was
+adjusted-significant. The supported conclusion is narrow: the tested
+source-price features did not improve these forecasts. Cross-pool information
+could still exist outside these features, horizons, or sample.
+
+![One-hour challenger model error](../results/reports/cross_pool_challengers_v1_2/model_error_comparison.png)
+
+*How to read the graph:* each bar is one-hour out-of-sample MAE, so lower is
+better. Gray uses target-only features. Teal uses the full source block,
+including source age. Teal is higher for OLS, ARX(2), and the additive model in
+both directions. The next graph isolates source price after accounting for
+source age.
+
+![Incremental source-price value](../results/reports/cross_pool_challengers_v1_2/source_price_contrasts.png)
+
+*How to read the graph:* zero means source return and the signed gap added no
+value after source age. Points to the right would improve MAE. Points to the
+left worsen it. Horizontal lines are simultaneous 95% intervals. The Huber
+point visually coincides with zero at chart scale. It is the reviewed numerical
+null, not a favorable or adverse economic result.
+
+Maximum design condition numbers were 1.94 for OLS, 2.23 for ARX(2), and 29.43
+for the additive model; those fits were not dominated by obvious collinearity.
+The adverse out-of-sample contrasts, rather than the fit diagnostics, establish
+that these alternatives do not overturn the OLS result. The additive model made
+475 validation extrapolations beyond its training-knot range, which remains a
+limitation. Every one of the 13 one-hour folds was negative for OLS, ARX(2), and
+the additive model in both directions.
+
+Restricting to fresher observed states did not improve the contrast. For BSC to
+Base at one hour, the same OLS forecasts produced ΔMAE of -0.229780,
+-0.254942, and -0.318365 bps on all rows, the at-most-four-hour subset, and the
+at-most-one-hour subset.
+ARX(2) scored -0.228620, -0.248239, and -0.284981 bps; the additive model scored
+-0.228504, -0.262909, and -0.329051 bps. These are rescored forecasts, not new
+fits selected on the fresher subsets.
+
+![Freshness sensitivity](../results/reports/cross_pool_challengers_v1_2/freshness_sensitivity.png)
+
+*How to read the graph:* moving right imposes a stricter observed-state-age
+filter. More negative values mean the source-price block hurt MAE more. All
+three families remain negative, so stale observations are not a sufficient
+explanation for the original result.
+
+The two-part model matched an important data property: target states often did
+not update within the horizon. Its probability estimates were not well
+calibrated, however. Several probability bins lie far from the 45-degree line,
+especially for Base to BSC. A model that predicts update frequency poorly
+cannot turn the conditional-move fit into a reliable unconditional forecast.
+
+![Two-part update calibration](../results/reports/cross_pool_challengers_v1_2/two_part_calibration.png)
+
+*How to read the graph:* each point groups similar predicted update
+probabilities and compares them with observed incidence. The dashed diagonal is
+perfect calibration. Only model cells that completed all required fits appear.
+Visible departures from the diagonal block any calibrated-probability claim.
+
+Daily loss differences were also serially dependent. At one hour for Base to
+BSC, lag-one autocorrelation was 0.526 for OLS, 0.529 for ARX(2), and 0.590 for
+the additive model. Row-wise standard errors would therefore be too optimistic;
+the seven-day block bootstrap is the appropriate comparison here.
+
+![Dependence in challenger loss differences](../results/reports/cross_pool_challengers_v1_2/loss_dependence.png)
+
+*How to read the graph:* the horizontal axis is the number of calendar days
+between paired loss differences. The vertical axis is autocorrelation. Values
+away from zero show persistence in forecast performance. They justify block
+resampling; they do not identify a leader or a causal mechanism.
+
+The run produced 276,320 predictions and 1,040 completed fold fits. The
+artifacts retain all ten fit failures. Huber full-source fits
+failed for BSC to Base at one and four hours and Base to BSC at four hours.
+Two-part conditional-Huber fits failed for every 15-minute variant in both
+directions and for full-source BSC to Base at one hour. Huber scale estimates
+fell as low as 4.0e-26, and some fits downweighted every observation. Failed
+cells count only as unavailable.
+
+ARMA or ARIMA would add residual dynamics and stronger regular-spacing and
+stationarity assumptions to an asynchronous as-of panel. ARX(2) tests the
+highest-value short-memory version without hiding those assumptions in a larger
+search. Broad tree ensembles and neural networks would require another layer of
+hyperparameter selection on only 88 out-of-sample days. The restricted
+additive model tests modest nonlinearity without that search burden. More
+complex models belong in a predeclared fresh-data replication with nested
+tuning, not another pass over this sealed sample.
+
+The challenger study is post-hoc. It strengthens the diagnosis that these
+specific source features do not improve the tested forecasts, but it does not
+change the reviewed parent decision: cross-pool leadership remains unresolved.
+
 ### Hypothesis 8: Event responses and time alignment identify a leader
 
 The event study asks what the target pool's as-of price does after a predefined
@@ -463,6 +637,10 @@ before results are inspected:
   non-pool inventory comparator and limited transfer evidence.
 - **Portfolio-level allocation-rule PBO and performance:** blocked by the
   incomplete allocation-rule reset matrices.
+- **Fresh-data predictive replication:** the OLS, ARX(2), additive, Huber, and
+  two-part comparison is sealed but post-hoc. ARMA, ARIMA, tree, and neural
+  searches were not run on the same sample because they would add another
+  unbudgeted model-selection layer.
 - **Causal price discovery, toxic-flow attribution, and external-LP
   profitability:** none of the completed studies identifies these mechanisms.
 
@@ -472,10 +650,13 @@ before results are inspected:
    or portfolio-allocation change from this program.
 2. **Fund measurement:** collect timestamped independent prices, executable
    depth, fills, state age, gas, slippage, and stablecoin basis.
-3. **Keep portfolio research separate from live decisions:** preserve the
+3. **Do not escalate model complexity on the sealed sample:** predeclare any
+   broader time-series or machine-learning comparison and test it on fresh data
+   with nested tuning.
+4. **Keep portfolio research separate from live decisions:** preserve the
    failed claim gate and repair the allocation-rule matrix contract before any
    new evaluation.
-4. **Finish the article from the sealed evidence:** publish the methods, exact
+5. **Finish the article from the sealed evidence:** publish the methods, exact
    aggregate results, and negative findings without operational policy details.
 
 ## Claim boundary
@@ -503,6 +684,18 @@ profitability, net executable profit, or a definitive no-lead finding.
   `7efeae4b654f55137de04186640b7d3b5674f0663fbd9d3205526bbc59172433`,
   and
   `ff2fe442578bd04bfbd6cb099cb2d01d19f6c118cba1e921c65e64be57b2e09c`.
+- Reviewed predictive-challenger manifest:
+  `research/results/cross_pool_challengers_v1_2/challenger_manifest.json`,
+  SHA-256
+  `2d7cc2f8047b2b421c2b011ea47e77369722ef37406e656aa6471a216fc987b3`.
+- Challenger model-error, source-contrast, freshness, calibration, and
+  dependence figures: SHA-256
+  `00bd7cad50952bceda7ca4354b29545145cb268f2c4247226ff7193c2ce1fdf0`,
+  `7f18b23736cc3ceb321268c6596bfa154048701a55ba26c28d0e758e62b29ea8`,
+  `b3902e3b08fea524ea654b13053043d06f3ab7b9c5c0176177a7140f5b4de8b2`,
+  `bced9d4b3a771466fec16af4e8f78843577d97bf81922c34f9680f12cfc8c6db`,
+  and
+  `6614d7f9a72fb29c34ebc09206b4010a831157f6255e13ffd70846313e28f135`.
 - Base and BSC portfolio manifests: SHA-256
   `6ce68fa8c0a05cb6339d223e9558aa9f5a425a5205de6d5b8bdddce252241ac4`
   and
