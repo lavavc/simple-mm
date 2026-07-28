@@ -2,7 +2,12 @@
 
 **Date:** 2026-07-27
 
-**Status:** Approved research design; implementation pending
+**Status:** Sealed; implementation and evidence review complete
+
+**Reviewed artifact:**
+`research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json`,
+SHA-256
+`9145738bb6dd4aa84512b3f62625d779e6e4ef223f5b614e1f9facc502ab7509`
 
 **Scope:** Post-hoc event-conditioned Base/BSC response study at 30 seconds
 through 15 minutes, followed by evidence sealing, article integration, a CTO

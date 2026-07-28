@@ -43,12 +43,27 @@ Active July 2026 sequence:
 Supporting evidence:
 
 - `evidence-pack-2026-07-cngn-market-making.md`
+- `cto-final-research-brief-2026-07.md`
 - `docs/superpowers/specs/2026-07-15-cross-pool-price-leadership-design.md`
-- `../results/cross_pool_lead_lag/article_manifest.json`
-- `../results/cross_pool_lead_lag/statistical_report.md`
-- `../results/cross_pool_lead_lag/frozen_policy_report.md`
 - `../results/cross_pool_short_horizon_v1/short_horizon_manifest.json`
 - `../results/reports/cross_pool_short_horizon_v1/short_horizon_manifest.json`
+
+The parent run's generated manifest and reports remain local under
+`../results/cross_pool_lead_lag/`; the evidence pack and CTO brief bind the
+reviewed manifest by SHA-256. The parent manifest is too large for the
+publication mirror because it contains the full coverage witness. It remains
+ignored research output; `.gitignore` is unchanged.
+
+Tracked publication artifacts:
+
+- `../results/reports/cross_pool_lead_lag/`: the three parent figures cited by
+  the CTO brief.
+- `../results/reports/cross_pool_short_horizon_v1/`: the reviewed extension
+  manifest and three cited figures.
+
+The CTO brief is the compact engineering handoff. It explains all completed
+hypotheses, exact outcomes, statistical terms, figures, and failed or unfinished
+work. The evidence pack remains the durable claim ledger.
 
 Publication boundary: the reviewed manifest permits only the aggregate claim
 that directional leadership remains unresolved and the independent economic

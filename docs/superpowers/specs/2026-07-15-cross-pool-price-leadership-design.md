@@ -1,5 +1,12 @@
 # Cross-Pool cNGN Price Leadership Experiment Design
 
+> **Closed 2026-07-27:** The reviewed parent manifest is
+> `research/results/cross_pool_lead_lag/article_manifest.json`. Its decision is
+> `leadership_unresolved`; the frozen economic class is
+> `no_net_return_improvement`. The sealed short-horizon extension is governed by
+> `2026-07-27-cross-pool-short-horizon-response-design.md`. Preserve this body as
+> the frozen parent design.
+
 ## Goal
 
 Test whether BSC Uniswap v4 price information improves out-of-sample prediction

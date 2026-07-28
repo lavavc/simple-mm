@@ -1,5 +1,9 @@
 # Cross-Pool Statistical Core Implementation Plan
 
+> **Execution complete 2026-07-27:** The reviewed parent decision is
+> `leadership_unresolved`. The short-horizon extension is separately sealed
+> under the July 27 design. Preserve this plan as implementation provenance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use

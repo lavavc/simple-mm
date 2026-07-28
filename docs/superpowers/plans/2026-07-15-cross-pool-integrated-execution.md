@@ -1,5 +1,9 @@
 # Cross-Pool Integrated Execution Plan
 
+> **Execution complete 2026-07-27:** The reviewed parent decision is
+> `leadership_unresolved`; the economic class is `no_net_return_improvement`.
+> Preserve this plan as coordination provenance.
+
 **Goal:** Execute the July 15 statistical research, portfolio/backtester
 integration, and Article 2 work as three coordinated streams without letting
 generated results leak into prose before review.

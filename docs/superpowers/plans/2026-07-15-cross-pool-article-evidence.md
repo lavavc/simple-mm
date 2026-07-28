@@ -1,5 +1,9 @@
 # Cross-Pool Article Evidence Implementation Plan
 
+> **Execution complete 2026-07-27:** Reviewed parent and short-horizon evidence
+> is integrated into `research/articles/evidence-pack-2026-07-cngn-market-making.md`.
+> Preserve this plan as implementation provenance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use

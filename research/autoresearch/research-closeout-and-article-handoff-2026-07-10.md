@@ -504,3 +504,17 @@ Suggested skills:
 - `superpowers:verification-before-completion`
 - `quant-analyst`
 - `firecrawl-search` or `firecrawl-scrape` for source checks
+
+## July 27 Closure Addendum
+
+The suggested next-session prompt above is historical and should not be run.
+The research program has since closed the external-reference search, completed
+the parent cross-pool experiment, sealed the post-hoc short-horizon extension,
+and integrated the reviewed evidence into Article 2.
+
+The parent conclusion is `leadership_unresolved`; the frozen LP gate is
+`no_net_return_improvement`. The short-horizon extension does not change either
+decision. The weighted-portfolio packages passed integrity checks but failed
+the claim gate, so no portfolio performance is reportable. The current
+engineering handoff is
+`research/articles/cto-final-research-brief-2026-07.md`.

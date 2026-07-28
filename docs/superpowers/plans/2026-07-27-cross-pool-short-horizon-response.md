@@ -8,6 +8,13 @@
 response package; integrate only reviewed evidence into the final empirical
 article; prepare a concise CTO brief; then clean task-created repository debris.
 
+**Status (2026-07-27):** Complete. The reviewed manifest is sealed at
+`9145738bb6dd4aa84512b3f62625d779e6e4ef223f5b614e1f9facc502ab7509`;
+the article evidence pack and CTO brief contain the reviewed results. The
+authorized cleanup removed `.firecrawl/`, generated caches, `.DS_Store` files,
+and inactive zero-byte research locks. The other protected paths below remain
+untouched.
+
 **Design:**
 `docs/superpowers/specs/2026-07-27-cross-pool-short-horizon-response-design.md`
 

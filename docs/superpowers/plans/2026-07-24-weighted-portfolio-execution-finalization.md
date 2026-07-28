@@ -1,5 +1,9 @@
 # Weighted Portfolio Execution Finalization Implementation Plan
 
+> **Historical v3 plan:** The binding successor is
+> [`2026-07-24-weighted-portfolio-v4-shared-exit-funding.md`](2026-07-24-weighted-portfolio-v4-shared-exit-funding.md).
+> Preserve this document as audit provenance; do not start or resume a v3 run.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the two invalid joint-portfolio execution seams with a fixed-cost-safe entry planner and globally funded terminal settlement, then publish versioned diagnostics that make every failure and execution decision reproducible.

@@ -1,5 +1,9 @@
 # Cross-Pool Economic and Portfolio Integration Implementation Plan
 
+> **Execution complete 2026-07-27:** The frozen economic classification is
+> `no_net_return_improvement`. Preserve this plan as implementation provenance;
+> the weighted-portfolio successor is the July 24 v4 contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use

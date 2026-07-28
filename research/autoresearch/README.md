@@ -11,9 +11,21 @@ Historical progress notes live in `research/autoresearch/archive/`.
 | Fair price closeout | `research/autoresearch/fair-price.md` | Close Fair Price as feed-quality and market-structure evidence because no accepted non-pool label overlaps the current windows. |
 | DEX LP closeout | `research/autoresearch/lp.md` | Preserve Base/BSC diagnostic LP findings while blocking live promotion until an external comparator exists. |
 | Quidax CEX execution EDA | `research/autoresearch/quidax-cex-execution-eda-2026-07-10.md` | Analyze the historical Quidax top-of-book JSON sample and its limits for CEX anchor/execution tests. |
-| Research closeout and article handoff | `research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md` | Track final comparator rejection, repo cleanup, and the two-article publication plan. |
 | Quidax latency | `research/autoresearch/quidax-latency.md` | Measure execution latency so markout horizons and execution-risk assumptions are defensible. |
-| Cross-venue lead/lag | `research/autoresearch/cross-venue-lead-lag-2026-07-15.md` | Establish which venue leads cNGN price discovery, quote-level and swap-level, with own-trade exclusion. |
+
+## Closed Handoffs
+
+| Handoff | Status | Current replacement |
+|---|---|---|
+| `research/autoresearch/research-closeout-and-article-handoff-2026-07-10.md` | Historical closeout; do not execute its next-session prompt. | `research/articles/cto-final-research-brief-2026-07.md` and `research/articles/evidence-pack-2026-07-cngn-market-making.md` |
+
+## Reviewed Cross-Pool Evidence
+
+| Role | Source | Current interpretation |
+|---|---|---|
+| Parent reviewed experiment | `research/results/cross_pool_lead_lag/article_manifest.json` | Directional leadership remains unresolved; the frozen forecast gate did not improve net return. |
+| Reviewed short-horizon extension | `research/results/cross_pool_short_horizon_v1/short_horizon_manifest.json` | Post-hoc timing and fee-gap diagnostics only; the parent conclusion is unchanged. |
+| Historical comparator | `research/autoresearch/cross-venue-lead-lag-2026-07-15.md` | Girum's hash-bound memo is preserved for comparison, not used as the active pipeline or final conclusion. |
 
 ## Closed External-Reference Acquisition
 

@@ -4,11 +4,15 @@
 > [`2026-07-24-weighted-portfolio-execution-finalization.md`](2026-07-24-weighted-portfolio-execution-finalization.md)
 > supersedes this document's entry-scaling, terminal-settlement, diagnostics,
 > checkpoint-compatibility, and source-freeze clauses. Preserve this document as
-> v2 audit provenance; do not use its conflicting clauses for a v3 run.
+> v2 audit provenance. The binding successor is the v4 shared-exit-funding
+> design
+> [`2026-07-24-weighted-portfolio-v4-shared-exit-funding-design.md`](2026-07-24-weighted-portfolio-v4-shared-exit-funding-design.md);
+> do not use this document's conflicting clauses for a v3 or v4 run.
 
 **Date frozen:** 2026-07-23
-**Status:** approved amendment; implementation complete, final verification and
-frozen Base/BSC execution pending
+**Historical status as of 2026-07-23; do not action:** approved amendment;
+implementation complete, final verification and frozen Base/BSC execution
+pending
 **Supersedes:** only the conflicting weighted-portfolio clauses identified below in
 `2026-07-10-weighted-parameterization-portfolio-design.md` and its implementation
 plan. All other July 10 research constraints remain binding.

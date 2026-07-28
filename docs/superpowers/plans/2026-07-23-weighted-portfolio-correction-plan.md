@@ -4,9 +4,11 @@
 > operative entry-scaling, terminal-settlement, diagnostics, checkpoint, and
 > source-freeze work is specified by
 > [`2026-07-24-weighted-portfolio-execution-finalization.md`](2026-07-24-weighted-portfolio-execution-finalization.md).
-> Never resume or overwrite the v2 result or checkpoint roots as v3.
+> That v3 amendment is itself superseded by the binding v4 plan
+> [`2026-07-24-weighted-portfolio-v4-shared-exit-funding.md`](2026-07-24-weighted-portfolio-v4-shared-exit-funding.md).
+> Never resume or overwrite the v2 or v3 result and checkpoint roots.
 
-**Status (2026-07-23):** Tasks 1–6 and Task 7's interruption/resume equivalence
+**Historical status as of 2026-07-23; do not action:** Tasks 1–6 and Task 7's interruption/resume equivalence
 are complete; the concurrent frozen Base/BSC run remains. Task 8 remains gated
 on validated run evidence.
 

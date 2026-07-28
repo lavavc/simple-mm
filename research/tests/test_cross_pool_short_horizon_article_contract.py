@@ -7,6 +7,7 @@ from typing import Any
 
 PUBLICATION_DIR = Path("research/results/reports/cross_pool_short_horizon_v1")
 PUBLICATION_MANIFEST = PUBLICATION_DIR / "short_horizon_manifest.json"
+PARENT_PUBLICATION_DIR = Path("research/results/reports/cross_pool_lead_lag")
 
 ARTICLE = Path("research/articles/02-backtesting-the-market-layer.md")
 EVIDENCE_PACK = Path(
@@ -39,6 +40,18 @@ FIGURE_HASHES = {
     ),
     "short_horizon_fee_gap.png": (
         "ff2fe442578bd04bfbd6cb099cb2d01d19f6c118cba1e921c65e64be57b2e09c"
+    ),
+}
+
+PARENT_FIGURE_HASHES = {
+    "predictive_performance.png": (
+        "a8badb8f809545597d9c2d712971bf2d8fa352cfc51205d21fa652ea936c812f"
+    ),
+    "dtw_lag.png": (
+        "3c9d79a12983f4eee6e7c083cf2e76af5701dbf9c6e0025a9c7298ab9a0f81ac"
+    ),
+    "lp_performance.png": (
+        "a18468cb4e4016dfbb72853d047a6e0e748bfcc1392e69ec86a2cd24354785ab"
     ),
 }
 
@@ -259,15 +272,21 @@ def test_cto_brief_is_concise_visual_and_evidence_bound() -> None:
     text = CTO_BRIEF.read_text()
     normalized = " ".join(text.split())
 
-    assert len(text.split()) <= 1_500
+    assert len(text.split()) <= 4_300
     for filename in FIGURE_HASHES:
         link = f"../results/reports/cross_pool_short_horizon_v1/{filename}"
         assert text.count(f"]({link})") == 1
     for digest in FIGURE_HASHES.values():
         assert text.count(digest) == 1
+    for filename, digest in PARENT_FIGURE_HASHES.items():
+        figure_path = PARENT_PUBLICATION_DIR / filename
+        link = f"../results/reports/cross_pool_lead_lag/{filename}"
+        assert _sha256(figure_path) == digest
+        assert text.count(f"]({link})") == 1
+        assert text.count(digest) == 1
     for phrase in (
         "Decision headline",
-        "Frozen confirmatory result",
+        "Pre-specified result",
         "Post-hoc exploratory extension",
         "Weighted-portfolio result",
         "unconditional response",
@@ -283,11 +302,134 @@ def test_cto_brief_is_concise_visual_and_evidence_bound() -> None:
         "does not mean the gap closed toward zero",
         "Recommended decisions",
         "No deployment decision",
-        "Fund measurement, not a signal",
-        "Keep portfolio research quarantined",
+        "Fund measurement",
+        "Keep portfolio research separate from live decisions",
         "Finish the article from the sealed evidence",
+        "One basis point is 0.01%",
+        "as-of price",
+        "markout",
+        "mean absolute error",
+        "target-only MAE minus cross-pool MAE",
+        "block bootstrap",
+        "confidence interval",
+        "dynamic time warping",
+        "reset-capital window",
+        "Probability of backtest overfitting",
+        "Failed or unfinished hypotheses",
     ):
         assert phrase in normalized
+
+
+def test_cto_brief_covers_every_finished_hypothesis() -> None:
+    normalized = " ".join(CTO_BRIEF.read_text().split())
+
+    for heading in (
+        "Hypothesis 1: An independent fair-price label exists",
+        "Hypothesis 2: Quidax top book predicts its own next move",
+        "Hypothesis 3: DEX or blended anchors improve Quidax quoting",
+        "Hypothesis 4: Quidax and the DEX pools broadly agree",
+        "Hypothesis 5: Full-grid DEX LP selection produces a deployable policy",
+        "Hypothesis 6: A directional LP policy transfers across pools",
+        "Hypothesis 7: One pool improves forecasts of the other",
+        "Hypothesis 8: Event responses and time alignment identify a leader",
+        "Hypothesis 9: A cross-pool forecast gate improves LP returns",
+        "Hypothesis 10: Short-horizon reactions reveal a leader or fee opportunity",
+        "Hypothesis 11: Girum's magnitude pattern replicates",
+        "Hypothesis 12: Joint portfolio allocation supports a performance claim",
+    ):
+        assert normalized.count(heading) == 1
+
+    for phrase in (
+        "255,846 Quidax rows and zero overlapping Binance observations",
+        "2024-03-07T02:59:00+00:00",
+        "99 complete quote states across 23 UTC days",
+        "every midpoint confidence interval included zero",
+        "+54.5 bps [37.0, 73.7]",
+        "83 states across 17 UTC days",
+        "714 matched Base rows",
+        "2,934 matched BSC rows",
+        "Base paper -0.460%",
+        "Base EWMA -1.256%",
+        "BSC paper -2.086%",
+        "BSC EWMA -1.755%",
+        "+1.039% across four active Base windows",
+        "-1.272% across seven BSC windows",
+        "Both reviewed evidence classes are `inconclusive`",
+        "zero aggregate signed minutes in both directions",
+        "band-unstable",
+        "+0.515% for the original policy and +0.310% for the gated policy",
+        "All unconditional simultaneous max-z bands include zero",
+        "magnitude ordering reverses",
+        "allocation-rule reset matrices were invalid and incomplete",
+        "no weighted-portfolio performance result is reportable",
+    ):
+        assert phrase in normalized
+
+
+def test_cto_brief_explains_lp_policy_mechanics_and_search() -> None:
+    normalized = " ".join(CTO_BRIEF.read_text().split())
+
+    for phrase in (
+        "Liquidity provision in CLMMs: evidence from transactions data",
+        "https://arxiv.org/abs/2604.22069",
+        "not a replication of the paper's population study",
+        "earns fees only while the current tick is inside its range",
+        "2,640 EWMA combinations",
+        "2,240 paper-style combinations",
+        "40 reduced paper-style configurations",
+        "five profiles crossed with three archetypes",
+        "20, 50, or 100 swaps",
+        "10, 25, or 50 swaps",
+        "Base used 200 training swaps followed by 50 validation swaps",
+        "BSC used 300 followed by 75",
+        "net return - maximum drawdown",
+        "top 100",
+        "upside_tight_v1",
+        "gate_strict_qts_20_25",
+        "+0.125%",
+        "0.25% below and 0.75% above",
+        "4% of its range",
+        "+0.5% fee return",
+        "-0.25% stop",
+        "four Base windows",
+        "not a deployable winner",
+    ):
+        assert phrase in normalized
+
+
+def test_cto_brief_lists_failed_or_unfinished_work_without_reopening_it() -> None:
+    normalized = " ".join(CTO_BRIEF.read_text().split())
+
+    for phrase in (
+        "Promotion-grade Fair Price and executable CEX PnL",
+        "Depth-walk, imbalance, OWA, microprice, and fill-probability tests",
+        "LP capacity, dynamic sizing, and live promotion",
+        "Portfolio-level allocation-rule PBO and performance",
+        "Causal price discovery, toxic-flow attribution, and external-LP profitability",
+        "require genuinely new data or a corrected analysis contract locked before results are inspected",
+    ):
+        assert phrase in normalized
+
+
+def test_cto_brief_passes_no_ai_slop_word_and_pattern_gate() -> None:
+    text = CTO_BRIEF.read_text().lower()
+
+    for banned in (
+        "delve",
+        "leverage",
+        "utilize",
+        "facilitate",
+        "robust",
+        "game changer",
+        "paradigm shift",
+        "at the end of the day",
+        "it's worth noting",
+        "in conclusion",
+        "overall,",
+        "let's dive in",
+        "stands as a testament",
+    ):
+        assert banned not in text
 
 
 def test_cto_brief_records_exact_outcomes_and_source_hashes() -> None:
@@ -380,15 +522,10 @@ def test_cto_brief_preserves_prohibited_inferences_and_credentials_boundary() ->
     text = CTO_BRIEF.read_text()
     normalized = " ".join(text.split())
 
-    for phrase in (
-        "does not establish causal price discovery",
-        "does not establish a unique directional leader",
-        "does not establish deployable alpha",
-        "does not establish toxic-flow attribution",
-        "does not establish external-LP profitability",
-        "does not establish net executable profit",
-        "does not establish an affirmative no-lead result",
-    ):
-        assert phrase in normalized
+    assert (
+        "The evidence does not support claims of causal price discovery, a unique "
+        "directional leader, deployable alpha, toxic-flow attribution, external-LP "
+        "profitability, net executable profit, or a definitive no-lead finding."
+    ) in normalized
     for forbidden in ("ALCHEMY", "API_KEY", "PRIVATE_KEY", "SECRET_KEY"):
         assert forbidden not in text
