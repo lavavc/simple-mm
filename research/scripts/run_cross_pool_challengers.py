@@ -27,10 +27,12 @@ from research.cross_pool.challenger_manifest import (
 )
 from research.cross_pool.challenger_parent import load_challenger_parent
 from research.cross_pool.challenger_publication import (
+    ChallengerPublicationError,
     PublicationMode,
     challenger_output_lock,
     classify_challenger_output,
     publish_or_verify_challenger_candidate,
+    validate_v1_supersession_baseline,
     write_challenger_candidate,
 )
 from research.cross_pool.challenger_reporting import render_challenger_artifacts
@@ -50,6 +52,7 @@ class _FailClosedArgumentParser(argparse.ArgumentParser):
 @dataclass(frozen=True)
 class RunArguments:
     parent_dir: Path
+    supersedes_dir: Path
     out_dir: Path
 
 
@@ -58,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the post-hoc Base/BSC predictive challenger study",
     )
     parser.add_argument("--parent-dir", type=Path, required=True)
+    parser.add_argument("--supersedes-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     return parser
 
@@ -69,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run(
             RunArguments(
                 parent_dir=cast(Path, namespace.parent_dir),
+                supersedes_dir=cast(Path, namespace.supersedes_dir),
                 out_dir=cast(Path, namespace.out_dir),
             )
         )
@@ -98,6 +103,7 @@ def _run_locked(arguments: RunArguments, mode: PublicationMode) -> int:
     candidate_dir = stage_root / "candidate"
     try:
         try:
+            validate_v1_supersession_baseline(arguments.supersedes_dir)
             parent = load_challenger_parent(arguments.parent_dir)
             study = run_challengers(parent)
             inference = infer_challengers(study)
@@ -111,7 +117,7 @@ def _run_locked(arguments: RunArguments, mode: PublicationMode) -> int:
                 source_diff_sha256=source_diff_sha256,
             )
             status = 0
-        except (CrossPoolContractError, OSError):
+        except (ChallengerPublicationError, CrossPoolContractError, OSError):
             if mode != "publish_new":
                 raise
             artifacts = ()

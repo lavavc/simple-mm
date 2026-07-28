@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 import ctypes
 import errno
 import fcntl
 import hashlib
+import io
 import os
 import shutil
 import sys
@@ -19,6 +21,10 @@ from research.cross_pool.challenger_artifacts import (
     ChallengerArtifact,
 )
 from research.cross_pool.challenger_manifest import (
+    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+    REQUIRED_REVIEW_ADJUDICATIONS,
+    V1_ARTIFACT_SHA256,
+    V1_MANIFEST_SHA256,
     JsonValue,
     canonical_challenger_manifest_bytes,
     load_challenger_manifest,
@@ -179,18 +185,45 @@ def validate_challenger_evidence_directory(
     return manifest
 
 
+def validate_v1_supersession_baseline(directory: Path) -> None:
+    try:
+        raw_manifest = (directory / _MANIFEST_NAME).read_bytes()
+    except OSError as exc:
+        raise ChallengerPublicationError(
+            "immutable challenger v1 manifest could not be read"
+        ) from exc
+    if hashlib.sha256(raw_manifest).hexdigest() != V1_MANIFEST_SHA256:
+        raise ChallengerPublicationError("immutable challenger v1 manifest hash changed")
+    manifest = validate_challenger_evidence_directory(directory)
+    if (
+        manifest.get("schema_version") != "1.0.0"
+        or manifest.get("artifact_status") != "generated_unreviewed"
+        or manifest.get("artifacts") != V1_ARTIFACT_SHA256
+    ):
+        raise ChallengerPublicationError("immutable challenger v1 baseline is invalid")
+
+
 def review_challenger_evidence(
     out_dir: Path,
     *,
+    supersedes_dir: Path,
     reviewed_by: str,
     reviewed_at_utc: str,
+    numerical_null_acknowledgement: str,
 ) -> None:
     with challenger_output_lock(out_dir):
+        validate_v1_supersession_baseline(supersedes_dir)
         original = validate_challenger_evidence_directory(out_dir)
+        if numerical_null_acknowledgement != REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT:
+            raise ChallengerPublicationError(
+                "required numerical-null acknowledgement is missing"
+            )
+        _validate_required_review_adjudication(out_dir)
         reviewed = reviewed_challenger_manifest(
             original,
             reviewed_by=reviewed_by,
             reviewed_at_utc=reviewed_at_utc,
+            adjudications=REQUIRED_REVIEW_ADJUDICATIONS,
         )
         original_bytes = canonical_challenger_manifest_bytes(original)
         reviewed_bytes = canonical_challenger_manifest_bytes(reviewed)
@@ -222,6 +255,42 @@ def review_challenger_evidence(
             raise ChallengerPublicationError(
                 "challenger review failed and was rolled back"
             ) from exc
+
+
+def _validate_required_review_adjudication(out_dir: Path) -> None:
+    raw = (out_dir / "challenger_contrasts.csv").read_bytes()
+    try:
+        reader = csv.DictReader(io.StringIO(raw.decode("utf-8"), newline=""))
+    except UnicodeDecodeError as exc:  # pragma: no cover - bundle validation precedes review.
+        raise ChallengerPublicationError("challenger contrast review row is invalid") from exc
+    expected = REQUIRED_REVIEW_ADJUDICATIONS[0]
+    cell = cast(dict[str, JsonValue], expected["cell"])
+    matches = [
+        row
+        for row in reader
+        if row["family"] == cell["family"]
+        and row["direction"] == cell["direction"]
+        and int(row["horizon_ms"]) == cell["horizon_ms"]
+        and row["support"] == cell["support"]
+        and row["endpoint"] == cell["endpoint"]
+        and row["contrast"] == cell["contrast"]
+        and row["comparator_variant"] == cell["comparator_variant"]
+        and row["candidate_variant"] == cell["candidate_variant"]
+    ]
+    if len(matches) != 1:
+        raise ChallengerPublicationError("required numerical-null cell is missing")
+    row = matches[0]
+    observed = cast(dict[str, JsonValue], expected["observed"])
+    actual = {
+        "point_bps": float(row["point"]),
+        "simultaneous_lower_bps": float(row["simultaneous_lower"]),
+        "simultaneous_upper_bps": float(row["simultaneous_upper"]),
+        "adjusted_p_value": float(row["adjusted_p_value"]),
+    }
+    if row["status"] != "adjudicable" or actual != observed:
+        raise ChallengerPublicationError(
+            "required numerical-null observation does not match the review record"
+        )
 
 
 def _is_verifiable(manifest: dict[str, JsonValue]) -> bool:

@@ -271,8 +271,16 @@ produces only a `qa_blocked` manifest.
 
 ## Evidence package
 
-The independent output root is `research/results/cross_pool_challengers_v1/`.
-It contains:
+The immutable first candidate remains at
+`research/results/cross_pool_challengers_v1/` with status
+`generated_unreviewed`. Review found that one Huber source-price contrast has a
+floating-point-scale point estimate but a small adjusted p-value. The
+review-capable replacement is
+`research/results/cross_pool_challengers_v1_1/`. Its 11 statistical artifact
+files must be byte-identical to v1; only the manifest and source provenance may
+change.
+
+The v1.1 package contains:
 
 - `challenger_predictions.csv`
 - `challenger_fold_audits.csv`
@@ -299,6 +307,22 @@ recorded commit contains the executable study. Generated evidence is
 `generated_unreviewed`; a failed contract produces `qa_blocked`; only an
 explicit review operation may produce `reviewed`. Publication is atomic and a
 rerun against an existing directory must be byte-identical.
+
+The v1.1 review manifest binds one structured adjudication to the exact Huber
+`full_source`, Base-to-BSC, one-hour, all-support, MAE source-price cell. It
+records the point estimate, simultaneous interval, adjusted p-value, and the
+classification `numerical_null`; excludes that cell from substantive rejection
+counts; and states that no statistical artifact was recomputed. The review CLI
+requires an explicit acknowledgement of that cell before it can stamp the
+package.
+
+The v1.1 manifest also binds the immutable v1 manifest SHA-256 and all 11 v1
+artifact SHA-256 values. Generation fails closed if any regenerated statistical
+artifact differs. Both generation and review also require and validate the
+on-disk v1 baseline supplied through an explicit CLI argument. Validation
+dispatches by schema version: v1 remains
+verifiable only under its exact 1.0 schema and state rules, while v1.1 uses the
+strict 1.1 schema and adjudication contract.
 
 ## CTO brief boundary
 

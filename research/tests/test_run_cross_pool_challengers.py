@@ -15,13 +15,19 @@ from research.cross_pool.challenger_artifacts import (
     CHALLENGER_ARTIFACT_NAMES,
     ChallengerArtifact,
 )
-from research.cross_pool.challenger_manifest import canonical_challenger_manifest_bytes
+from research.cross_pool.challenger_manifest import (
+    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+    REQUIRED_REVIEW_ADJUDICATIONS,
+    canonical_challenger_manifest_bytes,
+)
 from research.cross_pool.challenger_publication import (
     ChallengerPublicationError,
     review_challenger_evidence,
     validate_challenger_evidence_directory,
+    validate_v1_supersession_baseline,
     write_challenger_candidate,
 )
+from research.cross_pool.contracts import CrossPoolContractError
 from research.scripts.run_cross_pool_challengers import (
     ChallengerCliError,
     RunArguments,
@@ -30,6 +36,7 @@ from research.scripts.run_cross_pool_challengers import (
 )
 
 PARENT_DIR = Path("research/results/cross_pool_lead_lag")
+V1_DIR = Path("research/results/cross_pool_challengers_v1")
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -83,12 +90,28 @@ def test_source_identity_hashes_actual_diff_and_rejects_untracked_closure(
         )
 
 
+def test_v1_supersession_baseline_rejects_altered_artifact(
+    tmp_path: Path,
+) -> None:
+    altered = tmp_path / "altered-v1"
+    shutil.copytree(V1_DIR, altered)
+    metrics = altered / "challenger_metrics.csv"
+    metrics.write_bytes(metrics.read_bytes() + b"tamper\n")
+
+    with pytest.raises(ChallengerPublicationError, match="artifact hash mismatch"):
+        validate_v1_supersession_baseline(altered)
+
+
 def test_run_publish_compare_and_review_are_atomic_and_deterministic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     out_dir = tmp_path / "challengers"
-    arguments = RunArguments(parent_dir=PARENT_DIR, out_dir=out_dir)
+    arguments = RunArguments(
+        parent_dir=PARENT_DIR,
+        supersedes_dir=V1_DIR,
+        out_dir=out_dir,
+    )
 
     assert run(arguments) == 0
     generated = validate_challenger_evidence_directory(out_dir)
@@ -98,14 +121,30 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
     assert run(arguments) == 0
     assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
 
+    with pytest.raises(ChallengerPublicationError, match="acknowledgement"):
+        review_challenger_evidence(
+            out_dir,
+            supersedes_dir=V1_DIR,
+            reviewed_by="sol_ultra",
+            reviewed_at_utc="2026-07-27T23:59:00Z",
+            numerical_null_acknowledgement="wrong-cell",
+        )
+    assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
+
     review_challenger_evidence(
         out_dir,
+        supersedes_dir=V1_DIR,
         reviewed_by="sol_ultra",
         reviewed_at_utc="2026-07-27T23:59:00Z",
+        numerical_null_acknowledgement=REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
     )
     reviewed = validate_challenger_evidence_directory(out_dir)
     assert reviewed["artifact_status"] == "reviewed"
+    assert reviewed["review"]["adjudications"] == list(REQUIRED_REVIEW_ADJUDICATIONS)
     assert set(path.name for path in out_dir.iterdir()) == set(original)
+    assert {
+        name: (out_dir / name).read_bytes() for name in CHALLENGER_ARTIFACT_NAMES
+    } == {name: original[name] for name in CHALLENGER_ARTIFACT_NAMES}
 
     tampered_dir = tmp_path / "self-hashed-malformed"
     shutil.copytree(out_dir, tampered_dir)
@@ -120,7 +159,7 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
     (tampered_dir / "challenger_manifest.json").write_bytes(
         canonical_challenger_manifest_bytes(tampered_manifest)
     )
-    with pytest.raises(ChallengerPublicationError, match="projection is invalid"):
+    with pytest.raises(CrossPoolContractError, match="statistical artifacts"):
         validate_challenger_evidence_directory(tampered_dir)
 
     numeric_dir = tmp_path / "self-hashed-wrong-number"
@@ -144,7 +183,7 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
     (numeric_dir / "challenger_manifest.json").write_bytes(
         canonical_challenger_manifest_bytes(numeric_manifest)
     )
-    with pytest.raises(ChallengerPublicationError, match="quantitatively inconsistent"):
+    with pytest.raises(CrossPoolContractError, match="statistical artifacts"):
         validate_challenger_evidence_directory(numeric_dir)
 
     rejected_candidate = tmp_path / "rejected-candidate"
@@ -152,7 +191,7 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
         ChallengerArtifact(name, (numeric_dir / name).read_bytes())
         for name in CHALLENGER_ARTIFACT_NAMES
     )
-    with pytest.raises(ChallengerPublicationError):
+    with pytest.raises(CrossPoolContractError, match="statistical artifacts"):
         write_challenger_candidate(
             rejected_candidate,
             numeric_artifacts,
@@ -182,11 +221,43 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
 def test_invalid_parent_publishes_only_blocked_manifest(tmp_path: Path) -> None:
     out_dir = tmp_path / "blocked"
 
-    assert run(RunArguments(parent_dir=tmp_path / "missing", out_dir=out_dir)) == 1
+    assert (
+        run(
+            RunArguments(
+                parent_dir=tmp_path / "missing",
+                supersedes_dir=V1_DIR,
+                out_dir=out_dir,
+            )
+        )
+        == 1
+    )
 
     manifest = validate_challenger_evidence_directory(out_dir)
     assert manifest["artifact_status"] == "qa_blocked"
     assert manifest["qa"]["status"] == "blocked"
+    assert manifest["qa"]["reasons"] == ["PARENT_OR_ANALYSIS_CONTRACT_INVALID"]
+    assert set(path.name for path in out_dir.iterdir()) == {"challenger_manifest.json"}
+
+
+def test_invalid_v1_baseline_publishes_only_blocked_manifest(tmp_path: Path) -> None:
+    altered = tmp_path / "altered-v1"
+    shutil.copytree(V1_DIR, altered)
+    metrics = altered / "challenger_metrics.csv"
+    metrics.write_bytes(metrics.read_bytes() + b"tamper\n")
+    out_dir = tmp_path / "blocked-baseline"
+
+    assert (
+        run(
+            RunArguments(
+                parent_dir=PARENT_DIR,
+                supersedes_dir=altered,
+                out_dir=out_dir,
+            )
+        )
+        == 1
+    )
+    manifest = validate_challenger_evidence_directory(out_dir)
+    assert manifest["artifact_status"] == "qa_blocked"
     assert manifest["qa"]["reasons"] == ["PARENT_OR_ANALYSIS_CONTRACT_INVALID"]
     assert set(path.name for path in out_dir.iterdir()) == {"challenger_manifest.json"}
 
@@ -206,5 +277,11 @@ def test_unexpected_programming_error_is_not_sealed_as_evidence(
     )
 
     with pytest.raises(RuntimeError, match="programmer defect"):
-        run(RunArguments(parent_dir=PARENT_DIR, out_dir=out_dir))
+        run(
+            RunArguments(
+                parent_dir=PARENT_DIR,
+                supersedes_dir=V1_DIR,
+                out_dir=out_dir,
+            )
+        )
     assert not out_dir.exists()

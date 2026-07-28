@@ -47,8 +47,9 @@ JsonValue: TypeAlias = (
     None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 )
 
-_SCHEMA_PATH = Path(__file__).with_name("challenger_manifest.schema.json")
-CHALLENGER_SOURCE_PATHS = (
+_SCHEMA_PATH_V1 = Path(__file__).with_name("challenger_manifest.schema.json")
+_SCHEMA_PATH_V1_1 = Path(__file__).with_name("challenger_manifest_v1_1.schema.json")
+_V1_SOURCE_PATHS = (
     "engine/__init__.py",
     "engine/math/__init__.py",
     "engine/math/v3.py",
@@ -85,6 +86,52 @@ CHALLENGER_SOURCE_PATHS = (
     "research/cross_pool/qa.py",
     "research/cross_pool/reporting.py",
     "research/scripts/run_cross_pool_challengers.py",
+)
+CHALLENGER_SOURCE_PATHS = tuple(
+    path
+    for source_path in _V1_SOURCE_PATHS
+    for path in (
+        (
+            source_path,
+            "research/cross_pool/challenger_manifest_v1_1.schema.json",
+        )
+        if source_path == "research/cross_pool/challenger_manifest.schema.json"
+        else (source_path,)
+    )
+)
+V1_MANIFEST_SHA256 = (
+    "a7949885a0f2650e7a87d5361d3991dbc6d4a53140883a56e5239ad39bc9e903"
+)
+V1_ARTIFACT_SHA256: dict[str, str] = {
+    "challenger_predictions.csv": (
+        "b4633e341be70bbc5b97335591ff389e70a9ea26ce9cad2a380db8b10233acf8"
+    ),
+    "challenger_fold_audits.csv": (
+        "bc27fb1ab3c5ca929196f6d50dace9a64dd297bfc1540f7447d5e3fbc806eb6f"
+    ),
+    "challenger_metrics.csv": "c7ef08b466e9756afeb0dfd7fc95dbaa3a656c6ab41c56b667d3f23cf3402458",
+    "challenger_contrasts.csv": "2a919bccab8f22ab15b269a3e4ec701ee9559b99fd8a4048ce554162a289ec5f",
+    "challenger_diagnostics.json": (
+        "262b7830d9c8ce02866ebe771acd4d2b702e2be810f3907b63f55b78c89f3163"
+    ),
+    "challenger_report.md": "721db70e087f27850b51d153d933febb1fe54c0f3c4fde6281de2d8a1abd5a5c",
+    "model_error_comparison.png": (
+        "00bd7cad50952bceda7ca4354b29545145cb268f2c4247226ff7193c2ce1fdf0"
+    ),
+    "source_price_contrasts.png": (
+        "7f18b23736cc3ceb321268c6596bfa154048701a55ba26c28d0e758e62b29ea8"
+    ),
+    "freshness_sensitivity.png": "b3902e3b08fea524ea654b13053043d06f3ab7b9c5c0176177a7140f5b4de8b2",
+    "two_part_calibration.png": "bced9d4b3a771466fec16af4e8f78843577d97bf81922c34f9680f12cfc8c6db",
+    "loss_dependence.png": "6614d7f9a72fb29c34ebc09206b4010a831157f6255e13ffd70846313e28f135",
+}
+V1_SUPERSESSION: dict[str, JsonValue] = {
+    "candidate_path": "research/results/cross_pool_challengers_v1",
+    "manifest_sha256": V1_MANIFEST_SHA256,
+    "statistical_artifacts": dict(V1_ARTIFACT_SHA256),
+}
+REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT = (
+    "huber/full_source/base_to_bsc/3600000/all/mae/source_price"
 )
 _EXPECTED_CONFIGURATION: dict[str, JsonValue] = {
     "directions": ["bsc_to_base", "base_to_bsc"],
@@ -167,7 +214,15 @@ _EXPECTED_CONFIGURATION: dict[str, JsonValue] = {
         "minimum_complete_blocks": MINIMUM_COMPLETE_BLOCKS,
         "minimum_update_days": MINIMUM_UPDATE_DAYS,
     },
+    "review_policy": {
+        "statistical_artifacts_immutable": True,
+        "required_numerical_null_acknowledgements": [
+            REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT
+        ],
+    },
 }
+_EXPECTED_CONFIGURATION_V1 = deepcopy(_EXPECTED_CONFIGURATION)
+del _EXPECTED_CONFIGURATION_V1["review_policy"]
 _ALLOWED_CLAIMS = ["post_hoc_incremental_forecast_diagnostic"]
 _FORBIDDEN_CLAIMS = [
     "causal_price_discovery",
@@ -177,6 +232,35 @@ _FORBIDDEN_CLAIMS = [
     "lp_profitability",
     "parent_decision_revision_without_fresh_data",
 ]
+REQUIRED_REVIEW_ADJUDICATIONS: tuple[dict[str, JsonValue], ...] = (
+    {
+        "acknowledgement_id": REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+        "kind": "numerical_null",
+        "cell": {
+            "family": "huber",
+            "direction": "base_to_bsc",
+            "horizon_ms": 3_600_000,
+            "support": "all",
+            "endpoint": "mae",
+            "contrast": "source_price",
+            "comparator_variant": "source_age",
+            "candidate_variant": "full_source",
+        },
+        "observed": {
+            "point_bps": -1.6129320101754274e-12,
+            "simultaneous_lower_bps": -3.0583042110476276e-12,
+            "simultaneous_upper_bps": -1.6755980930322748e-13,
+            "adjusted_p_value": 0.022997700229977002,
+        },
+        "classification": "numerical_null",
+        "substantive_rejection_counted": False,
+        "statistical_artifacts_recomputed": False,
+        "basis": (
+            "The effect and interval are at floating-point scale, so the apparent "
+            "rejection is excluded from substantive evidence counts."
+        ),
+    },
+)
 
 
 def build_generated_challenger_manifest(
@@ -196,13 +280,18 @@ def build_generated_challenger_manifest(
     if source_price_cells != 126:
         raise CrossPoolContractError("challenger source-price registry is incomplete")
     artifact_map = _artifact_map(artifacts)
+    if artifact_map != V1_ARTIFACT_SHA256:
+        raise CrossPoolContractError(
+            "challenger v1.1 statistical artifacts differ from immutable v1"
+        )
     manifest: dict[str, JsonValue] = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "artifact_status": "generated_unreviewed",
         "research_role": "post_hoc_exploratory",
         "parent_decision": "leadership_unresolved",
         "parent_decision_unchanged": True,
         "parent_artifacts": dict(PARENT_ARTIFACT_SHA256),
+        "supersedes": deepcopy(V1_SUPERSESSION),
         "source_identity": {
             "code_commit": code_commit,
             "source_diff_sha256": source_diff_sha256,
@@ -226,6 +315,7 @@ def build_generated_challenger_manifest(
             "status": "pending",
             "reviewed_by": None,
             "reviewed_at_utc": None,
+            "adjudications": [],
         },
         "claims": {
             "allowed": list(_ALLOWED_CLAIMS),
@@ -245,12 +335,13 @@ def build_blocked_challenger_manifest(
     if not reason:
         raise CrossPoolContractError("blocked challenger reason must be nonempty")
     manifest: dict[str, JsonValue] = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "artifact_status": "qa_blocked",
         "research_role": "post_hoc_exploratory",
         "parent_decision": "leadership_unresolved",
         "parent_decision_unchanged": True,
         "parent_artifacts": dict(PARENT_ARTIFACT_SHA256),
+        "supersedes": deepcopy(V1_SUPERSESSION),
         "source_identity": {
             "code_commit": code_commit,
             "source_diff_sha256": source_diff_sha256,
@@ -274,6 +365,7 @@ def build_blocked_challenger_manifest(
             "status": "blocked",
             "reviewed_by": None,
             "reviewed_at_utc": None,
+            "adjudications": [],
         },
         "claims": {
             "allowed": list(_ALLOWED_CLAIMS),
@@ -289,12 +381,17 @@ def reviewed_challenger_manifest(
     *,
     reviewed_by: str,
     reviewed_at_utc: str,
+    adjudications: tuple[dict[str, JsonValue], ...],
 ) -> dict[str, JsonValue]:
     validate_challenger_manifest(payload)
+    if payload["schema_version"] != "1.1.0":
+        raise CrossPoolContractError("review adjudication requires challenger schema 1.1")
     if payload["artifact_status"] != "generated_unreviewed":
         raise CrossPoolContractError("review requires generated challenger evidence")
-    if not reviewed_by or reviewed_by.strip() != reviewed_by:
-        raise CrossPoolContractError("challenger reviewer identity must be explicit")
+    if reviewed_by != "sol_ultra":
+        raise CrossPoolContractError("challenger reviewer must be sol_ultra")
+    if adjudications != REQUIRED_REVIEW_ADJUDICATIONS:
+        raise CrossPoolContractError("challenger review adjudications are incomplete")
     _validate_review_timestamp(reviewed_at_utc)
     reviewed = deepcopy(payload)
     reviewed["artifact_status"] = "reviewed"
@@ -302,6 +399,7 @@ def reviewed_challenger_manifest(
         "status": "reviewed",
         "reviewed_by": reviewed_by,
         "reviewed_at_utc": reviewed_at_utc,
+        "adjudications": cast(list[JsonValue], deepcopy(list(adjudications))),
     }
     validate_challenger_manifest(reviewed)
     return reviewed
@@ -312,18 +410,30 @@ def canonical_challenger_manifest_bytes(payload: dict[str, JsonValue]) -> bytes:
 
 
 def validate_challenger_manifest(payload: dict[str, JsonValue]) -> None:
+    version = payload.get("schema_version")
+    expected_source_paths: tuple[str, ...]
+    if version == "1.0.0":
+        schema_path = _SCHEMA_PATH_V1
+        expected_configuration = _EXPECTED_CONFIGURATION_V1
+        expected_source_paths = _V1_SOURCE_PATHS
+    elif version == "1.1.0":
+        schema_path = _SCHEMA_PATH_V1_1
+        expected_configuration = _EXPECTED_CONFIGURATION
+        expected_source_paths = CHALLENGER_SOURCE_PATHS
+    else:
+        raise CrossPoolContractError("challenger manifest schema version is unsupported")
     try:
-        schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
         jsonschema.Draft202012Validator(schema).validate(payload)
     except (OSError, json.JSONDecodeError, jsonschema.ValidationError) as exc:
         raise CrossPoolContractError("challenger manifest schema validation failed") from exc
     if payload.get("parent_artifacts") != PARENT_ARTIFACT_SHA256:
         raise CrossPoolContractError("challenger manifest parent hashes are not frozen")
-    if payload.get("configuration") != _EXPECTED_CONFIGURATION:
+    if payload.get("configuration") != expected_configuration:
         raise CrossPoolContractError("challenger manifest configuration is not frozen")
     source_identity = payload.get("source_identity")
     if not isinstance(source_identity, dict) or source_identity.get("source_paths") != list(
-        CHALLENGER_SOURCE_PATHS
+        expected_source_paths
     ):
         raise CrossPoolContractError("challenger source closure is not frozen")
     claims = payload.get("claims")
@@ -333,28 +443,65 @@ def validate_challenger_manifest(payload: dict[str, JsonValue]) -> None:
     qa = cast(dict[str, JsonValue], payload["qa"])
     review = cast(dict[str, JsonValue], payload["review"])
     artifacts = cast(dict[str, JsonValue], payload["artifacts"])
+    if version == "1.1.0":
+        if payload.get("supersedes") != V1_SUPERSESSION:
+            raise CrossPoolContractError("challenger v1 supersession anchor is invalid")
+        if status != "qa_blocked" and artifacts != V1_ARTIFACT_SHA256:
+            raise CrossPoolContractError(
+                "challenger v1.1 statistical artifacts differ from immutable v1"
+            )
+        pending_review: dict[str, JsonValue] = {
+            "status": "pending",
+            "reviewed_by": None,
+            "reviewed_at_utc": None,
+            "adjudications": [],
+        }
+        blocked_review: dict[str, JsonValue] = {
+            "status": "blocked",
+            "reviewed_by": None,
+            "reviewed_at_utc": None,
+            "adjudications": [],
+        }
+    else:
+        pending_review = {
+            "status": "pending",
+            "reviewed_by": None,
+            "reviewed_at_utc": None,
+        }
+        blocked_review = {
+            "status": "blocked",
+            "reviewed_by": None,
+            "reviewed_at_utc": None,
+        }
     if status == "generated_unreviewed":
         if (
             qa != {"status": "pass", "reasons": []}
-            or review
-            != {"status": "pending", "reviewed_by": None, "reviewed_at_utc": None}
+            or review != pending_review
             or set(artifacts) != set(CHALLENGER_ARTIFACT_NAMES)
         ):
             raise CrossPoolContractError("generated challenger state is invalid")
     elif status == "reviewed":
-        if qa != {"status": "pass", "reasons": []} or review.get("status") != "reviewed":
+        if (
+            qa != {"status": "pass", "reasons": []}
+            or review.get("status") != "reviewed"
+            or (
+                version == "1.1.0"
+                and review.get("adjudications") != list(REQUIRED_REVIEW_ADJUDICATIONS)
+            )
+        ):
             raise CrossPoolContractError("reviewed challenger state is invalid")
         _validate_review_timestamp(cast(str, review["reviewed_at_utc"]))
         if not isinstance(review.get("reviewed_by"), str) or not review["reviewed_by"]:
             raise CrossPoolContractError("reviewed challenger identity is invalid")
+        if version == "1.1.0" and review["reviewed_by"] != "sol_ultra":
+            raise CrossPoolContractError("challenger v1.1 reviewer must be sol_ultra")
         if set(artifacts) != set(CHALLENGER_ARTIFACT_NAMES):
             raise CrossPoolContractError("reviewed challenger artifacts are incomplete")
     elif status == "qa_blocked":
         if (
             qa.get("status") != "blocked"
             or not qa.get("reasons")
-            or review
-            != {"status": "blocked", "reviewed_by": None, "reviewed_at_utc": None}
+            or review != blocked_review
             or artifacts
         ):
             raise CrossPoolContractError("blocked challenger state is invalid")

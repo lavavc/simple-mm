@@ -31,8 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Review and stamp QA-pass challenger evidence",
     )
     parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument("--supersedes-dir", type=Path, required=True)
     parser.add_argument("--reviewed-by", required=True)
     parser.add_argument("--reviewed-at-utc", required=True)
+    parser.add_argument("--acknowledge-numerical-null", required=True)
     return parser
 
 
@@ -42,8 +44,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         namespace = build_parser().parse_args(raw_arguments)
         review_challenger_evidence(
             cast(Path, namespace.evidence_dir),
+            supersedes_dir=cast(Path, namespace.supersedes_dir),
             reviewed_by=cast(str, namespace.reviewed_by),
             reviewed_at_utc=cast(str, namespace.reviewed_at_utc),
+            numerical_null_acknowledgement=cast(
+                str,
+                namespace.acknowledge_numerical_null,
+            ),
         )
         return 0
     except Exception as exc:
