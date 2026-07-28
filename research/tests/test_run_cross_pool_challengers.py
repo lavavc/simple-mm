@@ -16,15 +16,16 @@ from research.cross_pool.challenger_artifacts import (
     ChallengerArtifact,
 )
 from research.cross_pool.challenger_manifest import (
-    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS,
     REQUIRED_REVIEW_ADJUDICATIONS,
+    REQUIRED_REVIEW_SUMMARY,
     canonical_challenger_manifest_bytes,
 )
 from research.cross_pool.challenger_publication import (
     ChallengerPublicationError,
     review_challenger_evidence,
     validate_challenger_evidence_directory,
-    validate_v1_supersession_baseline,
+    validate_v1_1_supersession_baseline,
     write_challenger_candidate,
 )
 from research.cross_pool.contracts import CrossPoolContractError
@@ -36,7 +37,7 @@ from research.scripts.run_cross_pool_challengers import (
 )
 
 PARENT_DIR = Path("research/results/cross_pool_lead_lag")
-V1_DIR = Path("research/results/cross_pool_challengers_v1")
+V1_1_DIR = Path("research/results/cross_pool_challengers_v1_1")
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -90,16 +91,45 @@ def test_source_identity_hashes_actual_diff_and_rejects_untracked_closure(
         )
 
 
-def test_v1_supersession_baseline_rejects_altered_artifact(
+def test_v1_1_supersession_baseline_rejects_altered_artifact(
     tmp_path: Path,
 ) -> None:
-    altered = tmp_path / "altered-v1"
-    shutil.copytree(V1_DIR, altered)
+    altered = tmp_path / "altered-v1-1"
+    shutil.copytree(V1_1_DIR, altered)
     metrics = altered / "challenger_metrics.csv"
     metrics.write_bytes(metrics.read_bytes() + b"tamper\n")
 
     with pytest.raises(ChallengerPublicationError, match="artifact hash mismatch"):
-        validate_v1_supersession_baseline(altered)
+        validate_v1_1_supersession_baseline(altered)
+
+    changed_manifest = tmp_path / "changed-v1-1-manifest"
+    shutil.copytree(V1_1_DIR, changed_manifest)
+    manifest_path = changed_manifest / "challenger_manifest.json"
+    manifest_path.write_bytes(manifest_path.read_bytes() + b" ")
+    with pytest.raises(ChallengerPublicationError, match="manifest hash changed"):
+        validate_v1_1_supersession_baseline(changed_manifest)
+
+
+def test_review_evidence_validates_both_numerical_nulls_and_summary(
+    tmp_path: Path,
+) -> None:
+    assert (
+        challenger_publication._validate_required_review_evidence(V1_1_DIR)
+        == REQUIRED_REVIEW_SUMMARY
+    )
+
+    for index, adjudication in enumerate(REQUIRED_REVIEW_ADJUDICATIONS):
+        altered = tmp_path / f"altered-null-{index}"
+        shutil.copytree(V1_1_DIR, altered)
+        contrasts = altered / "challenger_contrasts.csv"
+        raw = contrasts.read_bytes()
+        observed = adjudication["observed"]
+        assert isinstance(observed, dict)
+        point = repr(observed["point_bps"]).encode("ascii")
+        assert point in raw
+        contrasts.write_bytes(raw.replace(point, b"-9e-12", 1))
+        with pytest.raises(ChallengerPublicationError, match="observation"):
+            challenger_publication._validate_required_review_evidence(altered)
 
 
 def test_run_publish_compare_and_review_are_atomic_and_deterministic(
@@ -109,38 +139,105 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
     out_dir = tmp_path / "challengers"
     arguments = RunArguments(
         parent_dir=PARENT_DIR,
-        supersedes_dir=V1_DIR,
+        supersedes_dir=V1_1_DIR,
         out_dir=out_dir,
     )
 
     assert run(arguments) == 0
     generated = validate_challenger_evidence_directory(out_dir)
     original = {path.name: path.read_bytes() for path in out_dir.iterdir()}
+    baseline = {path.name: path.read_bytes() for path in V1_1_DIR.iterdir()}
+    assert generated["schema_version"] == "1.2.0"
     assert generated["artifact_status"] == "generated_unreviewed"
+    assert {
+        name: original[name] for name in CHALLENGER_ARTIFACT_NAMES
+    } == {name: baseline[name] for name in CHALLENGER_ARTIFACT_NAMES}
 
     assert run(arguments) == 0
+    assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
+
+    for invalid_acknowledgements in (
+        (
+            REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS[0],
+            REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS[0],
+        ),
+        (*REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS, "unexpected-cell"),
+    ):
+        with pytest.raises(ChallengerPublicationError, match="acknowledgement"):
+            review_challenger_evidence(
+                out_dir,
+                supersedes_dir=V1_1_DIR,
+                reviewed_by="sol_ultra",
+                reviewed_at_utc="2026-07-27T23:59:00Z",
+                numerical_null_acknowledgements=invalid_acknowledgements,
+            )
+        assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
+
+    with pytest.raises(ChallengerPublicationError, match="acknowledgement"):
+        review_challenger_evidence(
+            out_dir,
+            supersedes_dir=V1_1_DIR,
+            reviewed_by="sol_ultra",
+            reviewed_at_utc="2026-07-27T23:59:00Z",
+            numerical_null_acknowledgements=("wrong-cell",),
+        )
     assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
 
     with pytest.raises(ChallengerPublicationError, match="acknowledgement"):
         review_challenger_evidence(
             out_dir,
-            supersedes_dir=V1_DIR,
+            supersedes_dir=V1_1_DIR,
             reviewed_by="sol_ultra",
             reviewed_at_utc="2026-07-27T23:59:00Z",
-            numerical_null_acknowledgement="wrong-cell",
+            numerical_null_acknowledgements=(
+                REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS[0],
+            ),
+    )
+    assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
+
+    real_fsync_directory = challenger_publication._fsync_directory
+    failures_remaining = 1
+
+    def fail_first_review_fsync(directory: Path) -> None:
+        nonlocal failures_remaining
+        if directory == out_dir and failures_remaining:
+            failures_remaining -= 1
+            raise OSError("injected review fsync failure")
+        real_fsync_directory(directory)
+
+    monkeypatch.setattr(
+        challenger_publication,
+        "_fsync_directory",
+        fail_first_review_fsync,
+    )
+    with pytest.raises(ChallengerPublicationError, match="was rolled back"):
+        review_challenger_evidence(
+            out_dir,
+            supersedes_dir=V1_1_DIR,
+            reviewed_by="sol_ultra",
+            reviewed_at_utc="2026-07-27T23:59:00Z",
+            numerical_null_acknowledgements=REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS,
         )
     assert {path.name: path.read_bytes() for path in out_dir.iterdir()} == original
+    monkeypatch.setattr(
+        challenger_publication,
+        "_fsync_directory",
+        real_fsync_directory,
+    )
 
     review_challenger_evidence(
         out_dir,
-        supersedes_dir=V1_DIR,
+        supersedes_dir=V1_1_DIR,
         reviewed_by="sol_ultra",
         reviewed_at_utc="2026-07-27T23:59:00Z",
-        numerical_null_acknowledgement=REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+        numerical_null_acknowledgements=tuple(
+            reversed(REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS)
+        ),
     )
     reviewed = validate_challenger_evidence_directory(out_dir)
     assert reviewed["artifact_status"] == "reviewed"
     assert reviewed["review"]["adjudications"] == list(REQUIRED_REVIEW_ADJUDICATIONS)
+    assert reviewed["review"]["source_price_summary"] == REQUIRED_REVIEW_SUMMARY
     assert set(path.name for path in out_dir.iterdir()) == set(original)
     assert {
         name: (out_dir / name).read_bytes() for name in CHALLENGER_ARTIFACT_NAMES
@@ -218,6 +315,21 @@ def test_run_publish_compare_and_review_are_atomic_and_deterministic(
     assert not fsync_candidate.exists()
 
 
+def test_v1_1_review_attempt_is_non_mutating() -> None:
+    original = {path.name: path.read_bytes() for path in V1_1_DIR.iterdir()}
+
+    with pytest.raises(CrossPoolContractError, match="schema 1.2"):
+        review_challenger_evidence(
+            V1_1_DIR,
+            supersedes_dir=V1_1_DIR,
+            reviewed_by="sol_ultra",
+            reviewed_at_utc="2026-07-27T23:59:00Z",
+            numerical_null_acknowledgements=REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS,
+        )
+
+    assert {path.name: path.read_bytes() for path in V1_1_DIR.iterdir()} == original
+
+
 def test_invalid_parent_publishes_only_blocked_manifest(tmp_path: Path) -> None:
     out_dir = tmp_path / "blocked"
 
@@ -225,7 +337,7 @@ def test_invalid_parent_publishes_only_blocked_manifest(tmp_path: Path) -> None:
         run(
             RunArguments(
                 parent_dir=tmp_path / "missing",
-                supersedes_dir=V1_DIR,
+                supersedes_dir=V1_1_DIR,
                 out_dir=out_dir,
             )
         )
@@ -239,9 +351,9 @@ def test_invalid_parent_publishes_only_blocked_manifest(tmp_path: Path) -> None:
     assert set(path.name for path in out_dir.iterdir()) == {"challenger_manifest.json"}
 
 
-def test_invalid_v1_baseline_publishes_only_blocked_manifest(tmp_path: Path) -> None:
-    altered = tmp_path / "altered-v1"
-    shutil.copytree(V1_DIR, altered)
+def test_invalid_v1_1_baseline_publishes_only_blocked_manifest(tmp_path: Path) -> None:
+    altered = tmp_path / "altered-v1-1"
+    shutil.copytree(V1_1_DIR, altered)
     metrics = altered / "challenger_metrics.csv"
     metrics.write_bytes(metrics.read_bytes() + b"tamper\n")
     out_dir = tmp_path / "blocked-baseline"
@@ -258,7 +370,7 @@ def test_invalid_v1_baseline_publishes_only_blocked_manifest(tmp_path: Path) -> 
     )
     manifest = validate_challenger_evidence_directory(out_dir)
     assert manifest["artifact_status"] == "qa_blocked"
-    assert manifest["qa"]["reasons"] == ["PARENT_OR_ANALYSIS_CONTRACT_INVALID"]
+    assert manifest["qa"]["reasons"] == ["SUPERSESSION_BASELINE_INVALID"]
     assert set(path.name for path in out_dir.iterdir()) == {"challenger_manifest.json"}
 
 
@@ -280,7 +392,7 @@ def test_unexpected_programming_error_is_not_sealed_as_evidence(
         run(
             RunArguments(
                 parent_dir=PARENT_DIR,
-                supersedes_dir=V1_DIR,
+                supersedes_dir=V1_1_DIR,
                 out_dir=out_dir,
             )
         )

@@ -21,10 +21,11 @@ from research.cross_pool.challenger_artifacts import (
     ChallengerArtifact,
 )
 from research.cross_pool.challenger_manifest import (
-    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS,
     REQUIRED_REVIEW_ADJUDICATIONS,
+    REQUIRED_REVIEW_SUMMARY,
+    V1_1_MANIFEST_SHA256,
     V1_ARTIFACT_SHA256,
-    V1_MANIFEST_SHA256,
     JsonValue,
     canonical_challenger_manifest_bytes,
     load_challenger_manifest,
@@ -185,22 +186,29 @@ def validate_challenger_evidence_directory(
     return manifest
 
 
-def validate_v1_supersession_baseline(directory: Path) -> None:
+def validate_v1_1_supersession_baseline(directory: Path) -> None:
     try:
         raw_manifest = (directory / _MANIFEST_NAME).read_bytes()
     except OSError as exc:
         raise ChallengerPublicationError(
-            "immutable challenger v1 manifest could not be read"
+            "immutable challenger v1.1 manifest could not be read"
         ) from exc
-    if hashlib.sha256(raw_manifest).hexdigest() != V1_MANIFEST_SHA256:
-        raise ChallengerPublicationError("immutable challenger v1 manifest hash changed")
+    if hashlib.sha256(raw_manifest).hexdigest() != V1_1_MANIFEST_SHA256:
+        raise ChallengerPublicationError("immutable challenger v1.1 manifest hash changed")
     manifest = validate_challenger_evidence_directory(directory)
     if (
-        manifest.get("schema_version") != "1.0.0"
+        manifest.get("schema_version") != "1.1.0"
         or manifest.get("artifact_status") != "generated_unreviewed"
         or manifest.get("artifacts") != V1_ARTIFACT_SHA256
+        or manifest.get("review")
+        != {
+            "status": "pending",
+            "reviewed_by": None,
+            "reviewed_at_utc": None,
+            "adjudications": [],
+        }
     ):
-        raise ChallengerPublicationError("immutable challenger v1 baseline is invalid")
+        raise ChallengerPublicationError("immutable challenger v1.1 baseline is invalid")
 
 
 def review_challenger_evidence(
@@ -209,21 +217,27 @@ def review_challenger_evidence(
     supersedes_dir: Path,
     reviewed_by: str,
     reviewed_at_utc: str,
-    numerical_null_acknowledgement: str,
+    numerical_null_acknowledgements: tuple[str, ...],
 ) -> None:
     with challenger_output_lock(out_dir):
-        validate_v1_supersession_baseline(supersedes_dir)
+        validate_v1_1_supersession_baseline(supersedes_dir)
         original = validate_challenger_evidence_directory(out_dir)
-        if numerical_null_acknowledgement != REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT:
+        if (
+            len(numerical_null_acknowledgements)
+            != len(REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS)
+            or set(numerical_null_acknowledgements)
+            != set(REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS)
+        ):
             raise ChallengerPublicationError(
-                "required numerical-null acknowledgement is missing"
+                "required numerical-null acknowledgements are incomplete"
             )
-        _validate_required_review_adjudication(out_dir)
+        source_price_summary = _validate_required_review_evidence(out_dir)
         reviewed = reviewed_challenger_manifest(
             original,
             reviewed_by=reviewed_by,
             reviewed_at_utc=reviewed_at_utc,
             adjudications=REQUIRED_REVIEW_ADJUDICATIONS,
+            source_price_summary=source_price_summary,
         )
         original_bytes = canonical_challenger_manifest_bytes(original)
         reviewed_bytes = canonical_challenger_manifest_bytes(reviewed)
@@ -257,40 +271,85 @@ def review_challenger_evidence(
             ) from exc
 
 
-def _validate_required_review_adjudication(out_dir: Path) -> None:
+def _validate_required_review_evidence(out_dir: Path) -> dict[str, JsonValue]:
     raw = (out_dir / "challenger_contrasts.csv").read_bytes()
     try:
-        reader = csv.DictReader(io.StringIO(raw.decode("utf-8"), newline=""))
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8"), newline="")))
     except UnicodeDecodeError as exc:  # pragma: no cover - bundle validation precedes review.
         raise ChallengerPublicationError("challenger contrast review row is invalid") from exc
-    expected = REQUIRED_REVIEW_ADJUDICATIONS[0]
-    cell = cast(dict[str, JsonValue], expected["cell"])
-    matches = [
+    for expected in REQUIRED_REVIEW_ADJUDICATIONS:
+        cell = cast(dict[str, JsonValue], expected["cell"])
+        matches = [
+            row
+            for row in rows
+            if row["family"] == cell["family"]
+            and row["direction"] == cell["direction"]
+            and int(row["horizon_ms"]) == cell["horizon_ms"]
+            and row["support"] == cell["support"]
+            and row["endpoint"] == cell["endpoint"]
+            and row["contrast"] == cell["contrast"]
+            and row["comparator_variant"] == cell["comparator_variant"]
+            and row["candidate_variant"] == cell["candidate_variant"]
+        ]
+        if len(matches) != 1:
+            raise ChallengerPublicationError("required numerical-null cell is missing")
+        row = matches[0]
+        observed = cast(dict[str, JsonValue], expected["observed"])
+        actual = {
+            "point_bps": float(row["point"]),
+            "simultaneous_lower_bps": float(row["simultaneous_lower"]),
+            "simultaneous_upper_bps": float(row["simultaneous_upper"]),
+            "adjusted_p_value": float(row["adjusted_p_value"]),
+        }
+        if row["status"] != "adjudicable" or actual != observed:
+            raise ChallengerPublicationError(
+                "required numerical-null observation does not match the review record"
+            )
+
+    source_price_rows = [row for row in rows if row["contrast"] == "source_price"]
+    adjudicable = [row for row in source_price_rows if row["status"] == "adjudicable"]
+    rejections = [
         row
-        for row in reader
-        if row["family"] == cell["family"]
-        and row["direction"] == cell["direction"]
-        and int(row["horizon_ms"]) == cell["horizon_ms"]
-        and row["support"] == cell["support"]
-        and row["endpoint"] == cell["endpoint"]
-        and row["contrast"] == cell["contrast"]
-        and row["comparator_variant"] == cell["comparator_variant"]
-        and row["candidate_variant"] == cell["candidate_variant"]
+        for row in adjudicable
+        if row["adjusted_p_value"]
+        and float(row["adjusted_p_value"]) <= 0.05
     ]
-    if len(matches) != 1:
-        raise ChallengerPublicationError("required numerical-null cell is missing")
-    row = matches[0]
-    observed = cast(dict[str, JsonValue], expected["observed"])
-    actual = {
-        "point_bps": float(row["point"]),
-        "simultaneous_lower_bps": float(row["simultaneous_lower"]),
-        "simultaneous_upper_bps": float(row["simultaneous_upper"]),
-        "adjusted_p_value": float(row["adjusted_p_value"]),
+    numerical_null_ids = set(REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS)
+    substantive = [
+        row for row in rejections if _review_cell_id(row) not in numerical_null_ids
+    ]
+    summary: dict[str, JsonValue] = {
+        "registered_source_price_cells": len(source_price_rows),
+        "adjudicable_source_price_cells": len(adjudicable),
+        "not_adjudicable_source_price_cells": len(source_price_rows) - len(adjudicable),
+        "adjusted_rejections": len(rejections),
+        "numerical_null_exclusions": len(rejections) - len(substantive),
+        "substantive_adverse_rejections": sum(
+            float(row["point"]) < 0.0 for row in substantive
+        ),
+        "substantive_favorable_rejections": sum(
+            float(row["point"]) > 0.0 for row in substantive
+        ),
+        "adjusted_p_value_threshold": 0.05,
+        "sign_convention": "positive_means_lower_mae",
     }
-    if row["status"] != "adjudicable" or actual != observed:
-        raise ChallengerPublicationError(
-            "required numerical-null observation does not match the review record"
+    if summary != REQUIRED_REVIEW_SUMMARY:
+        raise ChallengerPublicationError("challenger review summary does not match evidence")
+    return summary
+
+
+def _review_cell_id(row: dict[str, str]) -> str:
+    return "/".join(
+        (
+            row["family"],
+            row["candidate_variant"],
+            row["direction"],
+            row["horizon_ms"],
+            row["support"],
+            row["endpoint"],
+            row["contrast"],
         )
+    )
 
 
 def _is_verifiable(manifest: dict[str, JsonValue]) -> bool:

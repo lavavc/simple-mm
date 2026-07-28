@@ -19,6 +19,7 @@ if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from engine.web3_utils import redact_rpc_credentials
+from research.cross_pool.challenger_artifacts import ChallengerArtifact
 from research.cross_pool.challenger_inference import infer_challengers
 from research.cross_pool.challenger_manifest import (
     CHALLENGER_SOURCE_PATHS,
@@ -32,7 +33,7 @@ from research.cross_pool.challenger_publication import (
     challenger_output_lock,
     classify_challenger_output,
     publish_or_verify_challenger_candidate,
-    validate_v1_supersession_baseline,
+    validate_v1_1_supersession_baseline,
     write_challenger_candidate,
 )
 from research.cross_pool.challenger_reporting import render_challenger_artifacts
@@ -101,32 +102,45 @@ def _run_locked(arguments: RunArguments, mode: PublicationMode) -> int:
         )
     )
     candidate_dir = stage_root / "candidate"
+    artifacts: tuple[ChallengerArtifact, ...]
     try:
         try:
-            validate_v1_supersession_baseline(arguments.supersedes_dir)
-            parent = load_challenger_parent(arguments.parent_dir)
-            study = run_challengers(parent)
-            inference = infer_challengers(study)
-            artifacts = render_challenger_artifacts(study, inference)
-            manifest = build_generated_challenger_manifest(
-                parent=parent,
-                study=study,
-                inference=inference,
-                artifacts=artifacts,
-                code_commit=code_commit,
-                source_diff_sha256=source_diff_sha256,
-            )
-            status = 0
-        except (ChallengerPublicationError, CrossPoolContractError, OSError):
+            validate_v1_1_supersession_baseline(arguments.supersedes_dir)
+        except ChallengerPublicationError:
             if mode != "publish_new":
                 raise
             artifacts = ()
             manifest = build_blocked_challenger_manifest(
-                reason="PARENT_OR_ANALYSIS_CONTRACT_INVALID",
+                reason="SUPERSESSION_BASELINE_INVALID",
                 code_commit=code_commit,
                 source_diff_sha256=source_diff_sha256,
             )
             status = 1
+        else:
+            try:
+                parent = load_challenger_parent(arguments.parent_dir)
+                study = run_challengers(parent)
+                inference = infer_challengers(study)
+                artifacts = render_challenger_artifacts(study, inference)
+                manifest = build_generated_challenger_manifest(
+                    parent=parent,
+                    study=study,
+                    inference=inference,
+                    artifacts=artifacts,
+                    code_commit=code_commit,
+                    source_diff_sha256=source_diff_sha256,
+                )
+                status = 0
+            except (CrossPoolContractError, OSError):
+                if mode != "publish_new":
+                    raise
+                artifacts = ()
+                manifest = build_blocked_challenger_manifest(
+                    reason="PARENT_OR_ANALYSIS_CONTRACT_INVALID",
+                    code_commit=code_commit,
+                    source_diff_sha256=source_diff_sha256,
+                )
+                status = 1
         write_challenger_candidate(candidate_dir, artifacts, manifest)
         publish_or_verify_challenger_candidate(
             arguments.out_dir,

@@ -271,16 +271,15 @@ produces only a `qa_blocked` manifest.
 
 ## Evidence package
 
-The immutable first candidate remains at
-`research/results/cross_pool_challengers_v1/` with status
-`generated_unreviewed`. Review found that one Huber source-price contrast has a
-floating-point-scale point estimate but a small adjusted p-value. The
-review-capable replacement is
-`research/results/cross_pool_challengers_v1_1/`. Its 11 statistical artifact
-files must be byte-identical to v1; only the manifest and source provenance may
-change.
+The immutable v1 and v1.1 candidates remain `generated_unreviewed`. A prior
+audit found one Huber source-price contrast with a floating-point-scale point
+estimate but a small adjusted p-value. The final audit found the same numerical
+phenomenon on the four-hour freshness support. The review-capable replacement
+is `research/results/cross_pool_challengers_v1_2/`. Its 11 statistical artifact
+files must be byte-identical to v1.1; only the manifest and source provenance
+may change.
 
-The v1.1 package contains:
+The v1.2 package contains:
 
 - `challenger_predictions.csv`
 - `challenger_fold_audits.csv`
@@ -308,21 +307,26 @@ recorded commit contains the executable study. Generated evidence is
 explicit review operation may produce `reviewed`. Publication is atomic and a
 rerun against an existing directory must be byte-identical.
 
-The v1.1 review manifest binds one structured adjudication to the exact Huber
-`full_source`, Base-to-BSC, one-hour, all-support, MAE source-price cell. It
-records the point estimate, simultaneous interval, adjusted p-value, and the
-classification `numerical_null`; excludes that cell from substantive rejection
-counts; and states that no statistical artifact was recomputed. The review CLI
-requires an explicit acknowledgement of that cell before it can stamp the
-package.
+The v1.2 review manifest binds structured adjudications to the exact Huber
+`full_source`, Base-to-BSC, one-hour, MAE source-price cells on the all and
+both-age-at-most-four-hours supports. Each records the point estimate,
+simultaneous interval, adjusted p-value, and classification `numerical_null`;
+excludes the cell from substantive rejection counts; and states that no
+statistical artifact was recomputed. The review CLI requires an explicit,
+repeatable acknowledgement of both cells before it can stamp the package.
 
-The v1.1 manifest also binds the immutable v1 manifest SHA-256 and all 11 v1
-artifact SHA-256 values. Generation fails closed if any regenerated statistical
-artifact differs. Both generation and review also require and validate the
-on-disk v1 baseline supplied through an explicit CLI argument. Validation
-dispatches by schema version: v1 remains
-verifiable only under its exact 1.0 schema and state rules, while v1.1 uses the
-strict 1.1 schema and adjudication contract.
+The review also binds the summary derived from the sealed contrast registry:
+126 source-price cells, 78 adjudicable, 48 not adjudicable, 40 adjusted
+rejections at p no greater than 0.05, two numerical-null exclusions, 38
+substantive adverse rejections, and zero substantive favorable rejections.
+
+The v1.2 manifest binds the immutable v1.1 manifest SHA-256 and all 11 artifact
+SHA-256 values. Generation fails closed if any regenerated statistical artifact
+differs. Both generation and review require and validate the on-disk v1.1
+baseline supplied through an explicit CLI argument. Validation dispatches by
+schema version: v1 remains verifiable only under its exact 1.0 contract, v1.1
+under its exact one-adjudication 1.1 contract, and v1.2 under the strict
+two-adjudication 1.2 contract.
 
 ## CTO brief boundary
 

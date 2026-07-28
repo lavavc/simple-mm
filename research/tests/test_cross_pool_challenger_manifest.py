@@ -10,11 +10,13 @@ import pytest
 from research.cross_pool.challenger_inference import infer_challengers
 from research.cross_pool.challenger_manifest import (
     CHALLENGER_SOURCE_PATHS,
-    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT,
+    REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS,
     REQUIRED_REVIEW_ADJUDICATIONS,
+    REQUIRED_REVIEW_SUMMARY,
+    V1_1_MANIFEST_SHA256,
+    V1_1_SUPERSESSION,
     V1_ARTIFACT_SHA256,
     V1_MANIFEST_SHA256,
-    V1_SUPERSESSION,
     build_generated_challenger_manifest,
     canonical_challenger_manifest_bytes,
     reviewed_challenger_manifest,
@@ -30,6 +32,7 @@ from research.cross_pool.contracts import CrossPoolContractError
 
 PARENT_DIR = Path("research/results/cross_pool_lead_lag")
 V1_DIR = Path("research/results/cross_pool_challengers_v1")
+V1_1_DIR = Path("research/results/cross_pool_challengers_v1_1")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -54,7 +57,7 @@ def test_generated_manifest_is_canonical_strict_and_complete(generated_manifest)
     raw = canonical_challenger_manifest_bytes(generated_manifest)
 
     assert raw.endswith(b"\n")
-    assert generated_manifest["schema_version"] == "1.1.0"
+    assert generated_manifest["schema_version"] == "1.2.0"
     assert generated_manifest["artifact_status"] == "generated_unreviewed"
     assert generated_manifest["research_role"] == "post_hoc_exploratory"
     assert generated_manifest["parent_decision_unchanged"] is True
@@ -63,7 +66,7 @@ def test_generated_manifest_is_canonical_strict_and_complete(generated_manifest)
     assert generated_manifest["registry"]["source_price_cells"] == 126
     assert len(generated_manifest["artifacts"]) == 11
     assert generated_manifest["artifacts"] == V1_ARTIFACT_SHA256
-    assert generated_manifest["supersedes"] == V1_SUPERSESSION
+    assert generated_manifest["supersedes"] == V1_1_SUPERSESSION
     configuration = generated_manifest["configuration"]
     assert configuration["arx2"]["predecessor"] == "prior_regular_panel_row"
     assert configuration["gam"]["age_transform"] == "log1p_age_ms_over_60000"
@@ -85,6 +88,7 @@ def test_source_closure_contains_every_static_local_import() -> None:
         "research/cross_pool/article_manifest.schema.json",
         "research/cross_pool/challenger_manifest.schema.json",
         "research/cross_pool/challenger_manifest_v1_1.schema.json",
+        "research/cross_pool/challenger_manifest_v1_2.schema.json",
     } <= closure
 
     for relative_name in CHALLENGER_SOURCE_PATHS:
@@ -153,12 +157,23 @@ def test_immutable_v1_remains_valid_under_its_exact_contract() -> None:
     assert manifest["artifacts"] == V1_ARTIFACT_SHA256
 
 
+def test_immutable_v1_1_remains_valid_under_its_exact_contract() -> None:
+    raw = (V1_1_DIR / "challenger_manifest.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == V1_1_MANIFEST_SHA256
+    manifest = validate_challenger_evidence_directory(V1_1_DIR)
+
+    assert manifest["schema_version"] == "1.1.0"
+    assert manifest["artifact_status"] == "generated_unreviewed"
+    assert manifest["artifacts"] == V1_ARTIFACT_SHA256
+
+
 def test_review_transition_changes_only_status_and_review(generated_manifest) -> None:
     reviewed = reviewed_challenger_manifest(
         generated_manifest,
         reviewed_by="sol_ultra",
         reviewed_at_utc="2026-07-27T23:59:00Z",
         adjudications=REQUIRED_REVIEW_ADJUDICATIONS,
+        source_price_summary=REQUIRED_REVIEW_SUMMARY,
     )
 
     assert reviewed["artifact_status"] == "reviewed"
@@ -167,6 +182,7 @@ def test_review_transition_changes_only_status_and_review(generated_manifest) ->
         "reviewed_by": "sol_ultra",
         "reviewed_at_utc": "2026-07-27T23:59:00Z",
         "adjudications": list(REQUIRED_REVIEW_ADJUDICATIONS),
+        "source_price_summary": REQUIRED_REVIEW_SUMMARY,
     }
     projection = deepcopy(reviewed)
     projection["artifact_status"] = "generated_unreviewed"
@@ -180,6 +196,15 @@ def test_review_transition_changes_only_status_and_review(generated_manifest) ->
             reviewed_by="sol_ultra",
             reviewed_at_utc="2026-07-27T23:59:00Z",
             adjudications=(),
+            source_price_summary=REQUIRED_REVIEW_SUMMARY,
+        )
+    with pytest.raises(CrossPoolContractError, match="summary"):
+        reviewed_challenger_manifest(
+            generated_manifest,
+            reviewed_by="sol_ultra",
+            reviewed_at_utc="2026-07-27T23:59:00Z",
+            adjudications=REQUIRED_REVIEW_ADJUDICATIONS,
+            source_price_summary={**REQUIRED_REVIEW_SUMMARY, "adjusted_rejections": 39},
         )
     with pytest.raises(CrossPoolContractError, match="must be sol_ultra"):
         reviewed_challenger_manifest(
@@ -187,7 +212,10 @@ def test_review_transition_changes_only_status_and_review(generated_manifest) ->
             reviewed_by="different_reviewer",
             reviewed_at_utc="2026-07-27T23:59:00Z",
             adjudications=REQUIRED_REVIEW_ADJUDICATIONS,
+            source_price_summary=REQUIRED_REVIEW_SUMMARY,
         )
-    assert REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENT in canonical_challenger_manifest_bytes(
-        reviewed
-    ).decode("utf-8")
+    reviewed_text = canonical_challenger_manifest_bytes(reviewed).decode("utf-8")
+    assert all(
+        acknowledgement in reviewed_text
+        for acknowledgement in REQUIRED_NUMERICAL_NULL_ACKNOWLEDGEMENTS
+    )

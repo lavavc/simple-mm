@@ -34,7 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--supersedes-dir", type=Path, required=True)
     parser.add_argument("--reviewed-by", required=True)
     parser.add_argument("--reviewed-at-utc", required=True)
-    parser.add_argument("--acknowledge-numerical-null", required=True)
+    parser.add_argument(
+        "--acknowledge-numerical-null",
+        action="append",
+        required=True,
+    )
     return parser
 
 
@@ -47,9 +51,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             supersedes_dir=cast(Path, namespace.supersedes_dir),
             reviewed_by=cast(str, namespace.reviewed_by),
             reviewed_at_utc=cast(str, namespace.reviewed_at_utc),
-            numerical_null_acknowledgement=cast(
-                str,
-                namespace.acknowledge_numerical_null,
+            numerical_null_acknowledgements=tuple(
+                cast(list[str], namespace.acknowledge_numerical_null)
             ),
         )
         return 0

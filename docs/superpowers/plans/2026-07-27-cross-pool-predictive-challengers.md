@@ -299,10 +299,11 @@ python3 -m pytest \
    untracked source closure; the canonical manifest must point to a commit that
    contains the executable study rather than a pre-implementation `HEAD` plus an
    unrecoverable content hash.
-4. Preserve the first immutable candidate at
-   `research/results/cross_pool_challengers_v1` as unreviewed. Generate the
-   review-capable replacement in `research/results/cross_pool_challengers_v1_1`
-   and require all 11 statistical artifact bytes to match v1.
+4. Preserve the immutable v1 and v1.1 candidates as unreviewed. The v1.1 audit
+   identified one numerical-null Huber cell but missed the same phenomenon on
+   the four-hour freshness support. Generate the review-capable replacement in
+   `research/results/cross_pool_challengers_v1_2` and require all 11 statistical
+   artifact bytes to match v1.1.
 5. Validate the generated package independently, inspect all support/failure
    cells, and compare headline tables to direct calculations.
 6. Ask a read-only Terra reviewer to audit the complete code diff and generated
@@ -310,10 +311,11 @@ python3 -m pytest \
 7. Rerun the CLI against the existing generated package in compare-only mode
    and require byte-identical artifacts. Do not delete or clean the target.
 8. Explicitly review the final QA-pass package as `sol_ultra` with a UTC review
-   timestamp and the required Huber numerical-null acknowledgement, then
-   validate the manifest-bound adjudication and package again.
+   timestamp and both required Huber numerical-null acknowledgements, then
+   validate the manifest-bound adjudications, evidence-count summary, and
+   package again.
 9. Copy the five reviewed PNG artifacts byte-for-byte into
-   `research/results/reports/cross_pool_challengers_v1_1/` and verify each copied
+   `research/results/reports/cross_pool_challengers_v1_2/` and verify each copied
    hash against the reviewed manifest before editing the brief.
 
 Run at minimum:
@@ -323,16 +325,18 @@ python3 -m pytest research/tests/test_cross_pool_challenger_*.py -q
 python3 -m pytest research/tests/test_cross_pool_*.py -q
 python3 research/scripts/run_cross_pool_challengers.py \
   --parent-dir research/results/cross_pool_lead_lag \
-  --supersedes-dir research/results/cross_pool_challengers_v1 \
-  --out-dir research/results/cross_pool_challengers_v1_1
+  --supersedes-dir research/results/cross_pool_challengers_v1_1 \
+  --out-dir research/results/cross_pool_challengers_v1_2
 
 python3 research/scripts/review_cross_pool_challengers.py \
-  --evidence-dir research/results/cross_pool_challengers_v1_1 \
-  --supersedes-dir research/results/cross_pool_challengers_v1 \
+  --evidence-dir research/results/cross_pool_challengers_v1_2 \
+  --supersedes-dir research/results/cross_pool_challengers_v1_1 \
   --reviewed-by sol_ultra \
   --reviewed-at-utc <UTC-Z> \
   --acknowledge-numerical-null \
-  huber/full_source/base_to_bsc/3600000/all/mae/source_price
+  huber/full_source/base_to_bsc/3600000/all/mae/source_price \
+  --acknowledge-numerical-null \
+  huber/full_source/base_to_bsc/3600000/both_age_le_4h/mae/source_price
 ```
 
 ## Task 8: CTO brief and publication figures
@@ -340,7 +344,7 @@ python3 research/scripts/review_cross_pool_challengers.py \
 **Files**
 
 - Modify `research/articles/cto-final-research-brief-2026-07.md`
-- Generate `research/results/reports/cross_pool_challengers_v1_1/*.png`
+- Generate `research/results/reports/cross_pool_challengers_v1_2/*.png`
 
 1. Preserve unrelated existing brief edits and repair only the visible broken
    word split in the overlapping section.

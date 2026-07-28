@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://automated-infra.local/cross-pool-challenger-manifest-v1-2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_status",
+    "research_role",
+    "parent_decision",
+    "parent_decision_unchanged",
+    "parent_artifacts",
+    "supersedes",
+    "source_identity",
+    "runtime",
+    "configuration",
+    "registry",
+    "artifacts",
+    "qa",
+    "review",
+    "claims"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.2.0" },
+    "artifact_status": {
+      "enum": ["generated_unreviewed", "reviewed", "qa_blocked"]
+    },
+    "research_role": { "const": "post_hoc_exploratory" },
+    "parent_decision": { "const": "leadership_unresolved" },
+    "parent_decision_unchanged": { "const": true },
+    "parent_artifacts": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/sha256" },
+      "minProperties": 5,
+      "maxProperties": 5
+    },
+    "supersedes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_path", "manifest_sha256", "statistical_artifacts"],
+      "properties": {
+        "candidate_path": {
+          "const": "research/results/cross_pool_challengers_v1_1"
+        },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "statistical_artifacts": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/sha256" },
+          "minProperties": 11,
+          "maxProperties": 11
+        }
+      }
+    },
+    "source_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code_commit", "source_diff_sha256", "source_paths"],
+      "properties": {
+        "code_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_diff_sha256": { "$ref": "#/$defs/sha256" },
+        "source_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python", "numpy", "matplotlib"],
+      "properties": {
+        "python": { "type": "string", "minLength": 1 },
+        "numpy": { "type": "string", "minLength": 1 },
+        "matplotlib": { "type": "string", "minLength": 1 }
+      }
+    },
+    "configuration": { "type": "object" },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_cells",
+        "contrast_cells",
+        "source_price_cells",
+        "model_fit_failures"
+      ],
+      "properties": {
+        "metric_cells": { "const": 270 },
+        "contrast_cells": { "const": 378 },
+        "source_price_cells": { "const": 126 },
+        "model_fit_failures": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/sha256" },
+      "maxProperties": 11
+    },
+    "qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons"],
+      "properties": {
+        "status": { "enum": ["pass", "blocked"] },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reviewed_by",
+        "reviewed_at_utc",
+        "adjudications",
+        "source_price_summary"
+      ],
+      "properties": {
+        "status": { "enum": ["pending", "reviewed", "blocked"] },
+        "reviewed_by": { "type": ["string", "null"] },
+        "reviewed_at_utc": { "type": ["string", "null"] },
+        "adjudications": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/review_adjudication" },
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "source_price_summary": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/review_summary" }
+          ]
+        }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed", "forbidden"],
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "forbidden": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "review_adjudication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acknowledgement_id",
+        "kind",
+        "cell",
+        "observed",
+        "classification",
+        "substantive_rejection_counted",
+        "statistical_artifacts_recomputed",
+        "basis"
+      ],
+      "properties": {
+        "acknowledgement_id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "numerical_null" },
+        "cell": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "family",
+            "direction",
+            "horizon_ms",
+            "support",
+            "endpoint",
+            "contrast",
+            "comparator_variant",
+            "candidate_variant"
+          ],
+          "properties": {
+            "family": { "const": "huber" },
+            "direction": { "const": "base_to_bsc" },
+            "horizon_ms": { "const": 3600000 },
+            "support": { "enum": ["all", "both_age_le_4h"] },
+            "endpoint": { "const": "mae" },
+            "contrast": { "const": "source_price" },
+            "comparator_variant": { "const": "source_age" },
+            "candidate_variant": { "const": "full_source" }
+          }
+        },
+        "observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "point_bps",
+            "simultaneous_lower_bps",
+            "simultaneous_upper_bps",
+            "adjusted_p_value"
+          ],
+          "properties": {
+            "point_bps": { "type": "number" },
+            "simultaneous_lower_bps": { "type": "number" },
+            "simultaneous_upper_bps": { "type": "number" },
+            "adjusted_p_value": { "type": "number" }
+          }
+        },
+        "classification": { "const": "numerical_null" },
+        "substantive_rejection_counted": { "const": false },
+        "statistical_artifacts_recomputed": { "const": false },
+        "basis": { "type": "string", "minLength": 1 }
+      }
+    },
+    "review_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registered_source_price_cells",
+        "adjudicable_source_price_cells",
+        "not_adjudicable_source_price_cells",
+        "adjusted_rejections",
+        "numerical_null_exclusions",
+        "substantive_adverse_rejections",
+        "substantive_favorable_rejections",
+        "adjusted_p_value_threshold",
+        "sign_convention"
+      ],
+      "properties": {
+        "registered_source_price_cells": { "const": 126 },
+        "adjudicable_source_price_cells": { "const": 78 },
+        "not_adjudicable_source_price_cells": { "const": 48 },
+        "adjusted_rejections": { "const": 40 },
+        "numerical_null_exclusions": { "const": 2 },
+        "substantive_adverse_rejections": { "const": 38 },
+        "substantive_favorable_rejections": { "const": 0 },
+        "adjusted_p_value_threshold": { "const": 0.05 },
+        "sign_convention": { "const": "positive_means_lower_mae" }
+      }
+    }
+  }
+}
