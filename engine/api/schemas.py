@@ -36,6 +36,8 @@ class VenuePriceResponse(BaseModel):
     quote: Optional[PriceQuote] = None
     error: Optional[str] = None
     age_seconds: float = 0
+    volume_24h_usd: Optional[Decimal] = None
+    liquidity_usd: Optional[Decimal] = None
 
 
 class OrderBookDepthResponse(BaseModel):

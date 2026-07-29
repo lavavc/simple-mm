@@ -37,6 +37,8 @@ async def get_all_prices(
                 quote=price.quote,
                 error=price.error,
                 age_seconds=price.age_seconds,
+                volume_24h_usd=price.volume_24h_usd,
+                liquidity_usd=price.liquidity_usd,
             )
             for price in venue_prices.values()
         ]
@@ -115,6 +117,8 @@ async def refresh_prices(
                 quote=price.quote,
                 error=price.error,
                 age_seconds=price.age_seconds,
+                volume_24h_usd=price.volume_24h_usd,
+                liquidity_usd=price.liquidity_usd,
             )
             for price in venue_prices.values()
         ]
@@ -150,4 +154,6 @@ async def get_venue_price(
         quote=price.quote,
         error=price.error,
         age_seconds=price.age_seconds,
+        volume_24h_usd=price.volume_24h_usd,
+        liquidity_usd=price.liquidity_usd,
     )

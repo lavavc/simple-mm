@@ -136,6 +136,18 @@ function PriceCard({
                 <div className="text-white/80">{formatCompactUsd(dexVolume24hUsd)}</div>
               </div>
             )}
+            {price.venue === 'paycrest' && (price.volume_24h_usd != null || price.liquidity_usd != null) && (
+              <div className="mt-1 mb-3 grid grid-cols-2 gap-2 text-[9px] font-mono">
+                <div className="border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
+                  <div className="text-white/30 uppercase tracking-widest mb-1">24H Vol</div>
+                  <div className="text-white/80">{formatCompactUsd(price.volume_24h_usd)}</div>
+                </div>
+                <div className="border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
+                  <div className="text-white/30 uppercase tracking-widest mb-1">Liquidity</div>
+                  <div className="text-white/80">{formatCompactUsd(price.liquidity_usd)}</div>
+                </div>
+              </div>
+            )}
 
             {/* Sparkline */}
             {sparklineData.length > 1 && (

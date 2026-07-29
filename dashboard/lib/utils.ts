@@ -77,6 +77,7 @@ export const VENUE_LABELS: Record<string, VenueLabel> = {
   assetchain: { name: 'AssetChain', chain: 'Mainnet', type: 'DEX' },
   quidax: { name: 'Quidax', chain: 'CEX', type: 'CEX' },
   bybit: { name: 'Bybit P2P', chain: 'P2P', type: 'P2P' },
+  paycrest: { name: 'Paycrest', chain: 'Off-ramp', type: 'OFFRAMP' },
 };
 
 const CHAIN_EXPLORERS: Record<string, string> = {
@@ -95,6 +96,7 @@ export function txExplorerUrl(venue: string, txHash: string): string | null {
 
 export const VENUE_COLORS: Record<string, string> = {
   bybit: '#F7931A',
+  paycrest: '#8B5CF6',
   quidax: '#2E7D32',
   'uni-base': '#1976D2',
   'uni-bsc': '#7B1FA2',
@@ -112,6 +114,7 @@ interface SourceInfo {
 
 const SOURCE_MAP: Record<string, SourceInfo> = {
   bybit_p2p: { venue: 'bybit', pair: 'USDT/NGN' },
+  paycrest: { venue: 'paycrest', pair: 'USDT/NGN' },
   quidax: { venue: 'quidax', pair: 'cNGN/USDT' },
   'uni-base_pool': { venue: 'uni-base', pair: 'cNGN/USDC' },
   'uni-bsc_pool': { venue: 'uni-bsc', pair: 'cNGN/USDT' },

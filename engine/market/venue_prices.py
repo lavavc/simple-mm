@@ -36,6 +36,7 @@ class VenuePriceSource(ABC):
     name: str
     pair: str  # e.g. "USDT/NGN", "cNGN/USDC"
     volume_24h_usd: Optional[Decimal] = None  # Set during fetch_price(); used for VWAP weighting
+    liquidity_usd: Optional[Decimal] = None   # Set during fetch_price(); display-only depth signal
 
     @abstractmethod
     async def fetch_price(self) -> Optional[PriceQuote]:
@@ -419,6 +420,94 @@ class BlockradarPriceSource(VenuePriceSource):
             await cast(Any, self._adapter).close()
 
 
+# Paycrest (off-ramp aggregator — fiat NGN reference, display-only)
+# =============================================================================
+
+
+class PaycrestPriceSource(VenuePriceSource):
+    """Fiat NGN off-ramp reference (NGN/USDT) from Paycrest's public markets API.
+    Display-only, excluded from the cNGN fair-value blend."""
+
+    name = "paycrest"
+    pair = "USDT/NGN"
+
+    MARKETS_URL = "https://api.paycrest.io/v2/markets?fiat=NGN&token=USDT"
+    MIN_PROVIDER_BALANCE_USD = Decimal("100")
+    CACHE_SECONDS = 60  # off-ramp rates move slowly
+
+    def __init__(self) -> None:
+        self._cache: Optional[tuple[PriceQuote, float]] = None
+
+    @staticmethod
+    def _best_bid_ask(
+        book: list[dict[str, Any]], min_balance_usd: Decimal
+    ) -> Optional[tuple[Decimal, Decimal]]:
+        """bid = best sell (offramp) rate, ask = best buy (onramp) rate, ignoring dust below min_balance_usd."""
+        def _rates(side: str) -> list[Decimal]:
+            out: list[Decimal] = []
+            for row in book:
+                if row.get("side") != side:
+                    continue
+                try:
+                    balance = Decimal(str(row.get("balanceUsd") or "0"))
+                    rate = Decimal(str(row["rate"]))
+                except (KeyError, ValueError, TypeError, ArithmeticError):
+                    continue
+                if balance >= min_balance_usd and rate > 0:
+                    out.append(rate)
+            return out
+
+        sells, buys = _rates("sell"), _rates("buy")
+        if not sells or not buys:
+            return None
+        return max(sells), min(buys)
+
+    async def fetch_price(self) -> Optional[PriceQuote]:
+        if self._cache is not None:
+            quote, fetched_at = self._cache
+            if time.time() - fetched_at < self.CACHE_SECONDS:
+                return quote
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(self.MARKETS_URL, headers={"accept": "application/json"})
+                resp.raise_for_status()
+                data = resp.json().get("data", {})
+        except Exception as e:
+            logger.error("paycrest_fetch_failed", error=str(e))
+            return None
+
+        bid_ask = self._best_bid_ask(data.get("book", []), self.MIN_PROVIDER_BALANCE_USD)
+        if bid_ask is None:
+            logger.warning("paycrest_insufficient_book")
+            return None
+        bid, ask = bid_ask
+        mid = (bid + ask) / Decimal("2")
+
+        agg = data.get("aggregates", {})
+        vol = agg.get("settledVolumeUsd", {}).get("24h")
+        self.volume_24h_usd = Decimal(str(vol)) if vol else None
+        liq = agg.get("liveLiquidityUsd")
+        self.liquidity_usd = Decimal(str(liq)) if liq else None
+
+        logger.info(
+            "paycrest_price_fetched",
+            bid=float(bid),
+            ask=float(ask),
+            volume_24h_usd=float(self.volume_24h_usd or 0),
+            liquidity_usd=float(self.liquidity_usd or 0),
+        )
+        quote = PriceQuote(
+            source="paycrest",
+            timestamp=int(time.time() * 1000),
+            bid=bid,
+            ask=ask,
+            mid=mid,
+        )
+        self._cache = (quote, time.time())
+        return quote
+
+
 # =============================================================================
 # DEX Adapter Price Source (wraps a live VenueAdapter)
 # =============================================================================
@@ -485,6 +574,7 @@ class VenuePrice:
     error: Optional[str] = None
     fetched_at: float = field(default_factory=time.time)
     volume_24h_usd: Optional[Decimal] = None
+    liquidity_usd: Optional[Decimal] = None
 
     @property
     def is_valid(self) -> bool:
@@ -548,6 +638,7 @@ class VenuePriceAggregator:
                 quote=quote,
                 error=None if quote else "No price returned",
                 volume_24h_usd=source.volume_24h_usd,
+                liquidity_usd=source.liquidity_usd,
             )
         except Exception as e:
             return VenuePrice(
@@ -580,6 +671,7 @@ class VenuePriceAggregator:
 def create_venue_aggregator(
     bybit_enabled: bool = True,
     quidax_enabled: bool = True,
+    paycrest_enabled: bool = True,
     blockradar_adapter: "Optional[VenueAdapter]" = None,
 ) -> VenuePriceAggregator:
     """Create a venue price aggregator with configured sources."""
@@ -587,6 +679,9 @@ def create_venue_aggregator(
 
     if bybit_enabled:
         sources.append(BybitP2PPriceSource())
+
+    if paycrest_enabled:
+        sources.append(PaycrestPriceSource())
 
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
