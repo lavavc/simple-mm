@@ -106,6 +106,12 @@ export const VENUE_COLORS: Record<string, string> = {
   blockradar: '#455A64',
 };
 
+// Fiat NGN reference venues (naira price, not the cNGN token). Everything else prices the cNGN token.
+export const NGN_VENUES = new Set(['bybit', 'paycrest']);
+export function isNgnVenue(venue: string): boolean {
+  return NGN_VENUES.has(venue);
+}
+
 // ── Source → venue mapping ──────────────────────────────────────────────────
 // price_snapshots.source uses raw names; map to canonical venue names + pairs
 

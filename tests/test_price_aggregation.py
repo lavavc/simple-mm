@@ -310,11 +310,12 @@ class TestVWAP:
 
         blended = await calc.get_blended_price(force_refresh=True)
 
+        # cNGN-token-only blend: bybit (fiat NGN) is excluded; uni-bsc has null volume
+        # so it is dropped from this cycle. Only quidax + uni-base remain.
         expected = (
-            (Decimal("1") / Decimal("1436")) * Decimal("1000000")
-            + Decimal("0.000697") * Decimal("50000")
+            Decimal("0.000697") * Decimal("50000")
             + Decimal("0.000696") * Decimal("200000")
-        ) / Decimal("1250000")
+        ) / Decimal("250000")
 
         assert abs(blended.vwap - expected) < Decimal("0.0000001")
         assert blended.dex_volume_24h_usd["uni-base"] == Decimal("200000")
