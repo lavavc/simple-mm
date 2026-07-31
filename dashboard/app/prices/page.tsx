@@ -12,6 +12,7 @@ import {
   VENUE_COLORS,
   sourceToVenue,
   normalizeSnapshotMid,
+  isNgnVenue,
 } from '@/lib/utils';
 import { usePrices, useBlendedPrice, usePriceHistory } from '@/lib/hooks/useQueries';
 import { TrendingUp, AlertCircle, Circle, Activity } from 'lucide-react';
@@ -123,7 +124,7 @@ function PriceCard({
             <div className="flex items-center gap-2 mb-2">
               <TrendingUp className="h-4 w-4 text-emerald-500/50" />
               <span className="text-xl font-bold font-mono tracking-tight text-white">{formatNumber(normalized.mid, 2)}</span>
-              <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">NGN/USD</span>
+              <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">{price.venue === 'textile' ? 'cNGN/USDT' : 'NGN/USD'}</span>
             </div>
             {spread !== null && (
               <div className="mt-1 mb-3">
@@ -142,6 +143,14 @@ function PriceCard({
                   <div className="text-white/30 uppercase tracking-widest mb-1">24H Vol</div>
                   <div className="text-white/80">{formatCompactUsd(price.volume_24h_usd)}</div>
                 </div>
+                <div className="border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
+                  <div className="text-white/30 uppercase tracking-widest mb-1">Liquidity</div>
+                  <div className="text-white/80">{formatCompactUsd(price.liquidity_usd)}</div>
+                </div>
+              </div>
+            )}
+            {price.venue === 'textile' && price.liquidity_usd != null && (
+              <div className="mt-1 mb-3 grid grid-cols-1 gap-2 text-[9px] font-mono">
                 <div className="border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
                   <div className="text-white/30 uppercase tracking-widest mb-1">Liquidity</div>
                   <div className="text-white/80">{formatCompactUsd(price.liquidity_usd)}</div>
@@ -254,6 +263,10 @@ export default function PricesPage() {
 
   const vwapNgn = blended && blended.vwap > 0 ? 1 / blended.vwap : null;
 
+  // Split venues: cNGN token prices vs fiat NGN references
+  const cngnPrices = prices?.filter((p) => !isNgnVenue(p.venue)) ?? [];
+  const ngnPrices = prices?.filter((p) => isNgnVenue(p.venue)) ?? [];
+
   // Build per-venue sparklines from the shared history fetch
   const sparklines = useMemo(() => {
     const all = snapshots ?? [];
@@ -304,17 +317,17 @@ export default function PricesPage() {
                   <Activity className="h-5 w-5 text-emerald-400" />
                 </div>
                 <div>
-                  <div className="text-[10px] text-emerald-400/50 font-mono tracking-widest uppercase mb-1">AGGREGATED VWAP</div>
+                  <div className="text-[10px] text-emerald-400/50 font-mono tracking-widest uppercase mb-1">cNGN BLENDED — QUIDAX + UNISWAP</div>
                   <div className="text-2xl font-bold font-mono text-white tracking-tight">
                     {isLoading || !blended ? (
                       <div className="flex items-baseline gap-2">
                         <div className="h-7 w-24 bg-emerald-500/20 rounded-sm animate-pulse" />
-                        <span className="text-[12px] font-normal text-white/40 tracking-widest">NGN/USD</span>
+                        <span className="text-[12px] font-normal text-white/40 tracking-widest">cNGN/USDT</span>
                       </div>
                     ) : (
                       <>
                         {formatNumber(1 / blended.vwap, 2)}{' '}
-                        <span className="text-[12px] font-normal text-white/40 tracking-widest">NGN/USD</span>
+                        <span className="text-[12px] font-normal text-white/40 tracking-widest">cNGN/USDT</span>
                       </>
                     )}
                   </div>
@@ -330,8 +343,8 @@ export default function PricesPage() {
                   <span className="text-white/80">{isLoading || !blended ? <div className="h-3 w-12 bg-white/10 rounded-sm animate-pulse" /> : (blended.twap_1h > 0 ? formatNumber(1 / blended.twap_1h, 2) : '—')}</span>
                 </div>
                 <div className="flex flex-col items-end bg-emerald-500/10 px-3 py-1.5 rounded-sm border border-emerald-500/20">
-                  <span className="text-emerald-400/50 tracking-widest uppercase mb-1">{isLoading || !blended ? <div className="h-3 w-16 bg-emerald-500/20 rounded-sm animate-pulse mb-0.5" /> : `${blended.num_sources} SOURCES`}</span>
-                  <span className="text-emerald-400 font-bold tracking-wider">{isLoading || !blended ? <div className="h-3 w-10 bg-emerald-400/20 rounded-sm animate-pulse mt-0.5" /> : `${Math.round(blended.confidence * 100)}% CONF`}</span>
+                  <span className="text-emerald-400/50 tracking-widest uppercase mb-1">Confidence</span>
+                  <span className="text-emerald-400 font-bold tracking-wider">{isLoading || !blended ? <div className="h-3 w-10 bg-emerald-400/20 rounded-sm animate-pulse mt-0.5" /> : `${Math.round(blended.confidence * 100)}%`}</span>
                 </div>
               </div>
             </div>
@@ -339,10 +352,10 @@ export default function PricesPage() {
         </Card>
       )}
 
-      {/* Per-venue price cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        {isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => (
+      {/* Per-venue price cards — split into cNGN token venues and NGN fiat references */}
+      {isLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
             <Card key={i} className="hover:border-emerald-500/50 transition-colors bg-white/[0.02] border-white/[0.05]">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <div className="flex items-center gap-2">
@@ -377,18 +390,34 @@ export default function PricesPage() {
                 </div>
               </CardContent>
             </Card>
-          ))
-        ) : (
-          prices?.map((price) => (
-            <PriceCard
-              key={price.venue}
-              price={price}
-              sparklineData={sparklines[price.venue] ?? []}
-              dexVolume24hUsd={blended?.dex_volume_24h_usd?.[price.venue] ?? null}
-            />
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {[
+            { title: 'cNGN — token price', items: cngnPrices },
+            { title: 'NGN — fiat reference', items: ngnPrices },
+          ].map((group) =>
+            group.items.length > 0 ? (
+              <div key={group.title}>
+                <div className="text-[10px] font-mono font-bold tracking-widest uppercase text-white/40 mb-2">
+                  {group.title}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {group.items.map((price) => (
+                    <PriceCard
+                      key={price.venue}
+                      price={price}
+                      sparklineData={sparklines[price.venue] ?? []}
+                      dexVolume24hUsd={blended?.dex_volume_24h_usd?.[price.venue] ?? null}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null,
+          )}
+        </div>
+      )}
 
       {/* Multi-venue price comparison chart */}
       <VenuePriceChart blended={blended} />

@@ -296,6 +296,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         bybit_enabled=True,
         quidax_enabled=True,
         paycrest_enabled=True,
+        textile_enabled=True,
         blockradar_adapter=venues.get("blockradar"),
     )
     logger.info("price_aggregator_initialized", venues=list(price_aggregator.sources.keys()))

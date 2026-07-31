@@ -78,6 +78,7 @@ export const VENUE_LABELS: Record<string, VenueLabel> = {
   quidax: { name: 'Quidax', chain: 'CEX', type: 'CEX' },
   bybit: { name: 'Bybit P2P', chain: 'P2P', type: 'P2P' },
   paycrest: { name: 'Paycrest', chain: 'Off-ramp', type: 'OFFRAMP' },
+  textile: { name: 'Textile BSC', chain: 'BSC', type: 'RFQ' },
 };
 
 const CHAIN_EXPLORERS: Record<string, string> = {
@@ -97,12 +98,19 @@ export function txExplorerUrl(venue: string, txHash: string): string | null {
 export const VENUE_COLORS: Record<string, string> = {
   bybit: '#F7931A',
   paycrest: '#8B5CF6',
+  textile: '#EC4899',
   quidax: '#2E7D32',
   'uni-base': '#1976D2',
   'uni-bsc': '#7B1FA2',
   assetchain: '#10B981',
   blockradar: '#455A64',
 };
+
+// Fiat NGN reference venues (naira price, not the cNGN token). Everything else prices the cNGN token.
+export const NGN_VENUES = new Set(['bybit', 'paycrest']);
+export function isNgnVenue(venue: string): boolean {
+  return NGN_VENUES.has(venue);
+}
 
 // ── Source → venue mapping ──────────────────────────────────────────────────
 // price_snapshots.source uses raw names; map to canonical venue names + pairs
@@ -115,6 +123,7 @@ interface SourceInfo {
 const SOURCE_MAP: Record<string, SourceInfo> = {
   bybit_p2p: { venue: 'bybit', pair: 'USDT/NGN' },
   paycrest: { venue: 'paycrest', pair: 'USDT/NGN' },
+  textile: { venue: 'textile', pair: 'cNGN/USDT' },
   quidax: { venue: 'quidax', pair: 'cNGN/USDT' },
   'uni-base_pool': { venue: 'uni-base', pair: 'cNGN/USDC' },
   'uni-bsc_pool': { venue: 'uni-bsc', pair: 'cNGN/USDT' },
