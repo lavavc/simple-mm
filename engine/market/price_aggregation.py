@@ -82,8 +82,8 @@ USDT_NGN_VENUES = frozenset({"bybit"})
 # Venues excluded from VWAP/TWAP fair-value calculations.
 # blockradar: rate-setter, not a price taker.
 # assetchain: watch-only, negligible volume — included in price display but not fair-value math.
-# paycrest: fiat NGN off-ramp reference — display tile, not in the cNGN blend.
-FAIR_VALUE_EXCLUDED = frozenset({"blockradar", "assetchain", "paycrest"})
+# paycrest: fiat NGN off-ramp reference; textile: thin BSC RFQ book — display tiles, not in the cNGN blend.
+FAIR_VALUE_EXCLUDED = frozenset({"blockradar", "assetchain", "paycrest", "textile"})
 
 
 class PriceNormalizer:

@@ -5,7 +5,7 @@ order: 2
 
 ## Sources
 
-Seven venues feed the price pipeline. Four contribute to fair-value calculations; three are display-only.
+Eight venues feed the price pipeline. Four contribute to fair-value calculations; four are display-only.
 
 **Bybit P2P — REST + fraud filtering**
 
@@ -43,6 +43,10 @@ Blockradar provides a quote API for its fixed-rate swap system. Its price is inc
 **Paycrest — REST (display only)**
 
 Paycrest aggregates fiat on/off-ramp liquidity providers. Its public `/v2/markets` endpoint (no auth) returns a book of provider offers plus network aggregates. The engine queries the NGN/USDT corridor and derives a bid (best sell/offramp rate) and ask (best buy/onramp rate), restricted to providers above a minimum balance so a dust offer cannot set the top of book, cached ~60s. Like Bybit it is a fiat NGN reference (NGN per USDT), but it is excluded from the fair-value blend, so adding it leaves the blended price unchanged. Its tile also surfaces Paycrest's 24h settled volume and live liquidity, which no other venue exposes.
+
+**Textile — REST (display only)**
+
+Textile Credit runs an RFQ order book on BSC (Base is currently empty). Its authenticated REST API (`/v1/order-book`, `quotes:read` bearer key in `TEXTTILE_API_KEY`) returns, per direction, the top-of-book `bestRateRay` and the aggregate depth (`availableSellAmount` / `availableBuyAmount`). The engine reads both directions once per cycle — sell cNGN→USDT for the bid, sell USDT→cNGN for the ask — to derive a cNGN/USDT mid and the total two-sided liquidity in USD, cached ~60s. It is a real cNGN token price (~1,398) but excluded from the fair-value blend — the book is thin and concentrated (a handful of makers, most depth in one wallet), so including it would add noise, not accuracy. The tile surfaces its live BSC liquidity; Textile exposes no 24h volume.
 
 ## Price Normalisation
 
@@ -87,12 +91,12 @@ The blended price carries a confidence score between 0 and 0.9 (never 1.0 — fu
 
 | Venues reporting | Confidence |
 |-----------------|------------|
-| All 7 | 0.90 |
-| 6 | 0.70 |
-| 5 | 0.50 |
-| 4 | 0.30 |
-| 3 | 0.10 |
-| 2 or fewer | 0.00 |
+| All 8 | 0.90 |
+| 7 | 0.70 |
+| 6 | 0.50 |
+| 5 | 0.30 |
+| 4 | 0.10 |
+| 3 or fewer | 0.00 |
 
 ## The Numeraire
 

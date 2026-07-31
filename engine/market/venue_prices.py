@@ -509,6 +509,94 @@ class PaycrestPriceSource(VenuePriceSource):
 
 
 # =============================================================================
+# Textile Credit (RFQ order book on BSC — cNGN token reference, display-only)
+# =============================================================================
+
+
+class TextilePriceSource(VenuePriceSource):
+    """cNGN/USDT reference from Textile's REST order book on BSC.
+    Display-only, excluded from the cNGN fair-value blend."""
+
+    name = "textile"
+    pair = "cNGN/USDT"  # mid is USD per cNGN
+
+    ORDER_BOOK_URL = "https://api.textilecredit.com/v1/order-book"
+    CHAIN_ID = 56  # BSC — the only chain with liquidity (Base is empty)
+    USDT_DECIMALS = 18
+    RAY = Decimal(10**27)
+    CACHE_SECONDS = 60
+
+    def __init__(self) -> None:
+        self._cache: Optional[tuple[PriceQuote, float]] = None
+        self._cngn = settings.cngn_bsc_address
+        self._usdt = settings.usdt_bsc_address
+        self._key = settings.textile_api_key
+
+    async def _book(
+        self, client: httpx.AsyncClient, sell_token: str, buy_token: str
+    ) -> Optional[dict[str, Any]]:
+        """Order-book aggregate for one direction, or None if no usable liquidity."""
+        resp = await client.get(
+            self.ORDER_BOOK_URL,
+            params={"chainId": self.CHAIN_ID, "sellToken": sell_token, "buyToken": buy_token},
+            headers={"Authorization": f"Bearer {self._key}"},
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json().get("data", {})
+        rate_ray = data.get("bestRateRay")
+        if not data.get("hasLiquidity") or not rate_ray or Decimal(str(rate_ray)) <= 0:
+            return None
+        return data
+
+    async def fetch_price(self) -> Optional[PriceQuote]:
+        if self._cache is not None:
+            quote, fetched_at = self._cache
+            if time.time() - fetched_at < self.CACHE_SECONDS:
+                return quote
+
+        if not self._key:
+            logger.warning("textile_no_api_key")
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                sell = await self._book(client, self._cngn, self._usdt)  # sell cNGN -> USDT
+                buy = await self._book(client, self._usdt, self._cngn)   # sell USDT -> cNGN
+        except Exception as e:
+            logger.error("textile_fetch_failed", error=str(e))
+            return None
+
+        if sell is None or buy is None:
+            logger.warning("textile_no_liquidity")
+            return None
+
+        bid = Decimal(str(sell["bestRateRay"])) / self.RAY   # best USDT per cNGN, selling
+        ask = self.RAY / Decimal(str(buy["bestRateRay"]))    # invert best cNGN per USDT, buying
+        mid = (bid + ask) / Decimal("2")
+
+        # total two-sided depth in USD (both legs are USDT amounts): receivable selling + spendable buying
+        usdt_side = Decimal(str(sell["availableBuyAmount"])) / Decimal(10**self.USDT_DECIMALS)
+        cngn_side = Decimal(str(buy["availableSellAmount"])) / Decimal(10**self.USDT_DECIMALS)
+        self.liquidity_usd = usdt_side + cngn_side
+
+        logger.info(
+            "textile_price_fetched",
+            bid=float(bid),
+            ask=float(ask),
+            liquidity_usd=float(self.liquidity_usd or 0),
+        )
+        quote = PriceQuote(
+            source="textile",
+            timestamp=int(time.time() * 1000),
+            bid=bid,
+            ask=ask,
+            mid=mid,
+        )
+        self._cache = (quote, time.time())
+        return quote
+
+
+# =============================================================================
 # DEX Adapter Price Source (wraps a live VenueAdapter)
 # =============================================================================
 
@@ -672,6 +760,7 @@ def create_venue_aggregator(
     bybit_enabled: bool = True,
     quidax_enabled: bool = True,
     paycrest_enabled: bool = True,
+    textile_enabled: bool = True,
     blockradar_adapter: "Optional[VenueAdapter]" = None,
 ) -> VenuePriceAggregator:
     """Create a venue price aggregator with configured sources."""
@@ -682,6 +771,9 @@ def create_venue_aggregator(
 
     if paycrest_enabled:
         sources.append(PaycrestPriceSource())
+
+    if textile_enabled:
+        sources.append(TextilePriceSource())
 
     if quidax_enabled:
         sources.append(QuidaxPriceSource())

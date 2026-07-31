@@ -123,7 +123,7 @@ function PriceCard({
             <div className="flex items-center gap-2 mb-2">
               <TrendingUp className="h-4 w-4 text-emerald-500/50" />
               <span className="text-xl font-bold font-mono tracking-tight text-white">{formatNumber(normalized.mid, 2)}</span>
-              <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">NGN/USD</span>
+              <span className="text-[10px] text-white/40 uppercase tracking-widest font-mono">{price.venue === 'textile' ? 'cNGN/USDT' : 'NGN/USD'}</span>
             </div>
             {spread !== null && (
               <div className="mt-1 mb-3">
@@ -142,6 +142,14 @@ function PriceCard({
                   <div className="text-white/30 uppercase tracking-widest mb-1">24H Vol</div>
                   <div className="text-white/80">{formatCompactUsd(price.volume_24h_usd)}</div>
                 </div>
+                <div className="border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
+                  <div className="text-white/30 uppercase tracking-widest mb-1">Liquidity</div>
+                  <div className="text-white/80">{formatCompactUsd(price.liquidity_usd)}</div>
+                </div>
+              </div>
+            )}
+            {price.venue === 'textile' && price.liquidity_usd != null && (
+              <div className="mt-1 mb-3 grid grid-cols-1 gap-2 text-[9px] font-mono">
                 <div className="border border-white/[0.06] bg-white/[0.03] rounded-sm px-2 py-1.5">
                   <div className="text-white/30 uppercase tracking-widest mb-1">Liquidity</div>
                   <div className="text-white/80">{formatCompactUsd(price.liquidity_usd)}</div>

@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     quidax_lp_user_id: str = Field(default="", description="Quidax LP account user id; leave empty to disable LP venue")
     quidax_trade_address: str = Field(default="", description="Quidax arb account deposit address")
     quidax_lp_address: str = Field(default="", description="Quidax LP account deposit address")
+    textile_api_key: str = Field(default="", validation_alias="TEXTTILE_API_KEY", description="Textile FX REST API key (quotes:read)")
     blockradar_api_key: str = Field(default="", description="Blockradar API key")
     blockradar_wallet_id: str = Field(default="", description="Blockradar wallet ID for swaps")
     blockradar_deposit_address: str = Field(default="", description="Blockradar on-chain deposit address")
@@ -209,7 +210,7 @@ class Settings(BaseSettings):
     assetchain_router_address: str = "0x0000000000000000000000000000000000000000"
 
     model_config = {
-        "env_file": ".env",
+        "env_file": (".env", ".env.local"),  # .env.local overrides .env for local dev
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
