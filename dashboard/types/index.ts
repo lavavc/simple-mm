@@ -36,6 +36,8 @@ export interface VenuePriceResponse {
   quote?: PriceQuote;
   error?: string;
   age_seconds: number;
+  volume_24h_usd?: number | null;
+  liquidity_usd?: number | null;
 }
 
 export interface VenueStatus {

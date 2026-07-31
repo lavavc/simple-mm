@@ -5,7 +5,7 @@ order: 2
 
 ## Sources
 
-Six venues feed the price pipeline. Four contribute to fair-value calculations; two are display-only.
+Seven venues feed the price pipeline. Four contribute to fair-value calculations; three are display-only.
 
 **Bybit P2P — REST + fraud filtering**
 
@@ -39,6 +39,10 @@ AssetChain hosts a small cNGN/USDT pool. Its price is included in the dashboard 
 **Blockradar — REST (display only)**
 
 Blockradar provides a quote API for its fixed-rate swap system. Its price is included in the dashboard display but excluded from VWAP and TWAP fair-value calculations — it is a rate-setter, not a price-taker, so it reflects where Blockradar wants to trade, not where the market is.
+
+**Paycrest — REST (display only)**
+
+Paycrest aggregates fiat on/off-ramp liquidity providers. Its public `/v2/markets` endpoint (no auth) returns a book of provider offers plus network aggregates. The engine queries the NGN/USDT corridor and derives a bid (best sell/offramp rate) and ask (best buy/onramp rate), restricted to providers above a minimum balance so a dust offer cannot set the top of book, cached ~60s. Like Bybit it is a fiat NGN reference (NGN per USDT), but it is excluded from the fair-value blend, so adding it leaves the blended price unchanged. Its tile also surfaces Paycrest's 24h settled volume and live liquidity, which no other venue exposes.
 
 ## Price Normalisation
 
@@ -83,12 +87,12 @@ The blended price carries a confidence score between 0 and 0.9 (never 1.0 — fu
 
 | Venues reporting | Confidence |
 |-----------------|------------|
-| All 6 | 0.90 |
-| 5 | 0.70 |
-| 4 | 0.50 |
-| 3 | 0.30 |
-| 2 | 0.10 |
-| 1 or 0 | 0.00 |
+| All 7 | 0.90 |
+| 6 | 0.70 |
+| 5 | 0.50 |
+| 4 | 0.30 |
+| 3 | 0.10 |
+| 2 or fewer | 0.00 |
 
 ## The Numeraire
 
