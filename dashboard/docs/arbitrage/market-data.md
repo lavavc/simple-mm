@@ -5,7 +5,7 @@ order: 2
 
 ## Sources
 
-Eight venues feed the price pipeline. Four contribute to fair-value calculations; four are display-only.
+Eight venues feed the price pipeline. The blended price is **cNGN-token-only** — just three venues (Quidax, uni-base, uni-bsc) contribute to fair-value. The other five are display-only, including the two fiat NGN references (Bybit, Paycrest), which are shown separately as an NGN reference rather than mixed into the cNGN blend.
 
 **Bybit P2P — REST + fraud filtering**
 
@@ -14,7 +14,7 @@ Bybit's P2P market is the primary NGN/USD reference rate. Raw listings contain m
 - Prices more than 2% from the median of the remaining ads are removed
 - The modal price (most frequently occurring integer NGN rate) of the survivors is used as the side price
 
-The result is the rate the largest cohort of reputable mid-market merchants agree on. This is the primary input that determines the NGN leg of the blended price.
+The result is the rate the largest cohort of reputable mid-market merchants agree on. This is a **fiat NGN** rate (naira per USD), not the cNGN token price, so it is shown as an NGN reference and excluded from the cNGN blend.
 
 **Quidax order book — REST polling**
 
@@ -69,9 +69,7 @@ The blended price combines a VWAP (current snapshot) with two TWAP windows (5-mi
 
 ### VWAP
 
-The VWAP is computed across the four fair-value venues (Bybit, Quidax, uni-base, uni-bsc) with each venue weighted by its effective market depth or volume. The weights are not equal — they reflect how much liquidity each venue actually represents.
-
-**Bybit** — Bybit does not expose a 24h traded P2P volume figure via its API. Instead we derive a depth proxy: fetch page 1 (200 ads) of the buy-side order book, sum `lastQuantity` (remaining USDT available on each ad), then extrapolate to the full ad count using `result.count`. This gives total listed depth across all active buy ads. We then apply a utilization factor (`depth_utilization`, default 5%) on the basis that most listed P2P depth is not actually traded. At typical book sizes (~$30–35M total listed buy-side depth) this produces a proxy of ~$1.5–1.8M, making Bybit the highest-weighted venue. The depth is refreshed every 5 minutes.
+The VWAP is computed across the three cNGN-token fair-value venues (Quidax, uni-base, uni-bsc) with each venue weighted by its effective market depth or volume. The weights are not equal — they reflect how much liquidity each venue actually represents. Bybit is a fiat NGN reference and is no longer part of the blend, so its depth proxy no longer feeds the VWAP weighting.
 
 **Quidax** — The `/markets/tickers` response includes a `vol` field (24h traded volume in USDT). This is used directly as the VWAP weight.
 
@@ -87,16 +85,14 @@ TWAP is computed from stored price snapshots in the database. The 5-minute windo
 
 ### Confidence Score
 
-The blended price carries a confidence score between 0 and 0.9 (never 1.0 — full confidence is never appropriate for NGN price data). It starts at 0.9 when all venues report successfully, and drops by 0.2 for each venue that fails to return a valid price. The total venue count is derived from the live fetch result each cycle, not hardcoded, so it self-corrects as venues are added or removed.
+The blended price carries a confidence score between 0 and 0.9 (never 1.0 — full confidence is never appropriate for NGN price data). It starts at 0.9 when all **blend** venues report successfully, and drops by 0.2 for each blend venue that fails to return a valid price. Only the three cNGN fair-value venues count — display-only tiles (Bybit, Paycrest, etc.) do not affect the score. The count is derived from the live fetch each cycle, not hardcoded.
 
-| Venues reporting | Confidence |
+| Blend venues reporting | Confidence |
 |-----------------|------------|
-| All 8 | 0.90 |
-| 7 | 0.70 |
-| 6 | 0.50 |
-| 5 | 0.30 |
-| 4 | 0.10 |
-| 3 or fewer | 0.00 |
+| All 3 | 0.90 |
+| 2 | 0.70 |
+| 1 | 0.50 |
+| 0 | 0.30 (blend has no price; card is hidden) |
 
 ## The Numeraire
 

@@ -79,11 +79,13 @@ INVERTED_PAIRS = frozenset({"USDC/cNGN", "USDT/cNGN", "USDT/NGN"})  # 1/mid IS c
 # USDT_NGN_VENUES: used only by the TWAP path which has no pair info (DB snapshots).
 USDT_NGN_VENUES = frozenset({"bybit"})
 
-# Venues excluded from VWAP/TWAP fair-value calculations.
+# Venues excluded from VWAP/TWAP fair-value calculations. The blend is cNGN-token-only:
+# Quidax + the two Uniswap pools. Everything below is display-only.
+# bybit / paycrest: fiat NGN references (naira, not the cNGN token) — shown as NGN, not in the blend.
 # blockradar: rate-setter, not a price taker.
-# assetchain: watch-only, negligible volume — included in price display but not fair-value math.
-# paycrest: fiat NGN off-ramp reference; textile: thin BSC RFQ book — display tiles, not in the cNGN blend.
-FAIR_VALUE_EXCLUDED = frozenset({"blockradar", "assetchain", "paycrest", "textile"})
+# assetchain: watch-only, negligible volume.
+# textile: thin BSC RFQ book.
+FAIR_VALUE_EXCLUDED = frozenset({"bybit", "paycrest", "blockradar", "assetchain", "textile"})
 
 
 class PriceNormalizer:
@@ -346,8 +348,9 @@ class BlendedPriceCalculator:
         if twap_1h == 0:
             twap_1h = vwap
 
-        # Confidence: 90% when all venues report, minus 20% per missing venue
-        confidence = self._compute_confidence(normalized, len(venue_prices))
+        # Sources and confidence reflect the blend venues only (fair-value), not display tiles
+        fair_venue_count = sum(1 for v in venue_prices if v not in FAIR_VALUE_EXCLUDED)
+        confidence = self._compute_confidence(fair_normalized, fair_venue_count)
 
         venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}  # all venues for display
         dex_volume_24h_usd: dict[str, Optional[Decimal]] = {
@@ -362,8 +365,8 @@ class BlendedPriceCalculator:
             twap_1h=twap_1h,
             venue_prices=venue_price_map,
             timestamp=int(time.time() * 1000),
-            num_sources=len(normalized),
-            total_venues=len(venue_prices),
+            num_sources=len(fair_normalized),
+            total_venues=fair_venue_count,
             confidence=confidence,
             dex_volume_24h_usd=dex_volume_24h_usd,
         )
