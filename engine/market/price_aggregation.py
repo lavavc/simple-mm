@@ -84,8 +84,10 @@ USDT_NGN_VENUES = frozenset({"bybit"})
 # bybit / paycrest: fiat NGN references (naira, not the cNGN token) — shown as NGN, not in the blend.
 # blockradar: rate-setter, not a price taker.
 # assetchain: watch-only, negligible volume.
-# textile: thin BSC RFQ book.
-FAIR_VALUE_EXCLUDED = frozenset({"bybit", "paycrest", "blockradar", "assetchain", "textile"})
+# textile: thin BSC RFQ book; numo: display-only Base onchain order book.
+FAIR_VALUE_EXCLUDED = frozenset(
+    {"bybit", "paycrest", "blockradar", "assetchain", "textile", "numo"}
+)
 
 
 class PriceNormalizer:

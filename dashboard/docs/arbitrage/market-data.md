@@ -5,7 +5,7 @@ order: 2
 
 ## Sources
 
-Eight venues feed the price pipeline. The blended price is **cNGN-token-only** — just three venues (Quidax, uni-base, uni-bsc) contribute to fair-value. The other five are display-only, including the two fiat NGN references (Bybit, Paycrest), which are shown separately as an NGN reference rather than mixed into the cNGN blend.
+Nine venues feed the price pipeline. The blended price is **cNGN-token-only** — just three venues (Quidax, uni-base, uni-bsc) contribute to fair-value. The other six are display-only, including the two fiat NGN references (Bybit, Paycrest), which are shown separately as an NGN reference rather than mixed into the cNGN blend.
 
 **Bybit P2P — REST + fraud filtering**
 
@@ -48,6 +48,10 @@ Paycrest aggregates fiat on/off-ramp liquidity providers. Its public `/v2/market
 
 Textile Credit runs an RFQ order book on BSC (Base is currently empty). Its authenticated REST API (`/v1/order-book`, `quotes:read` bearer key in `TEXTTILE_API_KEY`) returns, per direction, the top-of-book `bestRateRay` and the aggregate depth (`availableSellAmount` / `availableBuyAmount`). The engine reads both directions once per cycle — sell cNGN→USDT for the bid, sell USDT→cNGN for the ask — to derive a cNGN/USDT mid and the total two-sided liquidity in USD, cached ~60s. It is a real cNGN token price (~1,398) but excluded from the fair-value blend — the book is thin and concentrated (a handful of makers, most depth in one wallet), so including it would add noise, not accuracy. The tile surfaces its live BSC liquidity; Textile exposes no 24h volume.
 
+**Numo — REST (display only)**
+
+Numo runs an onchain USDC/cNGN spot order book on Base. Its public `/v1/book?symbol=USDCcNGN-SPOT` response exposes both reciprocal engine prices and user-facing prices. The engine deliberately reads `bids[0]` and `asks[0]` from the nested `spot_contract.ui_intent.price`, takes their midpoint in cNGN per USDC, then inverts it once to the pipeline's canonical USDC-per-cNGN basis. The visible remaining USDC depth is summed across both returned sides using each order's documented USDC notional and unfilled fraction. Numo is display-only and does not affect fair value, arbitrage, or confidence.
+
 ## Price Normalisation
 
 All venues quote in different units. The normaliser converts everything to a common basis: **USD per 1 cNGN**.
@@ -60,6 +64,7 @@ All venues quote in different units. The normaliser converts everything to a com
 | Uniswap BSC | sqrtPriceX96, cNGN/USDT pool, inverted | Unpack Q96 fixed-point, invert |
 | AssetChain | sqrtPriceX96, cNGN/USDT pool | Unpack Q96 fixed-point, invert |
 | Blockradar | cNGN/USDC | Direct |
+| Numo | UI intent cNGN per USDC | Midpoint, then invert to USDC per cNGN |
 
 Adding a new pair from any venue only requires adding its string to `CNGN_USD_PAIRS` or `INVERTED_PAIRS` in `price_aggregation.py`.
 
