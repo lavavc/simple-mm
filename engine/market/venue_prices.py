@@ -597,6 +597,98 @@ class TextilePriceSource(VenuePriceSource):
 
 
 # =============================================================================
+# Numo (onchain order book on Base — cNGN token reference, display-only)
+# =============================================================================
+
+
+class NumoPriceSource(VenuePriceSource):
+    """USDC/cNGN spot reference from Numo's public Base order book.
+
+    Numo's engine prices are reciprocal. Its nested UI intent is authoritative
+    for the displayed cNGN-per-USDC rate, which we normalize to USDC per cNGN.
+    """
+
+    name = "numo"
+    pair = "cNGN/USDC"
+
+    BOOK_URL = "https://api.numofx.com/v1/book"
+    SYMBOL = "USDCcNGN-SPOT"
+    CACHE_SECONDS = 60
+
+    def __init__(self) -> None:
+        self._cache: Optional[tuple[PriceQuote, float]] = None
+
+    @staticmethod
+    def _ui_price(order: dict[str, Any]) -> Decimal:
+        price = Decimal(str(order["spot_contract"]["ui_intent"]["price"]))
+        if not price.is_finite() or price <= 0:
+            raise ValueError("Numo UI price must be finite and positive")
+        return price
+
+    @classmethod
+    def _remaining_usdc(cls, order: dict[str, Any]) -> Decimal:
+        desired = Decimal(str(order["desired_amount"]))
+        filled = Decimal(str(order.get("filled_amount", "0")))
+        size = Decimal(str(order["spot_contract"]["ui_intent"]["size"]))
+        if not all(value.is_finite() for value in (desired, filled, size)):
+            raise ValueError("Numo size fields must be finite")
+        if desired <= 0 or filled < 0 or size < 0:
+            raise ValueError("Numo size fields are invalid")
+        remaining = max(desired - filled, Decimal("0"))
+        return size * remaining / desired
+
+    async def fetch_price(self) -> Optional[PriceQuote]:
+        if self._cache is not None:
+            quote, fetched_at = self._cache
+            if time.time() - fetched_at < self.CACHE_SECONDS:
+                return quote
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(self.BOOK_URL, params={"symbol": self.SYMBOL})
+                response.raise_for_status()
+                data: dict[str, Any] = response.json()
+
+            bids = data.get("bids") or []
+            asks = data.get("asks") or []
+            if not bids or not asks:
+                logger.warning("numo_empty_book")
+                return None
+
+            ui_bid = self._ui_price(bids[0])
+            ui_ask = self._ui_price(asks[0])
+            ui_mid = (ui_bid + ui_ask) / Decimal("2")
+            reciprocal_sides = (Decimal("1") / ui_bid, Decimal("1") / ui_ask)
+            bid = min(reciprocal_sides)
+            ask = max(reciprocal_sides)
+            mid = Decimal("1") / ui_mid
+
+            self.liquidity_usd = sum(
+                (self._remaining_usdc(order) for order in (*bids, *asks)),
+                Decimal("0"),
+            )
+        except Exception as exc:
+            logger.error("numo_fetch_failed", error=str(exc))
+            return None
+
+        quote = PriceQuote(
+            source=self.name,
+            timestamp=int(time.time() * 1000),
+            bid=bid,
+            ask=ask,
+            mid=mid,
+        )
+        self._cache = (quote, time.time())
+        logger.info(
+            "numo_price_fetched",
+            bid=float(bid),
+            ask=float(ask),
+            liquidity_usd=float(self.liquidity_usd),
+        )
+        return quote
+
+
+# =============================================================================
 # DEX Adapter Price Source (wraps a live VenueAdapter)
 # =============================================================================
 
@@ -761,6 +853,7 @@ def create_venue_aggregator(
     quidax_enabled: bool = True,
     paycrest_enabled: bool = True,
     textile_enabled: bool = True,
+    numo_enabled: bool = True,
     blockradar_adapter: "Optional[VenueAdapter]" = None,
 ) -> VenuePriceAggregator:
     """Create a venue price aggregator with configured sources."""
@@ -774,6 +867,9 @@ def create_venue_aggregator(
 
     if textile_enabled:
         sources.append(TextilePriceSource())
+
+    if numo_enabled:
+        sources.append(NumoPriceSource())
 
     if quidax_enabled:
         sources.append(QuidaxPriceSource())
