@@ -50,4 +50,4 @@ delta_ratio = cNGN_usd_value / total_portfolio_usd_value
 target = 0.5 (50/50)
 ```
 
-If delta deviates more than `delta_alert_threshold_percent` (10%) from target, an alert is raised: it is logged and recorded in the alert store and broadcast to the dashboard. To avoid drowning Telegram in routine delta noise, such alerts are **not** sent to Telegram unless the deviation also exceeds `delta_alert_broadcast_percent` (25%). The `max_delta_ratio` parameter (60%) acts as a hard gate in `can_trade` — no new trades are taken if the portfolio is already too heavy in cNGN.
+If delta deviates more than `delta_alert_threshold_percent` (10%) from target, an alert is raised: it is logged and recorded in the alert store and broadcast to the dashboard. Delta alerts are **never** sent to Telegram — portfolio imbalance is routine and too noisy for the bot. The `max_delta_ratio` parameter (60%) acts as a hard gate in `can_trade` — no new trades are taken if the portfolio is already too heavy in cNGN.

@@ -101,12 +101,9 @@ class PositionJobs:
                     f"{float(deviation_percent):.1f}% from target {float(target):.1%} "
                     f"({direction})"
                 )
-                # Routine deviations are noisy on Telegram and drown real alerts,
-                # so they stay log-only + recorded; only a massive deviation escalates to TG.
-                is_massive = (
-                    deviation_percent > self.context.config.delta_alert_broadcast_percent
-                )
-                logger.warning("portfolio_delta_alert", message=message, telegram=is_massive)
+                # Delta deviations are logged and recorded on the dashboard, but never
+                # escalated to Telegram — routine imbalance is too noisy there.
+                logger.warning("portfolio_delta_alert", message=message)
                 alert_id = await self.context.alert_store.insert_alert(
                     severity="warning",
                     category="delta",
@@ -119,7 +116,7 @@ class PositionJobs:
                             "type": "alert",
                             "severity": "warning",
                             "message": message,
-                            "skip_telegram": not is_massive,
+                            "skip_telegram": True,
                         }
                     )
         except Exception as exc:
