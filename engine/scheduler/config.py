@@ -23,4 +23,3 @@ class SchedulerConfig:
 
     target_delta_ratio: Decimal = Decimal(str(settings.target_delta_ratio))
     delta_alert_threshold_percent: Decimal = Decimal(str(settings.delta_alert_threshold_percent))
-    delta_alert_broadcast_percent: Decimal = Decimal(str(settings.delta_alert_broadcast_percent))

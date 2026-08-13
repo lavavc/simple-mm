@@ -101,8 +101,7 @@ class Settings(BaseSettings):
     # Trading parameters
     target_delta_ratio: float = 0.5
     rebalance_threshold_percent: float = 5.0
-    delta_alert_threshold_percent: float = 10.0  # Log + record if delta deviates >10% from target
-    delta_alert_broadcast_percent: float = 25.0  # Only escalate to Telegram past this (routine deviations stay log-only)
+    delta_alert_threshold_percent: float = 10.0  # Log + record (dashboard only, never Telegram) if delta deviates >10% from target
     portfolio_delta_interval: int = 120  # Check portfolio delta every 2 minutes
 
     # Arbitrage settings
