@@ -509,21 +509,26 @@ class PaycrestPriceSource(VenuePriceSource):
 
 
 # =============================================================================
-# Textile Credit (RFQ order book on BSC — cNGN token reference, display-only)
+# Textile Credit (v2 RFQ on BSC — cNGN token reference, display-only)
 # =============================================================================
 
 
 class TextilePriceSource(VenuePriceSource):
-    """cNGN/USDT reference from Textile's REST order book on BSC.
+    """cNGN/USDT reference from Textile's v2 RFQ preview on BSC.
     Display-only, excluded from the cNGN fair-value blend."""
 
     name = "textile"
     pair = "cNGN/USDT"  # mid is USD per cNGN
 
-    ORDER_BOOK_URL = "https://api.textilecredit.com/v1/order-book"
+    PREVIEW_URL = "https://api.textilecredit.com/v2/rfq/preview"
     CHAIN_ID = 56  # BSC — the only chain with liquidity (Base is empty)
+    CNGN_DECIMALS = 6
     USDT_DECIMALS = 18
     RAY = Decimal(10**27)
+    # Small nominal probes: rateRay is top-of-book and availableSellAmount (depth) is returned
+    # regardless of size, while a small amount avoids the all-or-nothing no_quote on a thin book.
+    PROBE_CNGN = str(10_000 * 10**6)
+    PROBE_USDT = str(10 * 10**18)
     CACHE_SECONDS = 60
 
     def __init__(self) -> None:
@@ -532,19 +537,24 @@ class TextilePriceSource(VenuePriceSource):
         self._usdt = settings.usdt_bsc_address
         self._key = settings.textile_api_key
 
-    async def _book(
-        self, client: httpx.AsyncClient, sell_token: str, buy_token: str
+    async def _preview(
+        self, client: httpx.AsyncClient, sell_token: str, buy_token: str, sell_amount: str
     ) -> Optional[dict[str, Any]]:
-        """Order-book aggregate for one direction, or None if no usable liquidity."""
-        resp = await client.get(
-            self.ORDER_BOOK_URL,
-            params={"chainId": self.CHAIN_ID, "sellToken": sell_token, "buyToken": buy_token},
+        """RFQ preview for one direction, or None if no quote. rateRay is USDT per cNGN."""
+        resp = await client.post(
+            self.PREVIEW_URL,
+            json={
+                "chainId": self.CHAIN_ID,
+                "sellToken": sell_token,
+                "buyToken": buy_token,
+                "sellAmount": sell_amount,
+            },
             headers={"Authorization": f"Bearer {self._key}"},
         )
         resp.raise_for_status()
         data: dict[str, Any] = resp.json().get("data", {})
-        rate_ray = data.get("bestRateRay")
-        if not data.get("hasLiquidity") or not rate_ray or Decimal(str(rate_ray)) <= 0:
+        rate_ray = data.get("rateRay")
+        if data.get("status") != "preview" or not rate_ray or Decimal(str(rate_ray)) <= 0:
             return None
         return data
 
@@ -560,8 +570,8 @@ class TextilePriceSource(VenuePriceSource):
 
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                sell = await self._book(client, self._cngn, self._usdt)  # sell cNGN -> USDT
-                buy = await self._book(client, self._usdt, self._cngn)   # sell USDT -> cNGN
+                sell = await self._preview(client, self._cngn, self._usdt, self.PROBE_CNGN)  # sell cNGN -> USDT
+                buy = await self._preview(client, self._usdt, self._cngn, self.PROBE_USDT)   # sell USDT -> cNGN
         except Exception as e:
             logger.error("textile_fetch_failed", error=str(e))
             return None
@@ -570,14 +580,15 @@ class TextilePriceSource(VenuePriceSource):
             logger.warning("textile_no_liquidity")
             return None
 
-        bid = Decimal(str(sell["bestRateRay"])) / self.RAY   # best USDT per cNGN, selling
-        ask = self.RAY / Decimal(str(buy["bestRateRay"]))    # invert best cNGN per USDT, buying
+        # v2 rateRay is USDT per cNGN in both directions — no inversion needed
+        bid = Decimal(str(sell["rateRay"])) / self.RAY   # USDT per cNGN, selling cNGN
+        ask = Decimal(str(buy["rateRay"])) / self.RAY    # USDT per cNGN, buying cNGN
         mid = (bid + ask) / Decimal("2")
 
-        # total two-sided depth in USD (both legs are USDT amounts): receivable selling + spendable buying
-        usdt_side = Decimal(str(sell["availableBuyAmount"])) / Decimal(10**self.USDT_DECIMALS)
-        cngn_side = Decimal(str(buy["availableSellAmount"])) / Decimal(10**self.USDT_DECIMALS)
-        self.liquidity_usd = usdt_side + cngn_side
+        # total two-sided depth in USD: cNGN-sell depth valued at bid + USDT-sell depth
+        cngn_depth = Decimal(str(sell["availableSellAmount"])) / Decimal(10**self.CNGN_DECIMALS) * bid
+        usdt_depth = Decimal(str(buy["availableSellAmount"])) / Decimal(10**self.USDT_DECIMALS)
+        self.liquidity_usd = cngn_depth + usdt_depth
 
         logger.info(
             "textile_price_fetched",
