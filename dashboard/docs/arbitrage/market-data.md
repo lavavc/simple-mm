@@ -22,6 +22,8 @@ The Quidax CEX API is polled on a short interval (`price_update_interval`, defau
 
 The depth endpoint's native market is `usdtcngn`: prices are cNGN per USDT and sizes are USDT. Asks sell USDT for cNGN; bids buy USDT with cNGN. The spot/orderbook tab labels these native units explicitly. If either side is empty, it hides any retained arbitrage curve and reports the one-sided book because the current simulator requires both sides.
 
+Authenticated order operations prefer the documented OpenAPI host. Order lookup treats HTTP 404 with Quidax error code `110043` as a confirmed missing order, without letting an alternate host's authentication failure override it. Generic 404s, account errors, and transport failures remain unresolved and retain tracked orders. Confirmed missing orders follow the tracked-order reconciliation rules: pending cancellations clear immediately; other tracked orders require two missing lookups before clearing. New ladders remain blocked while any previous order is unresolved.
+
 **Uniswap V4 pools (Base + BSC) — WebSocket**
 
 Pool state is maintained via Alchemy WebSocket subscriptions. The listener subscribes to the PoolManager contract on each chain, filtered by the V4 Swap topic and pool ID:
@@ -74,7 +76,7 @@ Adding a new pair from any venue only requires adding its string to `CNGN_USD_PA
 
 ## Blended Price
 
-The blended price combines a VWAP (current snapshot) with two TWAP windows (5-minute and 1-hour). It is published on the prices WebSocket channel and used for arbitrage and portfolio delta management. LP range-setting is intentionally separate and uses venue-local pool history only.
+The blended price combines a VWAP (current snapshot) with two TWAP windows (5-minute and 1-hour). It is published on the prices WebSocket channel and used for arbitrage and portfolio valuation. LP range-setting is intentionally separate and uses venue-local pool history only.
 
 ### VWAP
 

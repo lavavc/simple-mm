@@ -16,6 +16,40 @@ class LadderOrderTarget:
     volume: Decimal
 
 
+def resolve_inventory_order_sizes(
+    *,
+    reference_price: Decimal,
+    order_size_cngn: Decimal,
+    order_size_usdt: Decimal,
+    cngn_total: Decimal,
+    usdt_total: Decimal,
+    cngn_budget: Decimal,
+    usdt_budget: Decimal,
+    levels: int,
+    skew_strength: Decimal,
+) -> tuple[Decimal, Decimal]:
+    """Tilt equal baseline notionals toward selling the overweight asset."""
+    if reference_price <= 0 or not reference_price.is_finite():
+        raise ValueError("Ladder reference price must be finite and positive")
+    if levels <= 0:
+        raise ValueError("Ladder must have at least one level")
+    cngn_size, usdt_size = order_size_cngn, order_size_usdt
+    total_value_usdt = cngn_total / reference_price + usdt_total
+    if cngn_size > 0 and usdt_size > 0:
+        baseline_cngn = min(cngn_size, usdt_size * reference_price)
+        imbalance = (
+            (usdt_total - cngn_total / reference_price) / total_value_usdt
+            if total_value_usdt > 0 else Decimal("0")
+        )
+        cngn_size = baseline_cngn * (1 - skew_strength * imbalance)
+        usdt_size = baseline_cngn / reference_price * (1 + skew_strength * imbalance)
+    # Reserve 1% of each spending asset for fees and rounding across the whole ladder.
+    return (
+        min(cngn_size, cngn_budget * Decimal("0.99") / levels),
+        min(usdt_size, usdt_budget * Decimal("0.99") / levels),
+    )
+
+
 def build_ladder_order_targets(
     *,
     reference_price: Decimal,
@@ -32,11 +66,13 @@ def build_ladder_order_targets(
             if buy_ngn_rate > 0:
                 buy_usdt_volume = order_size_cngn / buy_ngn_rate
                 price, volume = format_limit_order("buy", buy_ngn_rate, buy_usdt_volume)
-                targets.append(LadderOrderTarget(side="buy", price=price, volume=volume))
+                if volume > 0:
+                    targets.append(LadderOrderTarget(side="buy", price=price, volume=volume))
         if order_size_usdt > 0:
             sell_ngn_rate = reference_price + offset
             price, volume = format_limit_order("sell", sell_ngn_rate, order_size_usdt)
-            targets.append(LadderOrderTarget(side="sell", price=price, volume=volume))
+            if volume > 0:
+                targets.append(LadderOrderTarget(side="sell", price=price, volume=volume))
     return targets
 
 

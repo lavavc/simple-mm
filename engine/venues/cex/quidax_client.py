@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Awaitable, Callable, cast
 
@@ -9,6 +10,16 @@ import httpx
 import structlog
 
 logger = structlog.get_logger()
+
+
+@dataclass(frozen=True)
+class QuidaxWalletBalance:
+    available: Decimal
+    locked: Decimal
+
+    @property
+    def total(self) -> Decimal:
+        return self.available + self.locked
 
 
 class QuidaxApiClient:
@@ -30,10 +41,18 @@ class QuidaxApiClient:
         self._client_getter = client_getter
 
     async def get_wallet_balance(self, currency: str) -> Decimal:
+        return (await self.get_wallet_inventory(currency)).available
+
+    async def get_wallet_inventory(self, currency: str) -> QuidaxWalletBalance:
         client = await self._client_getter()
         response = await client.get(f"{self.base_url}/users/{self.order_user_id}/wallets/{currency}")
         response.raise_for_status()
-        return Decimal(str(response.json().get("data", {}).get("balance", "0")))
+        data = response.json()["data"]
+        available = Decimal(str(data["balance"]))
+        locked = Decimal(str(data["locked"]))
+        if any(not amount.is_finite() or amount < 0 for amount in (available, locked)):
+            raise ValueError(f"Invalid Quidax {currency} wallet balance")
+        return QuidaxWalletBalance(available=available, locked=locked)
 
     async def get_order_book_payload(self, limit: int) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -56,8 +75,8 @@ class QuidaxApiClient:
 
     def order_collection_endpoints(self) -> list[str]:
         endpoints = [
-            f"{self.order_api_base_url}/users/{self.order_user_id}/orders",
             f"{self.base_url}/users/{self.order_user_id}/orders",
+            f"{self.order_api_base_url}/users/{self.order_user_id}/orders",
         ]
         deduped: list[str] = []
         for endpoint in endpoints:
@@ -67,8 +86,8 @@ class QuidaxApiClient:
 
     def order_item_endpoints(self, order_id: str) -> list[str]:
         endpoints = [
-            f"{self.order_api_base_url}/users/{self.order_user_id}/orders/{order_id}",
             f"{self.base_url}/users/{self.order_user_id}/orders/{order_id}",
+            f"{self.order_api_base_url}/users/{self.order_user_id}/orders/{order_id}",
         ]
         deduped: list[str] = []
         for endpoint in endpoints:
@@ -102,16 +121,17 @@ class QuidaxApiClient:
 
     @staticmethod
     def is_missing_order_error(exc: Exception) -> bool:
-        response = getattr(exc, "response", None)
-        if response is not None and getattr(response, "status_code", None) == 404:
-            return True
-        return "404" in str(exc)
+        if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 404:
+            return False
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            return False
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return isinstance(data, dict) and str(data.get("code")) == "110043"
 
     async def fetch_order_by_id(self, order_id: str) -> tuple[str, dict[str, Any] | None]:
         client = await self._client_getter()
-        saw_missing = False
-        saw_error = False
-
         for endpoint in self.order_item_endpoints(order_id):
             try:
                 response = await client.get(endpoint)
@@ -122,9 +142,7 @@ class QuidaxApiClient:
                     return "found", data
             except Exception as exc:
                 if self.is_missing_order_error(exc):
-                    saw_missing = True
-                    continue
-                saw_error = True
+                    return "missing", None
                 logger.warning(
                     "quidax_fetch_order_by_id_failed",
                     endpoint=endpoint,
@@ -132,6 +150,4 @@ class QuidaxApiClient:
                     error=str(exc),
                 )
 
-        if saw_missing and not saw_error:
-            return "missing", None
         return "unknown", None

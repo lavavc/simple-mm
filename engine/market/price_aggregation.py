@@ -8,7 +8,7 @@ Provides:
 This module is the single source of truth for "what is the fair value of cNGN?"
 and is consumed by:
 - Arbitrage detection (cross-venue comparison)
-- Portfolio delta management (USD valuation)
+- Portfolio reporting (USD valuation)
 - CEX/Blockradar rate syncing (reference price)
 - Dashboard display
 """

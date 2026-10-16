@@ -79,10 +79,6 @@ def _build_preflight_context(engine: Any, venue_name: str, log_ctx: dict[str, An
         details["wallet_amount"] = float(wallet_amount)
 
     sell_price_usd = coerce_decimal(log_ctx.get("sell_price_usd"))
-    if sell_price_usd is None or sell_price_usd <= 0:
-        snapshot_price = engine.inventory.state.cngn_price_usd
-        if snapshot_price > 0:
-            sell_price_usd = snapshot_price
     if sell_price_usd is not None and sell_price_usd > 0:
         details["sell_price_usd"] = float(sell_price_usd)
 

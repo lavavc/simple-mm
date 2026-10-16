@@ -20,7 +20,6 @@ __all__ = [
     "PublicVenueOrdersResponse",
     "VenueStatus",
     "SystemStatus",
-    "GlobalPosition",
     "PortfolioExposureSource",
     "PortfolioExposure",
     "NormalizedPriceResponse",
@@ -105,30 +104,23 @@ class SystemStatus(BaseModel):
     venues: list[VenueStatus]
 
 
-class GlobalPosition(BaseModel):
-    """Global portfolio position summary."""
-
-    total_cngn: Decimal
-    total_usdt: Decimal
-    total_usdc: Decimal
-    total_usd_value: Decimal
-    delta_ratio: Decimal
-    target_delta: Decimal
-
-
 class PortfolioExposureSource(BaseModel):
-    """One contributing balance source in the global portfolio view."""
-
     source: str
     kind: Literal["account", "lp_position", "exchange"]
-    balances: dict[str, Decimal]
-    usd_value: Decimal
+    balances: dict[str, Decimal | None]
+    usd_value: Decimal | None
+    error: str | None
 
 
-class PortfolioExposure(GlobalPosition):
-    """Expanded global portfolio position with per-source breakdown."""
-
-    sources: list[PortfolioExposureSource] = Field(default_factory=list)
+class PortfolioExposure(BaseModel):
+    timestamp: int
+    complete: bool
+    total_cngn: Decimal | None
+    total_usdt: Decimal | None
+    total_usdc: Decimal | None
+    total_usd_value: Decimal | None
+    cngn_share: Decimal | None
+    sources: list[PortfolioExposureSource]
 
 
 class NormalizedPriceResponse(BaseModel):

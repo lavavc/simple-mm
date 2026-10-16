@@ -1,14 +1,10 @@
-"""Portfolio exposure routes."""
+"""Read-only portfolio reporting."""
 
-from __future__ import annotations
+from dataclasses import asdict
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from engine.api.deps import get_runtime
-from engine.api.helpers.portfolio import (
-    get_portfolio_exposure_calculator,
-    to_portfolio_exposure_response,
-)
 from engine.api.schemas import PortfolioExposure
 from engine.runtime import EngineRuntime
 
@@ -17,5 +13,7 @@ router = APIRouter()
 
 @router.get("/portfolio/exposure", response_model=PortfolioExposure)
 async def get_portfolio_exposure(runtime: EngineRuntime = Depends(get_runtime)) -> PortfolioExposure:
-    calculator = get_portfolio_exposure_calculator(runtime)
-    return to_portfolio_exposure_response(await calculator.calculate())
+    calculator = runtime.portfolio_exposure_calculator
+    if calculator is None:
+        raise HTTPException(status_code=503, detail="Portfolio reporting not initialized")
+    return PortfolioExposure.model_validate(asdict(await calculator.calculate()))

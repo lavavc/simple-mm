@@ -281,8 +281,8 @@ def find_optimal_arb(
     from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
     from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
 
-    uni_bsc_sqrt, uni_bsc_liq, _, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
-    uni_base_sqrt, uni_base_liq, _, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
+    uni_bsc_sqrt, uni_bsc_liq, bsc_ts, uni_bsc_fee = get_cached_pool_state(UNISWAP_BSC_POOL_READ_CONFIG.pool_address)
+    uni_base_sqrt, uni_base_liq, base_ts, uni_base_fee = get_cached_pool_state(UNISWAP_BASE_POOL_READ_CONFIG.pool_address)
 
     if (
         uni_bsc_sqrt is None or uni_bsc_liq is None or uni_bsc_fee is None
@@ -368,6 +368,11 @@ def find_optimal_arb(
 
     return {
         "timestamp": int(time.time() * 1000),
+        "price_timestamps": {
+            "quidax": quidax_depth.timestamp,
+            "uni-bsc": int(bsc_ts * 1000) if bsc_ts is not None else 0,
+            "uni-base": int(base_ts * 1000) if base_ts is not None else 0,
+        },
         "prices": {
             quidax_depth.venue: float(quidax_mid),
             "uni-bsc": uni_bsc_price_usd,

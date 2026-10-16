@@ -349,7 +349,7 @@ class TestArbDetectionFork:
         from engine.market.pool_state import update_single_v4_pool_state, _POOL_CACHE
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
-        from engine.types import ArbitrageParams
+        from engine.types import ArbitrageParams, TradeInventorySnapshot
 
         base_config = dataclasses.replace(UNISWAP_BASE_POOL_READ_CONFIG, rpc_url=anvil_base)
         bsc_config = dataclasses.replace(UNISWAP_BSC_POOL_READ_CONFIG, rpc_url=anvil_bsc)
@@ -396,8 +396,12 @@ class TestArbDetectionFork:
                 max_single_trade_usd=Decimal("1000"),
             )
             inventory = InventoryManager(params)
-            inventory.reconcile_cngn({"uni-base": Decimal("50000"), "uni-bsc": Decimal("50000")})
-            inventory.reconcile_stables({"uni-base": Decimal("1000"), "uni-bsc": Decimal("1000")})
+            for venue in ("uni-base", "uni-bsc"):
+                inventory.set_account_snapshot(venue, TradeInventorySnapshot(
+                    stable_available=Decimal("1000"), cngn_available=Decimal("50000"),
+                    stable_total=Decimal("1000"), cngn_total=Decimal("50000"),
+                    timestamp=int(_time.time() * 1000),
+                ))
 
             direction = arb["direction"]
             route_def = ROUTES_BY_DIRECTION[direction]

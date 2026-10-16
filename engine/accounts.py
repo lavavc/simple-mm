@@ -1,6 +1,8 @@
 """HD wallet account management for multi-venue trading."""
 
 import os
+import asyncio
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
@@ -149,6 +151,10 @@ class AccountManager:
         self._accounts: dict[AccountRole, LocalAccount] = {}
         self._web3_instances: dict[int, Web3] = {}  # chain_id -> Web3
         self._decimals_cache: dict[str, int] = {}  # contract_address -> decimals (immutable)
+        self._balance_snapshot: list[AccountBalance] | None = None
+        self._balance_snapshot_at = 0.0
+        self._balance_contracts: dict[Any, Any] | None = None
+        self._balance_lock = asyncio.Lock()
 
         # Derive all accounts
         self._derive_accounts()
@@ -319,14 +325,20 @@ class AccountManager:
         Returns:
             List of AccountBalance for all configured accounts
         """
-        balances = []
-        for role in self._accounts.keys():
-            try:
-                balance = await self.get_balance(role, token_contracts)
-                balances.append(balance)
-            except Exception as e:
-                logger.error("balance_check_failed", role=role.value, error=str(e))
-        return balances
+        async with self._balance_lock:
+            if (self._balance_snapshot is not None and self._balance_contracts == token_contracts
+                    and time.monotonic() - self._balance_snapshot_at < 10):
+                return list(self._balance_snapshot)
+            balances = []
+            for role in self._accounts:
+                try:
+                    balances.append(await self.get_balance(role, token_contracts))
+                except Exception as exc:
+                    logger.error("balance_check_failed", role=role.value, error=str(exc))
+            self._balance_snapshot = balances
+            self._balance_snapshot_at = time.monotonic()
+            self._balance_contracts = token_contracts
+            return list(balances)
 
     async def transfer_erc20(
         self,

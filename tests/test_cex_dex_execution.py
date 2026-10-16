@@ -110,6 +110,8 @@ def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
         adjusted_size_usd=size,
         net_profit_usd=Decimal("1.45"),
         expected_profit_usd=Decimal("1.50"),
+        inventory_improvement_usd=Decimal("0"),
+        selection_score=Decimal("0"),
     )
 
 

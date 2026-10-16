@@ -14,7 +14,6 @@ import engine.api.deps as api_deps
 from engine.api import api_router
 from engine.api.routes import venues as venue_routes
 from engine.config import DexParams
-from engine.market.portfolio_registry import DEFAULT_PORTFOLIO_SOURCE_REGISTRY
 from engine.runtime import EngineRuntime
 from engine.types import CexParams, LPPosition, Position
 
@@ -68,7 +67,6 @@ def _make_runtime() -> EngineRuntime:
         blended_calculator=None,
         normalizer=None,
         portfolio_exposure_calculator=None,
-        portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         lp_managers={},
     )
 
@@ -81,38 +79,24 @@ def _make_app(runtime: EngineRuntime | None) -> FastAPI:
     return app
 
 
-def test_global_position_uses_historical_blended_fallback_when_vwap_is_zero():
+def test_portfolio_endpoint_uses_initialized_shared_report():
+    from tests.test_portfolio_exposure import calculator, exchange
+
     runtime = _make_runtime()
-    runtime.venues = {
-        "quidax": SimpleNamespace(
-            enabled=True,
-            paused=False,
-            params=None,
-            get_position=AsyncMock(
-                return_value=SimpleNamespace(
-                    balances={"cngn": Decimal("1000"), "usdt": Decimal("50"), "usdc": Decimal("0")}
-                )
-            ),
-        )
-    }
-    runtime.blended_calculator = SimpleNamespace(
-        get_blended_price=AsyncMock(
-            return_value=SimpleNamespace(
-                vwap=Decimal("0"),
-                twap_5m=Decimal("0.0007"),
-                twap_1h=Decimal("0.00069"),
-            )
-        )
-    )
-    app = _make_app(runtime)
-
-    with TestClient(app) as client:
-        response = client.get("/api/positions/global")
-
+    runtime.portfolio_exposure_calculator = calculator(venues={"quidax": exchange(1000, 50)})
+    with TestClient(_make_app(runtime)) as client:
+        response = client.get("/api/portfolio/exposure")
+        assert client.get("/api/positions/global").status_code == 404
     assert response.status_code == 200
     body = response.json()
-    assert body["total_usd_value"] == "50.7000"
-    assert body["delta_ratio"] != "0"
+    assert body["complete"] is True
+    assert Decimal(body["total_usd_value"]) == 51
+    assert body["cngn_share"] is not None
+
+
+def test_portfolio_endpoint_requires_initialized_reporting():
+    with TestClient(_make_app(_make_runtime())) as client:
+        assert client.get("/api/portfolio/exposure").status_code == 503
 
 
 def test_account_balances_include_separate_quidax_trade_and_lp_rows():

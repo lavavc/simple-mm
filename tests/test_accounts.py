@@ -39,3 +39,30 @@ def test_missing_mnemonic_raises_not_silently_derives():
     finally:
         if old is not None:
             os.environ["WALLET_MNEMONIC"] = old
+
+
+@pytest.mark.asyncio
+async def test_monitoring_reads_share_cache_but_direct_balance_reads_stay_fresh():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    mgr = AccountManager(use_test_accounts=True)
+    mgr._accounts = {AccountRole.UNI_BASE_TRADE: mgr.get_account(AccountRole.UNI_BASE_TRADE)}
+    first = SimpleNamespace(role="uni-base-trade", token_balances={"USDC": 2})
+    second = SimpleNamespace(role="uni-base-trade", token_balances={"USDC": 3})
+    mgr.get_balance = AsyncMock(return_value=first)
+    contracts = {8453: {"USDC": "token"}}
+    a, b = await asyncio.gather(mgr.check_all_balances(contracts), mgr.check_all_balances(contracts))
+    assert a == b == [first]
+    mgr.get_balance.assert_awaited_once()
+
+    mgr.get_balance.return_value = second
+    assert await mgr.get_balance(AccountRole.UNI_BASE_TRADE, contracts) is second
+    assert await mgr.check_all_balances(contracts) == [first]
+    mgr._balance_snapshot_at -= 11
+    assert await mgr.check_all_balances(contracts) == [second]
+    assert mgr.get_balance.await_count == 3
+
+    await mgr.check_all_balances({8453: {"USDC": "other-token"}})
+    assert mgr.get_balance.await_count == 4

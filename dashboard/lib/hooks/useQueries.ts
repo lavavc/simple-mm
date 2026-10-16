@@ -86,10 +86,10 @@ export function useNormalizedPrices() {
   return useQuery({ queryKey: ['normalizedPrices'], queryFn: api.getNormalizedPrices });
 }
 
-export function useGlobalPosition() {
+export function usePortfolioExposure() {
   return useQuery({
-    queryKey: ['globalPosition'],
-    queryFn: api.getGlobalPosition,
+    queryKey: ['portfolioExposure'],
+    queryFn: api.getPortfolioExposure,
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnWindowFocus: false,

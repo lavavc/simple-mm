@@ -3,54 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from decimal import Decimal
 from typing import Any
 
 import structlog
 
-from engine.venues.base import is_dex_execution_venue
-
+from engine.types import TradeInventorySnapshot
+from engine.venues.base import TradeInventoryVenue, is_dex_execution_venue
 
 logger = structlog.get_logger()
-
-
-def reconcile_balances(engine: Any, balances: list[Any]) -> None:
-    """Refresh per-account stablecoin and cNGN from periodic balance fetches."""
-    venue_stables: dict[str, Decimal] = {}
-    venue_cngn: dict[str, Decimal] = {}
-    for b in balances:
-        role = getattr(b, "role", "")
-        tb = getattr(b, "token_balances", {})
-        if role == "uni-bsc-trade":
-            venue_stables["uni-bsc"] = Decimal(str(tb.get("USDT", 0)))
-            venue_cngn["uni-bsc"] = Decimal(str(tb.get("cNGN", 0)))
-        elif role == "uni-base-trade":
-            venue_stables["uni-base"] = Decimal(str(tb.get("USDC", 0)))
-            venue_cngn["uni-base"] = Decimal(str(tb.get("cNGN", 0)))
-        elif role == "quidax-trade":
-            venue_stables["quidax"] = Decimal(str(tb.get("USDT", 0)))
-            venue_cngn["quidax"] = Decimal(str(tb.get("cNGN", 0)))
-    if venue_stables:
-        engine.inventory.reconcile_stables(venue_stables)
-    if venue_cngn:
-        engine.inventory.reconcile_cngn(venue_cngn)
 
 
 def fetch_venue_wallet_snapshot(
     engine: Any,
     venue_name: str,
-) -> tuple[str, Decimal, Decimal] | None:
+) -> tuple[str, TradeInventorySnapshot] | None:
     """Read a venue trade wallet's live stable/cNGN balances."""
     venue = engine.venues.get(venue_name)
     if venue is None or not is_dex_execution_venue(venue):
         return None
 
+    observed_at = int(time.time() * 1000)
     try:
         stable_raw = venue.stable_token.functions.balanceOf(venue.trade_account.address).call()
         cngn_raw = venue.cngn_token.functions.balanceOf(venue.trade_account.address).call()
         stable_amount = Decimal(stable_raw) / Decimal(10 ** venue.stable_decimals)
         cngn_amount = Decimal(cngn_raw) / Decimal(10 ** venue.cngn_decimals)
-        return venue_name, stable_amount, cngn_amount
+        return venue_name, TradeInventorySnapshot(
+            stable_amount, cngn_amount, stable_amount, cngn_amount, observed_at,
+        )
     except Exception as e:
         logger.warning("wallet_snapshot_refresh_failed", venue=venue_name, error=str(e))
         return None
@@ -58,41 +40,26 @@ def fetch_venue_wallet_snapshot(
 
 async def refresh_inventory_for_venues(engine: Any, *venue_names: str) -> None:
     """Refresh live stable/cNGN inventory for the given venues."""
-    names = sorted({name for name in venue_names if name in engine.venues})
-    if not names:
-        return
-
+    names = sorted(set(venue_names) & {"quidax", "uni-base", "uni-bsc"})
     loop = asyncio.get_running_loop()
-    snapshots = await asyncio.gather(
-        *(loop.run_in_executor(None, engine._fetch_venue_wallet_snapshot, name) for name in names),
-        return_exceptions=True,
-    )
 
-    venue_stables: dict[str, Decimal] = {}
-    venue_cngn: dict[str, Decimal] = {}
-    for snapshot in snapshots:
-        if isinstance(snapshot, BaseException):
-            logger.warning("wallet_snapshot_refresh_task_failed", error=str(snapshot))
+    async def fetch(name: str) -> tuple[str, TradeInventorySnapshot] | None:
+        venue = engine.venues.get(name)
+        if venue is None:
+            return None
+        if isinstance(venue, TradeInventoryVenue):
+            return name, await venue.get_trade_inventory()
+        return await loop.run_in_executor(None, engine._fetch_venue_wallet_snapshot, name)
+
+    snapshots = await asyncio.gather(*(fetch(name) for name in names), return_exceptions=True)
+    for name, snapshot in zip(names, snapshots):
+        if isinstance(snapshot, BaseException) or snapshot is None:
+            engine.inventory.invalidate_snapshots(name)
+            logger.warning("arb_inventory_refresh_failed", venue=name, error=str(snapshot))
             continue
-        if snapshot is None:
-            continue
+        venue_name, balances = snapshot
+        engine.inventory.set_account_snapshot(venue_name, balances)
 
-        venue_name, stable_amount, cngn_amount = snapshot
-        venue_stables[venue_name] = stable_amount
-        venue_cngn[venue_name] = cngn_amount
-
-    if venue_stables:
-        engine.inventory.reconcile_stables(venue_stables)
-    if venue_cngn:
-        engine.inventory.reconcile_cngn(venue_cngn)
-
-    if venue_stables or venue_cngn:
-        logger.info(
-            "wallet_inventory_refreshed",
-            venues=names,
-            stable_balances={k: float(v) for k, v in venue_stables.items()},
-            cngn_balances={k: float(v) for k, v in venue_cngn.items()},
-        )
 
 
 async def seed_account_inventory(engine: Any, *, ensure_approvals: bool = True) -> None:
@@ -119,6 +86,7 @@ async def seed_account_inventory(engine: Any, *, ensure_approvals: bool = True) 
             cngn = None
         return name, stable, cngn
 
+    observed_at = int(time.time() * 1000)
     balance_results = await asyncio.gather(
         *(loop.run_in_executor(None, _read_balances, name, venue) for name, venue in tradeable.items()),
         return_exceptions=True,
@@ -140,6 +108,11 @@ async def seed_account_inventory(engine: Any, *, ensure_approvals: bool = True) 
         engine.inventory.initialize_account_stable(stable_balances)
     if cngn_balances:
         engine.inventory.initialize_account_cngn(cngn_balances)
+    for name in stable_balances.keys() & cngn_balances.keys():
+        stable, cngn = stable_balances[name], cngn_balances[name]
+        engine.inventory.set_account_snapshot(name, TradeInventorySnapshot(
+            stable, cngn, stable, cngn, observed_at,
+        ))
     engine._inventory_seeded = True
 
     if ensure_approvals:

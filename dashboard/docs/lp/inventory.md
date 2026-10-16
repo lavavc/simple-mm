@@ -3,44 +3,28 @@ title: Inventory
 order: 3
 ---
 
-## Delta-neutral target
+## Inventory preferences
 
-The portfolio targets a **50/50 split** between USD-denominated assets (USDC, USDT) and NGN-denominated assets (cNGN).
+A roughly equal split by value between cNGN and stablecoins helps keep both sides funded. This is a soft preference, not a delta-neutral portfolio: cNGN still carries NGN exchange-rate exposure.
 
-The engine now computes one canonical global portfolio snapshot from three additive buckets:
+LP venues manage their own funds. [Arbitrage inventory management](/docs/arbitrage/inventory-balance) considers only arb accounts. Balances in separate accounts cannot fund each other's trades without a transfer, so keeping these decisions separate gives each strategy clear ownership of its available capital.
 
-1. **Managed on-chain wallets** from `account_manager.check_all_balances(...)`
-2. **Deployed LP inventory** from explicitly registered LP venues
-3. **Off-chain exchange balances** from explicitly registered exchange venues
+## DEX liquidity
 
-Today that means:
+A concentrated LP position changes composition as price moves and can become entirely one token. Reranging restores active liquidity; it does not restore or maintain a fixed 50/50 allocation.
 
-- on-chain inventory includes `uni-base-trade`, `uni-bsc-trade`, `blockradar`, and any rare residual balances still sitting in `uni-base-lp` / `uni-bsc-lp`
-- deployed LP inventory is added from `uni-base` and `uni-bsc`
-- off-chain exchange inventory is added from `quidax` and, when separately configured, `quidax-lp`
+Once price moves more than 1% beyond a position's boundary, the engine closes it, swaps the LP wallet's tokens to the ratio needed by a new range, and remints. The trade wallet is not involved. These actions are recorded so the lifecycle can be reconstructed.
 
-This snapshot is exposed through both `/positions/global` and `/portfolio/exposure`, and the scheduler broadcasts it as `portfolio_delta` every 2 minutes by default.
+Range skew uses recent price history as a mean-reversion heuristic, not a calibrated probability. It adjusts when a new range is calculated, rather than continuously moving an existing position. The skew fraction stays between 0.2 and 0.8; a higher value allocates more of the range below the mean in the range calculation's price orientation. This changes liquidity placement, not a guaranteed inventory outcome.
 
-The inclusion rule is explicit by design: if a new venue should affect global totals, it must get one entry in `engine/market/portfolio_registry.py`. Unregistered venue positions remain visible for diagnostics, but they do not silently change portfolio totals.
+## Quidax liquidity
 
-If delta deviates by more than `delta_alert_threshold_percent` (default 10%) from target, an alert is broadcast. If it exceeds `max_delta_ratio` (default 60% cNGN), `can_trade()` blocks new arb trades entirely.
+The ladder keeps the same configured number of levels and price offsets, but increases order sizes that spend the overweight asset. On Quidax's USDT/cNGN market, a USDT-heavy account therefore posts larger asks to sell USDT for cNGN. Available funds cap each side, so an exhausted asset can leave only one side quoted.
 
-## Interaction with arbitrage
+This encourages balance when orders fill. It cannot guarantee fills or an exact allocation, and it does not use the arb account's inventory.
 
-Arb trades change per-chain stablecoin levels:
-- A `QUIDAX_TO_UNI_BASE` trade increases USDC on Base, reduces USDT on Quidax
-- A `UNI_BSC_TO_QUIDAX` trade reduces USDT on BSC, increases USDT on Quidax
+## Portfolio reporting
 
-The arb router's **inventory alignment tiebreak** uses this: if the portfolio is net long cNGN, it favours routes that sell cNGN to a CEX (reducing cNGN weight). If net short, it favours routes that buy cNGN. This creates passive delta management via arb flow — no explicit rebalancing trade is needed in routine operation.
+The dashboard combines three distinct sources: managed on-chain wallets, deployed LP positions, and exchange holdings including funds locked in orders. Residual tokens in LP wallets count separately from tokens deployed in positions. Each source is included once.
 
-## Automated LP rebalancing
-
-When an LP position moves outside its tick range and the price has drifted more than `rebalance_threshold_percent` beyond the boundary, the engine rebalances automatically:
-
-1. Close the out-of-range position and record the removal.
-2. Swap LP wallet tokens to the ratio required by the pool at the new range (using exact tick math — the trade account is not involved).
-3. Remint the position at a freshly calculated tick range.
-
-All three steps are persisted in the action log so the LP lifecycle can be reconstructed from the database without relying on runtime logs.
-
-The `downside_skew` adapts to mean-reversion probability: if the current price is 1σ above the EWMA mean, skew shifts up by 0.15 (more range above); if 1σ below, it shifts down. This is capped at ±0.8.
+HTTP and live updates share one report, refreshed every two minutes by default. Unreadable holdings or a missing valuation price make the report explicitly incomplete; unknown amounts are not presented as zero. The overall cNGN share describes the portfolio. It has no global target, imbalance alert, or influence on trading decisions.

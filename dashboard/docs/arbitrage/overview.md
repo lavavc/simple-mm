@@ -28,11 +28,14 @@ All thresholds are set in `engine/config.py` which is where you need to go to ch
 | `ARB_EXECUTE_CEX_DEX_ENABLED` | `false` | Enable live CEX-DEX execution |
 | `ARB_EXECUTE_DEX_DEX_ENABLED` | `false` | Enable live DEX-DEX execution |
 | `ARBITRAGE_MAX_DAILY_VOLUME_USD` | 10,000 | Rolling 24h volume cap |
-| `ARBITRAGE_MAX_INVENTORY_IMBALANCE_USD` | 5,000 | Max net directional exposure |
+| `ARBITRAGE_MAX_INVENTORY_IMBALANCE_USD` | 5,000 | Per-account target deviation cap; corrective trades remain eligible |
 | `ARBITRAGE_MAX_DAILY_LOSS_USD` | 500 | Circuit breaker loss threshold |
 | `ARBITRAGE_MAX_CONSECUTIVE_FAILURES` | 3 | Circuit breaker failure count |
-| `ARBITRAGE_MAX_DELTA_RATIO` | 0.60 | Portfolio cNGN% ceiling |
 | `ARBITRAGE_MIN_ACCOUNT_STABLECOIN_USD` | 10 | Min stablecoin per venue before pausing |
-| `ARBITRAGE_CROSS_CHAIN_REBALANCE_BPS` | 10 | Max rebalance penalty in route scoring |
+| `ARBITRAGE_INVENTORY_WEIGHT` | 0.02 | Weight of inventory improvement in route preference |
+| `ARBITRAGE_INVENTORY_MAX_AGE_SECONDS` | 30 | Maximum balance and price-reference age |
+| `ARBITRAGE_QUIDAX_TARGET_CNGN_RATIO` | 0.5 | Quidax arb account cNGN target by value |
+| `ARBITRAGE_UNI_BASE_TARGET_CNGN_RATIO` | 0.5 | Base arb account cNGN target by value |
+| `ARBITRAGE_UNI_BSC_TARGET_CNGN_RATIO` | 0.5 | BSC arb account cNGN target by value |
 
 Fee assumptions for arb detection are not currently environment-configurable. Quidax taker fee and route-specific on-chain fee assumptions live in the detection modules and route math, not in `engine/config.py`.

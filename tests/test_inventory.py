@@ -73,15 +73,10 @@ class TestTradeLimits:
         allowed, reason = tracker.can_trade(Decimal("500"))
         assert allowed is True
 
-    def test_inventory_imbalance_limit(self, tracker):
-        """Should block trades when imbalance too high."""
-        # Simulate large imbalance
+    def test_trade_flow_imbalance_is_informational(self, tracker):
         tracker._state.cngn_imbalance_usd = Decimal("1800")
-
-        # Another $300 could push over $2000
-        allowed, reason = tracker.can_trade(Decimal("300"))
-        assert allowed is False
-        assert "imbalance" in reason.lower()
+        allowed, _ = tracker.can_trade(Decimal("300"))
+        assert allowed is True
 
     def test_daily_loss_limit(self, tracker):
         """Should block trades when daily loss limit reached."""
@@ -230,7 +225,6 @@ class TestPerAccountStable:
             "uni-bsc": Decimal("3000"),
         })
         assert tracker._state.per_account_stable["uni-base"] == Decimal("5000")
-        assert tracker._state.initial_account_stable["uni-base"] == Decimal("5000")
 
     def test_buy_reduces_balance(self, tracker):
         tracker.initialize_account_stable({"uni-base": Decimal("5000")})
@@ -260,64 +254,6 @@ class TestPerAccountStable:
 
 
 # =============================================================================
-# get_rebalance_cost_bps
-# =============================================================================
-
-
-class TestGetRebalanceCost:
-
-    def test_full_stock_returns_zero(self, tracker):
-        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
-        assert tracker.get_rebalance_cost_bps("uni-base") == 0
-
-    def test_half_drained_returns_half_cost(self, tracker):
-        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
-        tracker.update_account_inventory("uni-base", Decimal("2500"), is_buy=True)
-        cost = tracker.get_rebalance_cost_bps("uni-base")
-        assert cost == 5  # 50% drained → 5 of 10 bps
-
-    def test_empty_returns_full_cost(self, tracker):
-        tracker.initialize_account_stable({"uni-base": Decimal("1000")})
-        tracker.update_account_inventory("uni-base", Decimal("1000"), is_buy=True)
-        cost = tracker.get_rebalance_cost_bps("uni-base")
-        assert cost == 10
-
-    def test_no_initial_data_returns_fallback(self, tracker):
-        # No seeding — should return cross_chain_rebalance_bps
-        cost = tracker.get_rebalance_cost_bps("uni-base")
-        assert cost == tracker.params.cross_chain_rebalance_bps
-
-
-# =============================================================================
-# Delta ratio check in can_trade
-# =============================================================================
-
-
-class TestDeltaRatioCheck:
-
-    def test_no_snapshot_check_skipped(self, tracker):
-        # total_portfolio_usd = 0 → check skipped
-        allowed, reason = tracker.can_trade(Decimal("100"))
-        assert allowed is True
-
-    def test_under_max_delta_ratio_allowed(self, tracker):
-        tracker.update_portfolio_snapshot(Decimal("500"), Decimal("1000"))  # 50% < 60%
-        allowed, reason = tracker.can_trade(Decimal("100"))
-        assert allowed is True
-
-    def test_over_max_delta_ratio_blocked(self, tracker):
-        tracker.update_portfolio_snapshot(Decimal("700"), Decimal("1000"))  # 70% > 60%
-        allowed, reason = tracker.can_trade(Decimal("100"))
-        assert allowed is False
-        assert "max delta ratio" in reason.lower()
-
-    def test_exactly_at_max_delta_ratio_blocked(self, tracker):
-        tracker.update_portfolio_snapshot(Decimal("600"), Decimal("1000"))  # exactly 60%
-        allowed, reason = tracker.can_trade(Decimal("100"))
-        assert allowed is False
-
-
-# =============================================================================
 # can_trade with venue flags
 # =============================================================================
 
@@ -332,7 +268,7 @@ class TestCanTradeWithVenueFlags:
 
     def test_sell_venue_flagged_is_allowed(self, tracker):
         tracker._state.low_inventory_venues.add("uni-bsc")
-        allowed, reason = tracker.can_trade(Decimal("100"), sell_venue="uni-bsc")
+        allowed, reason = tracker.can_trade(Decimal("100"), buy_venue="uni-base")
         assert allowed is True  # sell-side flag doesn't block
 
     def test_no_flag_is_allowed(self, tracker):
@@ -352,12 +288,6 @@ class TestReconcileStables:
         tracker.initialize_account_stable({"uni-base": Decimal("5000")})
         tracker.reconcile_stables({"uni-base": Decimal("3000")})
         assert tracker._state.per_account_stable["uni-base"] == Decimal("3000")
-
-    def test_does_not_change_initial_stable(self, tracker):
-        """reconcile_stables must NOT touch initial_account_stable (baseline for cost calc)."""
-        tracker.initialize_account_stable({"uni-base": Decimal("5000")})
-        tracker.reconcile_stables({"uni-base": Decimal("2000")})
-        assert tracker._state.initial_account_stable["uni-base"] == Decimal("5000")
 
     def test_flags_low_when_below_threshold(self, tracker):
         """reconcile_stables flags venue when balance drops below min threshold."""

@@ -360,4 +360,5 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 await arbitrage_store.update_dex_arbitrage_execution_state(opp_id, status="abandoned", reason=err)
             await engine.history.record_failed(opp_id, route, status="execution_error", reason=err)
     finally:
+        engine.inventory.invalidate_snapshots(buy_venue_name, sell_venue_name)
         engine._arb_executing = False

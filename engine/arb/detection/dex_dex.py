@@ -241,8 +241,23 @@ def find_optimal_dex_arb() -> dict[str, Any] | None:
 
     best_spread_bps = int(((usd_out - best_size) / best_size) * 10000) if best_size > 0 else 0
 
+    route_metadata = {
+        "slippage_tolerance_bps": 10,
+        "uni_bsc_fee_bps": int(uni_bsc_fee * 10000),
+        "uni_base_fee_bps": int(uni_base_fee * 10000),
+        "gas_usd": float(gas_base + gas_bsc),
+    }
+    all_arbs = [
+        {**_build_dex_dex_trade_result(direction, size, cngn, out), **route_metadata}
+        for _, size, cngn, out, direction in (best_v1, best_v2)
+    ]
+
     return {
         "timestamp": int(time.time() * 1000),
+        "price_timestamps": {
+            "uni-bsc": int(uni_bsc_ts * 1000) if uni_bsc_ts is not None else 0,
+            "uni-base": int(uni_base_ts * 1000) if uni_base_ts is not None else 0,
+        },
         "prices": {
             "uni-bsc": uni_bsc_price_usd,
             "uni-base": uni_base_price_usd,
@@ -253,6 +268,7 @@ def find_optimal_dex_arb() -> dict[str, Any] | None:
             "uni_bsc_ts": float(uni_bsc_ts or 0),
             "uni_base_ts": float(uni_base_ts or 0),
         },
+        "all_arbs": all_arbs,
         "optimal_arb": {
             "direction": best_dir,
             "optimal_size_usd": float(best_size),

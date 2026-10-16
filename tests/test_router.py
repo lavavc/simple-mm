@@ -1,12 +1,13 @@
 """Pure tests for route selection logic (router.py)."""
 
 import pytest
+import time
 from decimal import Decimal
 from unittest.mock import MagicMock
 
 import engine.arb.routing.router as _router
 from engine.arb.routing.router import RouteCandidate, SelectedRoute, select_route
-from engine.types import ArbitrageParams, OrderBookDepth, OrderBookLevel
+from engine.types import ArbitrageParams, OrderBookDepth, OrderBookLevel, TradeInventorySnapshot
 from engine.arb.risk.inventory import InventoryTracker
 
 
@@ -40,6 +41,10 @@ def _make_candidate(
             }
             else {}
         )
+    signal = {**signal, "timestamp": int(time.time() * 1000),
+              "price_timestamps": {v: int(time.time() * 1000) for v in ("quidax", "uni-base", "uni-bsc")},
+              "prices": {"quidax": "0.000625", "uni-base": "0.000625", "uni-bsc": "0.000625"},
+              "optimal_arb": {"cngn_transferred": size_usd * 1600}}
     return RouteCandidate(
         direction=direction,
         buy_venue=buy_venue,
@@ -53,9 +58,7 @@ def _make_candidate(
 
 def _make_inventory(
     per_account: dict | None = None,
-    initial: dict | None = None,
     cngn_per_account: dict | None = None,
-    imbalance: float = 0.0,
     circuit_breaker: bool = False,
 ) -> InventoryTracker:
     params = ArbitrageParams(
@@ -65,16 +68,19 @@ def _make_inventory(
         max_consecutive_failures=10,
     )
     tracker = InventoryTracker(params)
-    tracker._state.cngn_imbalance_usd = Decimal(str(imbalance))
     tracker._state.circuit_breaker_active = circuit_breaker
     if circuit_breaker:
         tracker._state.circuit_breaker_reason = "test"
     if per_account:
         tracker._state.per_account_stable = {k: Decimal(str(v)) for k, v in per_account.items()}
-    if initial:
-        tracker._state.initial_account_stable = {k: Decimal(str(v)) for k, v in initial.items()}
     if cngn_per_account:
         tracker._state.per_account_cngn = {k: Decimal(str(v)) for k, v in cngn_per_account.items()}
+    for venue in tracker._state.per_account_stable.keys() | tracker._state.per_account_cngn.keys():
+        stable = tracker._state.per_account_stable.get(venue, Decimal("0"))
+        cngn = tracker._state.per_account_cngn.get(venue, Decimal("0"))
+        tracker.set_account_snapshot(venue, TradeInventorySnapshot(
+            stable, cngn, stable, cngn, int(time.time() * 1000),
+        ))
     return tracker
 
 
@@ -113,7 +119,7 @@ class TestSelectRouteEdgeCases:
         monkeypatch.setattr(
             _router,
             "estimate_cex_dex_trade",
-            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10")},
+            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10"), "cngn_transferred": investment_usd * 1600},
         )
         inv = _make_inventory(per_account={"quidax": 100}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(size_usd=500.0, profit_usd=10.0)
@@ -126,13 +132,12 @@ class TestSelectRouteEdgeCases:
         monkeypatch.setattr(
             _router,
             "estimate_cex_dex_trade",
-            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10")},
+            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10"), "cngn_transferred": investment_usd * 1600},
         )
         inv = _make_inventory(
             per_account={"quidax": 500},
             cngn_per_account={"uni-base": 26999},
         )
-        inv._state.cngn_price_usd = Decimal("0")
         c = _make_candidate(
             size_usd=500.0,
             profit_usd=10.0,
@@ -151,7 +156,6 @@ class TestSelectRouteEdgeCases:
             per_account={"quidax": 500},
             cngn_per_account={"uni-base": 26999},
         )
-        inv._state.cngn_price_usd = Decimal("0")
         c = _make_candidate(size_usd=500.0, profit_usd=10.0, signal={})
 
         assert select_route([c], inv) is None
@@ -175,26 +179,8 @@ class TestSelectRouteNetProfit:
         inv = _make_inventory(per_account={"quidax": 500}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(size_usd=100.0, profit_usd=5.0, gas_usd=0.5)
         result = select_route([c], inv)
-        # rebalance_cost = 0 when no initial seeded (fallback returns cross_chain_rebalance_bps)
-        # actually fallback returns params.cross_chain_rebalance_bps = 20 bps
-        # rebalance_cost = 100 * 20/10000 = 0.2
         assert result is not None
-        # net = 5.0 - 0.5 - rebalance_cost
-        assert result.net_profit_usd < Decimal("5.0")
-
-    def test_rebalance_cost_scales_with_drain(self):
-        """Drained account adds more friction → lower net profit."""
-        inv_full = _make_inventory(
-            per_account={"quidax": 500}, initial={"quidax": 500}
-        )
-        inv_drained = _make_inventory(
-            per_account={"quidax": 250}, initial={"quidax": 500}
-        )
-        c = _make_candidate(profit_usd=5.0, gas_usd=0.07)
-        r_full = select_route([c], inv_full)
-        r_drained = select_route([c], inv_drained)
-        if r_full and r_drained:
-            assert r_full.net_profit_usd >= r_drained.net_profit_usd
+        assert result.net_profit_usd == Decimal("4.5")
 
     def test_dex_dex_route_recomputes_profit_at_capped_size(self, monkeypatch):
         """For DEX-DEX, net profit is recomputed from pool math at the capped size,
@@ -223,8 +209,8 @@ class TestSelectRouteNetProfit:
         result = select_route([c], inv)
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
-        # net = 2.0 (from cap trade result) - 0.5 (gas) - rebalance_cost
-        assert result.net_profit_usd == Decimal("1.4")
+        # net monetary profit = 2.0 (capped quote) - 0.5 gas
+        assert result.net_profit_usd == Decimal("1.5")
 
     def test_dex_dex_route_blocks_when_exact_sell_cap_unavailable(self, monkeypatch):
         inv = _make_inventory(
@@ -295,7 +281,7 @@ class TestSelectRouteNetProfit:
             assert direction == "UNI_BASE_TO_QUIDAX"
             assert depth == c.signal["depth"]["quidax"]
             assert investment_usd == Decimal("100")
-            return {"expected_profit_usd": Decimal("2.0")}
+            return {"expected_profit_usd": Decimal("2.0"), "cngn_transferred": Decimal("140000")}
 
         monkeypatch.setattr(_router, "estimate_max_cex_dex_buy_usd_for_cngn", _fake_exact_cap)
         monkeypatch.setattr(_router, "estimate_cex_dex_trade", _fake_estimate)
@@ -304,7 +290,7 @@ class TestSelectRouteNetProfit:
 
         assert result is not None
         assert result.adjusted_size_usd == Decimal("100")
-        assert result.net_profit_usd == Decimal("1.83")
+        assert result.net_profit_usd == Decimal("1.93")
 
     def test_dex_to_cex_route_blocks_when_exact_sell_cap_unavailable(self, monkeypatch):
         inv = _make_inventory(
@@ -335,37 +321,3 @@ class TestSelectRouteTiebreak:
         result = select_route([c1, c2], inv)
         assert result is not None
         assert result.candidate.direction == "QUIDAX_TO_UNI_BASE"
-
-    def test_inventory_alignment_tiebreak_long_cngn(self, monkeypatch):
-        """When long cNGN (imbalance > threshold), prefer selling cNGN to CEX."""
-        monkeypatch.setattr(_router, "estimate_max_cex_buy_usd_for_cngn", lambda depth, wallet_cngn: Decimal("200"))
-        monkeypatch.setattr(
-            _router,
-            "estimate_max_cex_dex_buy_usd_for_cngn",
-            lambda direction, depth, wallet_cngn: {
-                "optimal_size_usd": Decimal("200"),
-                "expected_profit_usd": Decimal("5"),
-                "cngn_transferred": Decimal("100"),
-            },
-        )
-        inv = _make_inventory(
-            imbalance=50.0,  # above $10 threshold
-            per_account={"uni-base": 500, "quidax": 500},
-            cngn_per_account={"uni-base": 5_000_000, "quidax": 5_000_000},
-        )
-        # sell-to-CEX direction (aligned): buy on uni-base, sell on quidax
-        c_sell = _make_candidate(
-            direction="UNI_BASE_TO_QUIDAX",  # in _SELLS_CNGN_TO_CEX
-            buy_venue="uni-base", sell_venue="quidax",
-            size_usd=200.0, profit_usd=5.0, gas_usd=0.07,
-        )
-        # buy-from-CEX direction (misaligned): buy on quidax, sell on uni-base
-        c_buy = _make_candidate(
-            direction="QUIDAX_TO_UNI_BASE",  # in _BUYS_CNGN_FROM_CEX
-            buy_venue="quidax", sell_venue="uni-base",
-            size_usd=200.0, profit_usd=5.0, gas_usd=0.07,
-        )
-        result = select_route([c_sell, c_buy], inv)
-        assert result is not None
-        # Tiebreak should prefer the aligned sell direction
-        assert result.candidate.direction == "UNI_BASE_TO_QUIDAX"

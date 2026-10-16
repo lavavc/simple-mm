@@ -129,6 +129,7 @@ def _make_lp_snapshot_adapter(
         name="uni-base",
         config=config,
         get_owned_positions=lambda: [pos.token_id for pos in positions],
+        verify_owned_positions=lambda: [pos.token_id for pos in positions],
         _get_live_pool_snapshot=lambda: (
             live_market
             if live_market is not None
@@ -385,7 +386,7 @@ class TestActiveLpPositionSnapshot:
         assert balances["usdc"] > 0
         assert balances["usdt"] == 0
 
-    def test_portfolio_balances_skip_multiple_positions(self):
+    def test_portfolio_balances_mark_multiple_positions_unknown(self):
         adapter = _make_lp_snapshot_adapter(
             [_make_position_state(token_id=77), _make_position_state(token_id=78)],
             sqrt_price_x96=_price_to_sqrt_x96(1.0),
@@ -393,7 +394,7 @@ class TestActiveLpPositionSnapshot:
 
         balances = V4PositionManager.get_portfolio_balances(adapter)
 
-        assert balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+        assert balances is None
 
     def test_get_owned_positions_falls_back_to_transfer_logs_when_not_enumerable(self):
         owner = "0x" + "cc" * 20

@@ -7,7 +7,7 @@ order: 1
 
 ## Overview
 
-CNGN manages market-making positions across multiple venues to provide liquidity for the Nigerian Naira stablecoin. The goal is delta-neutral operation (~50/50 USD/NGN exposure) across the portfolio while capturing 10-30 bps per transaction through cross-venue arbitrage.
+CNGN manages market-making positions across multiple venues to provide liquidity for the Nigerian Naira stablecoin. LP venues manage liquidity locally, while arbitrage accounts prefer a roughly balanced mix of cNGN and stablecoins to stay funded in both directions. Arbitrage seeks profitable cross-venue trades; overall holdings are reported without a global allocation target.
 
 ---
 
@@ -95,7 +95,7 @@ There is no reliable, clean source for the USDT/NGN rate.
 Portfolio state tracked in Google Sheets. No real-time view of:
 - Total exposure by currency (CNGN, USDT, USDC, NGN)
 - Position sizes per venue
-- Delta neutrality status
+- cNGN share by value and report completeness
 - P&L by venue
 
 **Impact:** Cannot quickly assess if rebalancing is needed or measure strategy performance.
