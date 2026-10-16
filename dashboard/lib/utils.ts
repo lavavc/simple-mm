@@ -110,6 +110,11 @@ export const VENUE_COLORS: Record<string, string> = {
 
 // Fiat NGN reference venues (naira price, not the cNGN token). Everything else prices the cNGN token.
 export const NGN_VENUES = new Set(['bybit', 'paycrest']);
+// Temporarily hide Numo's broken feed without disabling collection or removing its integration.
+export function isPriceVenueVisible(venue: string): boolean {
+  return venue !== 'numo';
+}
+
 export function isNgnVenue(venue: string): boolean {
   return NGN_VENUES.has(venue);
 }

@@ -56,6 +56,14 @@ export function useVenueOrders(venue: string, enabled = true) {
   });
 }
 
+export function useQuidaxDepth() {
+  return useQuery({
+    queryKey: ['quidaxDepth'],
+    queryFn: api.getQuidaxDepth,
+    staleTime: Infinity,
+  });
+}
+
 export function useHealth() {
   return useQuery({ queryKey: ['health'], queryFn: api.getHealth });
 }

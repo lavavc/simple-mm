@@ -4,6 +4,8 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { addNotification } from '@/lib/notifications';
 import { LAST_EVENT_PACKET_QUERY_KEY } from './useQueries';
+import { mergeEngineStatus } from '../venue-status';
+import type { SystemStatus } from '@/types';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
 const RECONNECT_BASE_MS = 1000;
@@ -67,12 +69,7 @@ export function useEventStream() {
 
         if (event.type === 'engine_status' && event.data) {
           const d = event.data;
-          qc.setQueryData(['status'], (old: any) => ({
-            ...(old || {}),
-            trading_enabled: d.trading_enabled,
-            uptime: d.uptime,
-            venues: d.venues,
-          }));
+          qc.setQueryData<SystemStatus>(['status'], (old) => mergeEngineStatus(old, d));
         }
 
         if (event.type === 'portfolio_delta' && event.data) {

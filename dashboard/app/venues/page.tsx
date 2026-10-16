@@ -616,8 +616,8 @@ function VenueDetail({
                     </div>
                     <div className="p-3.5 flex items-center justify-between hover:bg-white/[0.01] transition-colors">
                       <div>
-                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Rebalance Threshold Delta</div>
-                        <div className="text-[10px] font-mono text-white/50 mt-1">Imbalance trigger required to automatically reposition liquidity</div>
+                        <div className="text-[11px] font-mono text-white/90 uppercase tracking-widest">Rebalance Beyond Range</div>
+                        <div className="text-[10px] font-mono text-white/50 mt-1">Price must move this far beyond the LP range boundary before automatic repositioning</div>
                       </div>
                       <div className="text-sm font-mono text-yellow-400 bg-yellow-500/10 px-3 py-1 rounded-sm border border-yellow-500/20">
                         {venue.params?.rebalance_threshold_percent != null ? `${Number(venue.params.rebalance_threshold_percent).toFixed(1)}%` : '—'}

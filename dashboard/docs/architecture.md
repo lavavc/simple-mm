@@ -5,6 +5,8 @@ order: 2
 
 ## Layers
 
+The dashboard fetches complete venue records from `/api/status`. The WebSocket `engine_status` event carries only venue control flags; the client merges these by venue name into existing records, preserving positions, prices, parameters, and reference-only venues until the next API refresh.
+
 The engine is organised in layers. Each layer depends only on layers below it.
 
 **`engine/types.py`** — zero-dependency home for all shared domain types. Any layer may import from here freely. Covers cross-cutting types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`), order book types (`OrderBookLevel`, `OrderBookDepth`), config-adjacent params (`CexParams`, `WalletParams`), account types (`AccountInfo`, `AccountBalanceResponse`, `Alert`, etc.), and arb-domain types (`ArbitrageOpportunity`, `ArbitrageTrade`, `ArbitrageStatus`, etc.). `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
@@ -119,7 +121,7 @@ All LP strategy parameters are per-venue env vars. Defaults and env var names:
 | `min_tick_width` | 100 | 100 | `UNI_BASE_MIN_TICK_WIDTH` / `UNI_BSC_MIN_TICK_WIDTH` |
 | `max_tick_width` | 1000 | 1000 | `UNI_BASE_MAX_TICK_WIDTH` / `UNI_BSC_MAX_TICK_WIDTH` |
 | `lookback_points` | None (all) | None (all) | `UNI_BASE_LOOKBACK_POINTS` / `UNI_BSC_LOOKBACK_POINTS` |
-| `rebalance_threshold_percent` | 10.0 | 10.0 | `UNI_BASE_REBALANCE_THRESHOLD_PERCENT` / `UNI_BSC_REBALANCE_THRESHOLD_PERCENT` |
+| `rebalance_threshold_percent` | 1.0 | 1.0 | `UNI_BASE_REBALANCE_THRESHOLD_PERCENT` / `UNI_BSC_REBALANCE_THRESHOLD_PERCENT` |
 | `max_slippage_percent` | 1.0 | 1.0 | `UNI_BASE_MAX_SLIPPAGE_PERCENT` / `UNI_BSC_MAX_SLIPPAGE_PERCENT` |
 
 `settings.uni_base_lp_params` and `settings.uni_bsc_lp_params` are `@property` methods on `Settings` that return a fully-constructed `DexParams` object from the above fields. The adapter constructors call these properties; individual fields are never accessed from outside `config.py`.

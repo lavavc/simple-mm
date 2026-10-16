@@ -128,10 +128,15 @@ nginx-proxy sets to the real client address; update that setting if the source m
 
 ## CI/CD pipeline
 
-Every pull request and every push to `main` on [lavavc/automated-infra](https://github.com/lavavc/automated-infra):
-1. **test** job — builds the `typecheck` Docker target to run strict `mypy` on `engine/`, then builds the `test` Docker target to run the default pytest suite.
-2. The default pytest run intentionally skips `tests/test_dex_fork.py`, because those tests require Foundry's `anvil` plus fork-capable RPC endpoints.
-3. **deploy** job (only on pushes to `main`, and only if the checks pass) — builds and pushes the `production` image to `ghcr.io/lavavc/automated-infra:latest`, then SSHs to the server and runs `docker compose pull && docker compose up -d`.
+The [CI / Deploy workflow](https://github.com/lavavc/automated-infra/blob/main/.github/workflows/deploy.yml) runs on pull requests, pushes to `main`, and pushes of release tags matching `v*`.
+
+1. **test** job — builds the `typecheck` Docker target to run strict `mypy` on `engine/`, then builds the `test` Docker target to run the default pytest suite. The suite skips `tests/test_dex_fork.py`, which requires Foundry's `anvil` plus fork-capable RPC endpoints.
+2. **deploy** job — runs only for a pushed `v*` tag after tests pass. It uses the `production` environment and a self-hosted runner. Configure required reviewers on that environment if release approval is required; referencing the environment alone does not require manual approval.
+3. Deployment builds and pushes the `production` image as both `ghcr.io/lavavc/automated-infra:latest` and a commit-SHA tag. The runner copies `docker-compose.yml` to `/opt/repo/`, then runs `docker compose pull` and `docker compose up -d --remove-orphans` against that file.
+
+Merge changes to `main` after CI passes; merging does not deploy. When ready to release, tag the intended commit on `main` with a new `v*` version and push that tag. CI runs again before deployment. There is no need to cancel CI to avoid deploying a normal branch or `main` push.
+
+UI hotfixes copied directly into a running container survive a container restart but are replaced when the container is recreated. Include their source changes in the next tagged release. Venue parameters saved through `PUT /api/venues/{venue}/params`, including LP rebalance thresholds, are persisted in the mounted database and restored at startup.
 
 ## Capital allocation
 

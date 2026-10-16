@@ -1,11 +1,11 @@
 
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuidaxDepth } from '@/lib/hooks/useQueries';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { formatNumber } from '@/lib/utils';
-import type { OrderBookDepth, OrderBookLevel } from '@/types';
+import type { OrderBookLevel } from '@/types';
 import { Loader2 } from 'lucide-react';
 
 interface ProcessedLevel extends OrderBookLevel {
@@ -18,18 +18,7 @@ interface QuidaxOrderBookProps {
 }
 
 export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBookProps) {
-  const { data: depth, isLoading: loading, error: queryError } = useQuery<OrderBookDepth | null>({
-    queryKey: ['quidaxDepth'],
-    queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/venues/quidax/depth?limit=20`);
-      const data = await response.json();
-      if (!response.ok) {
-         throw new Error(data.detail || 'Failed to fetch order book depth');
-      }
-      return data;
-    },
-    staleTime: Infinity,
-  });
+  const { data: depth, isLoading: loading, error: queryError } = useQuidaxDepth();
 
   const error = queryError?.message || null;
 
@@ -124,7 +113,7 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
           </CardTitle>
           <div className="flex items-center gap-2">
              {loading && <Loader2 className="h-3 w-3 animate-spin text-white/40" />}
-            <span className="text-[10px] text-white/50 font-mono tracking-widest uppercase">cNGN/USDT</span>
+            <span className="text-[10px] text-white/50 font-mono tracking-widest uppercase">USDT/cNGN</span>
           </div>
         </div>
       </CardHeader>
@@ -142,22 +131,23 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
           <div className="flex flex-col">
             {/* Header Row */}
             <div className="flex justify-between text-[9px] font-medium text-white/40 uppercase tracking-widest py-1.5 px-3 border-b border-white/[0.02] bg-white/[0.01]">
-              <span className="w-[22%] text-left">Price</span>
-              <span className="w-[26%] text-right">Size</span>
-              <span className="w-[26%] text-right">Sum</span>
+              <span className="w-[30%] text-left">cNGN / USDT</span>
+              <span className="w-[35%] text-right">Size USDT</span>
+              <span className="w-[35%] text-right">Sum USDT</span>
             </div>
 
             {/* Asks (Sell Orders) */}
             <div className="flex flex-col justify-end pt-1 bg-gradient-to-b from-transparent to-red-500/[0.01]">
               {displayAsks.map((ask, i) => renderRow(ask, 'ask', i))}
+              {depth && !depth.asks.length && <div className="p-3 text-[10px] font-mono text-white/40">No USDT sell orders (asks)</div>}
             </div>
 
             {/* Spread Indicator Strip */}
             <div className="py-2 border-y border-white/[0.03] bg-black/40 flex items-center justify-between px-3 z-20">
                <span className="text-base font-bold tracking-tight text-white flex items-center gap-2">
-                 {depth && depth.asks.length > 0 && depth.bids.length > 0 
-                   ? formatNumber(parseFloat(depth.asks[0].price), 2)
-                   : '0.00'}
+                 {depth && (depth.asks[0] || depth.bids[0])
+                   ? formatNumber(parseFloat((depth.asks[0] || depth.bids[0]).price), 2)
+                   : '—'}
                  <span className="text-[9px] font-medium text-white/30 uppercase tracking-widest">cNGN</span>
                </span>
                <span className="text-[9px] text-white/50 font-mono tracking-widest bg-white/5 px-2 py-0.5 rounded-sm border border-white/5">
@@ -170,6 +160,7 @@ export function QuidaxOrderBook({ activeLevels, activeDirection }: QuidaxOrderBo
             {/* Bids (Buy Orders) */}
             <div className="flex flex-col pb-1 bg-gradient-to-t from-transparent to-emerald-500/[0.01]">
                {processedBids.map((bid, i) => renderRow(bid, 'bid', i))}
+               {depth && !depth.bids.length && <div className="p-3 text-[10px] font-mono text-white/40">No USDT buy orders (bids)</div>}
             </div>
           </div>
         )}
