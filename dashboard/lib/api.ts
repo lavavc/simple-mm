@@ -15,7 +15,9 @@ import type {
   BlendedPriceResponse,
   NormalizedPriceResponse,
   PoolMetricPoint,
+  OrderBookDepth,
 } from '@/types';
+import { isPriceVenueVisible, sourceToVenue } from './utils';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
 
@@ -28,6 +30,9 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getQuidaxDepth: (): Promise<OrderBookDepth> =>
+    fetchJson(`${API_BASE}/venues/quidax/depth?limit=20`),
+
   // Status
   getStatus: (): Promise<SystemStatus> =>
     fetchJson(`${API_BASE}/status`),
@@ -36,8 +41,9 @@ export const api = {
     fetchJson(`${API_BASE}/health`),
 
   // Prices
-  getPrices: (): Promise<VenuePriceResponse[]> =>
-    fetchJson(`${API_BASE}/prices`),
+  getPrices: async (): Promise<VenuePriceResponse[]> =>
+    (await fetchJson<VenuePriceResponse[]>(`${API_BASE}/prices`))
+      .filter((price) => isPriceVenueVisible(price.venue)),
 
   getVenuePrice: (venue: string): Promise<VenuePriceResponse> =>
     fetchJson(`${API_BASE}/prices/${venue}`),
@@ -49,10 +55,11 @@ export const api = {
   getBlendedPrice: (): Promise<BlendedPriceResponse> =>
     fetchJson(`${API_BASE}/prices/blended`),
 
-  getNormalizedPrices: (): Promise<NormalizedPriceResponse[]> =>
-    fetchJson(`${API_BASE}/prices/normalized`),
+  getNormalizedPrices: async (): Promise<NormalizedPriceResponse[]> =>
+    (await fetchJson<NormalizedPriceResponse[]>(`${API_BASE}/prices/normalized`))
+      .filter((price) => isPriceVenueVisible(price.venue)),
 
-  getPriceHistory: (params?: {
+  getPriceHistory: async (params?: {
     from_ts?: number;
     to_ts?: number;
     limit?: number;
@@ -62,7 +69,8 @@ export const api = {
     if (params?.to_ts) searchParams.set('to_ts', String(params.to_ts));
     if (params?.limit) searchParams.set('limit', String(params.limit));
     const query = searchParams.toString();
-    return fetchJson(`${API_BASE}/price/history${query ? `?${query}` : ''}`);
+    return (await fetchJson<PriceSnapshot[]>(`${API_BASE}/price/history${query ? `?${query}` : ''}`))
+      .filter((snapshot) => isPriceVenueVisible(sourceToVenue(snapshot.source)));
   },
 
   // Positions

@@ -92,6 +92,8 @@ docker compose up -d --build
 
 `deploy/setup.sh` documents a full server deployment behind nginx-proxy + Let's Encrypt.
 
+GitHub Actions runs checks on pull requests and pushes to `main`. Production deployment runs only when a `v*` release tag is pushed and its checks pass; merging to `main` does not deploy. See the [deployment runbook](dashboard/docs/runbook.md#cicd-pipeline) for the release process and production environment approval settings.
+
 ## Documentation
 
 Design and operational docs live in [`dashboard/docs/`](dashboard/docs/):

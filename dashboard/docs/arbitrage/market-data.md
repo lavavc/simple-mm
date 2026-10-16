@@ -20,6 +20,8 @@ The result is the rate the largest cohort of reputable mid-market merchants agre
 
 The Quidax CEX API is polled on a short interval (`price_update_interval`, default 10s) for the full order book depth on the cNGN/USDT pair. The raw bids and asks are stored in memory and passed directly into the signal layer. Market data hits the public depth endpoint; the configured Quidax API key is used only for authenticated trading and subaccount balance/order calls.
 
+The depth endpoint's native market is `usdtcngn`: prices are cNGN per USDT and sizes are USDT. Asks sell USDT for cNGN; bids buy USDT with cNGN. The spot/orderbook tab labels these native units explicitly. If either side is empty, it hides any retained arbitrage curve and reports the one-sided book because the current simulator requires both sides.
+
 **Uniswap V4 pools (Base + BSC) — WebSocket**
 
 Pool state is maintained via Alchemy WebSocket subscriptions. The listener subscribes to the PoolManager contract on each chain, filtered by the V4 Swap topic and pool ID:
@@ -49,6 +51,8 @@ Paycrest aggregates fiat on/off-ramp liquidity providers. Its public `/v2/market
 Textile Credit runs an RFQ maker network on BSC (Base is currently empty). Its v2 API (`POST /v2/rfq/preview`, bearer key in `TEXTTILE_API_KEY`) returns an unlocked indicative quote from makers' published levels: a `rateRay` (USDT per cNGN, RAY-scaled — the same orientation in both directions, so no inversion) and the published `availableSellAmount` depth. The engine previews a small nominal amount in each direction once per cycle — sell cNGN→USDT for the bid, sell USDT→cNGN for the ask — to derive a cNGN/USDT mid and the total two-sided liquidity in USD, cached ~60s. A small probe is used deliberately: v2 is all-or-nothing (an oversized amount returns `no_quote`), while depth is reported regardless of probe size. It is a real cNGN token price (~1,375) but excluded from the fair-value blend — the book is thin and concentrated (a handful of makers, most depth in one wallet), so including it would add noise, not accuracy. The tile surfaces its live BSC liquidity; Textile exposes no 24h volume.
 
 **Numo — REST (display only)**
+
+Numo is currently hidden throughout the dashboard (price cards, comparisons, and historical charts) while its price feed is broken. Collection and the integration remain intact. Restore visibility through `isPriceVenueVisible` in `dashboard/lib/utils.ts` once the feed is fixed.
 
 Numo runs an onchain USDC/cNGN spot order book on Base. Its public `/v1/book?symbol=USDCcNGN-SPOT` response exposes both reciprocal engine prices and user-facing prices. The engine deliberately reads `bids[0]` and `asks[0]` from the nested `spot_contract.ui_intent.price`, takes their midpoint in cNGN per USDC, then inverts it once to the pipeline's canonical USDC-per-cNGN basis. The visible remaining USDC depth is summed across both returned sides using each order's documented USDC notional and unfilled fraction. Numo is display-only and does not affect fair value, arbitrage, or confidence.
 

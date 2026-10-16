@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -117,6 +118,27 @@ def _make_rebalancer(action_store=None, venue_config_store=None):
 
 
 class TestLPLifecycle:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("distance_percent,expected", [("0.99", False), ("1.0", True), ("1.01", True)])
+    @pytest.mark.parametrize("below_range", [False, True])
+    async def test_one_percent_rebalance_boundary(self, distance_percent, expected, below_range):
+        boundary = Decimal("0.0005") if below_range else Decimal("0.0007")
+        distance = boundary * Decimal(distance_percent) / 100
+        position = _position(
+            in_range=False,
+            current_price=boundary - distance if below_range else boundary + distance,
+        )
+        venue = FakeDexAdapter(position=position)
+        venue.params.rebalance_threshold_percent = Decimal("1.0")
+        rebalancer, _ = _make_rebalancer(action_store=_FakeActionStore())
+        rebalancer._rebalance_locked = AsyncMock(return_value=True)
+
+        await rebalancer.check_and_rebalance(venue)
+
+        assert rebalancer._rebalance_locked.await_count == int(expected)
+        if expected:
+            assert rebalancer._rebalance_locked.call_args.kwargs["triggered_by"] == "auto:range_exit_rebalance"
+
     @pytest.mark.asyncio
     async def test_mint_from_idle_funds(self, price_db):
         """No position + funds above threshold → mint succeeds, one NFT created."""

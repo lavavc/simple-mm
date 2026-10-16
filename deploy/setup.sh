@@ -81,7 +81,7 @@ echo "  1. At your DNS provider, create an A record for your-domain.com pointing
 echo "     this server's public IP."
 echo "  2. Copy your .env to the server:"
 echo "       cat .env | ssh root@<server-ip> \"cat > /opt/repo/.env\""
-echo "  3. Push to main to trigger the first deployment."
+echo "  3. Merge to main after CI passes, then push a new v* release tag to deploy."
 echo ""
 echo "The dashboard is public and read-only. Mutating endpoints require ENGINE_API_TOKEN;"
 echo "the Quidax webhook is locked to QUIDAX_WEBHOOK_ALLOWED_IPS via the X-Real-IP header"

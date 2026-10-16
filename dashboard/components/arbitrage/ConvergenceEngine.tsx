@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Zap, ArrowRight, ArrowRightLeft, AlertTriangle } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { OrderBookDepthChart } from '@/components/charts/OrderBookDepthChart';
+import { useQuidaxDepth } from '@/lib/hooks/useQueries';
 
 
 
@@ -204,14 +205,17 @@ function TargetEngine({ data, isSyncing, arb }: { data: DexArbData | null, isSyn
 
 export function ConvergenceEngine() {
     // Subscribe to the real CEX-DEX curve WebSocket data
-    const { data: cexDexData } = useQuery<DexArbData | null>({
+    const { data: curveData } = useQuery<DexArbData | null>({
         queryKey: ['quidax_dex_arb_curve'],
         queryFn: () => null,
         staleTime: Infinity, // updated entirely by websocket
         gcTime: Infinity,
     });
 
-    const isSyncing = !cexDexData;
+    const { data: depth } = useQuidaxDepth();
+    const oneSidedBook = depth && (!depth.bids.length || !depth.asks.length);
+    const cexDexData = depth && !oneSidedBook ? curveData : null;
+    const isSyncing = !oneSidedBook && !cexDexData;
 
     // Pool stats and spot prices for the depth chart
     const optimalSize = cexDexData?.optimal_arb?.optimal_size_usd;
@@ -238,12 +242,18 @@ export function ConvergenceEngine() {
 
             {/* Center: Price Impact Chart */}
             <div className="min-h-[600px] flex flex-col">
-                <OrderBookDepthChart 
+                {oneSidedBook ? (
+                    <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center bg-[#12161C] border border-white/[0.05] rounded-sm">
+                        <AlertTriangle className="h-6 w-6 text-yellow-500/70" />
+                        <div className="text-sm font-mono text-yellow-500/80">Quidax book is one-sided</div>
+                        <p className="text-xs text-white/50">{!depth.bids.length ? 'No USDT buy orders (bids).' : 'No USDT sell orders (asks).'} A current arbitrage profit curve is unavailable until both sides return.</p>
+                    </div>
+                ) : <OrderBookDepthChart
                     curveCexToDex={cexDexData?.curve_cex_to_dex}
                     curveDexToCex={cexDexData?.curve_dex_to_cex}
                     direction={cexDexData?.optimal_arb?.direction}
                     optimalSize={optimalSize} 
-                />
+                />}
             </div>
 
             {/* Right Column: Orderbook */}

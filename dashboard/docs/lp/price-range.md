@@ -53,7 +53,7 @@ Ticks are then aligned to the pool's `tick_spacing` (floor for lower, ceil for u
 
 A rerange is considered when:
 1. The current active tick exits the LP range, **and**
-2. The price has moved at least `rebalance_threshold_percent` (default 10%) beyond the boundary.
+2. The price has moved at least `rebalance_threshold_percent` (default 1%) beyond the boundary.
 
 The second condition prevents churning on brief range exits caused by momentary volatility. The check runs on the scheduler's LP management cycle.
 
@@ -89,7 +89,7 @@ LP strategy parameters are defined in `engine/config.py` as `uni_base_*` / `uni_
 | `sd_multiplier` | 2.75 | 3.0 | Range width in standard deviations. Higher = wider, fewer reranges |
 | `ewma_lambda` | 0.975 | 0.975 | Volatility smoothing. Lower = adapts faster, noisier range |
 | `downside_skew` | 0.45 | 0.50 | Fraction of range below mean. 0.5 = symmetric |
-| `rebalance_threshold_percent` | 10.0 | 10.0 | % beyond range boundary before rerange triggers |
+| `rebalance_threshold_percent` | 1.0 | 1.0 | % beyond range boundary before rerange triggers |
 | `min_tick_width` | 100 | 100 | Floor on range width in ticks |
 | `max_tick_width` | 1000 | 1000 | Ceiling on range width in ticks |
 | `lookback_points` | None (all) | None (all) | Number of recent prices used for EWMA. None = full history |
