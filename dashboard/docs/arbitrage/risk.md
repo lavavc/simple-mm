@@ -5,7 +5,15 @@ order: 4
 
 ## Route selection
 
-Feasible routes must meet the minimum monetary-profit threshold after fees and gas. Inventory scoring then favours trades that improve the balance of the two affected arb accounts. Both DEX directions are considered. See [Inventory Balance](inventory-balance) for the rationale.
+Route selection compares eligible opportunities, including both DEX directions:
+
+1. Cap trade size to available stablecoins on the buying venue, available cNGN on the selling venue, and the single-trade limit. Recalculate expected profit when sizing changes.
+2. Require fresh balances and prices, sufficient monetary profit after fees and gas, and passing risk limits.
+3. Score each route as monetary profit plus a weighted inventory improvement across both affected arb accounts. Choose the highest score, using monetary profit to break ties.
+
+Inventory improvement measures how much the projected trade reduces each account's deviation from its own target. Larger imbalances earn a stronger preference for corrective trades; overshooting reduces the benefit. Inventory credit never replaces the monetary-profit requirement. If no route qualifies, no trade is selected.
+
+See [Inventory Balance](/docs/arbitrage/inventory-balance) for the reasons behind the policy and its separation from LP inventory.
 
 ## Pre-trade risk gates
 
