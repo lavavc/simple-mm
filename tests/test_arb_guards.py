@@ -98,6 +98,8 @@ def _route(direction="UNI_BASE_TO_UNI_BSC_DELTA_BALANCE", size=Decimal("100")):
         adjusted_size_usd=size,
         net_profit_usd=Decimal("0.45"),
         expected_profit_usd=Decimal("0.45"),
+        inventory_improvement_usd=Decimal("0"),
+        selection_score=Decimal("0"),
     )
 
 

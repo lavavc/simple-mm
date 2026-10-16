@@ -44,6 +44,14 @@ class TestFindOptimalDexArbNullCases:
 class TestFindOptimalDexArbResult:
     """find_optimal_dex_arb returns a well-formed result dict."""
 
+    def test_both_directions_are_available_for_inventory_ranking(self, seeded_pool_cache):
+        result = find_optimal_dex_arb()
+        assert {arb["direction"] for arb in result["all_arbs"]} == {
+            "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+        }
+        assert all(arb["gas_usd"] > 0 for arb in result["all_arbs"])
+        assert all(arb["cngn_transferred"] > 0 for arb in result["all_arbs"])
+
     def test_returns_dict_with_required_keys(self, seeded_pool_cache):
         result = find_optimal_dex_arb()
         assert result is not None

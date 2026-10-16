@@ -2,9 +2,9 @@
 
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import Any, Optional, Protocol, TypeGuard
+from typing import Any, Optional, Protocol, TypeGuard, runtime_checkable
 
-from engine.types import Position, PriceQuote, TxResult
+from engine.types import Position, PriceQuote, TradeInventorySnapshot, TxResult
 
 
 class VenueAdapter(ABC):
@@ -51,6 +51,11 @@ class SyncOrderLadderVenue(Protocol):
 class DepthVenue(Protocol):
     async def get_order_book_depth(self, limit: int = 50) -> Any: ...
     async def get_position(self) -> Any: ...
+
+
+@runtime_checkable
+class TradeInventoryVenue(Protocol):
+    async def get_trade_inventory(self) -> TradeInventorySnapshot: ...
 
 
 class WebhookVenue(Protocol):

@@ -2,11 +2,14 @@
 Route selection for arbitrage execution.
 
 select_route() picks the single best feasible trade from a list of candidates,
-scoring by net profit (after gas and rebalance cost) with inventory alignment as tiebreak.
+scoring monetary profit separately from venue-local inventory improvement.
 """
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
+
+import structlog
 
 from engine.arb.detection.cex_dex import (
     estimate_cex_dex_trade,
@@ -14,9 +17,11 @@ from engine.arb.detection.cex_dex import (
     estimate_max_cex_dex_buy_usd_for_cngn,
 )
 from engine.arb.detection.dex_dex import estimate_dex_dex_trade, estimate_max_dex_buy_usd_for_cngn
+from engine.arb.risk.balance_scoring import project_route
+from engine.arb.risk.inventory import InventoryTracker
 from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 
-_IMBALANCE_THRESHOLD_USD = Decimal("10")
+logger = structlog.get_logger()
 
 
 @dataclass
@@ -34,27 +39,32 @@ class RouteCandidate:
 class SelectedRoute:
     candidate: RouteCandidate
     adjusted_size_usd: Decimal   # capped to available stablecoin
-    net_profit_usd: Decimal      # after gas and rebalance penalty
+    net_profit_usd: Decimal      # monetary profit after gas
     expected_profit_usd: Decimal  # recomputed at adjusted size when needed
+    inventory_improvement_usd: Decimal
+    selection_score: Decimal
 
 
 def select_route(
     candidates: list[RouteCandidate],
-    inventory: Any,
+    inventory: InventoryTracker,
 ) -> Optional[SelectedRoute]:
-    """
-    Pick the best feasible route from candidates.
-
-    Filters: adjusted_size > 0, net_profit >= min_profit_usd, inventory.can_trade() passes.
-    Score: net_profit = expected_profit - gas - rebalance_cost_penalty.
-    Tiebreak: prefer routes that reduce current inventory imbalance (2=reduces, 1=neutral, 0=worsens).
-    """
-    scored: list[tuple[Decimal, int, SelectedRoute]] = []
-    imbalance = inventory.state.cngn_imbalance_usd
-
+    """Choose the highest inventory-adjusted score among profitable, funded routes."""
+    scored: list[SelectedRoute] = []
     for c in candidates:
         route_def = ROUTES_BY_DIRECTION.get(c.direction)
-        if not route_def:
+        if (not route_def or c.buy_venue != route_def.buy_leg.venue
+                or c.sell_venue != route_def.sell_leg.venue):
+            continue
+        if inventory.fresh_snapshot(c.buy_venue) is None or inventory.fresh_snapshot(c.sell_venue) is None:
+            continue
+        timestamp = c.signal.get("timestamp")
+        if timestamp is None or not 0 <= int(time.time() * 1000) - timestamp <= inventory.params.inventory_max_age_seconds * 1000:
+            continue
+        mark_times = c.signal.get("price_timestamps", {})
+        if any(venue not in mark_times or not 0 <= int(time.time() * 1000) - mark_times[venue]
+               <= inventory.params.inventory_max_age_seconds * 1000
+               for venue in (c.buy_venue, c.sell_venue)):
             continue
         cex_venue = route_def.buy_leg.venue if route_def.buy_leg.leg_type == "api" else route_def.sell_leg.venue
         cex_depth = c.signal.get("depth", {}).get(cex_venue)
@@ -95,6 +105,7 @@ def select_route(
         if adjusted_size <= 0:
             continue
 
+        trade = c.signal.get("optimal_arb", {})
         expected_profit_usd = c.expected_profit_usd
         if route_def.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
             # Detection already priced the unconstrained optimum. Only rescore when
@@ -102,45 +113,55 @@ def select_route(
             recomputed = estimate_cex_dex_trade(c.direction, cex_depth, adjusted_size)
             if not recomputed:
                 continue
+            trade = recomputed
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
         elif route_def.cngn_effect == "neutral":
             assert sell_cngn_cap_trade is not None
             cngn_cap_size = Decimal(str(sell_cngn_cap_trade["optimal_size_usd"]))
             if adjusted_size == cngn_cap_size:
                 # cNGN cap was binding — profit already computed at this size.
+                trade = sell_cngn_cap_trade
                 expected_profit_usd = Decimal(str(sell_cngn_cap_trade["expected_profit_usd"]))
             else:
                 # Stablecoin cap was tighter — rescore at the reduced size.
                 recomputed = estimate_dex_dex_trade(c.direction, adjusted_size)
                 if not recomputed:
                     continue
+                trade = recomputed
                 expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))
 
-        # Net profit after gas and rebalance friction
-        rebalance_bps = inventory.get_rebalance_cost_bps(c.buy_venue)
-        rebalance_cost = adjusted_size * Decimal(rebalance_bps) / Decimal(10000)
-        net_profit = expected_profit_usd - c.gas_usd - rebalance_cost
-
-        if net_profit < inventory.params.min_profit_usd:
+        net_profit = expected_profit_usd - c.gas_usd
+        if not net_profit.is_finite() or net_profit < inventory.params.min_profit_usd:
             continue
-
-        # Risk gate (circuit breaker, volume cap, imbalance limit, daily loss)
-        can, _ = inventory.can_trade(adjusted_size, c.buy_venue, c.sell_venue)
+        can, _ = inventory.can_trade(adjusted_size, c.buy_venue)
         if not can:
             continue
-
-        # Inventory alignment score: 2=reduces imbalance, 1=neutral, 0=worsens.
-        if imbalance > _IMBALANCE_THRESHOLD_USD:
-            alignment = 2 if route_def.cngn_effect == "sells_cngn_to_cex" else (1 if route_def.cngn_effect == "neutral" else 0)
-        elif imbalance < -_IMBALANCE_THRESHOLD_USD:
-            alignment = 2 if route_def.cngn_effect == "buys_cngn_from_cex" else (1 if route_def.cngn_effect == "neutral" else 0)
-        else:
-            alignment = 1
-
-        scored.append((net_profit, alignment, SelectedRoute(c, adjusted_size, net_profit, expected_profit_usd)))
-
+        cngn_raw = trade.get("cngn_transferred")
+        if cngn_raw is None:
+            continue
+        cngn = Decimal(str(cngn_raw))
+        if not cngn.is_finite() or cngn <= 0 or cngn > cngn_bal:
+            continue
+        prices = {venue: Decimal(str(value)) for venue, value in c.signal.get("prices", {}).items()}
+        projections = project_route(
+            inventory, c.buy_venue, c.sell_venue, prices, adjusted_size,
+            cngn, adjusted_size + expected_profit_usd,
+        )
+        if projections is None:
+            continue
+        improvement = sum((p.improvement_usd for p in projections), Decimal("0"))
+        score = net_profit + inventory.params.inventory_weight * improvement
+        selected = SelectedRoute(c, adjusted_size, net_profit, expected_profit_usd, improvement, score)
+        scored.append(selected)
+        logger.debug(
+            "arb_inventory_candidate", direction=c.direction, size_usd=str(adjusted_size),
+            monetary_profit_usd=str(net_profit), inventory_improvement_usd=str(improvement),
+            selection_score=str(score),
+            accounts=[{
+                "venue": p.venue, "before_cngn_ratio": str(p.before_ratio),
+                "after_cngn_ratio": str(p.after_ratio), "improvement_usd": str(p.improvement_usd),
+            } for p in projections],
+        )
     if not scored:
         return None
-
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return scored[0][2]
+    return max(scored, key=lambda route: (route.selection_score, route.net_profit_usd))

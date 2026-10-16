@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from engine.arb import ArbitrageEngine
     from engine.lp.uniswap_v4 import V4PositionManager
     from engine.market.portfolio_exposure import PortfolioExposureCalculator
-    from engine.market.portfolio_registry import PortfolioSourceDescriptor
     from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
     from engine.market.venue_prices import VenuePriceAggregator
     from engine.scheduler import TradingScheduler
@@ -32,5 +31,4 @@ class EngineRuntime:
     blended_calculator: "BlendedPriceCalculator | None"
     normalizer: "PriceNormalizer | None"
     portfolio_exposure_calculator: "PortfolioExposureCalculator | None"
-    portfolio_source_registry: tuple["PortfolioSourceDescriptor", ...]
     lp_managers: dict[str, "V4PositionManager"]

@@ -309,14 +309,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         price_store=db.prices,
     )
     logger.info("blended_price_calculator_initialized")
-    portfolio_source_registry = DEFAULT_PORTFOLIO_SOURCE_REGISTRY
     portfolio_exposure_calculator = PortfolioExposureCalculator(
         venues=venues,
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
         blended_calculator=blended_calculator,
         price_aggregator=price_aggregator,
-        portfolio_source_registry=portfolio_source_registry,
+        portfolio_source_registry=DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         lp_managers=lp_managers,
     )
     logger.info("portfolio_exposure_calculator_initialized")
@@ -349,7 +348,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         account_manager=account_manager,
         token_contracts=TOKEN_CONTRACTS,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
-        portfolio_source_registry=portfolio_source_registry,
         lp_managers=lp_managers,
         system_state_store=db.system_state,
         price_store=db.prices,
@@ -371,7 +369,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         blended_calculator=blended_calculator,
         normalizer=normalizer,
         portfolio_exposure_calculator=portfolio_exposure_calculator,
-        portfolio_source_registry=portfolio_source_registry,
         lp_managers=lp_managers,
     )
     app.state.runtime = runtime
@@ -390,10 +387,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler.start()
 
     # Warm up prices first so portfolio valuation has a valid cNGN/USD rate,
-    # then fire portfolio_delta so the retained WS snapshot is populated immediately.
+    # then fire portfolio_exposure so the retained WS snapshot is populated immediately.
     try:
         await price_aggregator.fetch_all()
-        await scheduler.position_jobs.check_portfolio_delta()
+        await scheduler.position_jobs.broadcast_portfolio_exposure()
     except Exception as exc:
         logger.warning("startup_portfolio_warmup_failed", error=str(exc))
 

@@ -98,11 +98,8 @@ class Settings(BaseSettings):
     dex_check_interval: int = 120
     cex_sync_interval: int = 300
 
-    # Trading parameters
-    target_delta_ratio: float = 0.5
-    rebalance_threshold_percent: float = 5.0
-    delta_alert_threshold_percent: float = 10.0  # Log + record (dashboard only, never Telegram) if delta deviates >10% from target
-    portfolio_delta_interval: int = 120  # Check portfolio delta every 2 minutes
+    # Read-only portfolio reporting
+    portfolio_refresh_interval: int = 120
 
     # Arbitrage settings
     arb_detection_enabled: bool = True       # master toggle for detection
@@ -117,8 +114,11 @@ class Settings(BaseSettings):
     arbitrage_max_inventory_imbalance_usd: float = 5000.0
     arbitrage_max_consecutive_failures: int = 3
     arbitrage_max_daily_loss_usd: float = 500.0
-    arbitrage_cross_chain_rebalance_bps: int = 10
-    arbitrage_max_delta_ratio: float = 0.60
+    arbitrage_inventory_weight: Decimal = Decimal("0.02")
+    arbitrage_inventory_max_age_seconds: int = 30
+    arbitrage_quidax_target_cngn_ratio: Decimal = Decimal("0.5")
+    arbitrage_uni_base_target_cngn_ratio: Decimal = Decimal("0.5")
+    arbitrage_uni_bsc_target_cngn_ratio: Decimal = Decimal("0.5")
     arbitrage_min_account_stablecoin_usd: float = 10.0
 
     # Quidax CEX balance alert thresholds

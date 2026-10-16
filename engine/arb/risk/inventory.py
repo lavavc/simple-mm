@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.types import ArbitrageParams
+from engine.types import ArbitrageParams, TradeInventorySnapshot
 
 logger = structlog.get_logger()
 
@@ -37,16 +37,11 @@ class InventoryState:
 
     # Per-account stablecoin tracking
     per_account_stable: dict[str, Decimal] = field(default_factory=dict)
-    initial_account_stable: dict[str, Decimal] = field(default_factory=dict)
+    account_snapshots: dict[str, TradeInventorySnapshot] = field(default_factory=dict)
     low_inventory_venues: set[str] = field(default_factory=set)
 
     # Per-account cNGN tracking (sell-side inventory cap)
     per_account_cngn: dict[str, Decimal] = field(default_factory=dict)
-    cngn_price_usd: Decimal = Decimal("0")
-
-    # Portfolio snapshot (fed from scheduler every 120s)
-    cngn_value_usd: Decimal = Decimal("0")
-    total_portfolio_usd: Decimal = Decimal("0")
 
 
 class InventoryTracker:
@@ -100,7 +95,6 @@ class InventoryTracker:
         self,
         trade_size_usd: Decimal,
         buy_venue: str = "",
-        sell_venue: str = "",
     ) -> tuple[bool, Optional[str]]:
         self._reset_daily_if_needed()
 
@@ -114,14 +108,6 @@ class InventoryTracker:
                 f"{float(new_volume):.2f} > {float(self.params.max_daily_volume_usd):.2f}"
             )
 
-        # Assume worst case: trade increases imbalance
-        potential_imbalance = abs(self._state.cngn_imbalance_usd) + trade_size_usd
-        if potential_imbalance > self.params.max_inventory_imbalance_usd:
-            return False, (
-                f"Would exceed inventory imbalance limit: "
-                f"{float(potential_imbalance):.2f} > {float(self.params.max_inventory_imbalance_usd):.2f}"
-            )
-
         if self._state.daily_loss_usd >= self.params.max_daily_loss_usd:
             return False, (
                 f"Daily loss limit reached: "
@@ -131,14 +117,6 @@ class InventoryTracker:
         # Block if buy-side venue has flagged low stablecoin
         if buy_venue and buy_venue in self._state.low_inventory_venues:
             return False, f"Low stablecoin inventory on {buy_venue} — rebalance needed"
-
-        if self._state.total_portfolio_usd > 0:
-            current_ratio = self._state.cngn_value_usd / self._state.total_portfolio_usd
-            if current_ratio >= self.params.max_delta_ratio:
-                return False, (
-                    f"Portfolio already at {float(current_ratio):.0%} cNGN — "
-                    f"above max delta ratio {float(self.params.max_delta_ratio):.0%}"
-                )
 
         return True, None
 
@@ -248,7 +226,6 @@ class InventoryTracker:
     def initialize_account_stable(self, venue_balances: dict[str, Decimal]) -> None:
         """Seed per-account stablecoin from on-chain balances (called once at startup)."""
         self._state.per_account_stable = dict(venue_balances)
-        self._state.initial_account_stable = dict(venue_balances)
         logger.info("account_stable_initialized", venues=list(venue_balances.keys()))
 
     def initialize_account_cngn(self, venue_balances: dict[str, Decimal]) -> None:
@@ -262,11 +239,7 @@ class InventoryTracker:
             self._state.per_account_cngn[venue] = amount
 
     def reconcile_stables(self, venue_balances: dict[str, Decimal]) -> None:
-        """Refresh per-account stablecoin from a periodic balance fetch.
-
-        Unlike initialize_account_stable, does not touch initial_account_stable
-        so get_rebalance_cost_bps() retains its startup baseline.
-        """
+        """Refresh spendable stablecoin balances."""
         for venue, amount in venue_balances.items():
             self._state.per_account_stable[venue] = amount
             if amount < self.params.min_account_stablecoin_usd:
@@ -289,27 +262,28 @@ class InventoryTracker:
         else:
             self._state.low_inventory_venues.discard(venue)
 
-    def get_rebalance_cost_bps(self, buy_venue: str) -> int:
-        """Returns 0 when fully stocked, cross_chain_rebalance_bps when empty."""
-        initial = self._state.initial_account_stable.get(buy_venue)
-        if not initial or initial <= 0:
-            return self.params.cross_chain_rebalance_bps  # Conservative fallback
-        current = self._state.per_account_stable.get(buy_venue, Decimal("0"))
-        fraction = min(Decimal("1"), current / initial)
-        cost = self.params.cross_chain_rebalance_bps * (1 - float(fraction))
-        return round(cost)
+    def set_account_snapshot(self, venue: str, snapshot: TradeInventorySnapshot) -> None:
+        if venue not in {"quidax", "uni-base", "uni-bsc"}:
+            raise ValueError(f"Not an arb venue: {venue}")
+        self.reconcile_stables({venue: snapshot.stable_available})
+        self.reconcile_cngn({venue: snapshot.cngn_available})
+        self._state.account_snapshots[venue] = snapshot
 
-    def update_portfolio_snapshot(
-        self,
-        cngn_value_usd: Decimal,
-        total_usd: Decimal,
-        cngn_price_usd: Decimal = Decimal("0"),
-    ) -> None:
-        """Called by scheduler every 120s to keep delta ratio check current."""
-        self._state.cngn_value_usd = cngn_value_usd
-        self._state.total_portfolio_usd = total_usd
-        if cngn_price_usd > 0:
-            self._state.cngn_price_usd = cngn_price_usd
+    def fresh_snapshot(self, venue: str) -> TradeInventorySnapshot | None:
+        snapshot = self._state.account_snapshots.get(venue)
+        if snapshot is None:
+            return None
+        age = int(time.time() * 1000) - snapshot.timestamp
+        if not 0 <= age <= self.params.inventory_max_age_seconds * 1000:
+            return None
+        if (snapshot.stable_available != self._state.per_account_stable.get(venue)
+                or snapshot.cngn_available != self._state.per_account_cngn.get(venue)):
+            return None
+        return snapshot
+
+    def invalidate_snapshots(self, *venues: str) -> None:
+        for venue in venues:
+            self._state.account_snapshots.pop(venue, None)
 
     def get_status_dict(self) -> dict[str, Any]:
         """Get current status as a dict for API responses."""

@@ -45,7 +45,7 @@ Current values:
 | `uni-base` | 2.75 | 0.45 |
 | `uni-bsc` | 3.0 | 0.5 |
 
-This means we provide liquidity across most of the range (high `sd_multiplier`), with a slight bullish lean on Base (skew 0.45 = more range above the mean) and a neutral position on BSC (skew 0.5 = symmetric).
+This means we provide liquidity across most of the range (high `sd_multiplier`), with slightly more range above the mean on Base (skew 0.45) and a symmetric range on BSC (skew 0.5). These directions refer to the calculation’s price orientation and do not imply a guaranteed inventory mix.
 
 Ticks are then aligned to the pool's `tick_spacing` (floor for lower, ceil for upper). The result is also clamped to `min_tick_width` and `max_tick_width` to prevent degenerate ranges.
 

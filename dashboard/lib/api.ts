@@ -3,7 +3,7 @@ import type {
   VenuePriceResponse,
   SystemStatus,
   VenueOrdersResponse,
-  GlobalPosition,
+  PortfolioExposure,
   Position,
   ArbitrageStatus,
   ArbitrageOpportunity,
@@ -77,8 +77,8 @@ export const api = {
   getPositions: (): Promise<Position[]> =>
     fetchJson(`${API_BASE}/positions`),
 
-  getGlobalPosition: (): Promise<GlobalPosition> =>
-    fetchJson(`${API_BASE}/positions/global`),
+  getPortfolioExposure: (): Promise<PortfolioExposure> =>
+    fetchJson(`${API_BASE}/portfolio/exposure`),
 
   getVenuePosition: (venue: string): Promise<Position> =>
     fetchJson(`${API_BASE}/positions/${venue}`),

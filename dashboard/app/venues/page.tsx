@@ -239,12 +239,17 @@ function VenueDetail({
         {
           key: 'order_size_cngn',
           label: 'Order Size cNGN',
-          description: 'Sell-side notional per resting order',
+          description: 'Baseline cNGN budget per USDT bid, before inventory sizing',
         },
         {
           key: 'order_size_usdt',
           label: 'Order Size USDT',
-          description: 'Buy-side notional per resting order',
+          description: 'Baseline USDT size per ask, before inventory sizing',
+        },
+        {
+          key: 'inventory_skew_strength',
+          label: 'Inventory Skew Strength',
+          description: '0 keeps equal notionals; 0.5 biases sizes up to 3:1 toward spending the overweight asset',
         },
       ]
     : [];

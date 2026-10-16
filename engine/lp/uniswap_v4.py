@@ -326,6 +326,8 @@ class V4PositionManager:
                     )
                 self._token_index_lookup_supported = False
         owned = self._get_owned_positions_from_logs(expected_balance=balance)
+        if strict and len(owned) != balance:
+            raise RuntimeError("owned_position_discovery_incomplete")
         if balance > 0 and not owned:
             if not strict:
                 logger.warning(
@@ -590,10 +592,10 @@ class V4PositionManager:
         )
         return self._compute_lp_token_amounts(pos_state, sqrt_price_x96)
 
-    def get_portfolio_balances(self) -> dict[str, Decimal]:
+    def get_portfolio_balances(self) -> dict[str, Decimal] | None:
         """Return LP token balances for portfolio exposure accounting only."""
         balances = self._empty_position_balances()
-        token_ids = self.get_owned_positions()
+        token_ids = self.verify_owned_positions()
         if not token_ids:
             return balances
         if len(token_ids) > 1:
@@ -602,10 +604,12 @@ class V4PositionManager:
                 venue=self.name,
                 token_ids=token_ids,
             )
-            return balances
+            return None
 
         metadata = self._get_static_position_metadata(token_ids[0])
-        if metadata is None or metadata.liquidity == 0:
+        if metadata is None:
+            return None
+        if metadata.liquidity == 0:
             return balances
 
         market = self._get_live_pool_snapshot()
@@ -615,7 +619,7 @@ class V4PositionManager:
 
             sqrt_price_x96, _, _, _ = get_cached_pool_state(self.config.pool_id)
         if sqrt_price_x96 is None:
-            return balances
+            return None
 
         amount0, amount1 = self._compute_lp_token_amounts_from_metadata(metadata, sqrt_price_x96)
         self._add_symbol_balance(balances, self.config.token0_symbol, amount0)

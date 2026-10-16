@@ -17,7 +17,7 @@ RETAINED_EVENT_TYPES = {
     "quidax_open_orders",
     "venue_prices",
     "positions",
-    "portfolio_delta",
+    "portfolio_exposure",
     "blended_price",
     "engine_status",
     "account_balances",

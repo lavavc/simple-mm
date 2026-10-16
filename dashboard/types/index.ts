@@ -78,13 +78,21 @@ export interface VenueOrdersResponse {
   orders: VenueOrderSummary[];
 }
 
-export interface GlobalPosition {
-  total_cngn: number;
-  total_usdt: number;
-  total_usdc: number;
-  total_usd_value: number;
-  delta_ratio: number;
-  target_delta: number;
+export interface PortfolioExposure {
+  timestamp: number;
+  complete: boolean;
+  total_cngn: number | null;
+  total_usdt: number | null;
+  total_usdc: number | null;
+  total_usd_value: number | null;
+  cngn_share: number | null;
+  sources: {
+    source: string;
+    kind: 'account' | 'lp_position' | 'exchange';
+    balances: Record<string, number | null>;
+    usd_value: number | null;
+    error: string | null;
+  }[];
 }
 
 export interface Alert {
@@ -96,16 +104,19 @@ export interface Alert {
 }
 
 export interface ArbitrageParams {
-  min_net_profit_bps: number;
-  dex_swap_fee_bps: number;
-  dex_slippage_bps: number;
-  cex_taker_fee_bps: number;
+  min_profit_usd: number;
   max_single_trade_usd: number;
   max_daily_volume_usd: number;
   max_inventory_imbalance_usd: number;
   scan_interval_seconds: number;
   max_consecutive_failures: number;
   max_daily_loss_usd: number;
+  inventory_weight: number;
+  inventory_max_age_seconds: number;
+  quidax_target_cngn_ratio: number;
+  uni_base_target_cngn_ratio: number;
+  uni_bsc_target_cngn_ratio: number;
+  min_account_stablecoin_usd: number;
 }
 
 export interface ArbitrageOpportunity {

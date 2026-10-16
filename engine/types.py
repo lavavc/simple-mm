@@ -7,7 +7,8 @@ engine/api/schemas.py contains only HTTP-specific response wrappers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation as _InvalidOperation
+from decimal import Decimal
+from decimal import InvalidOperation as _InvalidOperation
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -134,8 +135,9 @@ class CexParams(BaseModel):
     anchor_source: CexAnchorSource = "blended"
     anchor_requote_threshold_bps: int = 0
     anchor_requote_cooldown_seconds: int = 30
-    order_size_cngn: Decimal = Decimal("0")  # cNGN per sell order (0 = disabled)
-    order_size_usdt: Decimal = Decimal("0")  # USDT per buy order (0 = disabled)
+    order_size_cngn: Decimal = Decimal("0")  # Baseline cNGN spent per USDT bid (0 = disabled)
+    order_size_usdt: Decimal = Decimal("0")  # Baseline USDT offered per ask (0 = disabled)
+    inventory_skew_strength: Decimal = Field(default=Decimal("0.5"), ge=0, le=Decimal("0.5"))
 
     @property
     def resolved_ladder_offsets_ngn(self) -> list[int]:
@@ -215,6 +217,22 @@ class AccountThresholds(BaseModel):
 # === Arbitrage types ===
 
 
+@dataclass(frozen=True)
+class TradeInventorySnapshot:
+    stable_available: Decimal
+    cngn_available: Decimal
+    stable_total: Decimal
+    cngn_total: Decimal
+    timestamp: int
+
+    def __post_init__(self) -> None:
+        amounts = (self.stable_available, self.cngn_available, self.stable_total, self.cngn_total)
+        if any(not amount.is_finite() or amount < 0 for amount in amounts):
+            raise ValueError("Trade inventory must be finite and nonnegative")
+        if self.stable_available > self.stable_total or self.cngn_available > self.cngn_total:
+            raise ValueError("Available inventory cannot exceed total inventory")
+
+
 class ArbitrageParams(BaseModel):
     """Parameters for arbitrage detection and execution.
 
@@ -237,9 +255,11 @@ class ArbitrageParams(BaseModel):
     max_consecutive_failures: int = settings.arbitrage_max_consecutive_failures
     max_daily_loss_usd: Decimal = Decimal(str(settings.arbitrage_max_daily_loss_usd))
 
-    # Cross-chain inventory
-    cross_chain_rebalance_bps: int = settings.arbitrage_cross_chain_rebalance_bps
-    max_delta_ratio: Decimal = Decimal(str(settings.arbitrage_max_delta_ratio))
+    inventory_weight: Decimal = Field(default=settings.arbitrage_inventory_weight, ge=0, allow_inf_nan=False)
+    inventory_max_age_seconds: int = Field(default=settings.arbitrage_inventory_max_age_seconds, gt=0)
+    quidax_target_cngn_ratio: Decimal = Field(default=settings.arbitrage_quidax_target_cngn_ratio, ge=0, le=1)
+    uni_base_target_cngn_ratio: Decimal = Field(default=settings.arbitrage_uni_base_target_cngn_ratio, ge=0, le=1)
+    uni_bsc_target_cngn_ratio: Decimal = Field(default=settings.arbitrage_uni_bsc_target_cngn_ratio, ge=0, le=1)
     min_account_stablecoin_usd: Decimal = Decimal(str(settings.arbitrage_min_account_stablecoin_usd))
 
 

@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional, cast
 import httpx
 import structlog
 
-from engine.types import CexParams, OrderBookDepth, OrderBookLevel, Position, PriceQuote, VenueOrderSummary
+from engine.types import CexParams, OrderBookDepth, OrderBookLevel, Position, PriceQuote, VenueOrderSummary, TradeInventorySnapshot
 from engine.db.backend import AlertStoreProtocol, SystemStateStoreProtocol
 from engine.venues.base import VenueAdapter
 from engine.venues.cex.ladder_planner import (
@@ -16,6 +16,7 @@ from engine.venues.cex.ladder_planner import (
     build_ladder_order_targets,
     estimate_existing_anchor,
     get_requote_reason,
+    resolve_inventory_order_sizes,
 )
 from engine.venues.cex.order_values import decimal_from_order_value
 from engine.venues.cex.quidax_client import QuidaxApiClient
@@ -118,36 +119,40 @@ class QuidaxAdapter(VenueAdapter):
             await self._client.aclose()
             self._client = None
 
-    def _resolve_balanced_order_sizes(self, reference_price: Decimal) -> tuple[Decimal, Decimal]:
-        """Balance both ladder sides to the same notional when both are enabled.
-
-        Returns:
-            (effective_order_size_cngn, effective_order_size_usdt)
-        """
-        order_size_cngn = self.params.order_size_cngn
-        order_size_usdt = self.params.order_size_usdt
-        if reference_price <= 0 or order_size_cngn <= 0 or order_size_usdt <= 0:
-            return order_size_cngn, order_size_usdt
-
-        usdt_side_cngn_equiv = order_size_usdt * reference_price
-        target_notional_cngn = min(order_size_cngn, usdt_side_cngn_equiv)
-        effective_order_size_cngn = target_notional_cngn
-        effective_order_size_usdt = target_notional_cngn / reference_price
-
-        if (
-            effective_order_size_cngn != order_size_cngn
-            or effective_order_size_usdt != order_size_usdt
-        ):
-            logger.info(
-                "quidax_ladder_sizes_balanced",
-                reference_price_ngn=float(reference_price),
-                configured_order_size_cngn=float(order_size_cngn),
-                configured_order_size_usdt=float(order_size_usdt),
-                effective_order_size_cngn=float(effective_order_size_cngn),
-                effective_order_size_usdt=float(effective_order_size_usdt),
-            )
-
-        return effective_order_size_cngn, effective_order_size_usdt
+    async def _build_inventory_ladder(
+        self, reference_price: Decimal, *, after_cancellation: bool,
+    ) -> list[LadderOrderTarget]:
+        cngn, usdt = await asyncio.gather(
+            self._api.get_wallet_inventory("cngn"),
+            self._api.get_wallet_inventory("usdt"),
+        )
+        cngn_size, usdt_size = resolve_inventory_order_sizes(
+            reference_price=reference_price,
+            order_size_cngn=self.params.order_size_cngn,
+            order_size_usdt=self.params.order_size_usdt,
+            cngn_total=cngn.total,
+            usdt_total=usdt.total,
+            cngn_budget=cngn.available if after_cancellation else cngn.total,
+            usdt_budget=usdt.available if after_cancellation else usdt.total,
+            levels=self.params.ladder_levels_per_side,
+            skew_strength=self.params.inventory_skew_strength,
+        )
+        logger.info(
+            "quidax_ladder_inventory_sizing",
+            venue=self.name,
+            cngn_total=str(cngn.total),
+            usdt_total=str(usdt.total),
+            cngn_per_bid=str(cngn_size),
+            usdt_per_ask=str(usdt_size),
+            after_cancellation=after_cancellation,
+        )
+        return build_ladder_order_targets(
+            reference_price=reference_price,
+            offsets=self.params.resolved_ladder_offsets_ngn,
+            order_size_cngn=cngn_size,
+            order_size_usdt=usdt_size,
+            format_limit_order=self._format_limit_order,
+        )
 
     async def _emit_anchor_requote_alert(
         self,
@@ -296,6 +301,16 @@ class QuidaxAdapter(VenueAdapter):
 
     async def _reconcile_tracked_open_orders_from_rows(self, rows: list[dict[str, Any]]) -> set[str]:
         return await self._order_state.reconcile_from_rows(rows)
+
+    async def get_trade_inventory(self) -> TradeInventorySnapshot:
+        cngn, stable = await asyncio.gather(
+            self._api.get_wallet_inventory("cngn"), self._api.get_wallet_inventory("usdt"),
+        )
+        return TradeInventorySnapshot(
+            stable_available=stable.available, cngn_available=cngn.available,
+            stable_total=stable.total, cngn_total=cngn.total,
+            timestamp=int(time.time() * 1000),
+        )
 
     async def get_position(self) -> Position:
         """Fetch live cNGN and USDT balances from the Quidax wallet API."""
@@ -849,17 +864,10 @@ class QuidaxAdapter(VenueAdapter):
             logger.info("quidax_ladder_skipped", paused=self.paused, enabled=self.params.ladder_enabled)
             return
 
-        effective_order_size_cngn, effective_order_size_usdt = self._resolve_balanced_order_sizes(
-            reference_price
-        )
-        desired_orders = build_ladder_order_targets(
-            reference_price=reference_price,
-            offsets=self.params.resolved_ladder_offsets_ngn,
-            order_size_cngn=effective_order_size_cngn,
-            order_size_usdt=effective_order_size_usdt,
-            format_limit_order=self._format_limit_order,
-        )
         existing_orders = await self.get_open_orders()
+        desired_orders = await self._build_inventory_ladder(
+            reference_price, after_cancellation=not existing_orders,
+        )
         requote_reason: str | None = None
         previous_anchor: Decimal | None = None
         if existing_orders:
@@ -903,6 +911,14 @@ class QuidaxAdapter(VenueAdapter):
                     f"{len(remaining_orders)} still open ({', '.join(remaining_ids)})"
                 )
             await self._broadcast_open_orders_snapshot(remaining_orders)
+            desired_orders = await self._build_inventory_ladder(
+                reference_price, after_cancellation=True,
+            )
+
+        if not desired_orders:
+            logger.warning("quidax_ladder_no_funded_orders", venue=self.name)
+            await self._broadcast_open_orders_snapshot()
+            return
 
         orders_attempted = 0
         orders_placed = 0

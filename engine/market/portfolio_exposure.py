@@ -1,15 +1,16 @@
-"""Portfolio exposure aggregation built on top of fair-value pricing."""
+"""Read-only portfolio accounting shared by HTTP and WebSocket reporting."""
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Sequence
 
-import structlog
-
 from engine.config import settings
 from engine.market.portfolio_registry import PortfolioSourceDescriptor
+from engine.venues.base import TradeInventoryVenue
 
 if TYPE_CHECKING:
     from engine.accounts import AccountManager
@@ -17,37 +18,29 @@ if TYPE_CHECKING:
     from engine.market.venue_prices import VenuePriceAggregator
     from engine.venues.base import VenueAdapter
 
-logger = structlog.get_logger()
-
-PortfolioExposureSourceKind = Literal["account", "lp_position", "exchange"]
-
 
 @dataclass(frozen=True, slots=True)
 class PortfolioExposureSourceSnapshot:
-    """One contributing balance source in the global portfolio view."""
-
     source: str
-    kind: PortfolioExposureSourceKind
-    balances: dict[str, Decimal]
-    usd_value: Decimal
+    kind: Literal["account", "lp_position", "exchange"]
+    balances: dict[str, Decimal | None]
+    usd_value: Decimal | None
+    error: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class PortfolioExposureSnapshot:
-    """Expanded global portfolio snapshot with per-source breakdown."""
-
-    total_cngn: Decimal
-    total_usdt: Decimal
-    total_usdc: Decimal
-    total_usd_value: Decimal
-    delta_ratio: Decimal
-    target_delta: Decimal
+    timestamp: int
+    complete: bool
+    total_cngn: Decimal | None
+    total_usdt: Decimal | None
+    total_usdc: Decimal | None
+    total_usd_value: Decimal | None
+    cngn_share: Decimal | None
     sources: tuple[PortfolioExposureSourceSnapshot, ...]
 
 
 class PortfolioExposureCalculator:
-    """Aggregate all managed balances into one fair-value portfolio snapshot."""
-
     def __init__(
         self,
         venues: dict[str, "VenueAdapter"],
@@ -64,147 +57,117 @@ class PortfolioExposureCalculator:
         self.blended_calculator = blended_calculator
         self.price_aggregator = price_aggregator
         self.portfolio_source_registry = tuple(portfolio_source_registry)
-        self.lp_managers: dict[str, Any] = lp_managers or {}
+        self.lp_managers = lp_managers or {}
+        if len({s.venue for s in portfolio_source_registry}) != len(portfolio_source_registry):
+            raise ValueError("Duplicate portfolio source")
+        self._snapshot: PortfolioExposureSnapshot | None = None
+        self._refreshed_at = 0.0
+        self._lock = asyncio.Lock()
 
     async def calculate(self) -> PortfolioExposureSnapshot:
-        """Return the current portfolio exposure with per-source breakdown."""
-        cngn_usd_rate = await self._get_cngn_usd_rate()
-        total_balances = {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+        async with self._lock:
+            if self._snapshot is None or time.monotonic() - self._refreshed_at >= settings.portfolio_refresh_interval:
+                self._snapshot = await self._collect()
+                self._refreshed_at = time.monotonic()
+            return self._snapshot
+
+    async def _collect(self) -> PortfolioExposureSnapshot:
+        rate = await self._get_cngn_usd_rate()
         sources: list[PortfolioExposureSourceSnapshot] = []
-
         if self.account_manager is not None:
+            expected = set(self.account_manager.list_accounts())
             try:
-                account_balances = await self.account_manager.check_all_balances(self.token_contracts)
-            except Exception as exc:
-                logger.warning("portfolio_account_balances_failed", error=str(exc))
-                account_balances = []
+                wallets = await self.account_manager.check_all_balances(self.token_contracts)
+            except Exception:
+                wallets = []
+            for wallet in wallets:
+                expected.discard(wallet.role)
+                sources.append(self._source(wallet.role, "account", wallet.token_balances, rate))
+            for role in sorted(expected):
+                sources.append(self._source(role, "account", None, rate, "Wallet read failed"))
 
-            for account_balance in account_balances:
-                normalized = self._normalize_balances(getattr(account_balance, "token_balances", {}))
-                if not self._has_meaningful_balance(normalized):
-                    continue
-                self._accumulate(total_balances, normalized)
-                sources.append(
-                    PortfolioExposureSourceSnapshot(
-                        source=getattr(account_balance, "role", "unknown-account"),
-                        kind="account",
-                        balances=normalized,
-                        usd_value=self._balances_to_usd_value(normalized, cngn_usd_rate),
-                    )
-                )
-
-        seen_registered_venues: set[str] = set()
         for descriptor in self.portfolio_source_registry:
-            if descriptor.venue in seen_registered_venues:
-                logger.warning("duplicate_portfolio_source_descriptor", venue=descriptor.venue)
-                continue
-            seen_registered_venues.add(descriptor.venue)
-
             venue = self.venues.get(descriptor.venue)
             if venue is None:
                 continue
+            try:
+                if descriptor.source_kind == "lp_position":
+                    balances = self.lp_managers[descriptor.venue].get_portfolio_balances()
+                else:
+                    if not isinstance(venue, TradeInventoryVenue):
+                        raise TypeError("Exchange does not expose total holdings")
+                    exchange = await venue.get_trade_inventory()
+                    balances = {"cngn": exchange.cngn_total, "usdt": exchange.stable_total, "usdc": Decimal(0)}
+                sources.append(self._source(descriptor.venue, descriptor.source_kind, balances, rate))
+            except Exception:
+                sources.append(self._source(descriptor.venue, descriptor.source_kind, None, rate, "Holdings read failed"))
 
-            raw_balances: dict[str, Any] | None
-            if descriptor.source_kind == "lp_position":
-                lp_manager = self.lp_managers.get(descriptor.venue)
-                if lp_manager is None:
-                    logger.warning(
-                        "portfolio_lp_manager_missing",
-                        venue=descriptor.venue,
-                    )
-                    continue
-                try:
-                    raw_balances = lp_manager.get_portfolio_balances()
-                except Exception as exc:
-                    logger.warning(
-                        "portfolio_lp_balances_failed",
-                        venue=descriptor.venue,
-                        error=str(exc),
-                    )
-                    continue
-            else:
-                try:
-                    position = await venue.get_position()
-                except Exception as exc:
-                    logger.warning("portfolio_venue_position_failed", venue=descriptor.venue, error=str(exc))
-                    continue
-                raw_balances = getattr(position, "balances", {})
-
-            normalized = self._normalize_balances(raw_balances)
-            if not self._has_meaningful_balance(normalized):
-                continue
-            self._accumulate(total_balances, normalized)
-            sources.append(
-                PortfolioExposureSourceSnapshot(
-                    source=descriptor.venue,
-                    kind=descriptor.source_kind,
-                    balances=normalized,
-                    usd_value=self._balances_to_usd_value(normalized, cngn_usd_rate),
-                )
+        def total(symbol: str) -> Decimal | None:
+            values = [source.balances[symbol] for source in sources]
+            return None if any(value is None for value in values) else sum(
+                (value for value in values if value is not None), Decimal(0),
             )
 
-        total_cngn = total_balances["cngn"]
-        total_usdt = total_balances["usdt"]
-        total_usdc = total_balances["usdc"]
-        total_usd_value = total_usdt + total_usdc + (total_cngn * cngn_usd_rate)
-        delta_ratio = (
-            (total_cngn * cngn_usd_rate) / total_usd_value
-            if total_usd_value > 0
-            else Decimal("0")
-        )
-
+        complete = all(source.usd_value is not None for source in sources)
+        usd_value = sum((s.usd_value for s in sources if s.usd_value is not None), Decimal(0)) if complete else None
+        cngn = total("cngn")
+        share = None
+        if usd_value is not None and cngn is not None:
+            if usd_value == 0 or cngn == 0:
+                share = Decimal(0)
+            elif rate is not None:
+                share = cngn * rate / usd_value
         return PortfolioExposureSnapshot(
-            total_cngn=total_cngn,
-            total_usdt=total_usdt,
-            total_usdc=total_usdc,
-            total_usd_value=total_usd_value,
-            delta_ratio=delta_ratio,
-            target_delta=Decimal(str(settings.target_delta_ratio)),
-            sources=tuple(sources),
+            timestamp=int(time.time() * 1000), complete=complete,
+            total_cngn=cngn, total_usdt=total("usdt"), total_usdc=total("usdc"),
+            total_usd_value=usd_value, cngn_share=share, sources=tuple(sources),
         )
 
-    async def _get_cngn_usd_rate(self) -> Decimal:
+    @staticmethod
+    def _source(
+        name: str, kind: Literal["account", "lp_position", "exchange"],
+        raw: dict[str, Any] | None, rate: Decimal | None, error: str | None = None,
+    ) -> PortfolioExposureSourceSnapshot:
+        balances: dict[str, Decimal | None] = {symbol: Decimal(0) for symbol in ("cngn", "usdt", "usdc")}
+        if raw is None:
+            balances = dict.fromkeys(balances)
+            error = error or "Holdings unavailable"
+        else:
+            for token, value in raw.items():
+                symbol = token.lower()
+                if symbol not in balances:
+                    continue
+                amount = Decimal(str(value))
+                if not amount.is_finite() or amount < 0:
+                    balances[symbol] = None
+                    error = "Balance read failed"
+                else:
+                    current = balances[symbol]
+                    if current is not None:
+                        balances[symbol] = current + amount
+        cngn, usdt, usdc = (balances[s] for s in ("cngn", "usdt", "usdc"))
+        value = None
+        if cngn is not None and usdt is not None and usdc is not None:
+            if cngn == 0:
+                value = usdt + usdc
+            elif rate is not None:
+                value = usdt + usdc + cngn * rate
+            else:
+                error = "cNGN price unavailable"
+        return PortfolioExposureSourceSnapshot(name, kind, balances, value, error)
+
+    async def _get_cngn_usd_rate(self) -> Decimal | None:
         if self.blended_calculator is not None:
             try:
                 blended = await self.blended_calculator.get_blended_price()
                 for candidate in (blended.vwap, blended.twap_5m, blended.twap_1h):
-                    if candidate > 0:
+                    if candidate.is_finite() and candidate > 0:
                         return candidate
-            except Exception as exc:
-                logger.warning("portfolio_blended_price_unavailable", error=str(exc))
-
+            except Exception:
+                pass
         if self.price_aggregator is not None:
-            quidax = self.price_aggregator.get_price("quidax")
-            if quidax and quidax.quote and quidax.quote.mid > 0:
-                return quidax.quote.mid
-
-            bybit = self.price_aggregator.get_price("bybit")
-            if bybit and bybit.quote and bybit.quote.mid > 0:
-                return Decimal("1") / bybit.quote.mid
-
-        return Decimal("0")
-
-    def _normalize_balances(self, raw_balances: dict[str, Any] | None) -> dict[str, Decimal]:
-        normalized = {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
-        if not raw_balances:
-            return normalized
-
-        for raw_symbol, raw_amount in raw_balances.items():
-            symbol = str(raw_symbol).lower()
-            if symbol not in normalized:
-                continue
-            amount = Decimal(str(raw_amount))
-            if amount < 0:
-                continue
-            normalized[symbol] += amount
-        return normalized
-
-    def _balances_to_usd_value(self, balances: dict[str, Decimal], cngn_usd_rate: Decimal) -> Decimal:
-        return balances["usdt"] + balances["usdc"] + (balances["cngn"] * cngn_usd_rate)
-
-    def _accumulate(self, totals: dict[str, Decimal], balances: dict[str, Decimal]) -> None:
-        for symbol, amount in balances.items():
-            totals[symbol] += amount
-
-    def _has_meaningful_balance(self, balances: dict[str, Decimal]) -> bool:
-        return any(amount > 0 for amount in balances.values())
+            for venue in ("quidax", "bybit"):
+                price = self.price_aggregator.get_price(venue)
+                if price and price.quote and price.quote.mid.is_finite() and price.quote.mid > 0:
+                    return Decimal(1) / price.quote.mid if venue == "bybit" else price.quote.mid
+        return None

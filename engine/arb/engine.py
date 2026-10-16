@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 import structlog
 
-from engine.types import ArbitrageParams, ArbitrageStatus, DexArbOpportunity
+from engine.types import ArbitrageParams, ArbitrageStatus, DexArbOpportunity, TradeInventorySnapshot
 from engine.arb.execution.executor import ArbitrageExecutor
 from engine.arb.risk.history import ArbitrageHistoryRecorder
 from engine.arb.risk.inventory import InventoryTracker
@@ -22,7 +22,6 @@ from engine.arb.routing.route_registry import Pipeline, ROUTES_BY_DIRECTION, Tra
 from engine.arb.routing.router import RouteCandidate, SelectedRoute, select_route
 from engine.arb.wallet_state import (
     fetch_venue_wallet_snapshot as _fetch_venue_wallet_snapshot_impl,
-    reconcile_balances as _reconcile_balances_impl,
     refresh_inventory_for_venues as _refresh_inventory_for_venues_impl,
     seed_account_inventory as _seed_account_inventory_impl,
 )
@@ -111,7 +110,8 @@ class ArbitrageEngine:
         from engine.arb.valuation import portfolio_value
         from engine.market.pool_state import seed_dex_pool_states
 
-        self._reconcile_balances(balances)
+        if self._enabled and self.execute_cex_dex_enabled and not self._arb_executing:
+            await self._ensure_pool_marks()
         loop = asyncio.get_running_loop()
         signal = await loop.run_in_executor(None, find_optimal_arb, depth)
         val = await loop.run_in_executor(None, portfolio_value, depth, balances) if balances else {}
@@ -127,6 +127,9 @@ class ArbitrageEngine:
         self.broadcast({"type": "quidax_dex_optimal_arb", "data": broadcast_data})
 
         if signal and self._enabled and self.execute_cex_dex_enabled and not self._arb_executing:
+            await self._ensure_route_inventory("quidax", "uni-base", "uni-bsc")
+            if self._arb_executing:
+                return
             candidates = []
             for arb in signal.get("all_arbs", []):
                 direction = arb.get("direction")
@@ -144,11 +147,12 @@ class ArbitrageEngine:
                     optimal_size_usd=Decimal(str(arb["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(arb["expected_profit_usd"])),
                     gas_usd=Decimal(str(gas_usd_raw)),
-                    signal={"prices": signal["prices"], "optimal_arb": arb, "depth": {depth.venue: depth}},
+                    signal={"timestamp": signal["timestamp"], "price_timestamps": signal["price_timestamps"], "prices": signal["prices"], "optimal_arb": arb, "depth": {depth.venue: depth}},
                 ))
             route = select_route(candidates, self.inventory)
             if route:
                 opp_id = f"cex-dex-{uuid.uuid4()}"
+                self._arb_executing = True
                 asyncio.create_task(self._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id))
 
         if not self._cex_curve_task or self._cex_curve_task.done():
@@ -192,35 +196,42 @@ class ArbitrageEngine:
         if not self._inventory_seeded or not self._trade_approvals_seeded:
             await self._seed_account_inventory()
 
+        if self._enabled and self.execute_dex_dex_enabled and not self._arb_executing:
+            await self._ensure_pool_marks()
         loop = asyncio.get_running_loop()
         fast = await loop.run_in_executor(None, find_optimal_dex_arb)
         if fast is None:
             asyncio.create_task(seed_dex_pool_states())
             return
 
-        opp_id = await self._record_dex_opportunity(fast)
-
+        route = None
         if self._enabled and self.execute_dex_dex_enabled and not self._arb_executing:
-            optimal = fast.get("optimal_arb", {})
-            direction = optimal.get("direction")
-            route_def = ROUTES_BY_DIRECTION.get(direction)
-            if route_def and optimal.get("expected_profit_usd", 0) > 0:
-                gas_usd_raw = optimal.get("gas_usd")
-                if not gas_usd_raw:
-                    logger.warning("dex_dex_candidate_skipped_missing_gas", direction=direction)
-                    return
-                candidate = RouteCandidate(
-                    direction=direction,
-                    buy_venue=route_def.buy_leg.venue,
+            await self._ensure_route_inventory("uni-base", "uni-bsc")
+            candidates = []
+            for optimal in fast["all_arbs"]:
+                direction = optimal["direction"]
+                route_def = ROUTES_BY_DIRECTION[direction]
+                if optimal["expected_profit_usd"] <= 0:
+                    continue
+                candidates.append(RouteCandidate(
+                    direction=direction, buy_venue=route_def.buy_leg.venue,
                     sell_venue=route_def.sell_leg.venue,
                     optimal_size_usd=Decimal(str(optimal["optimal_size_usd"])),
                     expected_profit_usd=Decimal(str(optimal["expected_profit_usd"])),
-                    gas_usd=Decimal(str(gas_usd_raw)),
-                    signal=fast,
-                )
-                route = select_route([candidate], self.inventory)
-                if route:
-                    asyncio.create_task(self._execute_route(route_def, route, opp_id))
+                    gas_usd=Decimal(str(optimal["gas_usd"])),
+                    signal={**fast, "optimal_arb": optimal},
+                ))
+            route = select_route(candidates, self.inventory)
+        if route:
+            selected_signal = {**fast, "optimal_arb": route.candidate.signal["optimal_arb"]}
+            opp_id = await self._record_dex_opportunity(selected_signal)
+            if not self._arb_executing:
+                self._arb_executing = True
+                asyncio.create_task(self._execute_route(
+                    ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id,
+                ))
+        else:
+            await self._record_dex_opportunity(fast)
 
         if not self._dex_curve_task or self._dex_curve_task.done():
             self._dex_curve_task = asyncio.create_task(self._broadcast_dex_curve())
@@ -338,14 +349,6 @@ class ArbitrageEngine:
     def reset_circuit_breaker(self) -> None:
         self.inventory.reset_circuit_breaker()
 
-    def update_portfolio_snapshot(
-        self,
-        cngn_value_usd: Decimal,
-        total_usd: Decimal,
-        cngn_price_usd: Decimal = Decimal("0"),
-    ) -> None:
-        self.inventory.update_portfolio_snapshot(cngn_value_usd, total_usd, cngn_price_usd)
-
     async def recover_dex_half_open(self, opp_id: str) -> dict[str, Any]:
         return await _recover_dex_half_open_impl(self, opp_id)
 
@@ -355,11 +358,24 @@ class ArbitrageEngine:
     async def recover_cex_half_open(self, opp_id: str) -> dict[str, Any]:
         return await _recover_cex_half_open_impl(self, opp_id)
 
-    def _reconcile_balances(self, balances: list[Any]) -> None:
-        _reconcile_balances_impl(self, balances)
-
-    def _fetch_venue_wallet_snapshot(self, venue_name: str) -> tuple[str, Decimal, Decimal] | None:
+    def _fetch_venue_wallet_snapshot(self, venue_name: str) -> tuple[str, TradeInventorySnapshot] | None:
         return _fetch_venue_wallet_snapshot_impl(self, venue_name)
+
+    async def _ensure_pool_marks(self) -> None:
+        from engine.market.pool_state import get_cached_pool_state, seed_dex_pool_states
+        from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
+        from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
+
+        for config in (UNISWAP_BASE_POOL_READ_CONFIG, UNISWAP_BSC_POOL_READ_CONFIG):
+            _, _, timestamp, _ = get_cached_pool_state(config.pool_address)
+            if timestamp is None or not 0 <= time.time() - timestamp <= self.params.inventory_max_age_seconds:
+                await seed_dex_pool_states()
+                return
+
+    async def _ensure_route_inventory(self, *venues: str) -> None:
+        missing = [venue for venue in venues if self.inventory.fresh_snapshot(venue) is None]
+        if missing:
+            await self._refresh_inventory_for_venues(*missing)
 
     async def _refresh_inventory_for_venues(self, *venue_names: str) -> None:
         await _refresh_inventory_for_venues_impl(self, *venue_names)

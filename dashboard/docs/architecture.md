@@ -9,7 +9,7 @@ The dashboard fetches complete venue records from `/api/status`. The WebSocket `
 
 The engine is organised in layers. Each layer depends only on layers below it.
 
-**`engine/types.py`** — zero-dependency home for all shared domain types. Any layer may import from here freely. Covers cross-cutting types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`), order book types (`OrderBookLevel`, `OrderBookDepth`), config-adjacent params (`CexParams`, `WalletParams`), account types (`AccountInfo`, `AccountBalanceResponse`, `Alert`, etc.), and arb-domain types (`ArbitrageOpportunity`, `ArbitrageTrade`, `ArbitrageStatus`, etc.). `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `GlobalPosition`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
+**`engine/types.py`** — zero-dependency home for all shared domain types. Any layer may import from here freely. Covers cross-cutting types (`Position`, `LPPosition`, `PriceQuote`, `TxResult`), order book types (`OrderBookLevel`, `OrderBookDepth`), config-adjacent params (`CexParams`, `WalletParams`), account types (`AccountInfo`, `AccountBalanceResponse`, `Alert`, etc.), and arb-domain types (`ArbitrageOpportunity`, `ArbitrageTrade`, `ArbitrageStatus`, etc.). `engine/api/schemas.py` contains only HTTP-specific response types (`VenueStatus`, `SystemStatus`, `PortfolioExposure`, etc.) and does not re-export from `engine/types.py`. No module outside `engine/api/` should import from `engine/api/`.
 
 **`engine/venues/`** — thin adapters over on-chain contracts and CEX APIs. No strategy logic lives here. Adapters expose a uniform interface: `get_position()`, `swap()`, `get_current_price()`, etc. LP position management is **not** part of the adapter; it lives in `engine/lp/uniswap_v4.py`.
 
@@ -40,8 +40,6 @@ At startup the app constructs a single `EngineRuntime` in `engine/runtime.py`. I
 - `normalizer`
 - `token_contracts`
 - `portfolio_exposure_calculator`
-- `portfolio_source_registry`
-- `quidax_lp`
 
 FastAPI routes resolve everything from `app.state.runtime` via shared dependencies in `engine/api/deps.py`. There is no parallel `app.state.db` or module-global route state.
 
@@ -73,7 +71,7 @@ The scheduler follows the same pattern:
 
 **API read path:** HTTP request → `api/deps.get_runtime` → domain router in `engine/api/routes/` → runtime service or DB store → response model.
 
-**Global portfolio path:** HTTP request or scheduler tick → `market/portfolio_exposure.py` → all account-manager balances + registered additive sources from `market/portfolio_registry.py` → `/positions/global`, `/portfolio/exposure`, or `portfolio_delta` broadcast.
+**Global portfolio path:** HTTP request or scheduler tick → `market/portfolio_exposure.py` → all account-manager balances + registered additive sources from `market/portfolio_registry.py` → one cached snapshot shared by `/portfolio/exposure` and the `portfolio_exposure` broadcast. Exchange holdings include locked funds; unreadable sources remain explicitly unknown, making totals incomplete. This report has no global balance target or trading role.
 
 **Scheduler job path:** `TradingScheduler.start()` registers timers → delegated job coordinator in `engine/scheduler/jobs/` executes the business logic → events are broadcast over websocket/Telegram and persisted via domain stores.
 

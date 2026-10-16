@@ -20,10 +20,6 @@ from engine.db.backend import (
 )
 from engine.lp.rebalancer import LPRebalancer
 from engine.market.portfolio_exposure import PortfolioExposureCalculator
-from engine.market.portfolio_registry import (
-    DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
-    PortfolioSourceDescriptor,
-)
 from engine.market.price_aggregation import BlendedPriceCalculator
 from engine.market.venue_prices import VenuePriceAggregator
 from engine.scheduler.config import SchedulerConfig
@@ -57,7 +53,6 @@ class TradingScheduler:
         account_manager: "AccountManager | None" = None,
         token_contracts: TokenContracts | None = None,
         portfolio_exposure_calculator: PortfolioExposureCalculator | None = None,
-        portfolio_source_registry: tuple[PortfolioSourceDescriptor, ...] = DEFAULT_PORTFOLIO_SOURCE_REGISTRY,
         lp_managers: dict[str, Any] | None = None,
         system_state_store: SystemStateStoreProtocol | None = None,
         price_store: PriceStoreProtocol | None = None,
@@ -83,17 +78,6 @@ class TradingScheduler:
         self.scheduler = AsyncIOScheduler()
         self.state = SchedulerState(dex_bootstrap_pending=bool(arbitrage_engine))
         _lp_managers = lp_managers or {}
-        portfolio_calculator = portfolio_exposure_calculator
-        if portfolio_calculator is None and blended_calculator is not None:
-            portfolio_calculator = PortfolioExposureCalculator(
-                venues=venues,
-                account_manager=account_manager,
-                token_contracts=token_contracts or {},
-                blended_calculator=blended_calculator,
-                price_aggregator=price_aggregator,
-                portfolio_source_registry=portfolio_source_registry,
-                lp_managers=_lp_managers,
-            )
         self.context = SchedulerContext(
             config=config,
             price_aggregator=price_aggregator,
@@ -103,7 +87,7 @@ class TradingScheduler:
             arbitrage_engine=arbitrage_engine,
             account_manager=account_manager,
             token_contracts=token_contracts or {},
-            portfolio_exposure_calculator=portfolio_calculator,
+            portfolio_exposure_calculator=portfolio_exposure_calculator,
             lp_managers=_lp_managers,
             system_state_store=system_state_store,
             price_store=price_store,
@@ -221,12 +205,12 @@ class TradingScheduler:
 
         if self.context.portfolio_exposure_calculator:
             self.scheduler.add_job(
-                self._check_portfolio_delta,
-                IntervalTrigger(seconds=self.config.portfolio_delta_interval),
-                id="portfolio_delta",
+                self._broadcast_portfolio_exposure,
+                IntervalTrigger(seconds=self.config.portfolio_refresh_interval),
+                id="portfolio_exposure",
                 replace_existing=True,
             )
-            logger.info("portfolio_delta_job_registered")
+            logger.info("portfolio_reporting_job_registered")
 
         if "blockradar" in self.context.venues:
             self.scheduler.add_job(
@@ -303,8 +287,8 @@ class TradingScheduler:
     async def _sync_cex_orders(self) -> None:
         await self.market_jobs.sync_cex_orders()
 
-    async def _check_portfolio_delta(self) -> None:
-        await self.position_jobs.check_portfolio_delta()
+    async def _broadcast_portfolio_exposure(self) -> None:
+        await self.position_jobs.broadcast_portfolio_exposure()
 
     def _schedule_dex_bootstrap(self) -> None:
         self.arbitrage_jobs.schedule_dex_bootstrap()

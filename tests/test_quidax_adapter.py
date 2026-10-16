@@ -15,10 +15,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
+import httpx
 import pytest
 
 from engine.types import CexParams
 from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.cex.quidax_client import QuidaxWalletBalance
 from engine.venues.cex.quidax_order_state import QuidaxTrackedOrderState
 from engine.venues.cex.quidax_orders import normalize_order_summary, order_market_matches
 
@@ -71,8 +73,9 @@ def _make_adapter(
     alert_store: object | None = None,
     broadcast: object | None = None,
     order_user_id: str = "me",
+    mock_wallet_inventory: bool = True,
 ) -> QuidaxAdapter:
-    return QuidaxAdapter(
+    adapter = QuidaxAdapter(
         api_key="test-key",
         params=params,
         order_user_id=order_user_id,
@@ -80,6 +83,42 @@ def _make_adapter(
         system_state_store=system_state_store,
         broadcast=broadcast,
     )
+    if mock_wallet_inventory:
+        adapter._api.get_wallet_inventory = AsyncMock(side_effect=lambda currency: QuidaxWalletBalance(
+            available=Decimal("140000") if currency == "cngn" else Decimal("100"),
+            locked=Decimal("0"),
+        ))
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_confirmed_missing_pending_cancel_unblocks_both_ladder_sides():
+    store = _FakeSystemStateStore()
+    adapter = _make_adapter(CexParams(
+        ladder_enabled=True,
+        ladder_levels_per_side=5,
+        order_size_cngn=Decimal("2000"),
+        order_size_usdt=Decimal("10"),
+    ), system_state_store=store)
+    await adapter._track_open_order(
+        "old-order", side="sell", price=Decimal("1407.37"), volume=Decimal("1.44"),
+    )
+    await adapter._update_tracked_open_order("old-order", status="pending_cancel")
+
+    def respond(request):
+        if request.url.path.endswith("/old-order"):
+            return httpx.Response(404, json={"status": "error", "data": {"code": "110043"}})
+        return httpx.Response(200, json={"status": "success", "data": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter._get_client = AsyncMock(return_value=client)
+        adapter.place_order = AsyncMock()
+        await adapter.sync_order_ladder(Decimal("1360.36"))
+
+    sides = [item.args[0] for item in adapter.place_order.await_args_list]
+    assert sides.count("buy") == adapter.params.ladder_levels_per_side
+    assert sides.count("sell") == adapter.params.ladder_levels_per_side
+    assert json.loads(store.values[adapter._order_state.tracked_orders_state_key()]) == []
 
 
 @pytest.mark.asyncio
@@ -94,8 +133,8 @@ async def test_place_order_raises_on_quidax_error_payload():
 
 @pytest.mark.asyncio
 async def test_get_position_uses_configured_quidax_user_id_for_wallet_balances():
-    client = _FakeClient({"data": {"balance": "12.5"}})
-    adapter = _make_adapter(order_user_id="lp-user")
+    client = _FakeClient({"data": {"balance": "12.5", "locked": "0"}})
+    adapter = _make_adapter(order_user_id="lp-user", mock_wallet_inventory=False)
     adapter._get_client = AsyncMock(return_value=client)
 
     position = await adapter.get_position()

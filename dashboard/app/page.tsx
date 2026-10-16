@@ -4,7 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { formatNumber, formatCurrency, formatUptime } from '@/lib/utils';
-import { useStatus, useGlobalPosition, useBlendedPrice, useLastEventPacket } from '@/lib/hooks/useQueries';
+import { useStatus, usePortfolioExposure, useBlendedPrice, useLastEventPacket } from '@/lib/hooks/useQueries';
 import { VenuePriceChart } from '@/components/charts/VenuePriceChart';
 import { Activity, Zap, Wallet, AlertTriangle, ArrowRight, TrendingUp, Cpu } from 'lucide-react';
 
@@ -43,7 +43,7 @@ interface DexArbData {
 
 export default function DashboardPage() {
   const { data: status, isLoading: statusLoading } = useStatus();
-  const { data: globalPosition, isLoading: positionLoading } = useGlobalPosition();
+  const { data: portfolio, isLoading: portfolioLoading } = usePortfolioExposure();
   const { data: blendedPrice, isLoading: blendedLoading } = useBlendedPrice();
   const { data: lastPacketAt } = useLastEventPacket();
 
@@ -60,7 +60,7 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const isSyncing = !status && !globalPosition && !blendedPrice;
+  const isSyncing = !status && !portfolio && !blendedPrice;
   const timeSinceLastPacket = lastPacketAt ? Math.max(0, (now - lastPacketAt) / 1000).toFixed(1) : "0.0";
 
   const resolvedCurveData = curveData || {
@@ -175,7 +175,7 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent className={`p-4 flex-1 flex flex-col justify-between ${isSyncing ? 'opacity-30' : ''}`}>
-            {isSyncing || !globalPosition ? (
+            {isSyncing || !portfolio ? (
               <div className="space-y-4 pt-1">
                 <div className="flex items-center gap-3">
                   <div className="h-8 w-8 bg-white/10 rounded-sm animate-pulse" />
@@ -187,10 +187,11 @@ export default function DashboardPage() {
                 </div>
               </div>
             ) : (() => {
-              const stableUsd = Number(globalPosition.total_usdc) + Number(globalPosition.total_usdt);
-              const total = Number(globalPosition.total_usd_value);
-              const cngnPct = Number(globalPosition.delta_ratio) * 100;
-              const stablePct = 100 - cngnPct;
+              const stableUsd = portfolio.total_usdc == null || portfolio.total_usdt == null
+                ? null : Number(portfolio.total_usdc) + Number(portfolio.total_usdt);
+              const total = portfolio.total_usd_value == null ? null : Number(portfolio.total_usd_value);
+              const cngnPct = portfolio.cngn_share == null ? null : Number(portfolio.cngn_share) * 100;
+              const stablePct = cngnPct == null ? null : 100 - cngnPct;
               return (
                 <>
                   <div className="flex items-center gap-3 mb-4">
@@ -199,23 +200,28 @@ export default function DashboardPage() {
                     </div>
                     <div>
                       <div className="text-xl font-bold font-mono tracking-tight text-white leading-tight">
-                        {formatCurrency(total)}
+                        {total == null ? '—' : formatCurrency(total)}
                       </div>
                       <div className="text-[9px] text-white/40 font-mono tracking-widest uppercase mt-0.5">
-                        TOTAL VALUE
+                        {portfolio.complete ? 'TOTAL VALUE' : 'INCOMPLETE'}
                       </div>
+                      {!portfolio.complete && (
+                        <div className="text-[9px] text-amber-400 mt-1">
+                          {portfolio.sources.filter(source => source.error).map(source => `${source.source}: ${source.error}`).join('; ')}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-[10px] font-mono border-t border-white/[0.05] pt-3 mt-auto">
                     <div className="flex flex-col">
                       <span className="text-white/30 uppercase tracking-widest mb-1">cNGN</span>
-                      <span className="text-emerald-400">{formatNumber(globalPosition.total_cngn, 0)}</span>
-                      <span className="text-white/30 mt-0.5">{cngnPct.toFixed(1)}%</span>
+                      <span className="text-emerald-400">{portfolio.total_cngn == null ? '—' : formatNumber(portfolio.total_cngn, 0)}</span>
+                      <span className="text-white/30 mt-0.5">{cngnPct == null ? '—' : `${cngnPct.toFixed(1)}%`}</span>
                     </div>
                     <div className="flex flex-col text-right">
                       <span className="text-white/30 uppercase tracking-widest mb-1">USDC/USDT</span>
-                      <span className="text-blue-400">{formatNumber(stableUsd, 2)}</span>
-                      <span className="text-white/30 mt-0.5">{stablePct.toFixed(1)}%</span>
+                      <span className="text-blue-400">{stableUsd == null ? '—' : formatNumber(stableUsd, 2)}</span>
+                      <span className="text-white/30 mt-0.5">{stablePct == null ? '—' : `${stablePct.toFixed(1)}%`}</span>
                     </div>
                   </div>
                 </>

@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 import structlog
 
+from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION, Pipeline
 from engine.types import (
     ArbitrageHistoryEvent,
     ArbitrageHistoryWalletSnapshot,
     coerce_decimal,
 )
-from engine.arb.routing.route_registry import Pipeline, ROUTES_BY_DIRECTION
-from engine.arb.routing.router import SelectedRoute
+
+if TYPE_CHECKING:
+    from engine.arb.routing.router import SelectedRoute
 from engine.db.backend import HistoryStoreProtocol
 
 EventType = Literal["routed", "executed", "failed"]
@@ -106,6 +108,12 @@ class ArbitrageHistoryRecorder:
             )
 
     async def record_routed(self, opp_id: str, route: SelectedRoute) -> None:
+        logger.info(
+            "arb_inventory_route_selected", opportunity_id=opp_id,
+            direction=route.candidate.direction, monetary_profit_usd=str(route.net_profit_usd),
+            inventory_improvement_usd=str(route.inventory_improvement_usd),
+            selection_score=str(route.selection_score),
+        )
         await self._store(self._base_event(opp_id, route, event_type="routed", status="routed"))
 
     async def record_failed(
