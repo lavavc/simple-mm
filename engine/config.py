@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     arbitrage_max_inventory_imbalance_usd: float = 5000.0
     arbitrage_max_consecutive_failures: int = 3
     arbitrage_max_daily_loss_usd: float = 500.0
-    arbitrage_inventory_weight: Decimal = Decimal("0.02")
+    arbitrage_inventory_weight: Decimal = Decimal("0.005")
     arbitrage_inventory_max_age_seconds: int = 30
     arbitrage_quidax_target_cngn_ratio: Decimal = Decimal("0.5")
     arbitrage_uni_base_target_cngn_ratio: Decimal = Decimal("0.5")

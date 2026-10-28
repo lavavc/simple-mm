@@ -32,7 +32,7 @@ All thresholds are set in `engine/config.py` which is where you need to go to ch
 | `ARBITRAGE_MAX_DAILY_LOSS_USD` | 500 | Circuit breaker loss threshold |
 | `ARBITRAGE_MAX_CONSECUTIVE_FAILURES` | 3 | Circuit breaker failure count |
 | `ARBITRAGE_MIN_ACCOUNT_STABLECOIN_USD` | 10 | Min stablecoin per venue before pausing |
-| `ARBITRAGE_INVENTORY_WEIGHT` | 0.02 | Weight of inventory improvement in route preference |
+| `ARBITRAGE_INVENTORY_WEIGHT` | 0.005 | Weight of inventory improvement in route preference |
 | `ARBITRAGE_INVENTORY_MAX_AGE_SECONDS` | 30 | Maximum balance and price-reference age |
 | `ARBITRAGE_QUIDAX_TARGET_CNGN_RATIO` | 0.5 | Quidax arb account cNGN target by value |
 | `ARBITRAGE_UNI_BASE_TARGET_CNGN_RATIO` | 0.5 | Base arb account cNGN target by value |
